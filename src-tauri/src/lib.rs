@@ -127,6 +127,24 @@ async fn list_all_models() -> Result<AllModels, String> {
 }
 
 #[tauri::command]
+async fn delete_ollama_model(name: String) -> Result<(), String> {
+    validate_ollama_name(&name)?;
+    tokio::task::spawn_blocking(move || models::delete_ollama_model(&name))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn delete_mlx_model(repo_id: String) -> Result<(), String> {
+    validate_hf_repo(&repo_id)?;
+    tokio::task::spawn_blocking(move || models::delete_mlx_model(&repo_id))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
 async fn pull_ollama_model(name: String) -> Result<String, String> {
     validate_ollama_name(&name)?;
     const PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
@@ -609,6 +627,8 @@ pub fn run() {
             list_all_models,
             pull_ollama_model,
             pull_hf_model,
+            delete_ollama_model,
+            delete_mlx_model,
             open_external,
             list_conversations,
             create_conversation,

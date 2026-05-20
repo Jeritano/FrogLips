@@ -117,6 +117,49 @@ pub struct ModelLists {
     pub ollama_error: Option<String>,
 }
 
+pub fn delete_mlx_model(repo_id: &str) -> Result<()> {
+    if repo_id.is_empty() || repo_id.contains("..") || repo_id.contains('\0') {
+        return Err(anyhow::anyhow!("invalid repo id"));
+    }
+    // Validate org/name shape (HF repo)
+    let parts: Vec<&str> = repo_id.split('/').collect();
+    if parts.len() != 2 || parts.iter().any(|p| p.is_empty()) {
+        return Err(anyhow::anyhow!("repo id must be org/name"));
+    }
+    let hub = hf_hub_dir();
+    let canon_hub = std::fs::canonicalize(&hub)
+        .context("HF hub directory not accessible")?;
+    let encoded = format!("models--{}", repo_id.replace('/', "--"));
+    let target = canon_hub.join(&encoded);
+    // Canonicalize the target itself and re-check containment to defeat any
+    // symlink in the encoded path.
+    let canon_target = std::fs::canonicalize(&target)
+        .map_err(|e| anyhow::anyhow!("model dir not found: {e}"))?;
+    if !canon_target.starts_with(&canon_hub) {
+        return Err(anyhow::anyhow!("model path escapes hub root"));
+    }
+    std::fs::remove_dir_all(&canon_target)
+        .context("failed to remove model directory")?;
+    DIR_SIZE_CACHE.lock().remove(&target);
+    Ok(())
+}
+
+pub fn delete_ollama_model(name: &str) -> Result<()> {
+    use std::process::Stdio;
+    let output = std::process::Command::new("ollama")
+        .arg("rm")
+        .arg(name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("ollama not found on PATH")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("ollama rm failed: {}", stderr.trim()));
+    }
+    Ok(())
+}
+
 pub fn list_all_models() -> Result<ModelLists> {
     let (mlx, mlx_error) = match list_mlx_models() {
         Ok(v) => (v, None),

@@ -22,6 +22,8 @@ export const api = {
   serverStatus: () => invoke<ServerStatus>("server_status"),
   pullOllamaModel: (name: string) => invoke<string>("pull_ollama_model", { name }),
   pullHfModel: (repoId: string) => invoke<string>("pull_hf_model", { repoId }),
+  deleteOllamaModel: (name: string) => invoke<void>("delete_ollama_model", { name }),
+  deleteMlxModel: (repoId: string) => invoke<void>("delete_mlx_model", { repoId }),
   openExternal: (url: string) => invoke<void>("open_external", { url }),
 
   listConversations: () => invoke<Conversation[]>("list_conversations"),

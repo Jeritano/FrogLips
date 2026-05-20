@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
+import type { ModelEntry } from "../types";
 
-type Backend = "ollama" | "hf" | "rp" | "civitai";
+function fmtBytes(bytes: number): string {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
+  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+  if (bytes === 0) return "—";
+  return `${bytes} B`;
+}
+
+type Backend = "ollama" | "hf" | "rp" | "civitai" | "installed";
 
 interface CatalogEntry {
   id: string;
@@ -34,6 +43,7 @@ interface CivitaiFile {
   pickleScanResult?: string;
   virusScanResult?: string;
   metadata?: { format?: string; size?: string; fp?: string };
+  hashes?: { SHA256?: string; AutoV2?: string };
 }
 
 interface CivitaiVersion {
@@ -43,7 +53,9 @@ interface CivitaiVersion {
   files?: CivitaiFile[];
   images?: CivitaiImage[];
   publishedAt?: string;
+  updatedAt?: string;
   trainedWords?: string[];
+  availability?: string;
 }
 
 interface CivitaiModel {
@@ -52,6 +64,7 @@ interface CivitaiModel {
   description?: string;
   type: string;
   nsfw: boolean;
+  nsfwLevel?: number;
   tags?: string[];
   creator?: { username: string };
   stats?: {
@@ -59,10 +72,13 @@ interface CivitaiModel {
     thumbsUpCount?: number;
     ratingCount?: number;
     rating?: number;
+    commentCount?: number;
+    favoriteCount?: number;
   };
   modelVersions?: CivitaiVersion[];
   allowCommercialUse?: string | string[];
   allowDerivatives?: boolean;
+  mode?: string;
 }
 
 function stripHtml(s: string): string {
@@ -170,6 +186,7 @@ function civitaiLicenseShort(m: CivitaiModel): string {
    ─────────────────────────────────────────────────────────────────────── */
 const OLLAMA: CatalogEntry[] = [
   // ── Ollama Cloud (hosted by Ollama, no local VRAM) ──
+  { id: "kimi-k2-thinking:cloud",     label: "Kimi K2 Thinking",           size: "cloud", tags: ["cloud", "reasoning"], desc: "Moonshot Kimi K2 reasoning variant, hosted" },
   { id: "kimi-k2.6:cloud",            label: "Kimi K2.6",                  size: "cloud", tags: ["cloud", "chat"],      desc: "Moonshot's 1T-param flagship, hosted" },
   { id: "kimi-k2.5:cloud",            label: "Kimi K2.5",                  size: "cloud", tags: ["cloud", "chat"],      desc: "Previous Kimi K2, hosted" },
   { id: "deepseek-v4-pro:cloud",      label: "DeepSeek V4 Pro",            size: "cloud", tags: ["cloud", "chat"],      desc: "Latest DeepSeek flagship, hosted" },
@@ -420,11 +437,59 @@ interface Props {
 }
 
 export function ModelBrowser({ onClose, onPulled }: Props) {
-  const [tab, setTab] = useState<Backend>("ollama");
+  const [tab, setTab] = useState<Backend>("installed");
   const [query, setQuery] = useState("");
   const [pulling, setPulling] = useState<string | null>(null);
   const [done, setDone] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
+  const [installedOllama, setInstalledOllama] = useState<ModelEntry[]>([]);
+  const [installedMlx, setInstalledMlx] = useState<ModelEntry[]>([]);
+  const [installedErr, setInstalledErr] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  async function refreshInstalled() {
+    try {
+      const all = await api.listAllModels();
+      setInstalledOllama(all.ollama);
+      setInstalledMlx(all.mlx);
+      setInstalledErr(all.ollama_error ?? all.mlx_error ?? null);
+    } catch (e) {
+      setInstalledErr(String(e));
+    }
+  }
+
+  useEffect(() => {
+    refreshInstalled();
+  }, []);
+
+  const installedOllamaIds = useMemo(
+    () => new Set(installedOllama.map((m) => m.id)),
+    [installedOllama],
+  );
+  const installedMlxIds = useMemo(
+    () => new Set(installedMlx.map((m) => m.id)),
+    [installedMlx],
+  );
+
+  async function remove(id: string, backend: "ollama" | "mlx") {
+    if (!window.confirm(`Delete ${id} from disk? This frees up space and cannot be undone.`)) return;
+    setDeleting(id);
+    setErrors((m) => { const n = new Map(m); n.delete(id); return n; });
+    try {
+      if (backend === "ollama") {
+        await api.deleteOllamaModel(id);
+      } else {
+        await api.deleteMlxModel(id);
+      }
+      await refreshInstalled();
+      onPulled(); // refresh ModelPicker
+      setDone((s) => { const n = new Set(s); n.delete(id); return n; });
+    } catch (e) {
+      setErrors((m) => new Map([...m, [id, String(e)]]));
+    } finally {
+      setDeleting(null);
+    }
+  }
 
   const [hfModels, setHfModels] = useState<HfModel[]>([]);
   const [hfLoading, setHfLoading] = useState(false);
@@ -543,6 +608,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
       }
       setDone((s) => new Set([...s, id]));
       onPulled();
+      refreshInstalled();
     } catch (e) {
       setErrors((m) => new Map([...m, [id, String(e)]]));
     } finally {
@@ -574,6 +640,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
 
         {/* Tabs */}
         <div className="mb-tabs">
+          <button className={`mb-tab ${tab === "installed" ? "active" : ""}`} onClick={() => { setTab("installed"); setQuery(""); refreshInstalled(); }}>
+            Installed <span className="mb-tab-count">{installedOllama.length + installedMlx.length}</span>
+          </button>
           <button className={`mb-tab ${tab === "ollama" ? "active" : ""}`} onClick={() => { setTab("ollama"); setQuery(""); }}>
             Ollama <span className="mb-tab-count">{OLLAMA.length}</span>
           </button>
@@ -590,6 +659,85 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
 
         {/* List */}
         <div className="mb-list">
+          {tab === "installed" && (
+            <>
+              {installedErr && <div className="mb-empty mb-empty-err">{installedErr}</div>}
+              {installedOllama.length === 0 && installedMlx.length === 0 && (
+                <div className="mb-empty">No models installed. Use other tabs to pull.</div>
+              )}
+              {installedOllama.length > 0 && (
+                <div className="mb-section-title">Ollama ({installedOllama.length})</div>
+              )}
+              {installedOllama
+                .filter((m) => !query.trim() || m.id.toLowerCase().includes(query.toLowerCase()))
+                .map((m) => {
+                  const isDeleting = deleting === m.id;
+                  const err = errors.get(m.id);
+                  const isCloud = m.id.endsWith(":cloud");
+                  return (
+                    <div key={`ol-${m.id}`} className="mb-card">
+                      <div className="mb-card-info">
+                        <div className="mb-card-top">
+                          <span className="mb-card-label">{m.id}</span>
+                          <div className="mb-tags">
+                            <span className="mb-tag" style={{ background: "#3b82f622", color: "#3b82f6" }}>ollama</span>
+                            {isCloud && (
+                              <span className="mb-tag" style={{ background: "#0ea5e922", color: "#0ea5e9" }}>cloud</span>
+                            )}
+                          </div>
+                        </div>
+                        {err && <div className="mb-card-err">{err}</div>}
+                      </div>
+                      <div className="mb-card-actions">
+                        <span className="mb-card-size">{m.size_bytes > 0 ? fmtBytes(m.size_bytes) : (isCloud ? "cloud" : "—")}</span>
+                        <button
+                          className="mb-delete-btn"
+                          onClick={() => remove(m.id, "ollama")}
+                          disabled={isDeleting || !!deleting}
+                          title="Delete from disk"
+                        >
+                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              {installedMlx.length > 0 && (
+                <div className="mb-section-title">MLX / HuggingFace ({installedMlx.length})</div>
+              )}
+              {installedMlx
+                .filter((m) => !query.trim() || m.id.toLowerCase().includes(query.toLowerCase()))
+                .map((m) => {
+                  const isDeleting = deleting === m.id;
+                  const err = errors.get(m.id);
+                  return (
+                    <div key={`mlx-${m.id}`} className="mb-card">
+                      <div className="mb-card-info">
+                        <div className="mb-card-top">
+                          <span className="mb-card-label">{m.id}</span>
+                          <div className="mb-tags">
+                            <span className="mb-tag" style={{ background: "#a855f722", color: "#a855f7" }}>mlx</span>
+                          </div>
+                        </div>
+                        {err && <div className="mb-card-err">{err}</div>}
+                      </div>
+                      <div className="mb-card-actions">
+                        <span className="mb-card-size">{fmtBytes(m.size_bytes)}</span>
+                        <button
+                          className="mb-delete-btn"
+                          onClick={() => remove(m.id, "mlx")}
+                          disabled={isDeleting || !!deleting}
+                          title="Delete from disk"
+                        >
+                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+            </>
+          )}
+
           {tab === "ollama" && (
             <>
               {filteredOllama.length === 0 && (
@@ -597,10 +745,12 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               )}
               {filteredOllama.map((entry) => {
                 const isPulling = pulling === entry.id;
+                const isDeleting = deleting === entry.id;
                 const isDone = done.has(entry.id);
+                const isInstalled = installedOllamaIds.has(entry.id);
                 const err = errors.get(entry.id);
                 return (
-                  <div key={entry.id} className="mb-card">
+                  <div key={entry.id} className={`mb-card ${isInstalled ? "installed" : ""}`}>
                     <div className="mb-card-info">
                       <div className="mb-card-top">
                         <span className="mb-card-label">{entry.label}</span>
@@ -610,6 +760,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                               {t}
                             </span>
                           ))}
+                          {isInstalled && (
+                            <span className="mb-tag mb-installed-tag" title="Already pulled">✓ installed</span>
+                          )}
                         </div>
                       </div>
                       <div className="mb-card-desc">{entry.desc}</div>
@@ -617,13 +770,23 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                     </div>
                     <div className="mb-card-actions">
                       <span className="mb-card-size">{entry.size}</span>
-                      <button
-                        className={`mb-pull-btn ${isDone ? "done" : ""}`}
-                        onClick={() => pull(entry.id, "ollama")}
-                        disabled={isPulling || !!pulling}
-                      >
-                        {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
-                      </button>
+                      {isInstalled ? (
+                        <button
+                          className="mb-delete-btn"
+                          onClick={() => remove(entry.id, "ollama")}
+                          disabled={isDeleting || !!deleting}
+                        >
+                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                        </button>
+                      ) : (
+                        <button
+                          className={`mb-pull-btn ${isDone ? "done" : ""}`}
+                          onClick={() => pull(entry.id, "ollama")}
+                          disabled={isPulling || !!pulling}
+                        >
+                          {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -642,7 +805,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               )}
               {hfModels.map((m) => {
                 const isPulling = pulling === m.id;
+                const isDeleting = deleting === m.id;
                 const isDone = done.has(m.id);
+                const isInstalled = installedMlxIds.has(m.id);
                 const err = errors.get(m.id);
                 const label = m.id.replace("mlx-community/", "");
                 const tags = inferTags(m);
@@ -673,6 +838,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                               gated
                             </span>
                           )}
+                          {isInstalled && (
+                            <span className="mb-tag mb-installed-tag" title="Already pulled">✓ installed</span>
+                          )}
                         </div>
                       </div>
                       {info.baseModel && (
@@ -688,13 +856,23 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                     </div>
                     <div className="mb-card-actions">
                       <span className="mb-card-size">{author}</span>
-                      <button
-                        className={`mb-pull-btn ${isDone ? "done" : ""}`}
-                        onClick={() => pull(m.id, "hf")}
-                        disabled={isPulling || !!pulling}
-                      >
-                        {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
-                      </button>
+                      {isInstalled ? (
+                        <button
+                          className="mb-delete-btn"
+                          onClick={() => remove(m.id, "mlx")}
+                          disabled={isDeleting || !!deleting}
+                        >
+                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                        </button>
+                      ) : (
+                        <button
+                          className={`mb-pull-btn ${isDone ? "done" : ""}`}
+                          onClick={() => pull(m.id, "hf")}
+                          disabled={isPulling || !!pulling}
+                        >
+                          {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -710,10 +888,12 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               )}
               {filteredRp.map((entry) => {
                 const isPulling = pulling === entry.id;
+                const isDeleting = deleting === entry.id;
                 const isDone = done.has(entry.id);
+                const isInstalled = installedMlxIds.has(entry.id);
                 const err = errors.get(entry.id);
                 return (
-                  <div key={entry.id} className="mb-card">
+                  <div key={entry.id} className={`mb-card ${isInstalled ? "installed" : ""}`}>
                     <div className="mb-card-info">
                       <div className="mb-card-top">
                         <span className="mb-card-label">{entry.label}</span>
@@ -723,6 +903,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                               {t}
                             </span>
                           ))}
+                          {isInstalled && (
+                            <span className="mb-tag mb-installed-tag" title="Already pulled">✓ installed</span>
+                          )}
                         </div>
                       </div>
                       <div className="mb-card-desc">{entry.desc}</div>
@@ -731,13 +914,23 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                     </div>
                     <div className="mb-card-actions">
                       <span className="mb-card-size">{entry.size}</span>
-                      <button
-                        className={`mb-pull-btn ${isDone ? "done" : ""}`}
-                        onClick={() => pull(entry.id, "hf")}
-                        disabled={isPulling || !!pulling}
-                      >
-                        {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
-                      </button>
+                      {isInstalled ? (
+                        <button
+                          className="mb-delete-btn"
+                          onClick={() => remove(entry.id, "mlx")}
+                          disabled={isDeleting || !!deleting}
+                        >
+                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                        </button>
+                      ) : (
+                        <button
+                          className={`mb-pull-btn ${isDone ? "done" : ""}`}
+                          onClick={() => pull(entry.id, "hf")}
+                          disabled={isPulling || !!pulling}
+                        >
+                          {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -846,12 +1039,25 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                         by <strong>{m.creator?.username ?? "unknown"}</strong>
                         {m.stats?.downloadCount != null && <> · ↓ {abbrev(m.stats.downloadCount)}</>}
                         {m.stats?.thumbsUpCount != null && <> · 👍 {abbrev(m.stats.thumbsUpCount)}</>}
+                        {m.stats?.commentCount != null && m.stats.commentCount > 0 && <> · 💬 {abbrev(m.stats.commentCount)}</>}
+                        {m.stats?.favoriteCount != null && m.stats.favoriteCount > 0 && <> · ★ {abbrev(m.stats.favoriteCount)}</>}
                         {m.stats?.rating != null && m.stats.ratingCount != null && m.stats.ratingCount > 0 && (
-                          <> · ★ {m.stats.rating.toFixed(2)} ({abbrev(m.stats.ratingCount)})</>
+                          <> · {m.stats.rating.toFixed(2)}/5 ({abbrev(m.stats.ratingCount)})</>
                         )}
-                        {published && <> · {published}</>}
+                        {published && <> · pub {published}</>}
+                        {v0?.updatedAt && relativeTime(v0.updatedAt) && relativeTime(v0.updatedAt) !== published && (
+                          <> · upd {relativeTime(v0.updatedAt)}</>
+                        )}
                         {versionCount > 1 && <> · {versionCount} versions</>}
+                        {v0?.availability && v0.availability !== "Public" && <> · {v0.availability}</>}
+                        {m.mode && <> · {m.mode}</>}
                         {" · license: "}<span title={`commercial: ${parseCommercialUse(m.allowCommercialUse).join(", ") || "no"}; derivatives: ${m.allowDerivatives ? "yes" : "no"}`}>{licenseShort}</span>
+                        {primaryFile?.hashes?.SHA256 && (
+                          <span style={{ marginLeft: 6, opacity: 0.5, fontFamily: "var(--mono, monospace)", fontSize: 10 }}
+                                title={`SHA256: ${primaryFile.hashes.SHA256}`}>
+                            sha {primaryFile.hashes.SHA256.slice(0, 8)}
+                          </span>
+                        )}
                         {(!pickleOk || !virusOk) && (
                           <span style={{ color: "#ef4444", marginLeft: 6 }} title={`pickle: ${primaryFile?.pickleScanResult}, virus: ${primaryFile?.virusScanResult}`}>⚠ scan</span>
                         )}
