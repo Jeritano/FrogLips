@@ -73,20 +73,6 @@ Returns:
 }
 ```
 
-### `search_files(path, pattern, glob?)`
-
-Recursive line-grep. Default glob `*`. Skips `.git`, `node_modules`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__`, `.next`, `.cache`, and any directory starting with `.`. Files >2 MiB are skipped. Hard caps: 200 hits, 2000 files scanned.
-
-Returns:
-```json
-{
-  "hits": [{ "path": "src/main.rs", "line": 42, "text": "..." }, ...],
-  "files_scanned": 187,
-  "truncated_hits": false,
-  "truncated_scan": false
-}
-```
-
 ### `search_files(path, pattern, glob?, regex?)`
 
 Recursive line-grep. Default glob `*`. Skips `.git`, `node_modules`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__`, `.next`, `.cache`, and dotfiles. Files >2 MiB skipped. Hard caps: 200 hits, 2000 files scanned. Set `regex: true` for Rust regex syntax; default is literal substring.
@@ -156,6 +142,107 @@ Returns:
 
 If `op_id` is provided, the frontend can call `agent_cancel_shell(op_id)` to abort. `cancelActiveShell()` is wired into the chat abort button so a single user "stop" kills the in-flight shell too.
 
+### `read_pdf(path, limit?)`
+
+Text-extract a PDF via `pdf-extract` on a blocking thread. Default output cap = `MAX_READ_BYTES` (64 KiB). Returns `{content, bytes_read, total_bytes, truncated}`.
+
+### Git extras (v0.8+)
+
+#### `git_log(path?, limit?)`
+`git log --oneline --decorate -n <limit>` (default 20, max 200). Read-only.
+
+#### `git_show(reference, path?)`
+`git show --no-color <ref>`. `reference` must match `[A-Za-z0-9._/-]+` (argv-injection guard). Read-only.
+
+#### `git_branches(path?)`
+`git branch -a --no-color` — local + remote branches.
+
+#### `git_commit(message, path?)`
+Commits already-staged changes. Does NOT stage files itself — use `run_shell "git add …"` first. Message length capped at 8 KiB. Requires user approval (in `DANGEROUS_TOOLS`).
+
+### Web tools (v0.8+)
+
+All share an SSRF guard that rejects hosts resolving to loopback, RFC1918 private, link-local (incl. `169.254.169.254` metadata), `.local`, and `.internal`. The `Host:` header is also blocked from being overridden on `http_request` to prevent SNI-based bypasses.
+
+#### `web_fetch(url)`
+GET only. 15 s timeout, 1 MiB response cap. HTML detected by presence of `<html`/`<body`/`<!DOCTYPE` and run through `html2text` for the agent's benefit. Returns `{url, status, content, bytes, truncated}`.
+
+#### `web_search(query, n?)`
+DuckDuckGo HTML endpoint scrape — no API key. Default `n=5`, max 20. Returns `{query, hits: [{title, url, snippet}]}`.
+
+#### `http_request(method, url, headers?, body?, timeout_secs?)`
+Generic HTTP. Methods: `GET | POST | PUT | PATCH | DELETE | HEAD`. Body capped at 1 MiB. `timeout_secs` capped at 60. Same SSRF guard. **Requires user approval** (in `DANGEROUS_TOOLS` / `WRITE_TOOLS`). Returns `{status, headers, body, bytes, truncated}`.
+
+### macOS automation (v0.8+)
+
+#### `screenshot(out_path?)`
+`screencapture -x -t png`. Defaults to `$TMPDIR/froglips-screenshot-<ms>.png`. Returns `{path, bytes}`.
+
+#### `clipboard_get()` / `clipboard_set(text)`
+`pbpaste` / `pbcopy`. Get truncates at `MAX_READ_BYTES` (64 KiB). Set is dangerous (clipboard often holds secrets).
+
+#### `open_app(name)`
+`open -a <name>`. Name validated against `^[A-Za-z0-9 ._-]+$`. Dangerous — model could spawn arbitrary apps.
+
+#### `show_notification(title, body)`
+`osascript -e 'display notification …'`. Both fields strip embedded `"` before AppleScript interpolation. Combined length capped at 4 KiB. Not dangerous.
+
+#### `applescript_run(script)` (v0.9+)
+Generic AppleScript execution. Script size capped at 16 KiB, 30 s timeout. **High-power** — can drive any scriptable macOS app. Dangerous (in `DANGEROUS_TOOLS` / `WRITE_TOOLS`). Returns same shape as `run_shell`.
+
+### Code intelligence (v0.9+)
+
+#### `find_definition(symbol, path?)`
+Heuristic regex across the workspace for common definition patterns: `fn|def|function|class|struct|enum|trait|interface|type|const|let|var|pub <kind>`. Symbol restricted to `[A-Za-z0-9_]+`. Defaults `path` to workspace root. Returns a `SearchResult`.
+
+#### `find_references(symbol, path?)`
+Word-boundary regex search for the symbol. Returns a `SearchResult`.
+
+#### `format_code(path)`
+Runs the right formatter for the file's extension: `prettier --write` (ts/tsx/js/jsx/json/css/html/md/yaml/yml), `rustfmt` (rs), `black` (py), `gofmt -w` (go), `swift-format -i` (swift). 30 s timeout. Returns `{formatter, stdout, stderr, exit_code, duration_ms}`.
+
+### Background tasks (v0.9+)
+
+Fire-and-forget shell tasks. State lives in a Mutex-guarded `HashMap<id, TaskEntry>` w/ max 32 concurrent.
+
+#### `task_create(command, cwd?)`
+Spawns a tokio task wrapping `run_shell` with `op_id = task_id`. Returns the `TaskInfo` immediately (status = `pending` or `running`). Internal cancellation oneshot is forwarded to `cancel_shell` so the child process is killed.
+
+#### `task_status(id)`
+Returns the current `TaskInfo` snapshot.
+
+#### `task_list()`
+All session tasks.
+
+#### `task_cancel(id)`
+Idempotent on terminal states (`done` / `failed` / `cancelled`).
+
+#### `task_prune(older_than_secs?)` (Tauri command only — not exposed to the agent)
+Drops finished tasks older than threshold. Default 1 h.
+
+### Control flow (v0.9+)
+
+#### `ask_user(question, hint?)`
+Pauses the agent and pops a Tauri-event-driven modal in `ChatWindow` with a textarea. User submits via Cmd+Enter, cancels via Esc or backdrop click. 10 min hard timeout server-side. Returns `{ok: true, answer: "<user text>"}`.
+
+Implementation: `ask_user::prepare()` registers a oneshot sender in a `Mutex<HashMap<id, Sender>>`, the command layer emits `ask-user` event, then awaits the receiver. Frontend modal calls `agent_ask_user_reply(id, answer)` to resolve.
+
+#### `spawn_subagent(prompt, preset?)`
+Recursive `runAgentLoop` in an isolated context. Caps at `MAX_SUBAGENT_DEPTH = 3` to prevent runaway recursion. Inherits parent's:
+- `model`
+- `workspaceRoot`
+- `requestConfirmation`
+- `signal`
+- `approveAllShell` / `approveAllWrite` / `approvedShellPrefixes`
+
+Replaces parent's:
+- `messages` → `[{role: "user", content: prompt}]`
+- `systemPromptOverride` ← chosen preset's prompt (if `preset` matches)
+- `toolAllowlist` ← chosen preset's `allowedTools` (if non-empty)
+- `onUpdate` / `onStatusChange` / `onMetrics` → no-op (sub steps don't pollute parent UI)
+
+Returns `{ok, depth, preset, answer}` JSON.
+
 ## Error envelope
 
 Every tool that can fail returns a stringified JSON via the Tauri error channel:
@@ -199,6 +286,8 @@ Write-blocked: all of the above plus `/System`, `/private/etc`, `/etc`, `/privat
 When unset, the agent has full filesystem access (still subject to protected list and OS perms).
 
 ## Adding a tool
+
+For tools outside the path-sandbox model (web, OS-native, code intel, etc.) put them in `agent.rs` w/o `validate_for_*` calls — but still gate dangerous behavior at `DANGEROUS_TOOLS`. For task-queue–like long-running infrastructure, use a separate module (`task_queue.rs`, `ask_user.rs`) and expose Tauri commands.
 
 1. Implement the logic in `src-tauri/src/agent.rs`. Use `validate_for_read` / `validate_for_write` to get a resolved + sandboxed `PathBuf`. Return `Result<MyResult, String>` where the error string is `err_string(ToolError::…)`.
 2. Add a Tauri command in `src-tauri/src/lib.rs`:
@@ -245,6 +334,8 @@ Empty `allowedTools` means "all enabled". The preset's `systemPromptOverride` re
 | `DEDUPE_WINDOW` | 3 | How many recent calls to track for repeat detection |
 | `RETRY_MAX` | 2 | Ollama retry count |
 | `RETRY_BACKOFF_MS` | 500 | Initial backoff (multiplied by attempt+1) |
+| `OLLAMA_REQUEST_TIMEOUT_MS` | 120 000 | Per-request timeout combined with caller's signal |
+| `MAX_SUBAGENT_DEPTH` | 3 | Recursion cap for `spawn_subagent` |
 
 `src-tauri/src/agent.rs`:
 
@@ -258,3 +349,9 @@ Empty `allowedTools` means "all enabled". The preset's `systemPromptOverride` re
 | `MAX_LIST_ENTRIES` | 500 | `list_dir` cap |
 | `MAX_SEARCH_HITS` | 200 | `search_files` hit cap |
 | `MAX_SEARCH_FILES_SCANNED` | 2000 | `search_files` walk cap |
+| `WEB_FETCH_MAX_BYTES` | 1 048 576 | Response body cap for `web_fetch` + `http_request` |
+| `WEB_FETCH_TIMEOUT_SECS` | 15 | Default timeout for web tools |
+| `APPLESCRIPT_TIMEOUT_SECS` | 30 | Per-script timeout |
+| `APPLESCRIPT_MAX_SCRIPT_BYTES` | 16 384 | Script-source cap |
+| `MAX_CONCURRENT_TASKS` | 32 | task_queue size cap |
+| `ASK_TIMEOUT_SECS` | 600 | `ask_user` wait timeout (10 min) |
