@@ -20,15 +20,22 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
   {
     id: "coder",
     name: "Coder",
-    description: "Code reading, search, editing + shell. Prefers edit_file over write_file.",
+    description: "Code reading, search, editing + shell + full git. Prefers edit_file / multi_edit over write_file.",
     allowedTools: [
       "read_file",
       "list_dir",
       "search_files",
       "file_exists",
       "edit_file",
+      "multi_edit",
       "write_file",
       "run_shell",
+      "git_status",
+      "git_diff",
+      "git_log",
+      "git_show",
+      "git_branches",
+      "git_commit",
     ],
     systemPromptOverride:
       "You are a coding agent on the user's local machine. " +
@@ -40,8 +47,12 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
   {
     id: "researcher",
     name: "Researcher",
-    description: "Read-only exploration. No shell, no writes.",
-    allowedTools: ["read_file", "list_dir", "search_files", "file_exists"],
+    description: "Read-only exploration of FS + web + PDFs. No shell, no writes.",
+    allowedTools: [
+      "read_file", "list_dir", "search_files", "file_exists",
+      "read_pdf", "web_fetch", "web_search",
+      "git_status", "git_diff", "git_log", "git_show", "git_branches",
+    ],
     systemPromptOverride:
       "You are a read-only research agent. " +
       "Investigate the user's question by reading files, listing directories, and searching for patterns. " +

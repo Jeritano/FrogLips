@@ -92,6 +92,37 @@ export interface GitResult {
   cwd: string;
 }
 
+export interface WebFetchResult {
+  url: string;
+  status: number;
+  content: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface WebSearchHit {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface WebSearchResult {
+  query: string;
+  hits: WebSearchHit[];
+}
+
+export interface PdfResult {
+  content: string;
+  bytes_read: number;
+  total_bytes: number;
+  truncated: boolean;
+}
+
+export interface ScreenshotResult {
+  path: string;
+  bytes: number;
+}
+
 export interface WindowGeometry {
   width: number;
   height: number;

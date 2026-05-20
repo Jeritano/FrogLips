@@ -46,6 +46,21 @@ const ALL_TOOL_NAMES = [
   "run_shell",
   "write_file",
   "edit_file",
+  "multi_edit",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "git_branches",
+  "git_commit",
+  "web_fetch",
+  "web_search",
+  "read_pdf",
+  "screenshot",
+  "clipboard_get",
+  "clipboard_set",
+  "open_app",
+  "show_notification",
 ] as const;
 
 function loadAllowlist(): string[] {

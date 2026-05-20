@@ -553,6 +553,66 @@ async fn agent_git_diff(
 }
 
 #[tauri::command]
+async fn agent_git_log(path: Option<String>, limit: Option<u32>) -> Result<agent::GitResult, String> {
+    agent::git_log(path, limit).await
+}
+
+#[tauri::command]
+async fn agent_git_show(reference: String, path: Option<String>) -> Result<agent::GitResult, String> {
+    agent::git_show(reference, path).await
+}
+
+#[tauri::command]
+async fn agent_git_branches(path: Option<String>) -> Result<agent::GitResult, String> {
+    agent::git_branches(path).await
+}
+
+#[tauri::command]
+async fn agent_git_commit(message: String, path: Option<String>) -> Result<agent::GitResult, String> {
+    agent::git_commit(message, path).await
+}
+
+#[tauri::command]
+async fn agent_web_fetch(url: String) -> Result<agent::WebFetchResult, String> {
+    agent::web_fetch(url).await
+}
+
+#[tauri::command]
+async fn agent_web_search(query: String, n: Option<usize>) -> Result<agent::WebSearchResult, String> {
+    agent::web_search(query, n).await
+}
+
+#[tauri::command]
+async fn agent_read_pdf(path: String, limit: Option<u64>) -> Result<agent::PdfResult, String> {
+    agent::read_pdf(path, limit).await
+}
+
+#[tauri::command]
+async fn agent_screenshot(out_path: Option<String>) -> Result<agent::ScreenshotResult, String> {
+    agent::screenshot(out_path).await
+}
+
+#[tauri::command]
+async fn agent_clipboard_get() -> Result<String, String> {
+    agent::clipboard_get().await
+}
+
+#[tauri::command]
+async fn agent_clipboard_set(text: String) -> Result<(), String> {
+    agent::clipboard_set(text).await
+}
+
+#[tauri::command]
+async fn agent_open_app(name: String) -> Result<(), String> {
+    agent::open_app(name).await
+}
+
+#[tauri::command]
+async fn agent_show_notification(title: String, body: String) -> Result<(), String> {
+    agent::show_notification(title, body).await
+}
+
+#[tauri::command]
 fn agent_classify_shell(command: String) -> String {
     agent::classify_shell_risk(&command).to_string()
 }
@@ -805,6 +865,18 @@ pub fn run() {
             agent_multi_edit,
             agent_git_status,
             agent_git_diff,
+            agent_git_log,
+            agent_git_show,
+            agent_git_branches,
+            agent_git_commit,
+            agent_web_fetch,
+            agent_web_search,
+            agent_read_pdf,
+            agent_screenshot,
+            agent_clipboard_get,
+            agent_clipboard_set,
+            agent_open_app,
+            agent_show_notification,
             settings_get,
             settings_set,
             native_supported,

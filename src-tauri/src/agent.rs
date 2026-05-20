@@ -1055,3 +1055,409 @@ mod tests {
         assert!(result.is_err(), "should reject .. in path");
     }
 }
+
+/* ── Web tools ───────────────────────────────────────────────────────────── */
+
+#[derive(Serialize)]
+pub struct WebFetchResult {
+    pub url: String,
+    pub status: u16,
+    pub content: String,
+    pub bytes: u64,
+    pub truncated: bool,
+}
+
+const WEB_FETCH_MAX_BYTES: usize = 1_048_576; // 1 MiB
+const WEB_FETCH_TIMEOUT_SECS: u64 = 15;
+
+fn is_safe_public_host(host: &str) -> bool {
+    // Reject localhost + RFC1918 + link-local + .local — defends against SSRF.
+    let h = host.to_ascii_lowercase();
+    if h.is_empty() || h == "localhost" || h.ends_with(".local") || h.ends_with(".internal") {
+        return false;
+    }
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(a) => {
+                let oct = a.octets();
+                if a.is_loopback() || a.is_private() || a.is_link_local()
+                    || a.is_unspecified() || a.is_multicast() || a.is_broadcast() {
+                    return false;
+                }
+                // 169.254.169.254 + AWS/GCP metadata, etc. — caught by link_local
+                if oct[0] == 0 || oct[0] == 127 { return false; }
+            }
+            std::net::IpAddr::V6(a) => {
+                if a.is_loopback() || a.is_unspecified() || a.is_multicast() {
+                    return false;
+                }
+                let segs = a.segments();
+                if segs[0] == 0xfe80 || segs[0] == 0xfc00 || segs[0] == 0xfd00 { return false; }
+            }
+        }
+    }
+    true
+}
+
+pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
+    let url = url::Url::parse(&url_str)
+        .map_err(|e| err_string(ToolError::invalid(format!("bad url: {e}"))))?;
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return Err(err_string(ToolError::invalid("only http(s) urls allowed")));
+    }
+    let host = url.host_str().unwrap_or("");
+    if !is_safe_public_host(host) {
+        return Err(err_string(ToolError::Protected {
+            message: format!("host '{host}' is private/loopback/link-local — blocked to prevent SSRF"),
+        }));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS))
+        .user_agent("Froglips/0.8 (+https://github.com/Jeritano/FrogLips)")
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+
+    let resp = client.get(url.clone()).send().await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    let status = resp.status().as_u16();
+
+    let bytes = resp.bytes().await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    let total = bytes.len() as u64;
+    let truncated = bytes.len() > WEB_FETCH_MAX_BYTES;
+    let cap = bytes.len().min(WEB_FETCH_MAX_BYTES);
+    let body_text = String::from_utf8_lossy(&bytes[..cap]).into_owned();
+
+    // Strip HTML if it looks like HTML — agent gets clean text.
+    let looks_html = body_text.contains("<html") || body_text.contains("<HTML")
+        || body_text.contains("<body") || body_text.contains("<!DOCTYPE");
+    let content = if looks_html {
+        html2text::from_read(body_text.as_bytes(), 100)
+            .unwrap_or(body_text)
+    } else {
+        body_text
+    };
+
+    Ok(WebFetchResult { url: url_str, status, content, bytes: total, truncated })
+}
+
+#[derive(Serialize)]
+pub struct WebSearchHit {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
+#[derive(Serialize)]
+pub struct WebSearchResult {
+    pub query: String,
+    pub hits: Vec<WebSearchHit>,
+}
+
+pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResult, String> {
+    if query.trim().is_empty() {
+        return Err(err_string(ToolError::invalid("query must not be empty")));
+    }
+    if query.len() > 512 {
+        return Err(err_string(ToolError::invalid("query too long")));
+    }
+    let n = n.unwrap_or(5).min(20);
+
+    // DuckDuckGo HTML endpoint — no API key needed. Brittle but adequate.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS))
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605 Froglips")
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+
+    let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(&query));
+    let resp = client.get(&url).send().await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    let text = resp.text().await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+
+    // Parse <a class="result__a" href="..."> + <a class="result__snippet">
+    static RESULT_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(
+            r#"(?s)<a\s+rel="nofollow"\s+class="result__a"\s+href="([^"]+)"[^>]*>(.*?)</a>.*?<a\s+class="result__snippet"[^>]*>(.*?)</a>"#
+        ).unwrap()
+    });
+    fn strip_tags(s: &str) -> String {
+        let no_tags = regex::Regex::new(r"<[^>]*>").unwrap().replace_all(s, "");
+        no_tags.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            .replace("&quot;", "\"").replace("&#x27;", "'").replace("&#39;", "'")
+            .trim().to_string()
+    }
+    fn unwrap_ddg_redirect(href: &str) -> String {
+        // DDG returns //duckduckgo.com/l/?uddg=<url>&...
+        if let Some(idx) = href.find("uddg=") {
+            let enc = &href[idx + 5..];
+            let end = enc.find('&').unwrap_or(enc.len());
+            return percent_decode(&enc[..end]);
+        }
+        href.to_string()
+    }
+
+    let mut hits = Vec::new();
+    for cap in RESULT_RE.captures_iter(&text) {
+        if hits.len() >= n { break; }
+        let href = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let title_html = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        let snippet_html = cap.get(3).map(|m| m.as_str()).unwrap_or("");
+        hits.push(WebSearchHit {
+            url: unwrap_ddg_redirect(href),
+            title: strip_tags(title_html),
+            snippet: strip_tags(snippet_html),
+        });
+    }
+    Ok(WebSearchResult { query, hits })
+}
+
+fn urlencoding(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => { use std::fmt::Write; let _ = write!(out, "%{:02X}", b); }
+        }
+    }
+    out
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/* ── Extended git tools ──────────────────────────────────────────────────── */
+
+pub async fn git_log(path: Option<String>, limit: Option<u32>) -> Result<GitResult, String> {
+    let cwd = match path {
+        Some(p) => validate_for_read(&p).map_err(err_string)?,
+        None => workspace_root_clone()
+            .ok_or_else(|| err_string(ToolError::invalid("no path given and no workspace root set")))?,
+    };
+    let n = limit.unwrap_or(20).min(200).to_string();
+    git_invoke(cwd, &["log", "--oneline", "--decorate", "-n", &n]).await
+}
+
+pub async fn git_show(reference: String, path: Option<String>) -> Result<GitResult, String> {
+    static REF_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"^[A-Za-z0-9._/-]+$").unwrap()
+    });
+    if reference.is_empty() || reference.len() > 128 || !REF_RE.is_match(&reference) {
+        return Err(err_string(ToolError::invalid("ref contains illegal characters")));
+    }
+    let cwd = match path {
+        Some(p) => validate_for_read(&p).map_err(err_string)?,
+        None => workspace_root_clone()
+            .ok_or_else(|| err_string(ToolError::invalid("no path given and no workspace root set")))?,
+    };
+    git_invoke(cwd, &["show", "--no-color", &reference]).await
+}
+
+pub async fn git_branches(path: Option<String>) -> Result<GitResult, String> {
+    let cwd = match path {
+        Some(p) => validate_for_read(&p).map_err(err_string)?,
+        None => workspace_root_clone()
+            .ok_or_else(|| err_string(ToolError::invalid("no path given and no workspace root set")))?,
+    };
+    git_invoke(cwd, &["branch", "-a", "--no-color"]).await
+}
+
+pub async fn git_commit(message: String, path: Option<String>) -> Result<GitResult, String> {
+    if message.trim().is_empty() {
+        return Err(err_string(ToolError::invalid("commit message must not be empty")));
+    }
+    if message.len() > 8192 {
+        return Err(err_string(ToolError::invalid("commit message too long")));
+    }
+    let cwd = match path {
+        Some(p) => validate_for_write(&p).map_err(err_string)?,
+        None => workspace_root_clone()
+            .ok_or_else(|| err_string(ToolError::invalid("no path given and no workspace root set")))?,
+    };
+    git_invoke(cwd, &["commit", "-m", &message]).await
+}
+
+/* ── PDF text extraction ─────────────────────────────────────────────────── */
+
+#[derive(Serialize)]
+pub struct PdfResult {
+    pub content: String,
+    pub bytes_read: u64,
+    pub total_bytes: u64,
+    pub truncated: bool,
+}
+
+pub async fn read_pdf(path: String, limit: Option<u64>) -> Result<PdfResult, String> {
+    let resolved = validate_for_read(&path).map_err(err_string)?;
+    let bytes = tokio::fs::read(&resolved).await
+        .map_err(|e| err_string(classify_io(&e)))?;
+    let total = bytes.len() as u64;
+    // pdf-extract is sync + can block — push to a blocking thread.
+    let extracted = tokio::task::spawn_blocking(move || pdf_extract::extract_text_from_mem(&bytes))
+        .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?
+        .map_err(|e| err_string(ToolError::invalid(format!("pdf extract failed: {e}"))))?;
+    let cap = limit.unwrap_or(MAX_READ_BYTES as u64) as usize;
+    let truncated = extracted.len() > cap;
+    let bytes_read = extracted.len().min(cap) as u64;
+    let content = if truncated {
+        let mut s = extracted[..cap].to_string();
+        s.push_str(&format!("\n[... truncated — full text is {} chars]", extracted.len()));
+        s
+    } else {
+        extracted
+    };
+    Ok(PdfResult { content, bytes_read, total_bytes: total, truncated })
+}
+
+/* ── Screenshot ──────────────────────────────────────────────────────────── */
+
+#[derive(Serialize)]
+pub struct ScreenshotResult {
+    pub path: String,
+    pub bytes: u64,
+}
+
+pub async fn screenshot(out_path: Option<String>) -> Result<ScreenshotResult, String> {
+    // Default destination: app temp dir under the workspace, or /tmp.
+    let target = match out_path {
+        Some(p) => validate_for_write(&p).map_err(err_string)?,
+        None => {
+            let dir = std::env::temp_dir();
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            dir.join(format!("froglips-screenshot-{stamp}.png"))
+        }
+    };
+
+    // screencapture: -x silent, -t png. No -i (interactive) so it can't hang.
+    let path_str = target.to_string_lossy().into_owned();
+    let status = tokio::process::Command::new("screencapture")
+        .arg("-x")
+        .arg("-t").arg("png")
+        .arg(&path_str)
+        .kill_on_drop(true)
+        .status()
+        .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    if !status.success() {
+        return Err(err_string(ToolError::io(format!("screencapture exited {status}"))));
+    }
+    let bytes = tokio::fs::metadata(&target).await
+        .map(|m| m.len()).unwrap_or(0);
+    Ok(ScreenshotResult { path: path_str, bytes })
+}
+
+/* ── Clipboard ───────────────────────────────────────────────────────────── */
+
+pub async fn clipboard_get() -> Result<String, String> {
+    let output = tokio::process::Command::new("pbpaste")
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    if !output.status.success() {
+        return Err(err_string(ToolError::io("pbpaste failed")));
+    }
+    let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
+    if s.len() > MAX_READ_BYTES {
+        s.truncate(MAX_READ_BYTES);
+        s.push_str("\n[clipboard truncated]");
+    }
+    Ok(s)
+}
+
+pub async fn clipboard_set(text: String) -> Result<(), String> {
+    if text.len() > MAX_WRITE_BYTES {
+        return Err(err_string(ToolError::TooLarge {
+            message: format!("clipboard text exceeds {MAX_WRITE_BYTES} bytes"),
+        }));
+    }
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes()).await
+            .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    }
+    let status = child.wait().await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    if !status.success() {
+        return Err(err_string(ToolError::io("pbcopy failed")));
+    }
+    Ok(())
+}
+
+/* ── Open app + notifications ────────────────────────────────────────────── */
+
+pub async fn open_app(name: String) -> Result<(), String> {
+    // Validate app name — alphanumeric + space + dot/dash. Block argv injection.
+    static APP_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"^[A-Za-z0-9 ._-]+$").unwrap()
+    });
+    if name.is_empty() || name.len() > 128 || !APP_RE.is_match(&name) {
+        return Err(err_string(ToolError::invalid("app name has illegal characters")));
+    }
+    let status = tokio::process::Command::new("open")
+        .arg("-a").arg(&name)
+        .kill_on_drop(true)
+        .status()
+        .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    if !status.success() {
+        return Err(err_string(ToolError::io(format!("open -a {name} failed"))));
+    }
+    Ok(())
+}
+
+pub async fn show_notification(title: String, body: String) -> Result<(), String> {
+    // Both fields go into osascript — must escape double quotes to prevent
+    // breaking out of the string literal. AppleScript also doesn't have a
+    // standard backslash escape so we just strip quotes.
+    let safe_title = title.replace('"', "'");
+    let safe_body = body.replace('"', "'");
+    if safe_title.len() + safe_body.len() > 4096 {
+        return Err(err_string(ToolError::invalid("notification text too long")));
+    }
+    let script = format!(
+        r#"display notification "{}" with title "{}""#,
+        safe_body, safe_title
+    );
+    let status = tokio::process::Command::new("osascript")
+        .arg("-e").arg(&script)
+        .kill_on_drop(true)
+        .status()
+        .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    if !status.success() {
+        return Err(err_string(ToolError::io("osascript failed")));
+    }
+    Ok(())
+}

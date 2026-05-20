@@ -11,11 +11,15 @@ import type {
   Memory,
   Message,
   MultiEditResult,
+  PdfResult,
   ReadResult,
+  ScreenshotResult,
   SearchResult,
   ServerStatus,
   ShellOpts,
   ShellResult,
+  WebFetchResult,
+  WebSearchResult,
 } from "../types";
 
 export const api = {
@@ -122,6 +126,30 @@ export const api = {
     invoke<GitResult>("agent_git_status", { path: path ?? null }),
   agentGitDiff: (path?: string, staged?: boolean) =>
     invoke<GitResult>("agent_git_diff", { path: path ?? null, staged: staged ?? null }),
+  agentGitLog: (path?: string, limit?: number) =>
+    invoke<GitResult>("agent_git_log", { path: path ?? null, limit: limit ?? null }),
+  agentGitShow: (reference: string, path?: string) =>
+    invoke<GitResult>("agent_git_show", { reference, path: path ?? null }),
+  agentGitBranches: (path?: string) =>
+    invoke<GitResult>("agent_git_branches", { path: path ?? null }),
+  agentGitCommit: (message: string, path?: string) =>
+    invoke<GitResult>("agent_git_commit", { message, path: path ?? null }),
+  agentWebFetch: (url: string) =>
+    invoke<WebFetchResult>("agent_web_fetch", { url }),
+  agentWebSearch: (query: string, n?: number) =>
+    invoke<WebSearchResult>("agent_web_search", { query, n: n ?? null }),
+  agentReadPdf: (path: string, limit?: number) =>
+    invoke<PdfResult>("agent_read_pdf", { path, limit: limit ?? null }),
+  agentScreenshot: (outPath?: string) =>
+    invoke<ScreenshotResult>("agent_screenshot", { outPath: outPath ?? null }),
+  agentClipboardGet: () =>
+    invoke<string>("agent_clipboard_get"),
+  agentClipboardSet: (text: string) =>
+    invoke<void>("agent_clipboard_set", { text }),
+  agentOpenApp: (name: string) =>
+    invoke<void>("agent_open_app", { name }),
+  agentShowNotification: (title: string, body: string) =>
+    invoke<void>("agent_show_notification", { title, body }),
   agentClassifyShell: (command: string) =>
     invoke<string>("agent_classify_shell", { command }),
   agentSetWorkspace: (path: string | null) =>

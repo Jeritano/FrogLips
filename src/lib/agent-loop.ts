@@ -230,11 +230,157 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "git_log",
+      description: "Run `git log --oneline --decorate -n <limit>` (default 20, max 200).",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" }, limit: { type: "number" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_show",
+      description: "Run `git show <ref>` — view commit details + diff. Ref must be alphanumeric + ./_/-/slash.",
+      parameters: {
+        type: "object",
+        properties: {
+          reference: { type: "string" },
+          path: { type: "string" },
+        },
+        required: ["reference"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_branches",
+      description: "Run `git branch -a` — list local + remote branches.",
+      parameters: { type: "object", properties: { path: { type: "string" } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_commit",
+      description: "Commit already-staged changes with a message. Requires user approval. Does NOT stage files — use run_shell `git add` first.",
+      parameters: {
+        type: "object",
+        properties: { message: { type: "string" }, path: { type: "string" } },
+        required: ["message"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_fetch",
+      description: "GET a URL and return its text content (HTML auto-stripped). Blocks loopback/private/link-local hosts (SSRF defense). 15s timeout, 1 MiB response cap.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Search the web via DuckDuckGo. Returns up to 20 hits with title/url/snippet.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          n: { type: "number" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_pdf",
+      description: "Extract text from a PDF file at the given path. Optional byte-cap on output.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" }, limit: { type: "number" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "screenshot",
+      description: "Capture the screen via macOS `screencapture -x`. Saves to /tmp if no out_path. Returns the file path.",
+      parameters: {
+        type: "object",
+        properties: { out_path: { type: "string" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "clipboard_get",
+      description: "Read the user's macOS clipboard. Returns text only; large content truncated.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "clipboard_set",
+      description: "Write text to the user's macOS clipboard. Requires approval — clipboard may hold sensitive data.",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_app",
+      description: "Launch a macOS app by name via `open -a` (e.g. \"Safari\", \"Visual Studio Code\"). Requires approval.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "show_notification",
+      description: "Display a native macOS notification.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          body: { type: "string" },
+        },
+        required: ["title", "body"],
+      },
+    },
+  },
 ] as const;
 
-const DANGEROUS_TOOLS = new Set(["run_shell", "write_file", "edit_file", "multi_edit"]);
+const DANGEROUS_TOOLS = new Set([
+  "run_shell", "write_file", "edit_file", "multi_edit",
+  "git_commit", "clipboard_set", "open_app",
+]);
 const SHELL_TOOL = "run_shell";
-const WRITE_TOOLS = new Set(["write_file", "edit_file", "multi_edit"]);
+const WRITE_TOOLS = new Set(["write_file", "edit_file", "multi_edit", "git_commit", "clipboard_set"]);
 
 /* ── Tool execution ── */
 
@@ -313,6 +459,69 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         typeof args.staged === "boolean" ? args.staged : undefined,
       );
       return JSON.stringify(r);
+    }
+    case "git_log": {
+      const r = await api.agentGitLog(
+        args.path ? String(args.path) : undefined,
+        typeof args.limit === "number" ? args.limit : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "git_show": {
+      const r = await api.agentGitShow(
+        String(args.reference ?? ""),
+        args.path ? String(args.path) : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "git_branches": {
+      const r = await api.agentGitBranches(args.path ? String(args.path) : undefined);
+      return JSON.stringify(r);
+    }
+    case "git_commit": {
+      const r = await api.agentGitCommit(
+        String(args.message ?? ""),
+        args.path ? String(args.path) : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "web_fetch": {
+      const r = await api.agentWebFetch(String(args.url ?? ""));
+      return JSON.stringify(r);
+    }
+    case "web_search": {
+      const r = await api.agentWebSearch(
+        String(args.query ?? ""),
+        typeof args.n === "number" ? args.n : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "read_pdf": {
+      const r = await api.agentReadPdf(
+        String(args.path ?? ""),
+        typeof args.limit === "number" ? args.limit : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "screenshot": {
+      const r = await api.agentScreenshot(args.out_path ? String(args.out_path) : undefined);
+      return JSON.stringify(r);
+    }
+    case "clipboard_get": {
+      const text = await api.agentClipboardGet();
+      return JSON.stringify({ ok: true, text });
+    }
+    case "clipboard_set": {
+      await api.agentClipboardSet(String(args.text ?? ""));
+      return JSON.stringify({ ok: true });
+    }
+    case "open_app": {
+      await api.agentOpenApp(String(args.name ?? ""));
+      return JSON.stringify({ ok: true, app: args.name });
+    }
+    case "show_notification": {
+      await api.agentShowNotification(String(args.title ?? ""), String(args.body ?? ""));
+      return JSON.stringify({ ok: true });
     }
     case "file_exists": {
       const r = await api.agentFileExists(String(args.path ?? ""));
