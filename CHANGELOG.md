@@ -4,6 +4,11 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.18] — 2026-05-20
+
+### Fixed
+- **Model Library "Remove" button did nothing**: `window.confirm()` is disabled in Tauri 2 webview — sync dialogs return undefined → `remove()` exited early. Replaced with two-click inline confirm: first click arms (button label → "Click again to confirm", 4s timer), second click within window deletes. No dialog plugin dep added.
+
 ## [0.9.17] — 2026-05-20
 
 ### Fixed (full code-review pass)

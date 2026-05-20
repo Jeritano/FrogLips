@@ -446,6 +446,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   const [installedMlx, setInstalledMlx] = useState<ModelEntry[]>([]);
   const [installedErr, setInstalledErr] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  // Two-click confirm for delete (window.confirm() is disabled in Tauri 2 webview)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function refreshInstalled() {
     try {
@@ -471,8 +474,24 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
     [installedMlx],
   );
 
+  function requestRemove(id: string, backend: "ollama" | "mlx") {
+    // First click arms; second click within 4s confirms. Tauri 2 webview
+    // disables synchronous window.confirm, so we use an inline pattern.
+    if (confirmDelete !== id) {
+      setConfirmDelete(id);
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = setTimeout(() => setConfirmDelete(null), 4000);
+      return;
+    }
+    if (confirmTimerRef.current) {
+      clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = null;
+    }
+    setConfirmDelete(null);
+    void remove(id, backend);
+  }
+
   async function remove(id: string, backend: "ollama" | "mlx") {
-    if (!window.confirm(`Delete ${id} from disk? This frees up space and cannot be undone.`)) return;
     setDeleting(id);
     setErrors((m) => { const n = new Map(m); n.delete(id); return n; });
     try {
@@ -723,11 +742,11 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                         <span className="mb-card-size">{m.size_bytes > 0 ? fmtBytes(m.size_bytes) : (isCloud ? "cloud" : "—")}</span>
                         <button
                           className="mb-delete-btn"
-                          onClick={() => remove(m.id, "ollama")}
+                          onClick={() => requestRemove(m.id, "ollama")}
                           disabled={isDeleting || !!deleting}
                           title="Delete from disk"
                         >
-                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove")}
                         </button>
                       </div>
                     </div>
@@ -756,11 +775,11 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                         <span className="mb-card-size">{fmtBytes(m.size_bytes)}</span>
                         <button
                           className="mb-delete-btn"
-                          onClick={() => remove(m.id, "mlx")}
+                          onClick={() => requestRemove(m.id, "mlx")}
                           disabled={isDeleting || !!deleting}
                           title="Delete from disk"
                         >
-                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove")}
                         </button>
                       </div>
                     </div>
@@ -804,10 +823,10 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                       {isInstalled ? (
                         <button
                           className="mb-delete-btn"
-                          onClick={() => remove(entry.id, "ollama")}
+                          onClick={() => requestRemove(entry.id, "ollama")}
                           disabled={isDeleting || !!deleting}
                         >
-                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === entry.id ? "Click again to confirm" : "🗑 Remove")}
                         </button>
                       ) : (
                         <button
@@ -890,10 +909,10 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                       {isInstalled ? (
                         <button
                           className="mb-delete-btn"
-                          onClick={() => remove(m.id, "mlx")}
+                          onClick={() => requestRemove(m.id, "mlx")}
                           disabled={isDeleting || !!deleting}
                         >
-                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove")}
                         </button>
                       ) : (
                         <button
@@ -948,10 +967,10 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                       {isInstalled ? (
                         <button
                           className="mb-delete-btn"
-                          onClick={() => remove(entry.id, "mlx")}
+                          onClick={() => requestRemove(entry.id, "mlx")}
                           disabled={isDeleting || !!deleting}
                         >
-                          {isDeleting ? <span className="mb-spinner" /> : "🗑 Remove"}
+                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === entry.id ? "Click again to confirm" : "🗑 Remove")}
                         </button>
                       ) : (
                         <button

@@ -2,7 +2,7 @@
 
 Native macOS chat app for local LLMs. Apple Silicon. Three backends — **Native** (in-process mistralrs + Metal, zero install), MLX, and Ollama. Agent mode w/ 32 filesystem/shell/web/code/task tools, vector-recall memory, signed auto-updates.
 
-![version](https://img.shields.io/badge/version-0.9.17-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20arm64-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
+![version](https://img.shields.io/badge/version-0.9.18-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20arm64-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
 
 ## What it does
 
