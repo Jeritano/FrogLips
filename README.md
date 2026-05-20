@@ -18,9 +18,20 @@ Native macOS chat app for local LLMs. Apple Silicon, MLX + Ollama backends, agen
 
 ## Quick start
 
-1. Download the latest DMG from [Releases](https://github.com/Jeritano/FrogLips/releases/latest)
-2. Drag `Froglips.app` into `/Applications`
-3. Open. Pick a model from the catalog and click *Pull*
+1. Go to the [latest release](https://github.com/Jeritano/FrogLips/releases/latest)
+2. Download `Froglips_X.Y.Z_aarch64.dmg`
+3. Open the DMG, drag `Froglips.app` into `/Applications`, eject the DMG
+4. **First-launch warning:** macOS will refuse to open the app because it's not notarized.
+   - Right-click `/Applications/Froglips.app` → **Open** → click **Open** in the dialog
+   - Or strip Gatekeeper quarantine in one line:
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/Froglips.app
+     ```
+5. Install **Ollama** (the easiest backend): https://ollama.com/download
+6. Open Froglips → *Browse & download models…* → pick something small (`llama3.2:3b`, `qwen3:4b`) → **Pull**
+7. Hit **Start** in the dropdown, type a message, send
+
+Optional: clone the repo and run `bash scripts/first-run.sh` for an automated dependency check.
 
 See [User Guide](docs/USER_GUIDE.md) for full walkthrough.
 
