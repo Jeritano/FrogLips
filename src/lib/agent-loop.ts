@@ -24,6 +24,13 @@ export interface AgentMetrics {
   totalToolMs: number;
   totalLlmMs: number;
   retries: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface ConfirmDecision {
+  approve: boolean;
+  remember?: boolean;
 }
 
 export interface AgentRunOptions {
@@ -31,11 +38,17 @@ export interface AgentRunOptions {
   messages: Message[];
   conversationId: number;
   workspaceRoot: string | null;
+  /** Optional system-prompt override (from active preset). */
+  systemPromptOverride?: string;
   /** Tools the user has allowed for this conversation. Empty = all allowed. */
   toolAllowlist?: string[];
   /** Session-scoped flags: dangerous tools auto-approved if true. */
   approveAllShell?: boolean;
   approveAllWrite?: boolean;
+  /** Shell command prefixes auto-approved this session (e.g. "git", "ls"). */
+  approvedShellPrefixes?: string[];
+  /** Called when user opts into "remember this command pattern". */
+  onApproveShellPrefix?: (prefix: string) => void;
   onUpdate: (msgs: Message[]) => void;
   onStatusChange: (status: AgentStatus) => void;
   onMetrics?: (m: AgentMetrics) => void;
@@ -43,7 +56,7 @@ export interface AgentRunOptions {
     toolName: string,
     args: Record<string, unknown>,
     risk: string,
-  ) => Promise<boolean>;
+  ) => Promise<ConfirmDecision>;
   signal: AbortSignal;
 }
 
@@ -197,6 +210,18 @@ function formatToolError(raw: unknown): string {
   return JSON.stringify({ ok: false, kind: "unknown", message: s });
 }
 
+let currentShellOpId: string | null = null;
+
+export function cancelActiveShell(): boolean {
+  if (currentShellOpId) {
+    const id = currentShellOpId;
+    currentShellOpId = null;
+    api.agentCancelShell(id).catch(() => {});
+    return true;
+  }
+  return false;
+}
+
 async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
   switch (name) {
     case "read_file": {
@@ -225,8 +250,18 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     }
     case "run_shell": {
       const cwd = args.cwd ? String(args.cwd) : undefined;
-      const r = await api.agentRunShell(String(args.command ?? ""), cwd ? { cwd } : undefined);
-      return JSON.stringify(r);
+      const opId = `shell-${crypto.randomUUID()}`;
+      currentShellOpId = opId;
+      try {
+        const r = await api.agentRunShell(
+          String(args.command ?? ""),
+          cwd ? { cwd } : undefined,
+          opId,
+        );
+        return JSON.stringify(r);
+      } finally {
+        if (currentShellOpId === opId) currentShellOpId = null;
+      }
     }
     case "write_file":
       await api.agentWriteFile(String(args.path ?? ""), String(args.content ?? ""));
@@ -247,19 +282,24 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 
 /* ── Dynamic system prompt ── */
 
-function buildSystemPrompt(workspaceRoot: string | null, allowlist: string[]): string {
+function buildSystemPrompt(
+  workspaceRoot: string | null,
+  allowlist: string[],
+  override?: string,
+): string {
   const tools = allowlist.length
     ? TOOLS.filter((t) => allowlist.includes(t.function.name)).map((t) => t.function.name)
     : TOOLS.map((t) => t.function.name);
   const ws = workspaceRoot
     ? `Workspace root: ${workspaceRoot} — all file access is confined to this directory.`
     : "No workspace root set — you have full filesystem access (within OS permissions).";
+  const env = `${ws}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\nAvailable tools: ${tools.join(", ")}`;
+  if (override && override.trim()) {
+    return `${override.trim()}\n\n${env}`;
+  }
   return `You are an autonomous agent running on the user's local machine.
 
-${ws}
-Host OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).
-
-Available tools: ${tools.join(", ")}
+${env}
 
 Rules:
 1. When the user asks you to do something actionable (open an app, read files, run a command, modify files), CALL THE TOOLS. Don't describe what you would do.
@@ -341,14 +381,16 @@ async function callOllamaWithRetry(
 export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null> {
   const {
     model, onUpdate, onStatusChange, onMetrics, requestConfirmation, signal,
-    workspaceRoot, toolAllowlist = [], approveAllShell, approveAllWrite,
+    workspaceRoot, systemPromptOverride,
+    toolAllowlist = [], approveAllShell, approveAllWrite,
+    approvedShellPrefixes = [], onApproveShellPrefix,
   } = opts;
   const msgs: Message[] = [...opts.messages];
 
   const sysMsg: Message = {
     conversation_id: opts.conversationId,
     role: "system",
-    content: buildSystemPrompt(workspaceRoot, toolAllowlist),
+    content: buildSystemPrompt(workspaceRoot, toolAllowlist, systemPromptOverride),
   };
   msgs.unshift(sysMsg);
 
@@ -358,6 +400,8 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     totalToolMs: 0,
     totalLlmMs: 0,
     retries: 0,
+    promptTokens: 0,
+    completionTokens: 0,
   };
   const recentSigs: string[] = [];
 
@@ -392,6 +436,10 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       throw e;
     }
     metrics.totalLlmMs += performance.now() - llmStart;
+    const promptTok = data?.prompt_eval_count as number | undefined;
+    const evalTok = data?.eval_count as number | undefined;
+    if (typeof promptTok === "number") metrics.promptTokens += promptTok;
+    if (typeof evalTok === "number") metrics.completionTokens += evalTok;
     onMetrics?.({ ...metrics });
 
     const message = data?.message as Record<string, unknown> | undefined;
@@ -505,12 +553,20 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
             risk = await api.agentClassifyShell(String(args.command ?? ""));
           } catch {/* keep normal */}
         }
+        const cmd = String(args.command ?? "");
+        const firstWord = cmd.trim().split(/\s+/)[0] ?? "";
+        const prefixApproved =
+          fnName === SHELL_TOOL &&
+          risk === "normal" &&
+          firstWord !== "" &&
+          approvedShellPrefixes.includes(firstWord);
         const sessionApproved =
+          prefixApproved ||
           (fnName === SHELL_TOOL && approveAllShell && risk === "normal") ||
           (WRITE_TOOLS.has(fnName) && approveAllWrite);
         if (!sessionApproved) {
-          const approved = await requestConfirmation(fnName, args, risk);
-          if (!approved) {
+          const decision = await requestConfirmation(fnName, args, risk);
+          if (!decision.approve) {
             msgs.push({
               _tmpKey: makeTmpKey(),
               conversation_id: opts.conversationId,
@@ -525,6 +581,14 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
             });
             onUpdate([...msgs]);
             continue;
+          }
+          if (
+            decision.remember &&
+            fnName === SHELL_TOOL &&
+            risk === "normal" &&
+            firstWord !== ""
+          ) {
+            onApproveShellPrefix?.(firstWord);
           }
         }
       }

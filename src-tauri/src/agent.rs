@@ -1,9 +1,13 @@
 use anyhow::{anyhow, Result};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::RwLock;
 use std::time::Instant;
+use tokio::task::AbortHandle;
 
 const MAX_READ_BYTES: usize = 65_536;
 const MAX_SHELL_OUTPUT: usize = 32_768;
@@ -188,6 +192,7 @@ fn within_workspace(p: &Path) -> bool {
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum ToolError {
     NotFound { message: String },
     PermissionDenied { message: String },
@@ -196,6 +201,7 @@ pub enum ToolError {
     InvalidArgument { message: String },
     TooLarge { message: String },
     Timeout { message: String },
+    Cancelled { message: String },
     Io { message: String },
 }
 
@@ -218,6 +224,7 @@ impl std::fmt::Display for ToolError {
             | ToolError::InvalidArgument { message }
             | ToolError::TooLarge { message }
             | ToolError::Timeout { message }
+            | ToolError::Cancelled { message }
             | ToolError::Io { message } => write!(f, "{}", message),
         }
     }
@@ -372,7 +379,7 @@ pub async fn list_dir(path: String) -> Result<DirListing, String> {
     Ok(DirListing { entries, truncated })
 }
 
-/* ── Run shell w/ cwd + env + duration ───────────────────────────────────── */
+/* ── Run shell w/ cwd + env + duration + cancellation ────────────────────── */
 
 #[derive(Deserialize)]
 pub struct ShellOpts {
@@ -380,65 +387,109 @@ pub struct ShellOpts {
     pub env: Option<Vec<(String, String)>>,
 }
 
-pub async fn run_shell(command: String, opts: Option<ShellOpts>) -> Result<ShellResult, String> {
+static SHELL_HANDLES: Lazy<Mutex<HashMap<String, AbortHandle>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+pub fn cancel_shell(op_id: String) {
+    if let Some(h) = SHELL_HANDLES.lock().remove(&op_id) {
+        h.abort();
+    }
+}
+
+pub async fn run_shell(
+    command: String,
+    opts: Option<ShellOpts>,
+    op_id: Option<String>,
+) -> Result<ShellResult, String> {
     if command.is_empty() || command.len() > 4096 {
         return Err(err_string(ToolError::invalid("command length invalid")));
     }
     let opts = opts.unwrap_or(ShellOpts { cwd: None, env: None });
 
-    let mut cmd = tokio::process::Command::new("sh");
-    cmd.arg("-c").arg(&command);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-
-    if let Some(c) = &opts.cwd {
-        let resolved = validate_for_read(c).map_err(err_string)?;
-        cmd.current_dir(resolved);
-    } else if let Some(ws) = workspace_root_clone() {
-        cmd.current_dir(ws);
-    }
+    let cwd_path: Option<PathBuf> = match opts.cwd.as_ref() {
+        Some(c) => Some(validate_for_read(c).map_err(err_string)?),
+        None => workspace_root_clone(),
+    };
     if let Some(env) = &opts.env {
-        for (k, v) in env {
+        for (k, _) in env {
             if k.contains(['\0', '=']) {
                 return Err(err_string(ToolError::invalid("invalid env var name")));
             }
-            cmd.env(k, v);
         }
     }
 
-    let started = Instant::now();
-    let timeout = std::time::Duration::from_secs(SHELL_TIMEOUT_SECS);
-    let fut = cmd.output();
-    let (output, timed_out) = match tokio::time::timeout(timeout, fut).await {
-        Ok(Ok(o)) => (o, false),
-        Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
-        Err(_) => {
-            return Ok(ShellResult {
-                stdout: String::new(),
-                stderr: format!("timed out after {SHELL_TIMEOUT_SECS}s"),
-                exit_code: -1,
-                duration_ms: started.elapsed().as_millis() as u64,
-                timed_out: true,
-            });
-        }
-    };
+    let env_pairs = opts.env.clone();
+    let cmd_str = command.clone();
 
-    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if stdout.len() > MAX_SHELL_OUTPUT {
-        stdout.truncate(MAX_SHELL_OUTPUT);
-        stdout.push_str("\n[truncated]");
+    let task = tokio::spawn(async move {
+        let started = Instant::now();
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(&cmd_str);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        if let Some(c) = cwd_path {
+            cmd.current_dir(c);
+        }
+        if let Some(env) = env_pairs {
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+        }
+
+        let timeout = std::time::Duration::from_secs(SHELL_TIMEOUT_SECS);
+        let fut = cmd.output();
+        let (output, timed_out) = match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(o)) => (o, false),
+            Ok(Err(e)) => return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string()))),
+            Err(_) => {
+                return Ok(ShellResult {
+                    stdout: String::new(),
+                    stderr: format!("timed out after {SHELL_TIMEOUT_SECS}s"),
+                    exit_code: -1,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    timed_out: true,
+                });
+            }
+        };
+
+        let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        if stdout.len() > MAX_SHELL_OUTPUT {
+            stdout.truncate(MAX_SHELL_OUTPUT);
+            stdout.push_str("\n[truncated]");
+        }
+        if stderr.len() > MAX_SHELL_OUTPUT {
+            stderr.truncate(MAX_SHELL_OUTPUT);
+            stderr.push_str("\n[truncated]");
+        }
+        Ok(ShellResult {
+            stdout,
+            stderr,
+            exit_code: output.status.code().unwrap_or(-1),
+            duration_ms: started.elapsed().as_millis() as u64,
+            timed_out,
+        })
+    });
+
+    if let Some(id) = op_id.as_ref() {
+        SHELL_HANDLES.lock().insert(id.clone(), task.abort_handle());
     }
-    if stderr.len() > MAX_SHELL_OUTPUT {
-        stderr.truncate(MAX_SHELL_OUTPUT);
-        stderr.push_str("\n[truncated]");
+
+    let join_result = task.await;
+    if let Some(id) = op_id.as_ref() {
+        SHELL_HANDLES.lock().remove(id);
     }
-    Ok(ShellResult {
-        stdout,
-        stderr,
-        exit_code: output.status.code().unwrap_or(-1),
-        duration_ms: started.elapsed().as_millis() as u64,
-        timed_out,
-    })
+
+    match join_result {
+        Ok(inner) => inner,
+        Err(e) if e.is_cancelled() => Ok(ShellResult {
+            stdout: String::new(),
+            stderr: "cancelled by user".into(),
+            exit_code: -1,
+            duration_ms: 0,
+            timed_out: false,
+        }),
+        Err(e) => Err(err_string(ToolError::io(e.to_string()))),
+    }
 }
 
 /// Heuristic classifier for visibly destructive shell commands. Lets the

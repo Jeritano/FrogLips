@@ -84,8 +84,14 @@ export const api = {
     invoke<ReadResult>("agent_read_file", { path, offset: offset ?? null, limit: limit ?? null }),
   agentListDir: (path: string) =>
     invoke<DirListing>("agent_list_dir", { path }),
-  agentRunShell: (command: string, opts?: ShellOpts) =>
-    invoke<ShellResult>("agent_run_shell", { command, opts: opts ?? null }),
+  agentRunShell: (command: string, opts?: ShellOpts, opId?: string) =>
+    invoke<ShellResult>("agent_run_shell", {
+      command,
+      opts: opts ?? null,
+      opId: opId ?? null,
+    }),
+  agentCancelShell: (opId: string) =>
+    invoke<void>("agent_cancel_shell", { opId }),
   agentWriteFile: (path: string, content: string) =>
     invoke<void>("agent_write_file", { path, content }),
   agentEditFile: (path: string, oldString: string, newString: string, replaceAll?: boolean) =>

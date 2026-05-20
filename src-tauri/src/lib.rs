@@ -3,6 +3,7 @@ mod history;
 mod memory;
 mod mlx_server;
 mod models;
+mod settings;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -463,8 +464,14 @@ async fn agent_list_dir(path: String) -> Result<agent::DirListing, String> {
 async fn agent_run_shell(
     command: String,
     opts: Option<agent::ShellOpts>,
+    op_id: Option<String>,
 ) -> Result<agent::ShellResult, String> {
-    agent::run_shell(command, opts).await
+    agent::run_shell(command, opts, op_id).await
+}
+
+#[tauri::command]
+fn agent_cancel_shell(op_id: String) {
+    agent::cancel_shell(op_id);
 }
 
 #[tauri::command]
@@ -503,7 +510,11 @@ fn agent_classify_shell(command: String) -> String {
 
 #[tauri::command]
 fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, String> {
-    agent::set_workspace_root(path)
+    let result = agent::set_workspace_root(path)?;
+    let mut s = settings::load();
+    s.workspace_root = result.clone();
+    let _ = settings::save(&s);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -546,10 +557,19 @@ fn ensure_path_for_gui() {
 
 pub fn run() {
     ensure_path_for_gui();
+
+    // Restore persisted workspace root, if any
+    let persisted = settings::load();
+    if let Some(ws) = persisted.workspace_root.clone() {
+        let _ = agent::set_workspace_root(Some(ws));
+    }
+
     let server_state: ServerHandle = Arc::new(ServerState::default());
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(server_state.clone())
         .setup({
             let state = server_state.clone();
@@ -615,6 +635,7 @@ pub fn run() {
             agent_classify_shell,
             agent_set_workspace,
             agent_get_workspace,
+            agent_cancel_shell,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

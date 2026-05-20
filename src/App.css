@@ -1374,3 +1374,28 @@ button.cancel {
   font-size: 12px;
   border-radius: 4px;
 }
+.agent-confirm-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.agent-confirm-remember code {
+  background: var(--surface);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: var(--mono, monospace);
+}
+.agent-preset-select {
+  padding: 4px 8px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.agent-preset-select:hover:not(:disabled) { background: var(--surface-hover); }
+.agent-preset-select:disabled { opacity: 0.5; cursor: not-allowed; }

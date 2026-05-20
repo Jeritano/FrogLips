@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
-import { runAgentLoop } from "../lib/agent-loop";
-import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
+import { runAgentLoop, cancelActiveShell } from "../lib/agent-loop";
+import type { AgentMetrics, AgentStatus, ConfirmDecision } from "../lib/agent-loop";
+import {
+  loadAllPresets,
+  getActivePresetId,
+  setActivePresetId,
+} from "../lib/agent-presets";
+import type { AgentPreset } from "../lib/agent-presets";
+import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import type { Conversation, Memory, Message, ServerStatus } from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
@@ -67,11 +75,17 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [allowlist, setAllowlist] = useState<string[]>(() => loadAllowlist());
   const [approveAllShell, setApproveAllShell] = useState(false);
   const [approveAllWrite, setApproveAllWrite] = useState(false);
+  const [approvedShellPrefixes, setApprovedShellPrefixes] = useState<string[]>([]);
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
+  const [rememberPrefix, setRememberPrefix] = useState(false);
+  const [presets, setPresets] = useState<AgentPreset[]>(() => loadAllPresets());
+  const [activePresetId, setActivePresetIdState] = useState<string>(() => getActivePresetId());
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const activePreset = presets.find((p) => p.id === activePresetId) ?? presets[0];
   const abortRef = useRef<AbortController | null>(null);
   const creatingConvRef = useRef<Promise<Conversation> | null>(null);
   const convRef = useRef<Conversation | null>(null);
-  const confirmResolveRef = useRef<((v: boolean) => void) | null>(null);
+  const confirmResolveRef = useRef<((v: ConfirmDecision) => void) | null>(null);
 
   useEffect(() => {
     api.agentGetWorkspace().then(setWorkspaceRoot).catch(() => {});
@@ -113,7 +127,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     toolName: string,
     args: Record<string, unknown>,
     risk: string,
-  ): Promise<boolean> {
+  ): Promise<ConfirmDecision> {
+    setRememberPrefix(false);
     return new Promise((resolve) => {
       confirmResolveRef.current = resolve;
       setConfirmState({ toolName, args, risk });
@@ -143,9 +158,34 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     });
   }
 
+  function selectPreset(id: string) {
+    setActivePresetIdState(id);
+    setActivePresetId(id);
+    setPresets(loadAllPresets());
+  }
+
+  async function checkUpdates() {
+    setUpdateMsg("Checking…");
+    try {
+      const upd = await checkForUpdate();
+      if (!upd) {
+        setUpdateMsg("Up to date.");
+        return;
+      }
+      setUpdateMsg(`Update available: v${upd.version}. Downloading…`);
+      await upd.downloadAndInstall();
+      setUpdateMsg("Installed. Relaunching…");
+      await relaunch();
+    } catch (e) {
+      setUpdateMsg(`Update failed: ${e}`);
+    }
+  }
+
   function handleConfirm(approved: boolean) {
+    const remember = approved && rememberPrefix;
     setConfirmState(null);
-    confirmResolveRef.current?.(approved);
+    setRememberPrefix(false);
+    confirmResolveRef.current?.({ approve: approved, remember });
     confirmResolveRef.current = null;
   }
 
@@ -214,14 +254,22 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       if (isStreamConvActive()) setAgentStatus("thinking");
       try {
         setAgentMetrics(null);
+        // Preset's allowedTools wins when non-empty; otherwise fall back to manual allowlist
+        const effectiveAllowlist =
+          activePreset && activePreset.allowedTools.length > 0 ? activePreset.allowedTools : allowlist;
         const finalText = await runAgentLoop({
           model: status.model,
           messages: historyForApi,
           conversationId: conv.id,
           workspaceRoot,
-          toolAllowlist: allowlist,
+          systemPromptOverride: activePreset?.systemPromptOverride,
+          toolAllowlist: effectiveAllowlist,
           approveAllShell,
           approveAllWrite,
+          approvedShellPrefixes,
+          onApproveShellPrefix: (p) => {
+            setApprovedShellPrefixes((prev) => (prev.includes(p) ? prev : [...prev, p]));
+          },
           onUpdate: (msgs) => {
             if (isStreamConvActive()) {
               setMessages(msgs.filter((m) => m.role !== "system"));
@@ -362,7 +410,10 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     }
   }
 
-  function abort() { abortRef.current?.abort(); }
+  function abort() {
+    cancelActiveShell();
+    abortRef.current?.abort();
+  }
 
   const isWorking = streaming !== undefined || agentStatus === "thinking" || agentStatus === "tool";
   const agentAvailable = status?.backend === "ollama";
@@ -399,6 +450,19 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             Agent
           </button>
           {agentMode && (
+            <select
+              className="agent-preset-select"
+              value={activePresetId}
+              onChange={(e) => selectPreset(e.target.value)}
+              disabled={isWorking}
+              title={activePreset?.description ?? ""}
+            >
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          )}
+          {agentMode && (
             <button
               className="agent-toggle"
               onClick={() => setShowAgentSettings((v) => !v)}
@@ -415,9 +479,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             </span>
           )}
           {agentMetrics && agentMode && (
-            <span className="agent-metrics" title="iterations · tool calls · llm ms · tool ms · retries">
+            <span
+              className="agent-metrics"
+              title="iterations · tool calls · llm ms · tool ms · retries · prompt tok · completion tok"
+            >
               i{agentMetrics.iterations}·t{agentMetrics.toolCalls}·llm {Math.round(agentMetrics.totalLlmMs)}ms·tool {Math.round(agentMetrics.totalToolMs)}ms
               {agentMetrics.retries > 0 && `·r${agentMetrics.retries}`}
+              {(agentMetrics.promptTokens + agentMetrics.completionTokens) > 0 &&
+                `·${agentMetrics.promptTokens}+${agentMetrics.completionTokens}tok`}
             </span>
           )}
         </div>
@@ -466,6 +535,20 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
                 Reset to all enabled
               </button>
             )}
+            {approvedShellPrefixes.length > 0 && (
+              <div className="agent-settings-row">
+                <span className="agent-settings-label">Approved shell prefixes:</span>
+                <span className="agent-settings-value">{approvedShellPrefixes.join(", ")}</span>
+                <button className="agent-settings-btn" onClick={() => setApprovedShellPrefixes([])}>
+                  Clear
+                </button>
+              </div>
+            )}
+            <div className="agent-settings-row">
+              <span className="agent-settings-label">Updates:</span>
+              <button className="agent-settings-btn" onClick={checkUpdates}>Check now</button>
+              {updateMsg && <span className="agent-settings-hint">{updateMsg}</span>}
+            </div>
           </div>
         )}
 
@@ -497,6 +580,21 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             <pre className="agent-confirm-args">
               {JSON.stringify(confirmState.args, null, 2)}
             </pre>
+            {confirmState.toolName === "run_shell" && confirmState.risk === "normal" && (() => {
+              const cmd = String(confirmState.args.command ?? "");
+              const first = cmd.trim().split(/\s+/)[0] ?? "";
+              if (!first) return null;
+              return (
+                <label className="agent-confirm-remember">
+                  <input
+                    type="checkbox"
+                    checked={rememberPrefix}
+                    onChange={(e) => setRememberPrefix(e.target.checked)}
+                  />
+                  Also approve all <code>{first} *</code> commands this session
+                </label>
+              );
+            })()}
             <div className="agent-confirm-actions">
               <button className="agent-confirm-deny" onClick={() => handleConfirm(false)}>Deny</button>
               <button className="agent-confirm-allow" onClick={() => handleConfirm(true)}>Allow</button>
