@@ -700,6 +700,16 @@ fn agent_classify_shell(command: String) -> String {
 }
 
 #[tauri::command]
+fn agent_classify_applescript(script: String) -> String {
+    agent::classify_applescript_risk(&script).to_string()
+}
+
+#[tauri::command]
+fn agent_classify_http(method: String, has_auth: bool) -> String {
+    agent::classify_http_risk(&method, has_auth).to_string()
+}
+
+#[tauri::command]
 fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, String> {
     let result = agent::set_workspace_root(path)?;
     let mut s = settings::load();
@@ -941,6 +951,8 @@ pub fn run() {
             agent_file_exists,
             agent_search_files,
             agent_classify_shell,
+            agent_classify_applescript,
+            agent_classify_http,
             agent_set_workspace,
             agent_get_workspace,
             agent_cancel_shell,

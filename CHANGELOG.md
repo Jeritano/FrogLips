@@ -4,6 +4,21 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-05-20
+
+### Fixed
+- **Agent stall on chunked file reads**: small-language models would call `read_file` with `limit: 300` (copied from schema example) and burn the whole iteration budget reading one file 200 bytes at a time. Three-part fix:
+  - `agent.rs` clamps `limit` up to `MIN_READ_BYTES = 8_192` server-side.
+  - `read_file` tool schema explicitly tells the model not to pass a small limit and documents the auto-raise floor.
+  - `agent-loop.ts` tracks per-path read counts and trips a `stall_guard` after >6 reads of the same file, feeding the model a hint to stop chunking instead of silently looping.
+- `MAX_ITERATIONS` raised 20 → 40 so larger files still fit when the agent legitimately needs pagination.
+
+## [0.9.4] — 2026-05-20
+
+### Security
+- **TOCTOU between `lookup_host` and reqwest's connect-time resolve**: `web_fetch` + `http_request` now pin reqwest's DNS to the pre-validated IPs via `Client::builder().resolve_to_addrs(host, &[ip])`. The transport can no longer re-resolve to a new (unsafe) address between our pre-flight check and the socket open.
+- **Social-engineering double-check on destructive tool calls**: agent-loop classifies `applescript_run` (`do shell script`, Finder delete, system shutdown/restart/logout, system-events keystroke/click, `with administrator privileges`) and `http_request` (DELETE/PUT/PATCH → destructive, POST+Authorization → privileged). New destructive checkbox in the confirmation modal must be ticked before Allow is enabled. State resets on every confirm.
+
 ## [0.9.3] — 2026-05-20
 
 ### Security

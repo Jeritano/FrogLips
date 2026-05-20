@@ -85,6 +85,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [approvedShellPrefixes, setApprovedShellPrefixes] = useState<string[]>([]);
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [rememberPrefix, setRememberPrefix] = useState(false);
+  const [destructiveAck, setDestructiveAck] = useState(false);
   const [showToolHistory, setShowToolHistory] = useState(false);
   const [askUserReq, setAskUserReq] = useState<AskUserRequest | null>(null);
   const [askUserAnswer, setAskUserAnswer] = useState("");
@@ -168,6 +169,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     risk: string,
   ): Promise<ConfirmDecision> {
     setRememberPrefix(false);
+    setDestructiveAck(false);
     return new Promise((resolve) => {
       confirmResolveRef.current = resolve;
       setConfirmState({ toolName, args, risk });
@@ -221,9 +223,16 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   }
 
   function handleConfirm(approved: boolean) {
+    // Destructive actions must clear the explicit ack checkbox — defends
+    // against single-click approval fatigue and prompt-injection chains
+    // that flash a dangerous-looking command past the user.
+    if (approved && confirmState?.risk === "destructive" && !destructiveAck) {
+      return;
+    }
     const remember = approved && rememberPrefix;
     setConfirmState(null);
     setRememberPrefix(false);
+    setDestructiveAck(false);
     confirmResolveRef.current?.({ approve: approved, remember });
     confirmResolveRef.current = null;
   }
@@ -747,9 +756,19 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               )}
             </div>
             {confirmState.risk === "destructive" && (
-              <div className="agent-risk-warning">
-                ⚠ This command matches a known destructive pattern. Read carefully before approving.
-              </div>
+              <>
+                <div className="agent-risk-warning">
+                  ⚠ This action matches a known destructive pattern. Read it carefully before approving.
+                </div>
+                <label className="agent-confirm-remember" style={{ color: "#fca5a5" }}>
+                  <input
+                    type="checkbox"
+                    checked={destructiveAck}
+                    onChange={(e) => setDestructiveAck(e.target.checked)}
+                  />
+                  I have read this and accept the consequences
+                </label>
+              </>
             )}
             <pre className="agent-confirm-args">
               {JSON.stringify(confirmState.args, null, 2)}
@@ -771,7 +790,13 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             })()}
             <div className="agent-confirm-actions">
               <button className="agent-confirm-deny" onClick={() => handleConfirm(false)}>Deny</button>
-              <button className="agent-confirm-allow" onClick={() => handleConfirm(true)}>Allow</button>
+              <button
+                className="agent-confirm-allow"
+                onClick={() => handleConfirm(true)}
+                disabled={confirmState.risk === "destructive" && !destructiveAck}
+              >
+                Allow
+              </button>
             </div>
           </div>
         </div>

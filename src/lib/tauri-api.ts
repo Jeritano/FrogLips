@@ -183,6 +183,10 @@ export const api = {
     invoke<void>("agent_ask_user_cancel", { id }),
   agentClassifyShell: (command: string) =>
     invoke<string>("agent_classify_shell", { command }),
+  agentClassifyApplescript: (script: string) =>
+    invoke<string>("agent_classify_applescript", { script }),
+  agentClassifyHttp: (method: string, hasAuth: boolean) =>
+    invoke<string>("agent_classify_http", { method, hasAuth }),
   agentSetWorkspace: (path: string | null) =>
     invoke<string | null>("agent_set_workspace", { path }),
   agentGetWorkspace: () =>

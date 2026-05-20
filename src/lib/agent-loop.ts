@@ -11,8 +11,11 @@ import type { Message, ToolCall } from "../types";
    ──────────────────────────────────────────────────────────────────────────── */
 
 const OLLAMA_BASE = "http://127.0.0.1:11434";
-const MAX_ITERATIONS = 20;
+const MAX_ITERATIONS = 40;
 const DEDUPE_WINDOW = 3;
+// Stall detection: if agent reads the same path > this many times in
+// monotonically-advancing tiny chunks, abort the loop with an explanatory msg.
+const STALL_SAME_PATH_LIMIT = 6;
 const RETRY_MAX = 2;
 const RETRY_BACKOFF_MS = 500;
 
@@ -72,13 +75,13 @@ const TOOLS = [
     function: {
       name: "read_file",
       description:
-        "Read text contents of a file. Supports pagination via offset/limit (bytes). Returns content, bytes_read, total_bytes, truncated.",
+        "Read text contents of a file. Default reads up to 65536 bytes — DO NOT pass a small limit (anything under 8192 is auto-raised). Only paginate with offset when total_bytes exceeds 65536. Returns content, bytes_read, total_bytes, truncated.",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string", description: "Absolute path or ~/relative path." },
-          offset: { type: "number", description: "Byte offset to start reading (default 0)." },
-          limit: { type: "number", description: "Max bytes to read (default 65536)." },
+          offset: { type: "number", description: "Byte offset to start reading (default 0). Only use when continuing a previously-truncated read." },
+          limit: { type: "number", description: "Max bytes to read (default 65536, minimum 8192). Omit unless you specifically need less than the whole file." },
         },
         required: ["path"],
       },
@@ -972,6 +975,9 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     completionTokens: 0,
   };
   const recentSigs: string[] = [];
+  // Per-path read counter — guards against agents chunking the same file
+  // into dozens of tiny reads and blowing the iteration budget.
+  const readCounts = new Map<string, number>();
 
   onStatusChange("thinking");
 
@@ -1119,12 +1125,48 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       }
       const args = parsed.args;
 
+      // Stall guard: if the agent keeps re-reading the same file in chunks,
+      // bail out with a hint instead of letting it eat the iteration budget.
+      if (fnName === "read_file") {
+        const p = String(args.path ?? "");
+        const n = (readCounts.get(p) ?? 0) + 1;
+        readCounts.set(p, n);
+        if (n > STALL_SAME_PATH_LIMIT) {
+          msgs.push({
+            _tmpKey: makeTmpKey(),
+            conversation_id: opts.conversationId,
+            role: "tool",
+            content: JSON.stringify({
+              ok: false,
+              kind: "stall_guard",
+              message: `read_file has been called ${n} times for '${p}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`,
+            }),
+            tool_call_id: tc.id,
+            tool_name: fnName,
+          });
+          onUpdate([...msgs]);
+          continue;
+        }
+      }
+
       // Confirmation gate for dangerous tools
       if (DANGEROUS_TOOLS.has(fnName)) {
         let risk = "normal";
         if (fnName === SHELL_TOOL) {
           try {
             risk = await api.agentClassifyShell(String(args.command ?? ""));
+          } catch {/* keep normal */}
+        } else if (fnName === "applescript_run") {
+          try {
+            risk = await api.agentClassifyApplescript(String(args.script ?? ""));
+          } catch {/* keep normal */}
+        } else if (fnName === "http_request") {
+          try {
+            const headers = (args.headers && typeof args.headers === "object")
+              ? args.headers as Record<string, unknown>
+              : {};
+            const hasAuth = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+            risk = await api.agentClassifyHttp(String(args.method ?? "GET"), hasAuth);
           } catch {/* keep normal */}
         }
         const cmd = String(args.command ?? "");

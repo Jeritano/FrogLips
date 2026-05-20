@@ -348,7 +348,11 @@ pub async fn read_file(path: String, offset: Option<u64>, limit: Option<u64>) ->
         });
     }
     let start = offset.unwrap_or(0).min(total);
-    let cap = limit.unwrap_or(MAX_READ_BYTES as u64).min(MAX_READ_BYTES as u64);
+    // Clamp tiny limits to MIN_READ_BYTES to prevent agents from blowing
+    // iteration budget on pathologically small chunked reads (e.g. limit=300).
+    const MIN_READ_BYTES: u64 = 8_192;
+    let requested = limit.unwrap_or(MAX_READ_BYTES as u64);
+    let cap = requested.max(MIN_READ_BYTES).min(MAX_READ_BYTES as u64);
     let end = (start + cap).min(total);
     let slice = &bytes[start as usize..end as usize];
     let truncated = end < total;
@@ -550,6 +554,63 @@ pub fn classify_shell_risk(command: &str) -> &'static str {
     }
     if lc.contains("sudo ") {
         return "privileged";
+    }
+    "normal"
+}
+
+/// Risk heuristic for AppleScript payloads. Mirrors `classify_shell_risk`.
+pub fn classify_applescript_risk(script: &str) -> &'static str {
+    let lc = script.to_lowercase();
+    // Shell escape inside AppleScript ⇒ apply the same shell heuristic.
+    if lc.contains("do shell script") {
+        // Extract the quoted argument and feed it to classify_shell_risk —
+        // best-effort, just grab between the first pair of double quotes
+        // after the keyword.
+        if let Some(start) = lc.find("do shell script") {
+            let tail = &script[start..];
+            if let Some(q1) = tail.find('"') {
+                let after = &tail[q1 + 1..];
+                if let Some(q2) = after.find('"') {
+                    let inner = &after[..q2];
+                    let sub = classify_shell_risk(inner);
+                    if sub != "normal" {
+                        return sub;
+                    }
+                }
+            }
+            return "privileged";
+        }
+    }
+    let destructive: &[&str] = &[
+        "tell application \"finder\" to delete",
+        "empty trash",
+        "tell application \"system events\" to shut down",
+        "tell application \"system events\" to restart",
+        "tell application \"system events\" to log out",
+        "mount volume",
+    ];
+    if destructive.iter().any(|p| lc.contains(p)) {
+        return "destructive";
+    }
+    if lc.contains("system events") && (lc.contains("keystroke") || lc.contains("click")) {
+        return "privileged"; // synthetic input — can drive arbitrary UI
+    }
+    if lc.contains("with administrator privileges") {
+        return "privileged";
+    }
+    "normal"
+}
+
+/// Risk heuristic for HTTP requests beyond GET/HEAD. Read-only methods are
+/// the floor; writes are flagged as privileged so the confirm modal shows
+/// a louder banner.
+pub fn classify_http_risk(method: &str, has_auth: bool) -> &'static str {
+    let m = method.to_ascii_uppercase();
+    if matches!(m.as_str(), "DELETE" | "PUT" | "PATCH") {
+        return "destructive";
+    }
+    if m == "POST" {
+        return if has_auth { "privileged" } else { "normal" };
     }
     "normal"
 }
@@ -1120,43 +1181,47 @@ fn is_safe_public_host(host: &str) -> bool {
 /// We do this regardless of whether `host` parsed as an IP literal (which
 /// our string-level check already covered) so the same call covers both
 /// hostname and IP-literal cases.
-async fn assert_resolved_host_safe(host: &str, default_port: u16) -> Result<(), String> {
-    // Already-IP-literal hosts can skip lookup; is_safe_public_host already
-    // verified them. But still cheap to re-check via the same path.
-    let addrs = tokio::net::lookup_host(format!("{host}:{default_port}"))
-        .await
-        .map_err(|e| err_string(ToolError::invalid(format!("hostname does not resolve: {e}"))))?;
-    let mut saw_any = false;
-    for addr in addrs {
-        saw_any = true;
-        let ip = addr.ip();
-        let safe = match ip {
-            std::net::IpAddr::V4(a) => {
-                let oct = a.octets();
-                !(a.is_loopback() || a.is_private() || a.is_link_local()
-                    || a.is_unspecified() || a.is_multicast() || a.is_broadcast()
-                    || oct[0] == 0 || oct[0] == 127)
-            }
-            std::net::IpAddr::V6(a) => {
-                let segs = a.segments();
-                !(a.is_loopback() || a.is_unspecified() || a.is_multicast()
-                    || segs[0] == 0xfe80 || segs[0] == 0xfc00 || segs[0] == 0xfd00)
-            }
-        };
-        if !safe {
-            return Err(err_string(ToolError::Protected {
-                message: format!(
-                    "host '{host}' resolves to a private/loopback address ({ip}) — blocked"
-                ),
-            }));
+fn is_safe_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(a) => {
+            let oct = a.octets();
+            !(a.is_loopback() || a.is_private() || a.is_link_local()
+                || a.is_unspecified() || a.is_multicast() || a.is_broadcast()
+                || oct[0] == 0 || oct[0] == 127)
+        }
+        std::net::IpAddr::V6(a) => {
+            let segs = a.segments();
+            !(a.is_loopback() || a.is_unspecified() || a.is_multicast()
+                || segs[0] == 0xfe80 || segs[0] == 0xfc00 || segs[0] == 0xfd00)
         }
     }
-    if !saw_any {
+}
+
+/// Resolve hostname to SocketAddrs and keep only the ones in safe ranges.
+/// Returns the safe set so callers can pin reqwest's resolver to exactly
+/// those addresses — closes the TOCTOU window where reqwest would re-query
+/// DNS at connect time and possibly land on a poisoned IP.
+async fn resolve_to_safe_addrs(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
+        .await
+        .map_err(|e| err_string(ToolError::invalid(format!("hostname does not resolve: {e}"))))?
+        .collect();
+    if addrs.is_empty() {
         return Err(err_string(ToolError::invalid(format!(
             "host '{host}' yielded no addresses"
         ))));
     }
-    Ok(())
+    for a in &addrs {
+        if !is_safe_ip(&a.ip()) {
+            return Err(err_string(ToolError::Protected {
+                message: format!(
+                    "host '{host}' resolves to a private/loopback address ({}) — blocked",
+                    a.ip()
+                ),
+            }));
+        }
+    }
+    Ok(addrs)
 }
 
 /// Custom redirect policy: re-validate each hop against is_safe_public_host
@@ -1209,19 +1274,27 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
     if url.scheme() != "https" && url.scheme() != "http" {
         return Err(err_string(ToolError::invalid("only http(s) urls allowed")));
     }
-    let host = url.host_str().unwrap_or("");
-    if !is_safe_public_host(host) {
+    let host = url.host_str().unwrap_or("").to_string();
+    if !is_safe_public_host(&host) {
         return Err(err_string(ToolError::Protected {
             message: format!("host '{host}' is private/loopback/link-local — blocked to prevent SSRF"),
         }));
     }
     let default_port = url.port_or_known_default().unwrap_or(443);
-    assert_resolved_host_safe(host, default_port).await?;
+    let safe_addrs = resolve_to_safe_addrs(&host, default_port).await?;
 
-    let client = reqwest::Client::builder()
+    // Pin reqwest's DNS resolution to the addresses we pre-validated. This
+    // closes the TOCTOU window where the caller's DNS could return a
+    // different IP at connect time. The set covers the initial host only;
+    // redirect targets re-validate via ssrf_safe_redirect.
+    let mut client_builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS))
         .user_agent("Froglips/0.9 (+https://github.com/Jeritano/FrogLips)")
-        .redirect(ssrf_safe_redirect())
+        .redirect(ssrf_safe_redirect());
+    for a in &safe_addrs {
+        client_builder = client_builder.resolve_to_addrs(&host, &[*a]);
+    }
+    let client = client_builder
         .build()
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
 
@@ -1607,19 +1680,23 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
     if url.scheme() != "https" && url.scheme() != "http" {
         return Err(err_string(ToolError::invalid("only http(s) urls allowed")));
     }
-    let host = url.host_str().unwrap_or("");
-    if !is_safe_public_host(host) {
+    let host = url.host_str().unwrap_or("").to_string();
+    if !is_safe_public_host(&host) {
         return Err(err_string(ToolError::Protected {
             message: format!("host '{host}' is private/loopback — blocked (SSRF)"),
         }));
     }
     let default_port = url.port_or_known_default().unwrap_or(443);
-    assert_resolved_host_safe(host, default_port).await?;
+    let safe_addrs = resolve_to_safe_addrs(&host, default_port).await?;
     let timeout = std::time::Duration::from_secs(input.timeout_secs.unwrap_or(15).min(60));
-    let client = reqwest::Client::builder()
+    let mut client_builder = reqwest::Client::builder()
         .timeout(timeout)
         .user_agent("Froglips/0.9 (+https://github.com/Jeritano/FrogLips)")
-        .redirect(ssrf_safe_redirect())
+        .redirect(ssrf_safe_redirect());
+    for a in &safe_addrs {
+        client_builder = client_builder.resolve_to_addrs(&host, &[*a]);
+    }
+    let client = client_builder
         .build()
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     let method_obj = reqwest::Method::from_bytes(method.as_bytes())
