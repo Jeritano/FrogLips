@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
 import { streamNativeChat } from "../lib/native-client";
@@ -448,6 +448,37 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const isWorking = streaming !== undefined || agentStatus === "thinking" || agentStatus === "tool";
   const agentAvailable = status?.backend === "ollama";
 
+  // Stable handler identity for MessageRow's React.memo. The closure always
+  // sees the latest state via a ref-style indirection: we refresh the inner
+  // fn on every render and expose a thin wrapper that delegates to it.
+  const handleRegenerateRef = useRef<(() => void | Promise<void>) | null>(null);
+  handleRegenerateRef.current = async () => {
+    if (isWorking || !conversation) return;
+    let lastUserIdx = -1;
+    let lastAsstIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (lastAsstIdx === -1 && m.role === "assistant" && !m.tool_calls?.length) {
+        lastAsstIdx = i;
+      } else if (lastAsstIdx !== -1 && lastUserIdx === -1 && m.role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx === -1 || lastAsstIdx === -1) return;
+    const userText = messages[lastUserIdx].content;
+    for (let i = lastUserIdx; i <= lastAsstIdx; i++) {
+      const id = messages[i]?.id;
+      if (id != null) {
+        try { await api.deleteMessage(id); } catch {/* best effort */}
+      }
+    }
+    const truncated = messages.slice(0, lastUserIdx).concat(messages.slice(lastAsstIdx + 1));
+    setMessages(truncated);
+    await send(userText, truncated);
+  };
+  const onRegenerate = useCallback(() => handleRegenerateRef.current?.(), []);
+
   return (
     <div className="chat-window">
       <MessageList
@@ -456,44 +487,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         conversationId={conversation?.id ?? null}
         currentModel={status?.running ? status.model : null}
         agentStatus={agentStatus}
-        onRegenerate={async () => {
-          // Walk backwards: find last regular assistant (skip tool-call ones),
-          // then the user message immediately before it. Delete BOTH from DB
-          // + state and resend — send() recreates the user message itself,
-          // so leaving the original behind would dup it.
-          if (isWorking || !conversation) return;
-          let lastUserIdx = -1;
-          let lastAsstIdx = -1;
-          for (let i = messages.length - 1; i >= 0; i--) {
-            const m = messages[i];
-            if (lastAsstIdx === -1 && m.role === "assistant" && !m.tool_calls?.length) {
-              lastAsstIdx = i;
-            } else if (lastAsstIdx !== -1 && lastUserIdx === -1 && m.role === "user") {
-              lastUserIdx = i;
-              break;
-            }
-          }
-          if (lastUserIdx === -1 || lastAsstIdx === -1) return;
-          const userText = messages[lastUserIdx].content;
-          // Delete assistant + user from DB (best-effort), and any tool
-          // messages between them (agent mode leaves tool_calls + tool
-          // results scattered; clean them out so the conversation isn't
-          // left with orphan tool responses).
-          for (let i = lastUserIdx; i <= lastAsstIdx; i++) {
-            const id = messages[i]?.id;
-            if (id != null) {
-              try { await api.deleteMessage(id); } catch {/* best effort */}
-            }
-          }
-          // Drop the range from state in a single update so the UI doesn't
-          // flicker between partial states. Also pass the truncated history
-          // to send() explicitly — React's `messages` closure inside send()
-          // is still the stale, pre-deletion value, so without this the LLM
-          // would see + the UI would re-add the messages we just removed.
-          const truncated = messages.slice(0, lastUserIdx).concat(messages.slice(lastAsstIdx + 1));
-          setMessages(truncated);
-          await send(userText, truncated);
-        }}
+        onRegenerate={onRegenerate}
       />
       <div className="chat-input-wrap">
         {recalled.length > 0 && (

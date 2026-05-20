@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Message, ToolCall } from "../types";
 import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
@@ -33,6 +33,24 @@ function parseArgs(raw: unknown): Record<string, unknown> {
   }
   if (raw != null && typeof raw === "object") return raw as Record<string, unknown>;
   return {};
+}
+
+// Per-message markdown cache so streaming chunks don't re-parse + re-sanitize
+// every prior message on every render. Keyed by content string — JS strings
+// are immutable so content unchanged ⇒ cached HTML reused. FIFO eviction
+// keeps the cache bounded across long sessions.
+const MARKDOWN_CACHE_MAX = 500;
+const markdownCache = new Map<string, string>();
+function cachedMarkdown(text: string): string {
+  const hit = markdownCache.get(text);
+  if (hit !== undefined) return hit;
+  const rendered = renderMarkdown(text);
+  if (markdownCache.size >= MARKDOWN_CACHE_MAX) {
+    const firstKey = markdownCache.keys().next().value;
+    if (firstKey !== undefined) markdownCache.delete(firstKey);
+  }
+  markdownCache.set(text, rendered);
+  return rendered;
 }
 
 function ToolCallBlock({ calls }: { calls: ToolCall[] }) {
@@ -77,6 +95,9 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+const ToolCallBlockMemo = memo(ToolCallBlock);
+const ToolResultBlockMemo = memo(ToolResultBlock);
+
 function MessageActions({
   msg, isLast, onRegenerate, onEditUser,
 }: {
@@ -111,6 +132,86 @@ function MessageActions({
     </div>
   );
 }
+
+interface RowProps {
+  msg: Message;
+  divider: Row["divider"];
+  isLast: boolean;
+  isPinned: boolean;
+  isPinning: boolean;
+  onPin: (m: Message, key: string) => void;
+  rowKey: string;
+  onRegenerate?: () => void;
+  onEditUser?: (m: Message) => void;
+}
+
+function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowKey, onRegenerate, onEditUser }: RowProps) {
+  if (msg.role === "tool") {
+    return <ToolResultBlockMemo name={msg.tool_name} content={msg.content} />;
+  }
+
+  if (msg.role === "assistant" && msg.tool_calls?.length) {
+    const html = msg.content?.trim() ? cachedMarkdown(msg.content) : "";
+    return (
+      <>
+        {html && (
+          <div className="message assistant">
+            <div className="content markdown" dangerouslySetInnerHTML={{ __html: html }} />
+          </div>
+        )}
+        <ToolCallBlockMemo calls={msg.tool_calls} />
+      </>
+    );
+  }
+
+  const html = cachedMarkdown(msg.content);
+  return (
+    <>
+      {divider && (
+        <div className={`model-divider ${divider.tone}`}>
+          <span className="model-divider-line" />
+          <span className="model-divider-label">
+            {divider.tone === "start" ? "Started with" : "Switched to"}{" "}
+            <code>{divider.label}</code>
+          </span>
+          <span className="model-divider-line" />
+        </div>
+      )}
+      <div className={`message ${msg.role}`}>
+        <div className="content markdown" dangerouslySetInnerHTML={{ __html: html }} />
+        <MessageActions msg={msg} isLast={isLast} onRegenerate={onRegenerate} onEditUser={onEditUser} />
+        <button
+          className={`pin-btn ${isPinned ? "pinned" : ""}`}
+          onClick={() => onPin(msg, rowKey)}
+          disabled={isPinning || isPinned}
+          title={isPinned ? "Saved to memory" : "Pin to memory"}
+          aria-label="Pin to memory"
+        >
+          {isPinning ? (
+            <span className="mb-spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />
+          ) : isPinned ? (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><polygon points="12 2 15.09 8.63 22 9.24 16.54 13.97 18.18 21 12 17.27 5.82 21 7.46 13.97 2 9.24 8.91 8.63 12 2"/></svg>
+          )}
+        </button>
+      </div>
+    </>
+  );
+}
+
+// memo on shallow-equal props — handlers are stabilized via useCallback in
+// the parent. Without this, a single streaming chunk re-renders every prior
+// message (cached markdown helps but DOM diff still runs).
+const MessageRow = memo(MessageRowImpl);
+
+const StreamingMessage = memo(function StreamingMessage({ text }: { text: string }) {
+  return (
+    <div className="message assistant">
+      <div className="content markdown" dangerouslySetInnerHTML={{ __html: cachedMarkdown(text) + '<span class="cursor">▍</span>' }} />
+    </div>
+  );
+});
 
 export function MessageList({ messages, streaming, conversationId, currentModel, agentStatus, onRegenerate, onEditUser }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -151,7 +252,8 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
     return { rows: out, lastAsstModel: last, finalPrevAsst: prev };
   }, [messages]);
 
-  async function pin(m: Message, key: string) {
+  // Stabilize the pin handler so MessageRow's memo doesn't bust each render.
+  const pin = useCallback(async (m: Message, key: string) => {
     if (!m.content.trim()) return;
     setPinning(key);
     try {
@@ -164,7 +266,7 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
       setPinned((s) => new Set([...s, key]));
     } catch {/* ignore */}
     finally { setPinning(null); }
-  }
+  }, [conversationId]);
 
   const showEndFooter =
     messages.length > 0 && streaming === undefined && agentStatus === "idle" && lastAsstModel;
@@ -172,69 +274,21 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
 
   return (
     <div className="message-list">
-      {rows.map(({ msg: m, key: k, divider }, idx) => {
-        const isPinned = pinned.has(k);
-        const isPinning = pinning === k;
-        const isLast = idx === rows.length - 1;
-
-        // Tool result message
-        if (m.role === "tool") {
-          return (
-            <div key={k}>
-              <ToolResultBlock name={m.tool_name} content={m.content} />
-            </div>
-          );
-        }
-
-        // Assistant turn with tool calls (no text content to show)
-        if (m.role === "assistant" && m.tool_calls?.length) {
-          return (
-            <div key={k}>
-              {m.content?.trim() && (
-                <div className="message assistant">
-                  <div className="content markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
-                </div>
-              )}
-              <ToolCallBlock calls={m.tool_calls} />
-            </div>
-          );
-        }
-
-        // Regular message
-        return (
-          <div key={k}>
-            {divider && (
-              <div className={`model-divider ${divider.tone}`}>
-                <span className="model-divider-line" />
-                <span className="model-divider-label">
-                  {divider.tone === "start" ? "Started with" : "Switched to"}{" "}
-                  <code>{divider.label}</code>
-                </span>
-                <span className="model-divider-line" />
-              </div>
-            )}
-            <div className={`message ${m.role}`}>
-              <div className="content markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
-              <MessageActions msg={m} isLast={isLast} onRegenerate={onRegenerate} onEditUser={onEditUser} />
-              <button
-                className={`pin-btn ${isPinned ? "pinned" : ""}`}
-                onClick={() => pin(m, k)}
-                disabled={isPinning || isPinned}
-                title={isPinned ? "Saved to memory" : "Pin to memory"}
-                aria-label="Pin to memory"
-              >
-                {isPinning ? (
-                  <span className="mb-spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />
-                ) : isPinned ? (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
-                ) : (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><polygon points="12 2 15.09 8.63 22 9.24 16.54 13.97 18.18 21 12 17.27 5.82 21 7.46 13.97 2 9.24 8.91 8.63 12 2"/></svg>
-                )}
-              </button>
-            </div>
-          </div>
-        );
-      })}
+      {rows.map(({ msg: m, key: k, divider }, idx) => (
+        <div key={k}>
+          <MessageRow
+            msg={m}
+            divider={divider}
+            isLast={idx === rows.length - 1}
+            isPinned={pinned.has(k)}
+            isPinning={pinning === k}
+            onPin={pin}
+            rowKey={k}
+            onRegenerate={onRegenerate}
+            onEditUser={onEditUser}
+          />
+        </div>
+      ))}
 
       {streaming !== undefined && (
         <>
@@ -247,9 +301,7 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
               <span className="model-divider-line" />
             </div>
           )}
-          <div className="message assistant">
-            <div className="content markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming) + '<span class="cursor">▍</span>' }} />
-          </div>
+          <StreamingMessage text={streaming} />
         </>
       )}
 
