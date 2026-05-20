@@ -466,7 +466,40 @@ async fn agent_write_file(path: String, content: String) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+fn ensure_path_for_gui() {
+    // GUI apps launched from Finder/Dock get minimal PATH — extend so `ollama`,
+    // `mlx_lm.server`, and other CLI tools installed in common dirs are findable.
+    let extra = [
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+        "/usr/bin",
+        "/bin",
+    ];
+    let mut parts: Vec<String> = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect();
+    if let Some(home) = dirs::home_dir() {
+        for sub in [".local/bin", ".cargo/bin", ".venvs/mlx/bin"] {
+            let p = home.join(sub).to_string_lossy().into_owned();
+            if !parts.contains(&p) {
+                parts.push(p);
+            }
+        }
+    }
+    for p in extra {
+        let s = p.to_string();
+        if !parts.contains(&s) {
+            parts.push(s);
+        }
+    }
+    std::env::set_var("PATH", parts.join(":"));
+}
+
 pub fn run() {
+    ensure_path_for_gui();
     let server_state: ServerHandle = Arc::new(ServerState::default());
 
     let app = tauri::Builder::default()
