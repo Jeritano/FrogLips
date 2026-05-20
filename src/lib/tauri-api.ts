@@ -1,12 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AllModels,
+  AppSettings,
   Conversation,
   DirListing,
+  EditOp,
   EditResult,
   ExistsResult,
+  GitResult,
   Memory,
   Message,
+  MultiEditResult,
   ReadResult,
   SearchResult,
   ServerStatus,
@@ -46,6 +50,7 @@ export const api = {
     content,
     model: model ?? null,
   }),
+  deleteMessage: (id: number) => invoke<void>("delete_message", { id }),
 
   // Memory
   addMemory: (args: {
@@ -105,12 +110,27 @@ export const api = {
     }),
   agentFileExists: (path: string) =>
     invoke<ExistsResult>("agent_file_exists", { path }),
-  agentSearchFiles: (path: string, pattern: string, glob?: string) =>
-    invoke<SearchResult>("agent_search_files", { path, pattern, glob: glob ?? null }),
+  agentSearchFiles: (path: string, pattern: string, glob?: string, regex?: boolean) =>
+    invoke<SearchResult>("agent_search_files", {
+      path, pattern,
+      glob: glob ?? null,
+      regex: regex ?? null,
+    }),
+  agentMultiEdit: (path: string, edits: EditOp[]) =>
+    invoke<MultiEditResult>("agent_multi_edit", { path, edits }),
+  agentGitStatus: (path?: string) =>
+    invoke<GitResult>("agent_git_status", { path: path ?? null }),
+  agentGitDiff: (path?: string, staged?: boolean) =>
+    invoke<GitResult>("agent_git_diff", { path: path ?? null, staged: staged ?? null }),
   agentClassifyShell: (command: string) =>
     invoke<string>("agent_classify_shell", { command }),
   agentSetWorkspace: (path: string | null) =>
     invoke<string | null>("agent_set_workspace", { path }),
   agentGetWorkspace: () =>
     invoke<string | null>("agent_get_workspace"),
+
+  // Settings
+  settingsGet: () => invoke<AppSettings>("settings_get"),
+  settingsSet: (patch: Partial<AppSettings>) =>
+    invoke<AppSettings>("settings_set", { patch }),
 };

@@ -198,6 +198,36 @@ fn cached_dir_size(path: &Path) -> Result<u64> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_mlx_rejects_invalid_repo_ids() {
+        for bad in [
+            "",
+            "noslash",
+            "..",
+            "../escape",
+            "org/../name",
+            "org/name/extra",
+            "/absolute/path",
+            "org/name\0",
+        ] {
+            let r = delete_mlx_model(bad);
+            assert!(r.is_err(), "expected rejection for {bad:?}");
+        }
+    }
+
+    #[test]
+    fn delete_mlx_rejects_traversal_attempts() {
+        // Even if the hub dir exists, these should fail validation before fs ops.
+        for malicious in ["..//..//etc", "a/..", ".."] {
+            assert!(delete_mlx_model(malicious).is_err());
+        }
+    }
+}
+
 fn dir_size(path: &Path) -> Result<u64> {
     // Resolve the root once so symlinks pointing outside the model directory
     // are not followed. HF snapshots contain symlinks into the blob store

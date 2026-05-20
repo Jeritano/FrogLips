@@ -70,6 +70,44 @@ export interface ReadResult {
   bytes_read: number;
   total_bytes: number;
   truncated: boolean;
+  binary: boolean;
+}
+
+export interface EditOp {
+  old_string: string;
+  new_string: string;
+  replace_all?: boolean;
+}
+
+export interface MultiEditResult {
+  edits_applied: number;
+  total_replacements: number;
+  new_size: number;
+}
+
+export interface GitResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  cwd: string;
+}
+
+export interface WindowGeometry {
+  width: number;
+  height: number;
+  x?: number | null;
+  y?: number | null;
+}
+
+export interface AppSettings {
+  workspace_root?: string | null;
+  last_model?: string | null;
+  last_backend?: string | null;
+  memory_mode?: string | null;
+  active_preset_id?: string | null;
+  embedding_model?: string | null;
+  recall_threshold?: number | null;
+  window?: WindowGeometry | null;
 }
 
 export interface ShellResult {

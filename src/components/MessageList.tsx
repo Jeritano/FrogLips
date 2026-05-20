@@ -9,6 +9,8 @@ interface Props {
   conversationId?: number | null;
   currentModel?: string | null;
   agentStatus?: AgentStatus;
+  onRegenerate?: () => void;
+  onEditUser?: (msg: Message) => void;
 }
 
 interface Row {
@@ -64,7 +66,51 @@ function ToolResultBlock({ name, content }: { name?: string; content: string }) 
   );
 }
 
-export function MessageList({ messages, streaming, conversationId, currentModel, agentStatus }: Props) {
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function MessageActions({
+  msg, isLast, onRegenerate, onEditUser,
+}: {
+  msg: Message; isLast: boolean;
+  onRegenerate?: () => void;
+  onEditUser?: (m: Message) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  if (msg.role !== "assistant" && msg.role !== "user") return null;
+  return (
+    <div className="msg-actions">
+      <button
+        className="msg-action"
+        title="Copy message text"
+        onClick={async () => {
+          const ok = await copyText(msg.content);
+          if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1200); }
+        }}
+      >
+        {copied ? "✓ Copied" : "Copy"}
+      </button>
+      {msg.role === "assistant" && isLast && onRegenerate && (
+        <button className="msg-action" title="Regenerate response" onClick={onRegenerate}>
+          ↻ Regenerate
+        </button>
+      )}
+      {msg.role === "user" && isLast && onEditUser && (
+        <button className="msg-action" title="Edit and retry" onClick={() => onEditUser(msg)}>
+          Edit
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function MessageList({ messages, streaming, conversationId, currentModel, agentStatus, onRegenerate, onEditUser }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef<number | null>(null);
   const [pinned, setPinned] = useState<Set<string>>(new Set());
@@ -124,9 +170,10 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
 
   return (
     <div className="message-list">
-      {rows.map(({ msg: m, key: k, divider }) => {
+      {rows.map(({ msg: m, key: k, divider }, idx) => {
         const isPinned = pinned.has(k);
         const isPinning = pinning === k;
+        const isLast = idx === rows.length - 1;
 
         // Tool result message
         if (m.role === "tool") {
@@ -166,6 +213,7 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
             )}
             <div className={`message ${m.role}`}>
               <div className="content">{m.content}</div>
+              <MessageActions msg={m} isLast={isLast} onRegenerate={onRegenerate} onEditUser={onEditUser} />
               <button
                 className={`pin-btn ${isPinned ? "pinned" : ""}`}
                 onClick={() => pin(m, k)}

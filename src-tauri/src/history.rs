@@ -166,6 +166,12 @@ pub fn delete_conversation(id: i64) -> Result<()> {
     Ok(())
 }
 
+pub fn delete_message(id: i64) -> Result<()> {
+    let conn = get_db()?;
+    conn.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 pub fn rename_conversation(id: i64, title: &str) -> Result<()> {
     let conn = get_db()?;
     conn.execute(

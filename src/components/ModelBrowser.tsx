@@ -677,6 +677,16 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               {installedOllama.length === 0 && installedMlx.length === 0 && (
                 <div className="mb-empty">No models installed. Use other tabs to pull.</div>
               )}
+              {(installedOllama.length + installedMlx.length) > 0 && (
+                <div className="mb-disk-summary">
+                  Total: <strong>
+                    {fmtBytes(
+                      installedOllama.reduce((s, m) => s + (m.size_bytes || 0), 0) +
+                      installedMlx.reduce((s, m) => s + (m.size_bytes || 0), 0),
+                    )}
+                  </strong> across {installedOllama.length + installedMlx.length} models
+                </div>
+              )}
               {installedOllama.length > 0 && (
                 <div className="mb-section-title">Ollama ({installedOllama.length})</div>
               )}

@@ -317,6 +317,14 @@ async fn add_message(
     .map_err(map_err)
 }
 
+#[tauri::command]
+async fn delete_message(id: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || history::delete_message(id))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
 /* ── Memory ── */
 
 #[tauri::command]
@@ -517,8 +525,30 @@ async fn agent_search_files(
     path: String,
     pattern: String,
     glob: Option<String>,
+    regex: Option<bool>,
 ) -> Result<agent::SearchResult, String> {
-    agent::search_files(path, pattern, glob).await
+    agent::search_files(path, pattern, glob, regex).await
+}
+
+#[tauri::command]
+async fn agent_multi_edit(
+    path: String,
+    edits: Vec<agent::EditOp>,
+) -> Result<agent::MultiEditResult, String> {
+    agent::multi_edit(path, edits).await
+}
+
+#[tauri::command]
+async fn agent_git_status(path: Option<String>) -> Result<agent::GitResult, String> {
+    agent::git_status(path).await
+}
+
+#[tauri::command]
+async fn agent_git_diff(
+    path: Option<String>,
+    staged: Option<bool>,
+) -> Result<agent::GitResult, String> {
+    agent::git_diff(path, staged).await
 }
 
 #[tauri::command]
@@ -538,6 +568,25 @@ fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, String> {
 #[tauri::command]
 fn agent_get_workspace() -> Option<String> {
     agent::get_workspace_root()
+}
+
+#[tauri::command]
+fn settings_get() -> settings::Settings {
+    settings::load()
+}
+
+#[tauri::command]
+fn settings_set(patch: serde_json::Value) -> Result<settings::Settings, String> {
+    let mut current = serde_json::to_value(settings::load()).map_err(|e| e.to_string())?;
+    if let (Some(c), Some(p)) = (current.as_object_mut(), patch.as_object()) {
+        for (k, v) in p {
+            c.insert(k.clone(), v.clone());
+        }
+    }
+    let updated: settings::Settings =
+        serde_json::from_value(current).map_err(|e| e.to_string())?;
+    settings::save(&updated).map_err(|e| e.to_string())?;
+    Ok(updated)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -636,6 +685,7 @@ pub fn run() {
             rename_conversation,
             list_messages,
             add_message,
+            delete_message,
             add_memory,
             list_memories,
             delete_memory,
@@ -656,6 +706,11 @@ pub fn run() {
             agent_set_workspace,
             agent_get_workspace,
             agent_cancel_shell,
+            agent_multi_edit,
+            agent_git_status,
+            agent_git_diff,
+            settings_get,
+            settings_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

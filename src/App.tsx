@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { api } from "./lib/tauri-api";
+import { configureMemory } from "./lib/memory-client";
 import type { Conversation, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
@@ -20,6 +22,43 @@ function App() {
   useEffect(() => {
     refreshStatus();
     refreshConversations();
+    // Load settings + restore window geometry + configure memory client
+    api.settingsGet().then(async (s) => {
+      configureMemory({
+        embeddingModel: s.embedding_model,
+        recallThreshold: s.recall_threshold,
+      });
+      const win = getCurrentWindow();
+      if (s.window) {
+        try {
+          if (s.window.width > 200 && s.window.height > 200) {
+            await win.setSize(new PhysicalSize(Math.round(s.window.width), Math.round(s.window.height)));
+          }
+          if (s.window.x != null && s.window.y != null) {
+            await win.setPosition(new PhysicalPosition(Math.round(s.window.x), Math.round(s.window.y)));
+          }
+        } catch {/* ignore */}
+      }
+    }).catch(() => {/* ignore */});
+
+    // Persist window geometry on resize/move with debounce
+    let saveTimer: number | undefined;
+    const win = getCurrentWindow();
+    const persistGeometry = () => {
+      if (saveTimer) window.clearTimeout(saveTimer);
+      saveTimer = window.setTimeout(async () => {
+        try {
+          const sz = await win.innerSize();
+          const pos = await win.outerPosition();
+          await api.settingsSet({
+            window: { width: sz.width, height: sz.height, x: pos.x, y: pos.y },
+          });
+        } catch {/* ignore */}
+      }, 500);
+    };
+    const offResize = win.onResized(persistGeometry);
+    const offMove = win.onMoved(persistGeometry);
+
     let cancelled = false;
     let unlisten: UnlistenFn | undefined;
     listen<ServerStatus>("server-status", (e) => setStatus(e.payload))
@@ -30,7 +69,34 @@ function App() {
     return () => {
       cancelled = true;
       if (unlisten) unlisten();
+      offResize.then((f) => f()).catch(() => {});
+      offMove.then((f) => f()).catch(() => {});
+      if (saveTimer) window.clearTimeout(saveTimer);
     };
+  }, []);
+
+  // Global keyboard shortcuts: Cmd+N new chat, Cmd+L library, Cmd+K model picker focus
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === "n") { e.preventDefault(); newChat(); return; }
+      if (key === "l") {
+        e.preventDefault();
+        // Click the Browse & download models option in picker
+        const lib = document.querySelector<HTMLButtonElement>("[data-shortcut='open-library']");
+        lib?.click();
+        return;
+      }
+      if (key === "k") {
+        e.preventDefault();
+        const sel = document.querySelector<HTMLElement>("[data-shortcut='focus-model']");
+        sel?.focus();
+        return;
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, []);
 
   useEffect(() => {

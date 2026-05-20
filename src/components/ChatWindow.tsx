@@ -14,6 +14,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import type { Conversation, Memory, Message, ServerStatus } from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
+import { conversationToMarkdown, downloadText, safeFilename } from "../lib/export";
 import {
   getMemoryMode,
   recall,
@@ -426,6 +427,29 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         conversationId={conversation?.id ?? null}
         currentModel={status?.running ? status.model : null}
         agentStatus={agentStatus}
+        onRegenerate={async () => {
+          // Pop the last assistant message and resend the last user message
+          if (isWorking || !conversation) return;
+          let lastUser: Message | undefined;
+          let lastAsst: Message | undefined;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const m = messages[i];
+            if (!lastAsst && m.role === "assistant" && !m.tool_calls?.length) lastAsst = m;
+            else if (lastAsst && !lastUser && m.role === "user") { lastUser = m; break; }
+          }
+          if (!lastUser) return;
+          // Remove last assistant from DB + state
+          if (lastAsst?.id) {
+            try { await api.deleteMessage(lastAsst.id); } catch {/* best effort */}
+          }
+          // Also remove from state (last assistant)
+          setMessages((ms) => {
+            const idx = [...ms].reverse().findIndex((m) => m.role === "assistant" && !m.tool_calls?.length);
+            if (idx < 0) return ms;
+            return ms.slice(0, ms.length - 1 - idx).concat(ms.slice(ms.length - idx));
+          });
+          await send(lastUser.content);
+        }}
       />
       <div className="chat-input-wrap">
         {recalled.length > 0 && (
@@ -438,6 +462,18 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
         {/* Agent mode toggle */}
         <div className="agent-toolbar">
+          <button
+            className="agent-toggle"
+            disabled={!conversation || messages.length === 0}
+            onClick={() => {
+              if (!conversation) return;
+              const md = conversationToMarkdown(conversation, messages);
+              downloadText(md, safeFilename(conversation.title, "md"));
+            }}
+            title="Export conversation as Markdown"
+          >
+            ⤓ Export
+          </button>
           <button
             className={`agent-toggle ${agentMode ? "active" : ""}`}
             onClick={() => setAgentMode((v) => !v)}

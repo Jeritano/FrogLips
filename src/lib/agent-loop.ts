@@ -100,18 +100,71 @@ const TOOLS = [
     function: {
       name: "search_files",
       description:
-        "Search for a literal text pattern across files under a directory (line-grep, recursive). Skips .git/node_modules/target/etc.",
+        "Search for text across files under a directory (line-grep, recursive). Set regex=true for regex pattern matching. Skips .git/node_modules/target/etc.",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string", description: "Root directory to search." },
-          pattern: { type: "string", description: "Literal text to find." },
+          pattern: { type: "string", description: "Text or regex to find." },
           glob: {
             type: "string",
             description: "Optional filename glob, e.g. '*.ts' or '*.py'. Defaults to '*'.",
           },
+          regex: { type: "boolean", description: "Treat pattern as a regex (Rust regex syntax)." },
         },
         required: ["path", "pattern"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "multi_edit",
+      description:
+        "Apply multiple find-and-replace edits to a single file atomically — either all succeed or none do. Edits are applied sequentially. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          edits: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                old_string: { type: "string" },
+                new_string: { type: "string" },
+                replace_all: { type: "boolean" },
+              },
+              required: ["old_string", "new_string"],
+            },
+          },
+        },
+        required: ["path", "edits"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_status",
+      description: "Run `git status --short --branch` in the workspace (or given path). Returns stdout, stderr, exit_code.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "Optional working directory; defaults to workspace root." } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_diff",
+      description: "Run `git diff` in the workspace (or given path). Set staged=true for `--staged`.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          staged: { type: "boolean" },
+        },
       },
     },
   },
@@ -179,9 +232,9 @@ const TOOLS = [
   },
 ] as const;
 
-const DANGEROUS_TOOLS = new Set(["run_shell", "write_file", "edit_file"]);
+const DANGEROUS_TOOLS = new Set(["run_shell", "write_file", "edit_file", "multi_edit"]);
 const SHELL_TOOL = "run_shell";
-const WRITE_TOOLS = new Set(["write_file", "edit_file"]);
+const WRITE_TOOLS = new Set(["write_file", "edit_file", "multi_edit"]);
 
 /* ── Tool execution ── */
 
@@ -241,6 +294,23 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         String(args.path ?? ""),
         String(args.pattern ?? ""),
         args.glob ? String(args.glob) : undefined,
+        typeof args.regex === "boolean" ? args.regex : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "multi_edit": {
+      const edits = Array.isArray(args.edits) ? (args.edits as Array<{ old_string: string; new_string: string; replace_all?: boolean }>) : [];
+      const r = await api.agentMultiEdit(String(args.path ?? ""), edits);
+      return JSON.stringify(r);
+    }
+    case "git_status": {
+      const r = await api.agentGitStatus(args.path ? String(args.path) : undefined);
+      return JSON.stringify(r);
+    }
+    case "git_diff": {
+      const r = await api.agentGitDiff(
+        args.path ? String(args.path) : undefined,
+        typeof args.staged === "boolean" ? args.staged : undefined,
       );
       return JSON.stringify(r);
     }
@@ -336,6 +406,18 @@ function toolCallSig(tc: ToolCall): string {
   return `${name}::${argStr}`;
 }
 
+const OLLAMA_REQUEST_TIMEOUT_MS = 120_000;
+
+function combinedSignal(parent: AbortSignal, timeoutMs: number): AbortSignal {
+  const ctrl = new AbortController();
+  const onAbort = () => ctrl.abort(parent.reason);
+  if (parent.aborted) ctrl.abort(parent.reason);
+  else parent.addEventListener("abort", onAbort, { once: true });
+  const t = setTimeout(() => ctrl.abort(new DOMException("Ollama request timed out", "TimeoutError")), timeoutMs);
+  ctrl.signal.addEventListener("abort", () => clearTimeout(t), { once: true });
+  return ctrl.signal;
+}
+
 async function callOllamaWithRetry(
   url: string,
   body: unknown,
@@ -350,7 +432,7 @@ async function callOllamaWithRetry(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal,
+        signal: combinedSignal(signal, OLLAMA_REQUEST_TIMEOUT_MS),
       });
       if (res.status >= 500 && attempt < RETRY_MAX) {
         onRetry();

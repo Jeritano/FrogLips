@@ -2,8 +2,24 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Default, Clone)]
+pub struct WindowGeometry {
+    pub width: f64,
+    pub height: f64,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
 pub struct Settings {
     pub workspace_root: Option<String>,
+    pub last_model: Option<String>,
+    pub last_backend: Option<String>,
+    pub memory_mode: Option<String>,
+    pub active_preset_id: Option<String>,
+    pub embedding_model: Option<String>,
+    pub recall_threshold: Option<f32>,
+    pub window: Option<WindowGeometry>,
 }
 
 fn settings_path() -> Option<PathBuf> {
