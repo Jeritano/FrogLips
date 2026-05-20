@@ -4,6 +4,38 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-05-20
+
+### Fixed
+- Pinned model identity via authoritative system preamble — cloud tags (`deepseek-v4-pro:cloud`, `kimi-*:cloud`) no longer misidentify themselves on "what model are you?".
+
+## [0.6.2] — 2026-05-20
+
+### Security
+- All Markdown rendered via `dangerouslySetInnerHTML` now sanitized through DOMPurify with a strict tag + attribute allowlist. `javascript:` / `vbscript:` / `data:` URIs blocked on anchors.
+- `.gitignore` extended to cover common secret-file patterns (`.env*`, `*.key`, `*.pem`, `.tauri/`, etc.).
+- CI now runs `npm audit` + `cargo audit` on every push (informational; will fail builds once baseline is clean).
+
+## [0.6.1] — 2026-05-20
+
+### Added
+- First cross-platform release: GitHub Actions matrix builds for Linux (`.deb` + `.AppImage`) and Windows (`.msi` + `.exe`). Builds attached to the GitHub Release automatically on tag push.
+
+### Fixed
+- DMG bundling flake: `scripts/release.sh` now detaches stale hdiutil mounts before each build and retries once on failure.
+
+## [0.6.0] — 2026-05-20
+
+### Added
+- Markdown rendering w/ syntax highlighting (highlight.js, 20+ languages registered).
+- Light theme toggle in sidebar (☀/☾), persisted to settings.
+- Conversation search bar in sidebar.
+- Slide-out tool-history panel (⌖ Tools button) — shows every tool call w/ args + result, ok/err status.
+- `release.yml` cross-platform CI workflow.
+
+### Changed
+- `scripts/release.sh` pkill filter narrowed to `Contents/MacOS` so bundle_dmg.sh isn't killed mid-stream.
+
 ## [0.5.0] — 2026-05-20
 
 ### Added
