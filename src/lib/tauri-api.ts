@@ -169,6 +169,8 @@ export const api = {
     invoke<void>("agent_open_app", { name }),
   agentShowNotification: (title: string, body: string) =>
     invoke<void>("agent_show_notification", { title, body }),
+  agentOpenPathInEditor: (path: string, line?: number) =>
+    invoke<string>("agent_open_path_in_editor", { path, line: line ?? null }),
   agentApplescriptRun: (script: string) =>
     invoke<ShellResult>("agent_applescript_run", { script }),
   agentHttpRequest: (input: HttpReqInput) =>

@@ -618,6 +618,11 @@ async fn agent_show_notification(title: String, body: String) -> Result<(), Stri
 }
 
 #[tauri::command]
+async fn agent_open_path_in_editor(path: String, line: Option<u32>) -> Result<String, String> {
+    agent::open_path_in_editor(path, line).await
+}
+
+#[tauri::command]
 async fn agent_applescript_run(script: String) -> Result<agent::ShellResult, String> {
     agent::applescript_run(script).await
 }
@@ -1162,6 +1167,7 @@ pub fn run() {
             agent_clipboard_set,
             agent_open_app,
             agent_show_notification,
+            agent_open_path_in_editor,
             agent_applescript_run,
             agent_http_request,
             agent_find_definition,

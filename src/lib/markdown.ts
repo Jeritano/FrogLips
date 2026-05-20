@@ -123,8 +123,132 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   }
 });
 
+/* ── Citation chip post-processor ───────────────────────────────────────── */
+//
+// Runs AFTER DOMPurify. Walks text nodes that live inside <code> tags (and
+// not inside <pre><code>…</code></pre> code blocks — we don't want to
+// chip-ify lines inside fenced syntax-highlighted code, only the small
+// inline `path/foo.rs:42` mentions). For each text node, scans for
+// path-shaped substrings ending in a known code-file extension and wraps
+// them in <a class="citation-chip" data-path="…" data-line="…">basename</a>.
+//
+// XSS hardening: chips are constructed via document.createElement +
+// textContent — never innerHTML — so a path that contains characters that
+// would otherwise be HTML-meaningful (e.g. `'`) can't escape the attribute
+// quoting.
+
+const CITATION_EXTS = "rs|ts|tsx|js|jsx|py|md|json|toml|yml|yaml|sh|html|css";
+
+// Matches:
+//   absolute Unix path: /a/b/c.ext optionally followed by :LINE
+//   relative path w/ ≥ 1 slash: a/b.ext optionally followed by :LINE
+// The double-slash variant in the second alternative ensures we require at
+// least one path separator so we don't chip-ify bare filenames like
+// `index.js` that could just as easily be an npm package reference.
+const CITATION_RE = new RegExp(
+  String.raw`(?:` +
+    String.raw`\/[A-Za-z0-9_.\-\/]+\.(?:${CITATION_EXTS})` +
+    String.raw`|` +
+    String.raw`[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)+\.(?:${CITATION_EXTS})` +
+    String.raw`)` +
+    String.raw`(?::(\d+))?`,
+  "g",
+);
+
+function basenameWithLine(match: string): string {
+  // Strip line suffix, take basename, then re-append line if present.
+  const lineIdx = match.lastIndexOf(":");
+  const hasLine = lineIdx > 0 && /^\d+$/.test(match.slice(lineIdx + 1));
+  const pathPart = hasLine ? match.slice(0, lineIdx) : match;
+  const linePart = hasLine ? match.slice(lineIdx) : "";
+  const slash = pathPart.lastIndexOf("/");
+  const base = slash >= 0 ? pathPart.slice(slash + 1) : pathPart;
+  return base + linePart;
+}
+
+function splitPathAndLine(match: string): { path: string; line: string | null } {
+  const lineIdx = match.lastIndexOf(":");
+  if (lineIdx > 0 && /^\d+$/.test(match.slice(lineIdx + 1))) {
+    return { path: match.slice(0, lineIdx), line: match.slice(lineIdx + 1) };
+  }
+  return { path: match, line: null };
+}
+
+/**
+ * Chip-ify inline `<code>` elements that contain path-shaped text.
+ *
+ * Exported for unit tests — production code should use `renderMarkdown` which
+ * runs this automatically.
+ */
+export function chipifyCitations(root: HTMLElement | DocumentFragment): void {
+  // Inline <code> only — skip block <pre><code> to avoid messing with
+  // syntax-highlighted source listings.
+  const inlineCodes = root.querySelectorAll("code");
+  for (const code of Array.from(inlineCodes)) {
+    if (code.parentElement && code.parentElement.tagName === "PRE") continue;
+    // A single text-node child is the common marked output for `inline`.
+    // We tolerate multiple text nodes (e.g. mixed with hljs spans) by
+    // iterating childNodes.
+    const text = code.textContent ?? "";
+    if (!text) continue;
+    // Quick rejection — at least one of our extensions must appear or the
+    // regex can't match.
+    if (!/\.(rs|ts|tsx|js|jsx|py|md|json|toml|yml|yaml|sh|html|css)\b/.test(text)) {
+      continue;
+    }
+    // Reset stickiness for each fresh string (CITATION_RE is /g).
+    CITATION_RE.lastIndex = 0;
+    if (!CITATION_RE.test(text)) continue;
+    CITATION_RE.lastIndex = 0;
+
+    // Build a fragment that interleaves chip anchors with text segments,
+    // then replace the inline <code>'s contents wholesale.
+    const frag = code.ownerDocument!.createDocumentFragment();
+    let lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CITATION_RE.exec(text)) !== null) {
+      if (m.index > lastIndex) {
+        frag.appendChild(
+          code.ownerDocument!.createTextNode(text.slice(lastIndex, m.index)),
+        );
+      }
+      const matchStr = m[0];
+      const { path, line } = splitPathAndLine(matchStr);
+      const a = code.ownerDocument!.createElement("a");
+      a.className = "citation-chip";
+      a.setAttribute("data-path", path);
+      if (line) a.setAttribute("data-line", line);
+      a.setAttribute("title", matchStr);
+      // href="#" so it looks/feels like a link; the click handler in
+      // ChatWindow intercepts and prevents default.
+      a.setAttribute("href", "#");
+      a.textContent = basenameWithLine(matchStr);
+      frag.appendChild(a);
+      lastIndex = m.index + matchStr.length;
+    }
+    if (lastIndex < text.length) {
+      frag.appendChild(code.ownerDocument!.createTextNode(text.slice(lastIndex)));
+    }
+    // Only commit if we actually produced at least one chip.
+    if (frag.childNodes.length > 0) {
+      // Replace the <code>'s children with the new fragment. The <code>
+      // wrapper itself stays — the chip just lives inside it.
+      while (code.firstChild) code.removeChild(code.firstChild);
+      code.appendChild(frag);
+    }
+  }
+}
+
 export function renderMarkdown(md: string): string {
   if (!md) return "";
   const raw = marked.parse(md, { async: false }) as string;
-  return DOMPurify.sanitize(raw, PURIFY_CONFIG) as string;
+  const sanitized = DOMPurify.sanitize(raw, PURIFY_CONFIG) as string;
+  // Post-sanitize: parse the trusted HTML into a detached container, run
+  // chip-ification, return the serialized output. Building DOM nodes via
+  // document.createElement (not innerHTML) keeps this XSS-safe.
+  if (typeof document === "undefined") return sanitized;
+  const container = document.createElement("div");
+  container.innerHTML = sanitized;
+  chipifyCitations(container);
+  return container.innerHTML;
 }

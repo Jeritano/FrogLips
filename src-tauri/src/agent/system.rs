@@ -191,6 +191,120 @@ pub async fn show_notification(title: String, body: String) -> Result<(), String
     Ok(())
 }
 
+/* ── Open path in editor ─────────────────────────────────────────────────── */
+
+/// Open `path` (optionally jumping to `line`) in the user's editor.
+///
+/// Detection ladder:
+///   1. `code --goto <path>:<line>` (VS Code on PATH)
+///   2. `cursor --goto <path>:<line>` (Cursor on PATH)
+///   3. `open <path>` (macOS default app)
+///
+/// Returns the program that actually ran (`"code"`, `"cursor"`, or `"open"`).
+///
+/// Safety:
+///   * `path` must be absolute or `~/...` — relative paths are rejected so
+///     citation clicks can never be coerced into resolving against the app's
+///     cwd (which could differ from where the user thinks the file lives).
+///   * The path must canonicalize to an existing file or directory.
+///   * The canonical path must stay under the user's home dir, or under a
+///     few well-known shared roots (`/tmp`, `/private/tmp`, `/Volumes`).
+///     Defends against a malicious model surfacing `/etc/passwd:1` and the
+///     user clicking it open in their editor — VS Code itself is harmless,
+///     but the behavior is still better confined to writable locations.
+pub async fn open_path_in_editor(
+    path: String,
+    line: Option<u32>,
+) -> Result<String, String> {
+    if path.is_empty() || path.len() > super::fs::MAX_PATH_LEN {
+        return Err(err_string(ToolError::invalid("path length invalid")));
+    }
+    if !(path.starts_with('/') || path.starts_with("~/") || path == "~") {
+        return Err(err_string(ToolError::invalid(
+            "path must be absolute or start with ~/",
+        )));
+    }
+    // Resolve + canonicalize. `resolve_path(_, true)` rejects `..` and
+    // surfaces NotFound errors for nonexistent targets.
+    let resolved = super::fs::resolve_path(&path, true)
+        .map_err(|e| err_string(ToolError::invalid(e.to_string())))?;
+    if !is_open_target_allowed(&resolved) {
+        return Err(err_string(ToolError::Protected {
+            message: "path is outside user-writable areas".into(),
+        }));
+    }
+    let path_str = resolved.to_string_lossy().into_owned();
+    let goto_arg = match line {
+        Some(n) if n > 0 => format!("{path_str}:{n}"),
+        _ => path_str.clone(),
+    };
+
+    // Try VS Code, then Cursor, then fall back to `open`. We probe by
+    // attempting to run the editor with `--goto` directly; if the binary
+    // isn't on PATH the spawn errors with NotFound and we move on. This
+    // avoids a separate `which` round-trip and keeps the happy path one
+    // process spawn.
+    for prog in ["code", "cursor"] {
+        match tokio::process::Command::new(prog)
+            .arg("--goto")
+            .arg(&goto_arg)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status()
+            .await
+        {
+            Ok(s) if s.success() => return Ok(prog.to_string()),
+            // Binary not on PATH — try the next one. Any other error
+            // (non-zero exit, IO error mid-run) is logged via Err so the
+            // user can tell the editor was found but failed.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(s) => {
+                return Err(err_string(ToolError::io(format!(
+                    "{prog} exited {s}"
+                ))));
+            }
+            Err(e) => {
+                return Err(err_string(ToolError::io(format!(
+                    "{prog} failed: {e}"
+                ))));
+            }
+        }
+    }
+    // Fallback: hand off to the OS default app via `open` (macOS).
+    let status = tokio::process::Command::new("open")
+        .arg(&path_str)
+        .kill_on_drop(true)
+        .status()
+        .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    if !status.success() {
+        return Err(err_string(ToolError::io(format!("open exited {status}"))));
+    }
+    Ok("open".to_string())
+}
+
+/// Whitelist of roots an editor-open is allowed to target. Anything outside
+/// these prefixes (e.g. `/etc`, `/System`) is rejected.
+fn is_open_target_allowed(canon: &std::path::Path) -> bool {
+    // User's home wins — that's where source code lives.
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(home_c) = std::fs::canonicalize(&home) {
+            if canon.starts_with(&home_c) {
+                return true;
+            }
+        }
+    }
+    // A handful of conventional scratch / mount points. /tmp and /private/tmp
+    // both appear because macOS resolves /tmp → /private/tmp via symlink.
+    for root in ["/tmp", "/private/tmp", "/Volumes"] {
+        if canon.starts_with(root) {
+            return true;
+        }
+    }
+    false
+}
+
 /* ── Screenshot ──────────────────────────────────────────────────────────── */
 
 #[derive(Serialize)]
@@ -229,4 +343,58 @@ pub async fn screenshot(out_path: Option<String>) -> Result<ScreenshotResult, St
     let bytes = tokio::fs::metadata(&target).await
         .map(|m| m.len()).unwrap_or(0);
     Ok(ScreenshotResult { path: path_str, bytes })
+}
+
+/* ── Tests ───────────────────────────────────────────────────────────────── */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn open_path_rejects_relative() {
+        let err = open_path_in_editor("relative/file.rs".into(), None).await.unwrap_err();
+        assert!(err.contains("absolute"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn open_path_rejects_parent_traversal() {
+        let err = open_path_in_editor("/tmp/../etc/passwd".into(), None).await.unwrap_err();
+        // Either the `..` check trips inside resolve_path, or the resulting
+        // canonical path falls outside the allowlist — both are acceptable.
+        assert!(
+            err.contains("..") || err.contains("outside") || err.contains("restricted") || err.contains("not accessible"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_path_rejects_nonexistent() {
+        let err = open_path_in_editor(
+            "/tmp/__froglips_does_not_exist_xyzzy_9999".into(),
+            None,
+        ).await.unwrap_err();
+        assert!(err.contains("not accessible") || err.contains("No such"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn open_path_rejects_system_dir() {
+        // `/etc` exists and canonicalizes, but lives outside the allowlist.
+        let err = open_path_in_editor("/etc/hosts".into(), None).await.unwrap_err();
+        assert!(err.contains("outside") || err.contains("restricted"), "got: {err}");
+    }
+
+    #[test]
+    fn is_open_target_allowed_home_and_tmp() {
+        let home = dirs::home_dir().unwrap();
+        let in_home = home.join("Documents");
+        if in_home.exists() {
+            let canon = std::fs::canonicalize(&in_home).unwrap();
+            assert!(is_open_target_allowed(&canon));
+        }
+        assert!(is_open_target_allowed(std::path::Path::new("/tmp/foo")));
+        assert!(is_open_target_allowed(std::path::Path::new("/private/tmp/foo")));
+        assert!(!is_open_target_allowed(std::path::Path::new("/etc/passwd")));
+        assert!(!is_open_target_allowed(std::path::Path::new("/System/Library")));
+    }
 }

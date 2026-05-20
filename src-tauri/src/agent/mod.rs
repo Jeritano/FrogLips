@@ -39,7 +39,7 @@ pub use git::{git_branches, git_commit, git_diff, git_log, git_show, git_status,
 
 pub use system::{
     applescript_run, classify_applescript_risk, clipboard_get, clipboard_set, open_app,
-    screenshot, show_notification, ScreenshotResult,
+    open_path_in_editor, screenshot, show_notification, ScreenshotResult,
 };
 
 pub use code::{find_definition, find_references, format_code, read_pdf, FormatResult, PdfResult};

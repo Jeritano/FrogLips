@@ -4,6 +4,18 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.12] — 2026-05-20
+
+### Added (v1.2 batch A)
+- **Inline file citations**: paths inside `` `code` `` spans matching `…/file.{rs,ts,tsx,…}(:line)?` get chip-ified post-DOMPurify (XSS-safe via `document.createElement` + `textContent`). Click → `agent_open_path_in_editor(path, line)` which tries `code --goto path:line` → `cursor --goto path:line` → `open path`. Path safety: must be absolute or `~/…`, canonicalized, must live under `$HOME`/`/tmp`/`/Volumes`. `/etc/*` etc. rejected. Session-scoped `citedPathsByConv` Map tracks paths from `read_file` outcomes (consumed by future plain-text trigger). Fenced code blocks untouched — only inline code.
+- **Markdown export modes**: Export button is now a split-button dropdown ("Plain Markdown" / "Detailed Markdown"). Detailed mode renders each tool call as a GitHub-flavored `<details>` block with pretty-printed JSON args + 500-char-capped result body. Filename suffix `-detailed.md` distinguishes the two. Plain mode strictly user + assistant prose (drops tool envelopes entirely).
+
+### Tests
+- Rust: **56 passing** (was 51). +5 `open_path_in_editor` (relative/.. /nonexistent/protected/allowlist helper).
+- Vitest: **70 passing** (was 55). +8 citation chip (path:line wrap, URL not wrapped, bare filename ignored, fenced code untouched, XSS-safe), +7 export modes.
+- Playwright: **11 passing** (was 10). +1 detailed-export filename + content.
+- **Grand total: 137 tests across 3 runners.**
+
 ## [0.9.11] — 2026-05-20
 
 ### Added (v1.1 final batch)

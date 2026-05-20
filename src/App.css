@@ -72,6 +72,24 @@
   margin: 8px 0;
 }
 .markdown a { color: var(--accent); text-decoration: underline; }
+/* Citation chips — inline `path/file.rs:42` style references rendered as
+   clickable pills that hand off to VS Code / Cursor / `open`. Lives inside
+   inline <code> so the chip inherits the mono font but overrides the
+   surrounding code-bubble background to look chip-shaped, not box-shaped. */
+.markdown code:not(pre code) a.citation-chip,
+.citation-chip {
+  display: inline;
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--accent);
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+}
+.citation-chip:hover {
+  background: var(--surface-2);
+  border-bottom-style: solid;
+}
 .markdown table { border-collapse: collapse; margin: 8px 0; }
 .markdown th, .markdown td {
   border: 1px solid var(--border);

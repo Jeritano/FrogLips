@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
@@ -20,7 +20,7 @@ import { ChatInput } from "./ChatInput";
 import { McpSettings } from "./McpSettings";
 import { AuditLog } from "./AuditLog";
 import { ToolHistory } from "./ToolHistory";
-import { conversationToMarkdown, downloadText, safeFilename } from "../lib/export";
+import { conversationToMarkdown, downloadText, safeFilename, type ExportMode } from "../lib/export";
 import {
   getMemoryMode,
   recall,
@@ -99,6 +99,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [rememberPrefix, setRememberPrefix] = useState(false);
   const [destructiveAck, setDestructiveAck] = useState(false);
   const [showToolHistory, setShowToolHistory] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const [askUserReq, setAskUserReq] = useState<AskUserRequest | null>(null);
   const [askUserAnswer, setAskUserAnswer] = useState("");
   const [presets, setPresets] = useState<AgentPreset[]>(() => loadAllPresets());
@@ -589,8 +590,37 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   };
   const onRegenerate = useCallback(() => handleRegenerateRef.current?.(), []);
 
+  // Citation chip click handler — event-delegated at the chat-window root.
+  // `.citation-chip` anchors are emitted by the markdown post-processor with
+  // data-path and (optional) data-line attributes. We intercept the click,
+  // resolve to a Tauri command, and toast the resulting editor.
+  const onCitationClick = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const chip = target.closest(".citation-chip") as HTMLAnchorElement | null;
+    if (!chip) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const path = chip.getAttribute("data-path") ?? "";
+    const lineRaw = chip.getAttribute("data-line");
+    const line = lineRaw ? Number(lineRaw) : undefined;
+    if (!path) return;
+    api.agentOpenPathInEditor(path, line)
+      .then((prog) => {
+        const label = prog === "code" ? "VS Code"
+          : prog === "cursor" ? "Cursor"
+          : "default app";
+        setUpdateMsg(`Opened in ${label}`);
+        setTimeout(
+          () => setUpdateMsg((m) => (m && m.startsWith("Opened") ? null : m)),
+          2200,
+        );
+      })
+      .catch((err2) => setErr(`Open failed: ${err2}`));
+  }, []);
+
   return (
-    <div className="chat-window">
+    <div className="chat-window" onClick={onCitationClick}>
       {agentMode && dryRun && (
         <div
           className="dry-run-banner"
@@ -626,19 +656,58 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
         {/* Agent mode toggle */}
         <div className="agent-toolbar">
-          <button
-            data-testid="export-btn"
-            className="agent-toggle"
-            disabled={!conversation || messages.length === 0}
-            onClick={() => {
-              if (!conversation) return;
-              const md = conversationToMarkdown(conversation, messages);
-              downloadText(md, safeFilename(conversation.title, "md"));
-            }}
-            title="Export conversation as Markdown"
-          >
-            ⤓ Export
-          </button>
+          <div className="export-menu-wrap" style={{ position: "relative", display: "inline-block" }}>
+            <button
+              data-testid="export-btn"
+              className="agent-toggle"
+              disabled={!conversation || messages.length === 0}
+              onClick={() => setShowExportMenu((v) => !v)}
+              title="Export conversation as Markdown"
+              aria-haspopup="menu"
+              aria-expanded={showExportMenu}
+            >
+              ⤓ Export ▾
+            </button>
+            {showExportMenu && conversation && (
+              <div
+                role="menu"
+                className="export-menu"
+                data-testid="export-menu"
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  zIndex: 100,
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  padding: 4,
+                  minWidth: 180,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                  marginTop: 2,
+                }}
+                onMouseLeave={() => setShowExportMenu(false)}
+              >
+                {(["plain", "detailed"] as ExportMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    role="menuitem"
+                    data-testid={`export-${mode}`}
+                    className="agent-toggle"
+                    style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "transparent" }}
+                    onClick={() => {
+                      const md = conversationToMarkdown(conversation, messages, mode);
+                      const suffix = mode === "detailed" ? "detailed" : undefined;
+                      downloadText(md, safeFilename(conversation.title, "md", suffix));
+                      setShowExportMenu(false);
+                    }}
+                  >
+                    {mode === "plain" ? "Plain Markdown" : "Detailed Markdown"}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             className="agent-toggle"
             onClick={() => setShowToolHistory((v) => !v)}

@@ -114,6 +114,44 @@ function makeTmpKey() {
   return `tmp:${crypto.randomUUID()}`;
 }
 
+/* ── Cited paths registry ──────────────────────────────────────────────────
+ *
+ * Session-scoped record of every path that successfully resolved via a
+ * `read_file` tool call, keyed by conversation id. The chat UI's citation
+ * post-processor uses this in a future iteration to chip-ify *plain-text*
+ * mentions of paths that the agent just read (v1 only chip-ifies backticked
+ * paths). Stored at module scope so multiple agent runs in the same session
+ * share state; bounded to avoid unbounded growth across long sessions.
+ */
+const CITED_PATHS_LIMIT_PER_CONV = 256;
+const citedPathsByConv: Map<number, Set<string>> = new Map();
+
+function rememberCitedPath(conversationId: number, path: string): void {
+  let set = citedPathsByConv.get(conversationId);
+  if (!set) {
+    set = new Set();
+    citedPathsByConv.set(conversationId, set);
+  }
+  set.add(path);
+  // Bound the set — FIFO drop. Worst case the post-processor loses
+  // chip-ification for the oldest reads, no correctness impact.
+  if (set.size > CITED_PATHS_LIMIT_PER_CONV) {
+    const first = set.values().next().value;
+    if (first !== undefined) set.delete(first);
+  }
+}
+
+/** Read-only snapshot of cited paths for a given conversation. */
+export function getCitedPaths(conversationId: number): string[] {
+  const s = citedPathsByConv.get(conversationId);
+  return s ? Array.from(s) : [];
+}
+
+/** Test helper — clears the cited-paths cache. */
+export function _resetCitedPaths(): void {
+  citedPathsByConv.clear();
+}
+
 /* ── Main loop ── */
 
 export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null> {
@@ -606,6 +644,14 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         errorKind: toolErrorKind,
         conversationId: opts.conversationId,
       });
+
+      // Track cited paths for the citation post-processor. We only record
+      // on a successful read_file — both because failed reads don't surface
+      // a real path and because the chip would 404 on click.
+      if (fnName === "read_file" && outcome === "ok") {
+        const p = typeof args.path === "string" ? args.path : "";
+        if (p) rememberCitedPath(opts.conversationId, p);
+      }
 
       msgs.push({
         _tmpKey: makeTmpKey(),
