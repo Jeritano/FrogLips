@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Message, ToolCall } from "../types";
 import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
+import { renderMarkdown } from "../lib/markdown";
+import "highlight.js/styles/github-dark.css";
 
 interface Props {
   messages: Message[];
@@ -190,7 +192,7 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
             <div key={k}>
               {m.content?.trim() && (
                 <div className="message assistant">
-                  <div className="content">{m.content}</div>
+                  <div className="content markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
                 </div>
               )}
               <ToolCallBlock calls={m.tool_calls} />
@@ -212,7 +214,7 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
               </div>
             )}
             <div className={`message ${m.role}`}>
-              <div className="content">{m.content}</div>
+              <div className="content markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
               <MessageActions msg={m} isLast={isLast} onRegenerate={onRegenerate} onEditUser={onEditUser} />
               <button
                 className={`pin-btn ${isPinned ? "pinned" : ""}`}
@@ -246,7 +248,7 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
             </div>
           )}
           <div className="message assistant">
-            <div className="content">{streaming}<span className="cursor">▍</span></div>
+            <div className="content markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming) + '<span class="cursor">▍</span>' }} />
           </div>
         </>
       )}

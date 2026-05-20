@@ -99,6 +99,14 @@ export interface WindowGeometry {
   y?: number | null;
 }
 
+export interface CustomBackend {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  api_key?: string | null;
+}
+
 export interface AppSettings {
   workspace_root?: string | null;
   last_model?: string | null;
@@ -108,6 +116,8 @@ export interface AppSettings {
   embedding_model?: string | null;
   recall_threshold?: number | null;
   window?: WindowGeometry | null;
+  theme?: "dark" | "light" | null;
+  custom_backends?: CustomBackend[] | null;
 }
 
 export interface ShellResult {

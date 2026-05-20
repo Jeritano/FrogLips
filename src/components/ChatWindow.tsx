@@ -14,6 +14,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import type { Conversation, Memory, Message, ServerStatus } from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
+import { ToolHistory } from "./ToolHistory";
 import { conversationToMarkdown, downloadText, safeFilename } from "../lib/export";
 import {
   getMemoryMode,
@@ -79,6 +80,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [approvedShellPrefixes, setApprovedShellPrefixes] = useState<string[]>([]);
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [rememberPrefix, setRememberPrefix] = useState(false);
+  const [showToolHistory, setShowToolHistory] = useState(false);
   const [presets, setPresets] = useState<AgentPreset[]>(() => loadAllPresets());
   const [activePresetId, setActivePresetIdState] = useState<string>(() => getActivePresetId());
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
@@ -475,6 +477,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             ⤓ Export
           </button>
           <button
+            className="agent-toggle"
+            onClick={() => setShowToolHistory((v) => !v)}
+            disabled={messages.length === 0}
+            title="Tool call history"
+          >
+            ⌖ Tools
+          </button>
+          <button
             className={`agent-toggle ${agentMode ? "active" : ""}`}
             onClick={() => setAgentMode((v) => !v)}
             disabled={isWorking || !agentAvailable}
@@ -595,6 +605,10 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           streaming={isWorking}
         />
       </div>
+
+      {showToolHistory && (
+        <ToolHistory messages={messages} onClose={() => setShowToolHistory(false)} />
+      )}
 
       {/* Tool confirmation modal */}
       {confirmState && (

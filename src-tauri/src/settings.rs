@@ -20,6 +20,17 @@ pub struct Settings {
     pub embedding_model: Option<String>,
     pub recall_threshold: Option<f32>,
     pub window: Option<WindowGeometry>,
+    pub theme: Option<String>, // "dark" | "light"
+    pub custom_backends: Option<Vec<CustomBackend>>,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct CustomBackend {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key: Option<String>,
 }
 
 fn settings_path() -> Option<PathBuf> {

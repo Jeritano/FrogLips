@@ -17,6 +17,8 @@ function App() {
   const [editingTitle, setEditingTitle] = useState("");
   const [memoryTick, setMemoryTick] = useState(0);
   const [err, setErr] = useState<string | null>(null);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [convSearch, setConvSearch] = useState("");
   const editInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -28,6 +30,10 @@ function App() {
         embeddingModel: s.embedding_model,
         recallThreshold: s.recall_threshold,
       });
+      if (s.theme === "light" || s.theme === "dark") {
+        setTheme(s.theme);
+        document.documentElement.dataset.theme = s.theme;
+      }
       const win = getCurrentWindow();
       if (s.window) {
         try {
@@ -123,6 +129,17 @@ function App() {
     setCurrent(null);
   }
 
+  function toggleTheme() {
+    const next: "dark" | "light" = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    api.settingsSet({ theme: next }).catch(() => {});
+  }
+
+  const filteredConversations = conversations.filter((c) =>
+    !convSearch.trim() || c.title.toLowerCase().includes(convSearch.trim().toLowerCase()),
+  );
+
   async function deleteConv(id: number) {
     try {
       await api.deleteConversation(id);
@@ -166,14 +183,31 @@ function App() {
   return (
     <div className="app">
       <aside className="sidebar">
-        <button className="new-chat" onClick={newChat}>+ New chat</button>
+        <div className="sidebar-top">
+          <button className="new-chat" onClick={newChat}>+ New chat</button>
+          <button
+            className="theme-toggle"
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-label="Toggle theme"
+          >
+            {theme === "dark" ? "☀" : "☾"}
+          </button>
+        </div>
+        <input
+          className="conv-search"
+          type="search"
+          placeholder="Search conversations…"
+          value={convSearch}
+          onChange={(e) => setConvSearch(e.target.value)}
+        />
         {err && (
           <div className="error-bar" onClick={() => setErr(null)} title="Click to dismiss">
             {err}
           </div>
         )}
         <ul className="conv-list">
-          {conversations.map((c) => (
+          {filteredConversations.map((c) => (
             <li
               key={c.id}
               className={current?.id === c.id ? "active" : ""}
