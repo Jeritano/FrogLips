@@ -377,7 +377,7 @@ const RP_CATALOG: CatalogEntry[] = [
   { id: "Sao10K/72B-Qwen2.5-Kunou-v1",          label: "Kunou 72B v1",             size: "~47 GB", tags: ["rp"],               desc: "Qwen2.5 72B RP tune" },
 
   // Anthracite (Magnum series)
-  { id: "anthracite-org/magnum-v4-72b",         label: "Magnum v4 72B",            size: "~47 GB", tags: ["rp"],               desc: "Claude-style prose Qwen2.5 tune" },
+  { id: "anthracite-org/magnum-v4-72b",         label: "Magnum v4 72B",            size: "~47 GB", tags: ["rp"],               desc: "Literary-prose Qwen2.5 tune" },
   { id: "anthracite-org/magnum-v4-22b",         label: "Magnum v4 22B",            size: "~14 GB", tags: ["rp"],               desc: "Mistral Small Magnum" },
   { id: "anthracite-org/magnum-v4-12b",         label: "Magnum v4 12B",            size: "~7 GB",  tags: ["rp"],               desc: "Nemo Magnum, compact" },
 

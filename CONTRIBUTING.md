@@ -28,7 +28,7 @@ CI runs the same three commands on every push.
 - Rust: `cargo fmt`. Prefer explicit error types over `anyhow` in library code that's tested.
 - TypeScript: no formatter enforced, but match the existing 2-space, semicolons-on style.
 - Commits: imperative mood, prefix with `vX.Y.Z:` if it's a release commit. Detail in body.
-- No `Co-Authored-By: Claude` in commit messages.
+- Do not credit AI assistants in commit messages (no `Co-Authored-By` for any model / tool).
 
 ## Pull requests
 
