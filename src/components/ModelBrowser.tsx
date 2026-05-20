@@ -638,23 +638,35 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
           <button className="mb-close" onClick={onClose}>✕</button>
         </div>
 
-        {/* Tabs */}
+        {/* Source selector */}
         <div className="mb-tabs">
-          <button className={`mb-tab ${tab === "installed" ? "active" : ""}`} onClick={() => { setTab("installed"); setQuery(""); refreshInstalled(); }}>
-            Installed <span className="mb-tab-count">{installedOllama.length + installedMlx.length}</span>
-          </button>
-          <button className={`mb-tab ${tab === "ollama" ? "active" : ""}`} onClick={() => { setTab("ollama"); setQuery(""); }}>
-            Ollama <span className="mb-tab-count">{OLLAMA.length}</span>
-          </button>
-          <button className={`mb-tab ${tab === "hf" ? "active" : ""}`} onClick={() => { setTab("hf"); setQuery(""); }}>
-            HuggingFace MLX <span className="mb-tab-count">{hfModels.length || "live"}</span>
-          </button>
-          <button className={`mb-tab ${tab === "rp" ? "active" : ""}`} onClick={() => { setTab("rp"); setQuery(""); }}>
-            RP / Kobold <span className="mb-tab-count">{RP_CATALOG.length}</span>
-          </button>
-          <button className={`mb-tab ${tab === "civitai" ? "active" : ""}`} onClick={() => { setTab("civitai"); setQuery(""); }}>
-            Civitai <span className="mb-tab-count">{civitaiModels.length || "live"}</span>
-          </button>
+          <label className="mb-source-label">Source:</label>
+          <select
+            className="mb-source-select"
+            value={tab}
+            onChange={(e) => {
+              const next = e.target.value as Backend;
+              setTab(next);
+              setQuery("");
+              if (next === "installed") refreshInstalled();
+            }}
+          >
+            <option value="installed">
+              Installed ({installedOllama.length + installedMlx.length})
+            </option>
+            <option value="ollama">
+              Ollama ({OLLAMA.length})
+            </option>
+            <option value="hf">
+              HuggingFace MLX ({hfModels.length || "live"})
+            </option>
+            <option value="rp">
+              RP / Kobold ({RP_CATALOG.length})
+            </option>
+            <option value="civitai">
+              Civitai ({civitaiModels.length || "live"})
+            </option>
+          </select>
         </div>
 
         {/* List */}
