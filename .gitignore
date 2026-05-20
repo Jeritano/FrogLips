@@ -27,3 +27,15 @@ dist-ssr
 src-tauri/target
 src-tauri/gen/schemas
 
+# Secrets — never commit
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+secrets/
+.tauri/
+credentials.json
+

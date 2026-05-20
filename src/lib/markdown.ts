@@ -1,6 +1,7 @@
 import { marked, type Tokens } from "marked";
 import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js/lib/core";
+import DOMPurify from "dompurify";
 
 // Register a focused set — keeps bundle small.
 import javascript from "highlight.js/lib/languages/javascript";
@@ -94,7 +95,36 @@ renderer.link = function (token: Tokens.Link) {
 };
 marked.use({ renderer });
 
+// Allow only the elements + attributes marked produces — plus hljs spans for
+// syntax highlighting. Drops javascript:, data: (except in img src already
+// gated by CSP), and any DOM-clobbering attributes.
+const PURIFY_CONFIG = {
+  ALLOWED_TAGS: [
+    "a", "p", "span", "br", "hr", "strong", "em", "del", "code", "pre",
+    "ul", "ol", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6",
+    "table", "thead", "tbody", "tr", "th", "td", "img",
+  ],
+  ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "src", "alt"],
+  ALLOW_DATA_ATTR: false,
+  FORBID_TAGS: ["style", "script", "iframe", "object", "embed", "form", "input", "button"],
+  FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
+};
+
+// Block javascript: + vbscript: hrefs explicitly via uri policy.
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName === "A") {
+    const a = node as HTMLAnchorElement;
+    const href = a.getAttribute("href") ?? "";
+    if (/^(javascript|vbscript|data):/i.test(href.trim())) {
+      a.removeAttribute("href");
+    }
+    a.setAttribute("target", "_blank");
+    a.setAttribute("rel", "noopener noreferrer");
+  }
+});
+
 export function renderMarkdown(md: string): string {
   if (!md) return "";
-  return marked.parse(md, { async: false }) as string;
+  const raw = marked.parse(md, { async: false }) as string;
+  return DOMPurify.sanitize(raw, PURIFY_CONFIG) as string;
 }

@@ -42,3 +42,14 @@ jobs:
 
       - name: cargo test
         run: cargo test --manifest-path src-tauri/Cargo.toml --no-fail-fast
+
+      - name: npm audit (production deps)
+        run: npm audit --omit=dev --audit-level=moderate
+        continue-on-error: true
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --quiet || true
+
+      - name: cargo audit
+        run: cargo audit --file src-tauri/Cargo.lock
+        continue-on-error: true
