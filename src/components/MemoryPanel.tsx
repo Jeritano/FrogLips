@@ -1,20 +1,64 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/tauri-api";
-import type { Memory, MemoryMode } from "../types";
-import { getMemoryMode, setMemoryMode } from "../lib/memory-client";
+import type { Memory, MemoryMode, MemoryScope } from "../types";
+import {
+  demoteMemory,
+  getMemoryMode,
+  promoteMemory,
+  saveMemory,
+  setMemoryMode,
+} from "../lib/memory-client";
 
 interface Props {
   refreshToken?: number;
+  /** Current workspace root, used to bind newly-created project memories. */
+  workspaceRoot?: string | null;
+  /** Current conversation id, used to bind newly-created conversation memories. */
+  conversationId?: number | null;
 }
 
-export function MemoryPanel({ refreshToken }: Props) {
+type ScopeFilter = "all" | MemoryScope;
+
+/* ── Scope badge metadata ───────────────────────────────────────────────── */
+
+const SCOPE_LABELS: Record<MemoryScope, string> = {
+  global: "Global",
+  project: "Project",
+  conversation: "Conversation",
+};
+
+const SCOPE_LETTERS: Record<MemoryScope, string> = {
+  global: "G",
+  project: "P",
+  conversation: "C",
+};
+
+/** Promote chain: conversation → project → global. */
+function nextUp(s: MemoryScope): MemoryScope | null {
+  if (s === "conversation") return "project";
+  if (s === "project") return "global";
+  return null;
+}
+
+/** Demote chain: global → project → conversation. */
+function nextDown(s: MemoryScope): MemoryScope | null {
+  if (s === "global") return "project";
+  if (s === "project") return "conversation";
+  return null;
+}
+
+export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Props) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<Memory[]>([]);
   const [pending, setPending] = useState<Memory[]>([]);
   const [mode, setMode] = useState<MemoryMode>(getMemoryMode());
   const [tab, setTab] = useState<"active" | "pending">("active");
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("all");
   const [busy, setBusy] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [newMemoryText, setNewMemoryText] = useState("");
+  const [newMemoryScope, setNewMemoryScope] = useState<MemoryScope>("global");
+  const [savingNew, setSavingNew] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -64,7 +108,79 @@ export function MemoryPanel({ refreshToken }: Props) {
     finally { setBusy(null); }
   }
 
-  const list = tab === "active" ? active : pending;
+  async function promote(m: Memory) {
+    setBusy(m.id);
+    setErr(null);
+    try {
+      // Promoting conversation → project requires a project_root to be
+      // bound first. Use the current workspace if the memory doesn't have
+      // one yet — otherwise the backend will reject the transition.
+      if (m.scope === "conversation" && !m.project_root && workspaceRoot) {
+        await api.memorySetContext(m.id, workspaceRoot, null);
+      }
+      await promoteMemory(m.id);
+      await refresh();
+    } catch (e) { setErr(`Promote failed: ${e}`); }
+    finally { setBusy(null); }
+  }
+
+  async function demote(m: Memory) {
+    setBusy(m.id);
+    setErr(null);
+    try {
+      // Demoting global → project needs project_root; demoting project →
+      // conversation needs conversation_id. Use current context as the
+      // binding when the memory hasn't been bound previously.
+      if (m.scope === "global" && !m.project_root && workspaceRoot) {
+        await api.memorySetContext(m.id, workspaceRoot, null);
+      } else if (m.scope === "project" && !m.conversation_id && conversationId != null) {
+        await api.memorySetContext(m.id, null, conversationId);
+      }
+      await demoteMemory(m.id);
+      await refresh();
+    } catch (e) { setErr(`Demote failed: ${e}`); }
+    finally { setBusy(null); }
+  }
+
+  async function saveNew() {
+    const content = newMemoryText.trim();
+    if (!content) return;
+    if (newMemoryScope === "project" && !workspaceRoot) {
+      setErr("Project scope needs an active workspace.");
+      return;
+    }
+    if (newMemoryScope === "conversation" && conversationId == null) {
+      setErr("Conversation scope needs an open chat.");
+      return;
+    }
+    setSavingNew(true);
+    setErr(null);
+    try {
+      await saveMemory({
+        content,
+        conversationId: newMemoryScope === "conversation" ? conversationId : null,
+        scope: newMemoryScope,
+        projectRoot: newMemoryScope === "project" ? workspaceRoot : null,
+        tags: "manual",
+      });
+      setNewMemoryText("");
+      await refresh();
+    } catch (e) {
+      setErr(`Save failed: ${e}`);
+    } finally {
+      setSavingNew(false);
+    }
+  }
+
+  // Apply scope chip filter on top of the active/inbox tab selection.
+  const baseList = tab === "active" ? active : pending;
+  const list = useMemo(
+    () => (scopeFilter === "all" ? baseList : baseList.filter((m) => m.scope === scopeFilter)),
+    [baseList, scopeFilter],
+  );
+
+  const canSelectProject = !!workspaceRoot;
+  const canSelectConversation = conversationId != null;
 
   return (
     <div className={`memory-panel ${open ? "open" : ""}`}>
@@ -98,6 +214,56 @@ export function MemoryPanel({ refreshToken }: Props) {
             </button>
           </div>
 
+          {/* Scope filter chips */}
+          <div className="memory-scope-chips" data-testid="memory-scope-chips" role="tablist">
+            {(["all", "global", "project", "conversation"] as const).map((s) => (
+              <button
+                key={s}
+                role="tab"
+                aria-selected={scopeFilter === s}
+                data-testid={`scope-chip-${s}`}
+                className={`memory-scope-chip ${scopeFilter === s ? "active" : ""}`}
+                onClick={() => setScopeFilter(s)}
+              >
+                {s === "all" ? "All" : SCOPE_LABELS[s]}
+              </button>
+            ))}
+          </div>
+
+          {/* Manual add row */}
+          <div className="memory-new-row">
+            <input
+              data-testid="memory-new-input"
+              className="memory-new-input"
+              placeholder="Save a memory…"
+              value={newMemoryText}
+              onChange={(e) => setNewMemoryText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !savingNew) { e.preventDefault(); saveNew(); }
+              }}
+            />
+            <select
+              data-testid="memory-new-scope"
+              className="memory-new-scope"
+              value={newMemoryScope}
+              onChange={(e) => setNewMemoryScope(e.target.value as MemoryScope)}
+            >
+              <option value="global">G — Global</option>
+              <option value="project" disabled={!canSelectProject}>
+                P — Project{canSelectProject ? "" : " (set workspace)"}
+              </option>
+              <option value="conversation" disabled={!canSelectConversation}>
+                C — Conversation{canSelectConversation ? "" : " (open a chat)"}
+              </option>
+            </select>
+            <button
+              data-testid="memory-new-save"
+              className="memory-btn"
+              disabled={savingNew || !newMemoryText.trim()}
+              onClick={saveNew}
+            >Save</button>
+          </div>
+
           {err && (
             <div className="error-bar" onClick={() => setErr(null)} title="Click to dismiss">{err}</div>
           )}
@@ -106,24 +272,51 @@ export function MemoryPanel({ refreshToken }: Props) {
           <div className="memory-list">
             {list.length === 0 && (
               <div className="memory-empty">
-                {tab === "active" ? "No memories yet. Pin messages or enable auto-extract." : "Inbox empty."}
+                {tab === "active" ? "No memories at this scope." : "Inbox empty."}
               </div>
             )}
-            {list.map((m) => (
-              <div key={m.id} className="memory-item">
-                <div className="memory-item-content">{m.content}</div>
-                <div className="memory-item-actions">
-                  {tab === "pending" ? (
-                    <>
-                      <button className="memory-btn approve" disabled={busy === m.id} onClick={() => approve(m.id)} title="Approve">✓</button>
-                      <button className="memory-btn reject" disabled={busy === m.id} onClick={() => reject(m.id)} title="Reject">✕</button>
-                    </>
-                  ) : (
-                    <button className="memory-btn delete" disabled={busy === m.id} onClick={() => del(m.id)} title="Delete">✕</button>
-                  )}
+            {list.map((m) => {
+              const up = nextUp(m.scope);
+              const down = nextDown(m.scope);
+              return (
+                <div key={m.id} className="memory-item" data-testid={`memory-item-${m.id}`}>
+                  <span
+                    className={`memory-scope-badge scope-${m.scope}`}
+                    data-testid={`scope-badge-${m.id}`}
+                    title={SCOPE_LABELS[m.scope]}
+                  >
+                    {SCOPE_LETTERS[m.scope]}
+                  </span>
+                  <div className="memory-item-content">{m.content}</div>
+                  <div className="memory-item-actions">
+                    {tab === "pending" ? (
+                      <>
+                        <button className="memory-btn approve" disabled={busy === m.id} onClick={() => approve(m.id)} title="Approve">✓</button>
+                        <button className="memory-btn reject" disabled={busy === m.id} onClick={() => reject(m.id)} title="Reject">✕</button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="memory-btn promote"
+                          disabled={busy === m.id || up === null}
+                          onClick={() => promote(m)}
+                          title={up ? `Promote → ${SCOPE_LABELS[up]}` : "Already global"}
+                          aria-label="Promote memory"
+                        >↑</button>
+                        <button
+                          className="memory-btn demote"
+                          disabled={busy === m.id || down === null}
+                          onClick={() => demote(m)}
+                          title={down ? `Demote → ${SCOPE_LABELS[down]}` : "Already conversation"}
+                          aria-label="Demote memory"
+                        >↓</button>
+                        <button className="memory-btn delete" disabled={busy === m.id} onClick={() => del(m.id)} title="Delete">✕</button>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

@@ -584,6 +584,23 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "search_project_knowledge",
+      description:
+        "Semantic search over an indexed local folder (RAG). Returns top-K matching chunks with file paths and snippets. Index folders first via the RAG panel in agent settings; this tool only reads.",
+      parameters: {
+        type: "object",
+        properties: {
+          corpus_name: { type: "string", description: "Name of the indexed corpus to search." },
+          query: { type: "string", description: "Natural-language or keyword query." },
+          top_k: { type: "number", description: "Max number of hits to return (default 5, max 50)." },
+        },
+        required: ["corpus_name", "query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "spawn_subagent",
       description:
         "Run a fresh agent in an isolated context to handle a sub-task. Default mode 'sync' awaits the sub-agent and returns its final text. Pass mode='async' for parallel fan-out — returns {subagent_id, status:'running'} immediately; join with await_subagents. Max recursion depth 3.",

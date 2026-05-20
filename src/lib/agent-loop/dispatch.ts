@@ -73,6 +73,19 @@ export function toolCallSig(tc: ToolCall): string {
   return `${name}::${argStr}`;
 }
 
+/**
+ * Dispatch helper for the `search_project_knowledge` agent tool. Exposed so
+ * tests can stub it independently of `api.ragSearch`.
+ */
+export async function agentRagSearch(
+  corpus: string,
+  query: string,
+  topK?: number,
+): Promise<unknown[]> {
+  const hits = await api.ragSearch(corpus, query, topK);
+  return hits;
+}
+
 let currentShellOpId: string | null = null;
 
 export function cancelActiveShell(): boolean {
@@ -730,6 +743,14 @@ export async function executeTool(
     case "list_watches": {
       const r = await api.agentListWatches();
       return JSON.stringify(r);
+    }
+    case "search_project_knowledge": {
+      const hits = await agentRagSearch(
+        String(args.corpus_name ?? ""),
+        String(args.query ?? ""),
+        typeof args.top_k === "number" ? args.top_k : undefined,
+      );
+      return JSON.stringify({ ok: true, hits });
     }
     default:
       return JSON.stringify({ ok: false, kind: "unknown_tool", message: `Unknown tool: ${name}` });

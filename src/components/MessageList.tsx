@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Message, ToolCall } from "../types";
+import type { Message, MemoryScope, ToolCall } from "../types";
 import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
 import { renderMarkdown } from "../lib/markdown";
@@ -9,6 +9,8 @@ interface Props {
   messages: Message[];
   streaming?: string;
   conversationId?: number | null;
+  /** Current workspace root (used when pinning at project scope). */
+  workspaceRoot?: string | null;
   currentModel?: string | null;
   agentStatus?: AgentStatus;
   onRegenerate?: () => void;
@@ -139,13 +141,17 @@ interface RowProps {
   isLast: boolean;
   isPinned: boolean;
   isPinning: boolean;
-  onPin: (m: Message, key: string) => void;
+  onPin: (m: Message, key: string, scope: MemoryScope) => void;
   rowKey: string;
+  /** Whether the project scope option is selectable in the pin dropdown. */
+  canPinProject: boolean;
+  /** Whether the conversation scope option is selectable in the pin dropdown. */
+  canPinConversation: boolean;
   onRegenerate?: () => void;
   onEditUser?: (m: Message) => void;
 }
 
-function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowKey, onRegenerate, onEditUser }: RowProps) {
+function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowKey, canPinProject, canPinConversation, onRegenerate, onEditUser }: RowProps) {
   if (msg.role === "tool") {
     return <ToolResultBlockMemo name={msg.tool_name} content={msg.content} />;
   }
@@ -188,24 +194,81 @@ function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowK
           <div className="content markdown" dangerouslySetInnerHTML={{ __html: cachedMarkdown(msg.content) }} />
         )}
         <MessageActions msg={msg} isLast={isLast} onRegenerate={onRegenerate} onEditUser={onEditUser} />
-        <button
-          data-testid="pin-btn"
-          className={`pin-btn ${isPinned ? "pinned" : ""}`}
-          onClick={() => onPin(msg, rowKey)}
-          disabled={isPinning || isPinned}
-          title={isPinned ? "Saved to memory" : "Pin to memory"}
-          aria-label="Pin to memory"
-        >
-          {isPinning ? (
-            <span className="mb-spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />
-          ) : isPinned ? (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
-          ) : (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><polygon points="12 2 15.09 8.63 22 9.24 16.54 13.97 18.18 21 12 17.27 5.82 21 7.46 13.97 2 9.24 8.91 8.63 12 2"/></svg>
-          )}
-        </button>
+        <PinControl
+          msg={msg}
+          rowKey={rowKey}
+          isPinned={isPinned}
+          isPinning={isPinning}
+          onPin={onPin}
+          canPinProject={canPinProject}
+          canPinConversation={canPinConversation}
+        />
       </div>
     </>
+  );
+}
+
+interface PinControlProps {
+  msg: Message;
+  rowKey: string;
+  isPinned: boolean;
+  isPinning: boolean;
+  onPin: (m: Message, key: string, scope: MemoryScope) => void;
+  canPinProject: boolean;
+  canPinConversation: boolean;
+}
+
+/**
+ * Pin button + scope selector. Default scope is `conversation` (per spec —
+ * avoids polluting global memory with one-off pins). Falls back to the
+ * highest-available scope if conversation isn't pinnable yet (rare —
+ * happens before the first message is persisted).
+ */
+function PinControl({ msg, rowKey, isPinned, isPinning, onPin, canPinProject, canPinConversation }: PinControlProps) {
+  const defaultScope: MemoryScope = canPinConversation
+    ? "conversation"
+    : canPinProject
+      ? "project"
+      : "global";
+  const [scope, setScope] = useState<MemoryScope>(defaultScope);
+  // Keep the dropdown in sync if the available scopes change (e.g. workspace
+  // gets set later) and the user hasn't moved off the default yet.
+  useEffect(() => {
+    if (scope === "conversation" && !canPinConversation) setScope(defaultScope);
+    if (scope === "project" && !canPinProject) setScope(defaultScope);
+  }, [canPinConversation, canPinProject, defaultScope, scope]);
+
+  return (
+    <span className="pin-control">
+      <select
+        data-testid="pin-scope"
+        className="pin-scope"
+        value={scope}
+        onChange={(e) => setScope(e.target.value as MemoryScope)}
+        disabled={isPinning || isPinned}
+        title="Pin scope"
+      >
+        <option value="global">G</option>
+        <option value="project" disabled={!canPinProject}>P</option>
+        <option value="conversation" disabled={!canPinConversation}>C</option>
+      </select>
+      <button
+        data-testid="pin-btn"
+        className={`pin-btn ${isPinned ? "pinned" : ""}`}
+        onClick={() => onPin(msg, rowKey, scope)}
+        disabled={isPinning || isPinned}
+        title={isPinned ? "Saved to memory" : `Pin to ${scope} memory`}
+        aria-label="Pin to memory"
+      >
+        {isPinning ? (
+          <span className="mb-spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />
+        ) : isPinned ? (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+        ) : (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><polygon points="12 2 15.09 8.63 22 9.24 16.54 13.97 18.18 21 12 17.27 5.82 21 7.46 13.97 2 9.24 8.91 8.63 12 2"/></svg>
+        )}
+      </button>
+    </span>
   );
 }
 
@@ -222,7 +285,7 @@ const StreamingMessage = memo(function StreamingMessage({ text }: { text: string
   );
 });
 
-export function MessageList({ messages, streaming, conversationId, currentModel, agentStatus, onRegenerate, onEditUser }: Props) {
+export function MessageList({ messages, streaming, conversationId, workspaceRoot, currentModel, agentStatus, onRegenerate, onEditUser }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef<number | null>(null);
   const [pinned, setPinned] = useState<Set<string>>(new Set());
@@ -262,7 +325,7 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
   }, [messages]);
 
   // Stabilize the pin handler so MessageRow's memo doesn't bust each render.
-  const pin = useCallback(async (m: Message, key: string) => {
+  const pin = useCallback(async (m: Message, key: string, scope: MemoryScope) => {
     if (!m.content.trim()) return;
     setPinning(key);
     try {
@@ -271,11 +334,19 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
         conversationId: conversationId ?? null,
         sourceMsgId: m.id ?? null,
         tags: m.role,
+        scope,
+        // project scope requires a workspace_root; the dropdown guards
+        // against selecting project when none is set, so this is non-null
+        // by construction when scope === "project".
+        projectRoot: scope === "project" ? (workspaceRoot ?? null) : null,
       });
       setPinned((s) => new Set([...s, key]));
     } catch {/* ignore */}
     finally { setPinning(null); }
-  }, [conversationId]);
+  }, [conversationId, workspaceRoot]);
+
+  const canPinProject = !!workspaceRoot;
+  const canPinConversation = conversationId != null;
 
   const showEndFooter =
     messages.length > 0 && streaming === undefined && agentStatus === "idle" && lastAsstModel;
@@ -293,6 +364,8 @@ export function MessageList({ messages, streaming, conversationId, currentModel,
             isPinning={pinning === k}
             onPin={pin}
             rowKey={k}
+            canPinProject={canPinProject}
+            canPinConversation={canPinConversation}
             onRegenerate={onRegenerate}
             onEditUser={onEditUser}
           />

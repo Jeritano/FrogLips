@@ -4,6 +4,29 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.13] — 2026-05-20
+
+### Added (v1.2 batch B — v1.2 sprint complete)
+- **Project RAG**: drag-drop folder → walk → chunk (512-char w/ 64-char overlap, UTF-8 safe) → embed (feature-hashed TF-IDF, 512-dim L2-normalized; ONNX BGE-small deferred to v1.3) → SQLite vector store (`rag_corpora` + `rag_chunks` tables). New agent tool `search_project_knowledge(corpus_name, query, top_k)` returns ranked chunks. Four Tauri cmds (`rag_ingest_folder`/`search`/`list_corpora`/`delete_corpus`). New `RagPanel.tsx` UI: list corpora, ingest form, delete, debug search. File-size cap 2 MB; max 200k chunks per ingest. Walker skips `.git`/`node_modules`/`target`/etc. + hidden dirs + symlinks. Re-ingest of same corpus name replaces all chunks. Tool count: 45 → 46.
+- **Memory scopes**: every memory belongs to one of `global` / `project` / `conversation`. Idempotent SQLite migration (`PRAGMA table_info` detect → ALTER) adds `scope TEXT NOT NULL DEFAULT 'global'` + `project_root TEXT`. Legacy data migrates to `global`. `MemoryContext { workspace_root, conv_id }` threads through `recall_memories` so search post-filters by scope. Three new Tauri cmds (`memory_promote`/`demote`/`set_context`). `MemoryPanel.tsx` gains G/P/C badges + filter chips + per-row ↑/↓ buttons. Pin-to-memory in `MessageList.tsx` gets a scope dropdown (defaults to conversation). Drive-by clippy fix in `rag.rs` (approx_constant lint) unblocked `--all-targets -D warnings`.
+
+### v1.2 sprint complete (4/4)
+| # | Item | Shipped |
+|---|---|---|
+| 20 | Inline file citations | v0.9.12 |
+| 21 | Markdown export modes | v0.9.12 |
+| 18 | Project RAG (TF-IDF) | v0.9.13 |
+| 19 | Memory scopes | v0.9.13 |
+
+### Tests
+- Rust: **64 passing** (was 56). +5 RAG, +3 memory scopes.
+- Vitest: **78 passing** (was 70). +4 RAG dispatch + 2 memory scopes UI + 2 RAG panel.
+- Playwright: **11 passing** (unchanged).
+- **Grand total: 153 tests across 3 runners.**
+
+### Tool count
+45 → **46** (+1 search_project_knowledge).
+
 ## [0.9.12] — 2026-05-20
 
 ### Added (v1.2 batch A)

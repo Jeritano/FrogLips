@@ -88,8 +88,46 @@ fn setup_schema(conn: &Connection) -> Result<()> {
     if !has_model {
         conn.execute("ALTER TABLE messages ADD COLUMN model TEXT", [])?;
     }
+    // ── Memory scopes migration (idempotent) ─────────────────────────────
+    // Adds: scope ('global'|'project'|'conversation'), project_root.
+    // Existing 'conversation_id INTEGER' column is reused for scope='conversation'
+    // filtering — it already points at the originating conversation when set.
+    ensure_memory_scope_columns(conn)?;
+
     // Install audit table (idempotent — CREATE TABLE IF NOT EXISTS).
     crate::agent_audit::ensure_schema(conn)?;
+    // Install RAG tables (idempotent).
+    crate::rag::ensure_schema(conn)?;
+    Ok(())
+}
+
+/// Idempotently add scope columns to the `memories` table. Detects each
+/// column via `pragma_table_info` before running `ALTER TABLE`.
+pub(crate) fn ensure_memory_scope_columns(conn: &Connection) -> Result<()> {
+    let has_col = |name: &str| -> Result<bool> {
+        match conn.query_row(
+            "SELECT 1 FROM pragma_table_info('memories') WHERE name = ?1",
+            params![name],
+            |_| Ok(true),
+        ) {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(anyhow::anyhow!("pragma_table_info failed: {e}")),
+        }
+    };
+    if !has_col("scope")? {
+        conn.execute(
+            "ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'",
+            [],
+        )?;
+    }
+    if !has_col("project_root")? {
+        conn.execute("ALTER TABLE memories ADD COLUMN project_root TEXT", [])?;
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)",
+        [],
+    )?;
     Ok(())
 }
 

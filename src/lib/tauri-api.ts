@@ -27,6 +27,9 @@ import type {
   PdfResult,
   PolicyDecision,
   ProjectPolicy,
+  RagCorpusInfo,
+  RagHit,
+  RagIngestReport,
   ReadResult,
   ScreenshotResult,
   SearchResult,
@@ -83,6 +86,8 @@ export const api = {
     tags?: string;
     embedding?: number[];
     status?: "active" | "pending" | "archived";
+    scope?: "global" | "project" | "conversation";
+    projectRoot?: string | null;
   }) => invoke<number>("add_memory", {
     content: args.content,
     conversationId: args.conversationId ?? null,
@@ -90,6 +95,8 @@ export const api = {
     tags: args.tags ?? "",
     embedding: args.embedding ?? null,
     status: args.status ?? "active",
+    scope: args.scope ?? "global",
+    projectRoot: args.projectRoot ?? null,
   }),
   listMemories: (status?: "active" | "pending" | "archived") =>
     invoke<Memory[]>("list_memories", { status: status ?? null }),
@@ -98,16 +105,41 @@ export const api = {
     invoke<void>("update_memory_status", { id, status }),
   touchMemory: (id: number) => invoke<void>("touch_memory", { id }),
   touchMemories: (ids: number[]) => invoke<void>("touch_memories", { ids }),
-  searchMemoriesKeyword: (query: string, limit?: number) =>
-    invoke<Memory[]>("search_memories_keyword", { query, limit: limit ?? 5 }),
-  searchMemoriesVector: (embedding: number[], limit?: number, minScore?: number) =>
+  searchMemoriesKeyword: (
+    query: string,
+    limit?: number,
+    ctx?: { cwd?: string | null; convId?: number | null },
+  ) =>
+    invoke<Memory[]>("search_memories_keyword", {
+      query,
+      limit: limit ?? 5,
+      cwd: ctx?.cwd ?? null,
+      convId: ctx?.convId ?? null,
+    }),
+  searchMemoriesVector: (
+    embedding: number[],
+    limit?: number,
+    minScore?: number,
+    ctx?: { cwd?: string | null; convId?: number | null },
+  ) =>
     invoke<Memory[]>("search_memories_vector", {
       embedding,
       limit: limit ?? 5,
       minScore: minScore ?? 0.55,
+      cwd: ctx?.cwd ?? null,
+      convId: ctx?.convId ?? null,
     }),
   findDuplicateMemory: (embedding: number[], threshold?: number) =>
     invoke<number | null>("find_duplicate_memory", { embedding, threshold: threshold ?? 0.85 }),
+  // Scope mutators
+  memoryPromote: (id: number) => invoke<void>("memory_promote", { id }),
+  memoryDemote: (id: number) => invoke<void>("memory_demote", { id }),
+  memorySetContext: (id: number, projectRoot?: string | null, convId?: number | null) =>
+    invoke<void>("memory_set_context", {
+      id,
+      projectRoot: projectRoot ?? null,
+      convId: convId ?? null,
+    }),
 
   // Agent tools
   agentReadFile: (path: string, offset?: number, limit?: number) =>
@@ -273,6 +305,23 @@ export const api = {
     invoke<string>("mcp_call_tool", { server, tool, args }),
   mcpServerStderr: (name: string) =>
     invoke<string | null>("mcp_server_stderr", { name }),
+
+  // RAG (project knowledge)
+  ragIngestFolder: (name: string, root: string, glob?: string) =>
+    invoke<RagIngestReport>("rag_ingest_folder", {
+      name,
+      root,
+      glob: glob ?? null,
+    }),
+  ragSearch: (corpusName: string, query: string, topK?: number) =>
+    invoke<RagHit[]>("rag_search", {
+      corpusName,
+      query,
+      topK: topK ?? null,
+    }),
+  ragListCorpora: () => invoke<RagCorpusInfo[]>("rag_list_corpora"),
+  ragDeleteCorpus: (name: string) =>
+    invoke<void>("rag_delete_corpus", { name }),
 
   // Agent audit log
   agentAuditRecord: (entry: AgentAuditEntry) =>

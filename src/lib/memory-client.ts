@@ -1,5 +1,13 @@
 import { api } from "./tauri-api";
-import type { Memory, MemoryMode } from "../types";
+import type { Memory, MemoryMode, MemoryScope } from "../types";
+
+/** Caller context used to filter recall hits by scope on the backend. */
+export interface RecallContext {
+  /** Current workspace root (filters scope='project' memories). */
+  cwd?: string | null;
+  /** Current conversation id (filters scope='conversation' memories). */
+  convId?: number | null;
+}
 
 /* ───────────────────────────────────────────────────────────────────────────
    Memory orchestration layer. Talks to Ollama directly for embeddings and
@@ -121,18 +129,25 @@ export async function embed(text: string): Promise<number[] | null> {
 
 /* ── Recall (search active memories matching a user query) ── */
 
-export async function recall(query: string, k = 5): Promise<Memory[]> {
+export async function recall(
+  query: string,
+  k = 5,
+  ctx: RecallContext = {},
+): Promise<Memory[]> {
   if (!query.trim()) return [];
+  // Backend degrades to global-only when ctx is missing; we still forward
+  // whatever the caller has (workspace root + conv id) so project/
+  // conversation-scoped memories surface in the right place.
   const emb = await embed(query);
   if (emb && emb.length) {
     try {
-      const hits = await api.searchMemoriesVector(emb, k, _recallThreshold);
+      const hits = await api.searchMemoriesVector(emb, k, _recallThreshold, ctx);
       if (hits.length) return hits;
     } catch {/* fall through to keyword */}
   }
   // Phase 1 fallback: keyword search
   try {
-    return await api.searchMemoriesKeyword(query, k);
+    return await api.searchMemoriesKeyword(query, k, ctx);
   } catch {
     return [];
   }
@@ -146,6 +161,10 @@ export async function saveMemory(args: {
   sourceMsgId?: number | null;
   tags?: string;
   status?: "active" | "pending" | "archived";
+  /** Defaults to "global" for back-compat with legacy pin/extract flows. */
+  scope?: MemoryScope;
+  /** Required when scope === "project". */
+  projectRoot?: string | null;
 }): Promise<{ id: number; deduped: boolean }> {
   const emb = await embed(args.content);
   if (emb && emb.length) {
@@ -162,8 +181,35 @@ export async function saveMemory(args: {
     tags: args.tags,
     embedding: emb ?? undefined,
     status: args.status ?? "active",
+    scope: args.scope ?? "global",
+    projectRoot: args.projectRoot ?? null,
   });
   return { id, deduped: false };
+}
+
+/* ── Scope mutators ── */
+
+/** Bump scope one step up: conversation → project → global. */
+export async function promoteMemory(id: number): Promise<void> {
+  await api.memoryPromote(id);
+}
+
+/** Bump scope one step down: global → project → conversation. */
+export async function demoteMemory(id: number): Promise<void> {
+  await api.memoryDemote(id);
+}
+
+/**
+ * Attach scope context (project root, conversation id) to a memory before
+ * a transition that requires it — e.g. demoting a global memory to project
+ * scope requires the workspace root to be set first.
+ */
+export async function setMemoryContext(
+  id: number,
+  projectRoot?: string | null,
+  convId?: number | null,
+): Promise<void> {
+  await api.memorySetContext(id, projectRoot ?? null, convId ?? null);
 }
 
 /* ── Fact extraction (Phase 3) ── */

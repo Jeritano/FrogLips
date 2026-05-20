@@ -16,6 +16,7 @@ function App() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [memoryTick, setMemoryTick] = useState(0);
+  const [panelWorkspace, setPanelWorkspace] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [convSearch, setConvSearch] = useState("");
@@ -80,6 +81,18 @@ function App() {
       if (saveTimer) window.clearTimeout(saveTimer);
     };
   }, []);
+
+  // Track the agent workspace root so MemoryPanel can bind newly-created
+  // project-scoped memories without re-asking the user. Refetched on every
+  // memoryTick (covers workspace changes from inside ChatWindow) and on
+  // conversation switch (cheap; just reads in-memory state on the Rust side).
+  useEffect(() => {
+    let cancelled = false;
+    api.agentGetWorkspace().then((p) => {
+      if (!cancelled) setPanelWorkspace(p ?? null);
+    }).catch(() => {/* ignore */});
+    return () => { cancelled = true; };
+  }, [memoryTick, current?.id]);
 
   // Global keyboard shortcuts: Cmd+N new chat, Cmd+L library, Cmd+K model picker focus
   useEffect(() => {
@@ -246,7 +259,11 @@ function App() {
             </li>
           ))}
         </ul>
-        <MemoryPanel refreshToken={memoryTick} />
+        <MemoryPanel
+          refreshToken={memoryTick}
+          workspaceRoot={panelWorkspace}
+          conversationId={current?.id ?? null}
+        />
       </aside>
       <main className="main">
         <header>

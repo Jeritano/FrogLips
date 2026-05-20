@@ -9,6 +9,7 @@ mod mlx_server;
 mod models;
 mod native_inference;
 mod policy;
+mod rag;
 mod settings;
 
 use once_cell::sync::Lazy;
@@ -334,6 +335,7 @@ async fn delete_message(id: i64) -> Result<(), String> {
 /* ── Memory ── */
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn add_memory(
     content: String,
     conversation_id: Option<i64>,
@@ -341,6 +343,8 @@ async fn add_memory(
     tags: Option<String>,
     embedding: Option<Vec<f32>>,
     status: Option<String>,
+    scope: Option<String>,
+    project_root: Option<String>,
 ) -> Result<i64, String> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -352,6 +356,12 @@ async fn add_memory(
     let st = status.as_deref().unwrap_or("active").to_string();
     if !matches!(st.as_str(), "active" | "pending" | "archived") {
         return Err(format!("invalid status: {st}"));
+    }
+    // Default scope='global' preserves legacy caller behavior (callers that
+    // pre-date scopes still produce global memories).
+    let sc = scope.as_deref().unwrap_or("global").to_string();
+    if !matches!(sc.as_str(), "global" | "project" | "conversation") {
+        return Err(format!("invalid scope: {sc}"));
     }
     let tags_s = tags.unwrap_or_default();
     if tags_s.len() > MAX_TAGS_LEN {
@@ -365,6 +375,11 @@ async fn add_memory(
             return Err(format!("embedding exceeds {MAX_EMBEDDING_DIMS} dims"));
         }
     }
+    if let Some(pr) = &project_root {
+        if pr.len() > 4096 {
+            return Err("project_root too long".into());
+        }
+    }
     let content = trimmed.to_string();
     tauri::async_runtime::spawn_blocking(move || {
         memory::add_memory(
@@ -374,6 +389,8 @@ async fn add_memory(
             &tags_s,
             embedding,
             &st,
+            &sc,
+            project_root.as_deref(),
         )
     })
     .await
@@ -433,12 +450,17 @@ async fn touch_memories(ids: Vec<i64>) -> Result<(), String> {
 async fn search_memories_keyword(
     query: String,
     limit: Option<i64>,
+    cwd: Option<String>,
+    conv_id: Option<i64>,
 ) -> Result<Vec<memory::Memory>, String> {
     if query.len() > MAX_QUERY_LEN {
         return Err(format!("query exceeds {MAX_QUERY_LEN} chars"));
     }
     let limit = limit.unwrap_or(5).clamp(1, 50);
-    tauri::async_runtime::spawn_blocking(move || memory::search_keyword(&query, limit))
+    // Missing cwd / conv_id degrades to "global-only" via scope_matches —
+    // never crashes on absent context (per spec).
+    let ctx = memory::MemoryContext::new(cwd, conv_id);
+    tauri::async_runtime::spawn_blocking(move || memory::search_keyword(&query, limit, &ctx))
         .await
         .map_err(map_err)?
         .map_err(map_err)
@@ -449,16 +471,56 @@ async fn search_memories_vector(
     embedding: Vec<f32>,
     limit: Option<i64>,
     min_score: Option<f32>,
+    cwd: Option<String>,
+    conv_id: Option<i64>,
 ) -> Result<Vec<memory::Memory>, String> {
     if embedding.len() > MAX_EMBEDDING_DIMS {
         return Err(format!("embedding exceeds {MAX_EMBEDDING_DIMS} dims"));
     }
     let limit = limit.unwrap_or(5).clamp(1, 50) as usize;
     let min_score = min_score.unwrap_or(0.55);
-    tauri::async_runtime::spawn_blocking(move || memory::search_vector(embedding, limit, min_score))
+    let ctx = memory::MemoryContext::new(cwd, conv_id);
+    tauri::async_runtime::spawn_blocking(move || {
+        memory::search_vector(embedding, limit, min_score, &ctx)
+    })
+    .await
+    .map_err(map_err)?
+    .map_err(map_err)
+}
+
+#[tauri::command]
+async fn memory_promote(id: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || memory::promote_memory(id))
         .await
         .map_err(map_err)?
         .map_err(map_err)
+}
+
+#[tauri::command]
+async fn memory_demote(id: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || memory::demote_memory(id))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn memory_set_context(
+    id: i64,
+    project_root: Option<String>,
+    conv_id: Option<i64>,
+) -> Result<(), String> {
+    if let Some(pr) = &project_root {
+        if pr.len() > 4096 {
+            return Err("project_root too long".into());
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        memory::set_memory_context(id, project_root.as_deref(), conv_id)
+    })
+    .await
+    .map_err(map_err)?
+    .map_err(map_err)
 }
 
 #[tauri::command]
@@ -973,6 +1035,68 @@ fn settings_set(patch: serde_json::Value) -> Result<settings::Settings, String> 
 
 /* ── Agent audit log ────────────────────────────────────────────────────── */
 
+/* ── RAG (project knowledge) ────────────────────────────────────────── */
+
+const MAX_RAG_NAME_LEN: usize = 128;
+const MAX_RAG_QUERY_LEN: usize = 4096;
+
+#[tauri::command]
+async fn rag_ingest_folder(
+    name: String,
+    root: String,
+    glob: Option<String>,
+) -> Result<rag::IngestReport, String> {
+    let trimmed = name.trim().to_string();
+    if trimmed.is_empty() || trimmed.len() > MAX_RAG_NAME_LEN {
+        return Err(format!("name length must be 1..={MAX_RAG_NAME_LEN}"));
+    }
+    if root.trim().is_empty() {
+        return Err("root must not be empty".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        rag::ingest_folder(rag::IngestOpts {
+            name: trimmed,
+            root,
+            glob,
+        })
+    })
+    .await
+    .map_err(map_err)?
+    .map_err(map_err)
+}
+
+#[tauri::command]
+async fn rag_search(
+    corpus_name: String,
+    query: String,
+    top_k: Option<u32>,
+) -> Result<Vec<rag::RagHit>, String> {
+    if query.len() > MAX_RAG_QUERY_LEN {
+        return Err(format!("query exceeds {MAX_RAG_QUERY_LEN} chars"));
+    }
+    let k = top_k.unwrap_or(5);
+    tauri::async_runtime::spawn_blocking(move || rag::search(&corpus_name, &query, k))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn rag_list_corpora() -> Result<Vec<rag::CorpusInfo>, String> {
+    tauri::async_runtime::spawn_blocking(rag::list_corpora)
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn rag_delete_corpus(name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || rag::delete_corpus(&name))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
 #[tauri::command]
 async fn agent_audit_record(entry: agent_audit::AuditEntry) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || agent_audit::record(entry))
@@ -1139,6 +1263,9 @@ pub fn run() {
             search_memories_keyword,
             search_memories_vector,
             find_duplicate_memory,
+            memory_promote,
+            memory_demote,
+            memory_set_context,
             agent_read_file,
             agent_list_dir,
             agent_run_shell,
@@ -1211,6 +1338,10 @@ pub fn run() {
             agent_audit_list,
             agent_audit_purge,
             agent_audit_stats,
+            rag_ingest_folder,
+            rag_search,
+            rag_list_corpora,
+            rag_delete_corpus,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

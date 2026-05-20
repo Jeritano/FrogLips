@@ -18,6 +18,7 @@ import type { Conversation, Memory, Message, ProjectPolicy, ServerStatus } from 
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { McpSettings } from "./McpSettings";
+import { RagPanel } from "./RagPanel";
 import { AuditLog } from "./AuditLog";
 import { ToolHistory } from "./ToolHistory";
 import { conversationToMarkdown, downloadText, safeFilename, type ExportMode } from "../lib/export";
@@ -316,7 +317,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     let recallHits: Memory[] = [];
     if (mode !== "off") {
       try {
-        recallHits = await recall(text, 5);
+        recallHits = await recall(text, 5, { cwd: workspaceRoot, convId: conv.id });
         recallBlock = formatRecallBlock(recallHits);
         if (isStreamConvActive()) setRecalled(recallHits);
         if (recallHits.length > 0) {
@@ -641,6 +642,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         messages={messages}
         streaming={streaming}
         conversationId={conversation?.id ?? null}
+        workspaceRoot={workspaceRoot}
         currentModel={status?.running ? status.model : null}
         agentStatus={agentStatus}
         onRegenerate={onRegenerate}
@@ -861,6 +863,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               {updateMsg && <span className="agent-settings-hint">{updateMsg}</span>}
             </div>
             <McpSettings />
+            <RagPanel />
             <AuditLog />
           </div>
         )}

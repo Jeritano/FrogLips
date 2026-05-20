@@ -275,6 +275,8 @@ export interface ShellOpts {
   env?: [string, string][];
 }
 
+export type MemoryScope = "global" | "project" | "conversation";
+
 export interface Memory {
   id: number;
   content: string;
@@ -284,6 +286,8 @@ export interface Memory {
   status: "active" | "pending" | "archived";
   created_at: number;
   last_used_at: number | null;
+  scope: MemoryScope;
+  project_root?: string | null;
   score?: number;
 }
 
@@ -379,4 +383,32 @@ export interface WatchPoll {
   events: WatchEvent[];
   next_ts: number;
   dropped: number;
+}
+
+/* ── RAG (project knowledge) ────────────────────────────────────────── */
+
+export interface RagCorpusInfo {
+  id: number;
+  name: string;
+  root_path: string;
+  chunk_count: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface RagIngestReport {
+  corpus_id: number;
+  files_seen: number;
+  files_indexed: number;
+  chunks_created: number;
+  total_bytes: number;
+  duration_ms: number;
+}
+
+export interface RagHit {
+  path: string;
+  snippet: string;
+  score: number;
+  start_byte: number;
+  end_byte: number;
 }
