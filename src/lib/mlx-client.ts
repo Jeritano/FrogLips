@@ -36,7 +36,27 @@ export async function* streamChat(
     stream: true,
     temperature: opts.temperature ?? 0.7,
     max_tokens: opts.maxTokens ?? 2048,
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    messages: messages.map((m) => {
+      // Vision: OpenAI-compat endpoints (MLX, mistralrs) accept the
+      // multi-content form `[{type: "text", ...}, {type: "image_url", ...}]`.
+      // Use it only when the user message actually carries images — keeps
+      // the plain-text path untouched for non-vision turns.
+      if (m.role === "user" && m.images && m.images.length > 0) {
+        const parts: Array<
+          | { type: "text"; text: string }
+          | { type: "image_url"; image_url: { url: string } }
+        > = [];
+        if (m.content) parts.push({ type: "text", text: m.content });
+        for (const img of m.images) {
+          parts.push({
+            type: "image_url",
+            image_url: { url: `data:${img.mime};base64,${img.base64}` },
+          });
+        }
+        return { role: m.role, content: parts };
+      }
+      return { role: m.role, content: m.content };
+    }),
   };
 
   const res = await fetch(url, {

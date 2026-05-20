@@ -16,6 +16,15 @@ export function toOllamaMessages(msgs: Message[]) {
     if (m.tool_calls?.length) {
       return { role: "assistant" as const, content: m.content ?? "", tool_calls: m.tool_calls };
     }
+    // Vision: Ollama /api/chat accepts `images: [base64...]` alongside text.
+    // The base64 must be the raw payload — no `data:` prefix.
+    if (m.role === "user" && m.images && m.images.length > 0) {
+      return {
+        role: "user" as const,
+        content: m.content,
+        images: m.images.map((img) => img.base64),
+      };
+    }
     return { role: m.role as "system" | "user" | "assistant", content: m.content };
   });
 }

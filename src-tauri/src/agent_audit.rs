@@ -38,7 +38,20 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
             error_kind TEXT
          );
          CREATE INDEX IF NOT EXISTS idx_agent_audit_ts ON agent_audit(ts);
-         CREATE INDEX IF NOT EXISTS idx_agent_audit_conv ON agent_audit(conversation_id);",
+         CREATE INDEX IF NOT EXISTS idx_agent_audit_conv ON agent_audit(conversation_id);
+         CREATE TABLE IF NOT EXISTS agent_session_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            conversation_id TEXT NOT NULL,
+            iterations INTEGER NOT NULL,
+            tool_calls INTEGER NOT NULL,
+            total_tool_ms INTEGER NOT NULL,
+            total_llm_ms INTEGER NOT NULL,
+            prompt_tokens INTEGER NOT NULL,
+            completion_tokens INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_ts ON agent_session_metrics(ts);
+         CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_conv ON agent_session_metrics(conversation_id);",
     )?;
     Ok(())
 }
@@ -273,6 +286,257 @@ pub fn stats() -> Result<AuditStats> {
     })
 }
 
+/* ── Session metrics (recorded once per `runAgentLoop` exit) ── */
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionMetricsEntry {
+    #[serde(default)]
+    pub ts: i64,
+    pub conversation_id: String,
+    pub iterations: i64,
+    pub tool_calls: i64,
+    pub total_tool_ms: i64,
+    pub total_llm_ms: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionMetricsRow {
+    pub id: i64,
+    pub ts: i64,
+    pub conversation_id: String,
+    pub iterations: i64,
+    pub tool_calls: i64,
+    pub total_tool_ms: i64,
+    pub total_llm_ms: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+}
+
+pub fn session_metrics_record(entry: SessionMetricsEntry) -> Result<()> {
+    let conn = get_db()?;
+    let ts = if entry.ts > 0 { entry.ts } else { now_millis() };
+    conn.execute(
+        "INSERT INTO agent_session_metrics
+            (ts, conversation_id, iterations, tool_calls, total_tool_ms,
+             total_llm_ms, prompt_tokens, completion_tokens)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            ts,
+            entry.conversation_id,
+            entry.iterations,
+            entry.tool_calls,
+            entry.total_tool_ms,
+            entry.total_llm_ms,
+            entry.prompt_tokens,
+            entry.completion_tokens,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn session_metrics_query(filter: AuditFilter) -> Result<Vec<SessionMetricsRow>> {
+    let conn = get_db()?;
+    let limit = filter.limit.unwrap_or(1000).clamp(1, 10_000);
+    let offset = filter.offset.unwrap_or(0).max(0);
+
+    let mut sql = String::from(
+        "SELECT id, ts, conversation_id, iterations, tool_calls,
+                total_tool_ms, total_llm_ms, prompt_tokens, completion_tokens
+         FROM agent_session_metrics",
+    );
+    let mut clauses: Vec<&'static str> = Vec::new();
+    let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(c) = &filter.conversation_id {
+        clauses.push("conversation_id = ?");
+        binds.push(Box::new(c.clone()));
+    }
+    if let Some(s) = filter.since_ts {
+        clauses.push("ts >= ?");
+        binds.push(Box::new(s));
+    }
+    if let Some(u) = filter.until_ts {
+        clauses.push("ts <= ?");
+        binds.push(Box::new(u));
+    }
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
+    }
+    sql.push_str(" ORDER BY ts ASC, id ASC LIMIT ? OFFSET ?");
+    binds.push(Box::new(limit));
+    binds.push(Box::new(offset));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params_refs: Vec<&dyn rusqlite::ToSql> =
+        binds.iter().map(|b| b.as_ref() as &dyn rusqlite::ToSql).collect();
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params_refs), |r| {
+            Ok(SessionMetricsRow {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                conversation_id: r.get(2)?,
+                iterations: r.get(3)?,
+                tool_calls: r.get(4)?,
+                total_tool_ms: r.get(5)?,
+                total_llm_ms: r.get(6)?,
+                prompt_tokens: r.get(7)?,
+                completion_tokens: r.get(8)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/* ── Dashboard summary (one-shot aggregate) ── */
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolLatencyRow {
+    pub tool_name: String,
+    pub count: i64,
+    pub avg_ms: f64,
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub max_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApprovalCount {
+    pub approval: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct DashboardSummary {
+    pub window_since_ts: i64,
+    pub window_until_ts: i64,
+    pub tool_counts: Vec<TopToolEntry>,
+    pub tool_latency: Vec<ToolLatencyRow>,
+    pub approval_counts: Vec<ApprovalCount>,
+    pub session_metrics: Vec<SessionMetricsRow>,
+    pub total_prompt_tokens: i64,
+    pub total_completion_tokens: i64,
+}
+
+fn percentile(sorted: &[i64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    if sorted.len() == 1 {
+        return sorted[0] as f64;
+    }
+    let rank = p * (sorted.len() as f64 - 1.0);
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    if lo == hi {
+        return sorted[lo] as f64;
+    }
+    let frac = rank - lo as f64;
+    sorted[lo] as f64 + (sorted[hi] as f64 - sorted[lo] as f64) * frac
+}
+
+pub fn dashboard_summary(filter: AuditFilter) -> Result<DashboardSummary> {
+    let conn = get_db()?;
+    let now = now_millis();
+    let since = filter.since_ts.unwrap_or(0);
+    let until = filter.until_ts.unwrap_or(now);
+
+    // Tool counts (top 15 by descending count).
+    let mut stmt = conn.prepare(
+        "SELECT tool_name, COUNT(*) AS c
+           FROM agent_audit
+          WHERE ts >= ?1 AND ts <= ?2
+          GROUP BY tool_name
+          ORDER BY c DESC
+          LIMIT 15",
+    )?;
+    let tool_counts: Vec<TopToolEntry> = stmt
+        .query_map(params![since, until], |r| {
+            Ok(TopToolEntry { tool_name: r.get(0)?, count: r.get(1)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+
+    // Tool latency — pull every duration grouped by tool, compute percentiles in Rust.
+    let mut stmt = conn.prepare(
+        "SELECT tool_name, duration_ms
+           FROM agent_audit
+          WHERE ts >= ?1 AND ts <= ?2
+          ORDER BY tool_name",
+    )?;
+    let mut grouped: HashMap<String, Vec<i64>> = HashMap::new();
+    let rows = stmt.query_map(params![since, until], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (name, dur) = row?;
+        grouped.entry(name).or_default().push(dur);
+    }
+    drop(stmt);
+    let mut tool_latency: Vec<ToolLatencyRow> = grouped
+        .into_iter()
+        .map(|(name, mut durs)| {
+            durs.sort_unstable();
+            let count = durs.len() as i64;
+            let sum: i64 = durs.iter().sum();
+            let avg_ms = if count > 0 { sum as f64 / count as f64 } else { 0.0 };
+            let p50 = percentile(&durs, 0.50);
+            let p95 = percentile(&durs, 0.95);
+            let max_ms = *durs.last().unwrap_or(&0);
+            ToolLatencyRow { tool_name: name, count, avg_ms, p50_ms: p50, p95_ms: p95, max_ms }
+        })
+        .collect();
+    tool_latency.sort_by_key(|r| std::cmp::Reverse(r.count));
+
+    // Approval counts.
+    let mut stmt = conn.prepare(
+        "SELECT approval, COUNT(*) AS c
+           FROM agent_audit
+          WHERE ts >= ?1 AND ts <= ?2
+          GROUP BY approval",
+    )?;
+    let mut approval_counts: Vec<ApprovalCount> = stmt
+        .query_map(params![since, until], |r| {
+            Ok(ApprovalCount { approval: r.get(0)?, count: r.get(1)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Also include rows whose outcome is dry_run (those are recorded under approval=auto
+    // but the dashboard renders them as a separate slice). Pull outcome counts and
+    // synthesize a dry_run pseudo-approval row.
+    drop(stmt);
+    let dry_run: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM agent_audit
+           WHERE ts >= ?1 AND ts <= ?2 AND outcome = 'dry_run'",
+        params![since, until],
+        |r| r.get(0),
+    )?;
+    if dry_run > 0 {
+        approval_counts.push(ApprovalCount { approval: "dry_run".into(), count: dry_run });
+    }
+
+    // Session metrics rows in the window.
+    let session_metrics = session_metrics_query(AuditFilter {
+        since_ts: Some(since),
+        until_ts: Some(until),
+        limit: Some(10_000),
+        ..AuditFilter::default()
+    })?;
+    let total_prompt_tokens: i64 = session_metrics.iter().map(|r| r.prompt_tokens).sum();
+    let total_completion_tokens: i64 = session_metrics.iter().map(|r| r.completion_tokens).sum();
+
+    Ok(DashboardSummary {
+        window_since_ts: since,
+        window_until_ts: until,
+        tool_counts,
+        tool_latency,
+        approval_counts,
+        session_metrics,
+        total_prompt_tokens,
+        total_completion_tokens,
+    })
+}
+
 /* ── Internal: small helper for callers that want a structured args map ── */
 
 /// Convenience: serialize args (truncating large `content` fields for
@@ -420,6 +684,54 @@ mod tests {
         let s = redact_args("search_files", &args);
         assert!(s.contains("\"abc\""));
         assert!(s.contains("\"/a\""));
+    }
+
+    #[test]
+    fn session_metrics_table_exists_and_idempotent() {
+        let conn = fresh_db();
+        // Re-running ensure_schema must not error and the new table must exist
+        // (sanity-checked via an insert against the new shape).
+        ensure_schema(&conn).unwrap();
+        ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO agent_session_metrics
+                (ts, conversation_id, iterations, tool_calls, total_tool_ms,
+                 total_llm_ms, prompt_tokens, completion_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![now_millis(), "conv-1", 5_i64, 2_i64, 12_i64, 34_i64, 100_i64, 200_i64],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_session_metrics", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn empty_db_summary_aggregations_are_zeroed() {
+        // The public summary fn requires the shared get_db() pool, but the
+        // aggregation queries themselves are exactly what we'd run there.
+        // Verify that on a freshly-installed schema each aggregation returns
+        // zero rows / zero totals — the dashboard relies on this for its
+        // empty-state rendering.
+        let conn = fresh_db();
+        let now = now_millis();
+        let cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_audit WHERE ts >= ?1 AND ts <= ?2",
+                params![0_i64, now],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cnt, 0);
+        let sm_cnt: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_session_metrics", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sm_cnt, 0);
+        // percentile helper handles empty + single element correctly.
+        assert_eq!(percentile(&[], 0.5), 0.0);
+        assert_eq!(percentile(&[42], 0.95), 42.0);
+        assert_eq!(percentile(&[1, 2, 3, 4], 0.5), 2.5);
     }
 
     #[test]

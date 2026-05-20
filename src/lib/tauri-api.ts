@@ -4,12 +4,16 @@ import type {
   AgentAuditFilter,
   AgentAuditRow,
   AgentAuditStats,
+  AgentSessionMetricsEntry,
+  AgentSessionMetricsRow,
   AllModels,
+  DashboardSummary,
   AppSettings,
   BrowserNavigateResult,
   BrowserOkResult,
   BrowserScreenshotResult,
   BrowserTextResult,
+  ChatImage,
   Conversation,
   DirListing,
   EditOp,
@@ -63,18 +67,42 @@ export const api = {
     invoke<void>("delete_conversation", { id }),
   renameConversation: (id: number, title: string) =>
     invoke<void>("rename_conversation", { id, title }),
-  listMessages: (conversationId: number) =>
-    invoke<Message[]>("list_messages", { conversationId }),
+  listMessages: async (conversationId: number) => {
+    // Backend returns `images` as a JSON-encoded string (the literal SQLite
+    // column). Parse here so callers see the typed `ChatImage[]` shape
+    // declared on `Message`. Bad JSON → drop the field rather than throw,
+    // mirroring the way we treat other recoverable persistence quirks.
+    type RawMsg = Omit<Message, "images"> & { images?: string | null };
+    const raw = await invoke<RawMsg[]>("list_messages", { conversationId });
+    return raw.map((m) => {
+      if (typeof m.images !== "string" || m.images.length === 0) {
+        const { images: _drop, ...rest } = m;
+        return rest as Message;
+      }
+      try {
+        const parsed = JSON.parse(m.images) as ChatImage[];
+        if (Array.isArray(parsed)) {
+          return { ...m, images: parsed } as Message;
+        }
+      } catch {/* fall through */}
+      const { images: _drop, ...rest } = m;
+      return rest as Message;
+    });
+  },
   addMessage: (
     conversationId: number,
     role: string,
     content: string,
     model?: string | null,
+    images?: ChatImage[] | null,
   ) => invoke<number>("add_message", {
     conversationId,
     role,
     content,
     model: model ?? null,
+    // Persist as a JSON string in the messages.images TEXT column. Skipping
+    // when there are no attachments keeps the column NULL for the common case.
+    imagesJson: images && images.length > 0 ? JSON.stringify(images) : null,
   }),
   deleteMessage: (id: number) => invoke<void>("delete_message", { id }),
 
@@ -331,6 +359,16 @@ export const api = {
   agentAuditPurge: (days: number) =>
     invoke<number>("agent_audit_purge", { days }),
   agentAuditStats: () => invoke<AgentAuditStats>("agent_audit_stats"),
+
+  // Per-session metrics + dashboard summary
+  agentSessionMetricsRecord: (entry: AgentSessionMetricsEntry) =>
+    invoke<void>("agent_session_metrics_record", { entry }),
+  agentSessionMetricsQuery: (filter?: AgentAuditFilter) =>
+    invoke<AgentSessionMetricsRow[]>("agent_session_metrics_query", {
+      filter: filter ?? null,
+    }),
+  agentDashboardSummary: (filter?: AgentAuditFilter) =>
+    invoke<DashboardSummary>("agent_dashboard_summary", { filter: filter ?? null }),
 
   // Native inference (alpha)
   nativeSupported: () => invoke<boolean>("native_supported"),

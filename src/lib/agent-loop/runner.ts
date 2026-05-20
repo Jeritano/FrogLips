@@ -154,6 +154,34 @@ export function _resetCitedPaths(): void {
 
 /* ── Main loop ── */
 
+/**
+ * Best-effort: persist a session-level metrics row when `runAgentLoop` exits.
+ * Failure paths (db locked / disk full / IPC unavailable in tests) must never
+ * affect the agent run — caller voids the returned promise.
+ */
+function recordSessionMetricsSafe(conversationId: number, metrics: AgentMetrics): void {
+  try {
+    void api
+      .agentSessionMetricsRecord({
+        ts: Date.now(),
+        conversation_id: String(conversationId),
+        iterations: metrics.iterations,
+        tool_calls: metrics.toolCalls,
+        total_tool_ms: Math.max(0, Math.round(metrics.totalToolMs)),
+        total_llm_ms: Math.max(0, Math.round(metrics.totalLlmMs)),
+        prompt_tokens: metrics.promptTokens,
+        completion_tokens: metrics.completionTokens,
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn("[session-metrics] record failed:", e);
+      });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn("[session-metrics] record sync error:", e);
+  }
+}
+
 export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null> {
   const {
     model, onUpdate, onStatusChange, onMetrics, onAssistantDelta, requestConfirmation, signal,
@@ -207,6 +235,16 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   // fetchMcpTools so the loop never blocks on a broken server.
   const mcpTools = await fetchMcpTools();
 
+  // Wrap the rest of the run in a try/finally so the session-metrics row is
+  // written exactly once regardless of how we exit (completion, abort,
+  // exception, or iteration-cap).
+  let _sessionMetricsRecorded = false;
+  const recordMetricsOnce = () => {
+    if (_sessionMetricsRecorded) return;
+    _sessionMetricsRecorded = true;
+    recordSessionMetricsSafe(opts.conversationId, metrics);
+  };
+
   // Filter tool defs by allowlist. The allowlist applies to both built-in
   // and MCP tools — if a user-set allowlist is in effect, MCP tool names
   // (`mcp__server__tool`) must appear explicitly to be exposed.
@@ -218,6 +256,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     ? allTools.filter((t) => toolAllowlist.includes(t.function.name))
     : allTools;
 
+  try {
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     if (signal.aborted) return null;
     metrics.iterations = i + 1;
@@ -677,4 +716,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   onUpdate([...msgs]);
   onStatusChange("done");
   return null;
+  } finally {
+    recordMetricsOnce();
+  }
 }

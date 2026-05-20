@@ -303,12 +303,18 @@ async fn list_messages(conversation_id: i64) -> Result<Vec<history::Message>, St
         .map_err(map_err)
 }
 
+/// Hard cap on the JSON-encoded image payload per message. Generous enough to
+/// hold 4 × 4 MiB PNGs at ~33% base64 overhead, but bounded so a malformed
+/// IPC call can't blow up the SQLite row size budget.
+const MAX_MESSAGE_IMAGES_BYTES: usize = 24 * 1024 * 1024;
+
 #[tauri::command]
 async fn add_message(
     conversation_id: i64,
     role: String,
     content: String,
     model: Option<String>,
+    images_json: Option<String>,
 ) -> Result<i64, String> {
     if content.len() > MAX_MESSAGE_BYTES {
         return Err(format!("message exceeds {MAX_MESSAGE_BYTES} bytes"));
@@ -316,8 +322,21 @@ async fn add_message(
     if !matches!(role.as_str(), "system" | "user" | "assistant") {
         return Err(format!("invalid role: {role}"));
     }
+    if let Some(j) = images_json.as_deref() {
+        if j.len() > MAX_MESSAGE_IMAGES_BYTES {
+            return Err(format!(
+                "images payload exceeds {MAX_MESSAGE_IMAGES_BYTES} bytes"
+            ));
+        }
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        history::add_message(conversation_id, &role, &content, model.as_deref())
+        history::add_message(
+            conversation_id,
+            &role,
+            &content,
+            model.as_deref(),
+            images_json.as_deref(),
+        )
     })
     .await
     .map_err(map_err)?
@@ -1132,6 +1151,38 @@ async fn agent_audit_stats() -> Result<agent_audit::AuditStats, String> {
         .map_err(map_err)
 }
 
+#[tauri::command]
+async fn agent_session_metrics_record(
+    entry: agent_audit::SessionMetricsEntry,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || agent_audit::session_metrics_record(entry))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn agent_session_metrics_query(
+    filter: Option<agent_audit::AuditFilter>,
+) -> Result<Vec<agent_audit::SessionMetricsRow>, String> {
+    let filter = filter.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || agent_audit::session_metrics_query(filter))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn agent_dashboard_summary(
+    filter: Option<agent_audit::AuditFilter>,
+) -> Result<agent_audit::DashboardSummary, String> {
+    let filter = filter.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || agent_audit::dashboard_summary(filter))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn ensure_path_for_gui() {
     // GUI apps launched from Finder/Dock get minimal PATH — extend so `ollama`,
@@ -1338,6 +1389,9 @@ pub fn run() {
             agent_audit_list,
             agent_audit_purge,
             agent_audit_stats,
+            agent_session_metrics_record,
+            agent_session_metrics_query,
+            agent_dashboard_summary,
             rag_ingest_folder,
             rag_search,
             rag_list_corpora,

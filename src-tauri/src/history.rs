@@ -88,16 +88,43 @@ fn setup_schema(conn: &Connection) -> Result<()> {
     if !has_model {
         conn.execute("ALTER TABLE messages ADD COLUMN model TEXT", [])?;
     }
+    // ── Vision attachments migration (idempotent) ────────────────────────
+    // Stores a JSON-encoded `ChatImage[]` for messages that carry image
+    // attachments. NULL for plain-text turns. Adding here so older databases
+    // upgrade in place on first open after this build ships.
+    ensure_messages_images_column(conn)?;
     // ── Memory scopes migration (idempotent) ─────────────────────────────
     // Adds: scope ('global'|'project'|'conversation'), project_root.
     // Existing 'conversation_id INTEGER' column is reused for scope='conversation'
     // filtering — it already points at the originating conversation when set.
     ensure_memory_scope_columns(conn)?;
+    // ── Conversation branching migration (idempotent) ────────────────────
+    // Adds: parent_conv_id, parent_message_id — refs the source conversation
+    // and the cutoff message id used to seed the fork (deep-copy boundary).
+    ensure_conversation_fork_columns(conn)?;
 
     // Install audit table (idempotent — CREATE TABLE IF NOT EXISTS).
     crate::agent_audit::ensure_schema(conn)?;
     // Install RAG tables (idempotent).
     crate::rag::ensure_schema(conn)?;
+    Ok(())
+}
+
+/// Idempotently add the `images` JSON column to the `messages` table. Detects
+/// via `pragma_table_info` so re-runs on an upgraded schema are no-ops.
+pub(crate) fn ensure_messages_images_column(conn: &Connection) -> Result<()> {
+    let has: bool = match conn.query_row(
+        "SELECT 1 FROM pragma_table_info('messages') WHERE name = 'images'",
+        [],
+        |_| Ok(true),
+    ) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => false,
+        Err(e) => return Err(anyhow::anyhow!("pragma_table_info(images) failed: {e}")),
+    };
+    if !has {
+        conn.execute("ALTER TABLE messages ADD COLUMN images TEXT", [])?;
+    }
     Ok(())
 }
 
@@ -126,6 +153,39 @@ pub(crate) fn ensure_memory_scope_columns(conn: &Connection) -> Result<()> {
     }
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Idempotently add fork tracking columns to the `conversations` table.
+/// Detects each column via `pragma_table_info` before running `ALTER TABLE`.
+pub(crate) fn ensure_conversation_fork_columns(conn: &Connection) -> Result<()> {
+    let has_col = |name: &str| -> Result<bool> {
+        match conn.query_row(
+            "SELECT 1 FROM pragma_table_info('conversations') WHERE name = ?1",
+            params![name],
+            |_| Ok(true),
+        ) {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(anyhow::anyhow!("pragma_table_info failed: {e}")),
+        }
+    };
+    if !has_col("parent_conv_id")? {
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN parent_conv_id INTEGER",
+            [],
+        )?;
+    }
+    if !has_col("parent_message_id")? {
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN parent_message_id INTEGER",
+            [],
+        )?;
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_conv_id)",
         [],
     )?;
     Ok(())
@@ -171,6 +231,10 @@ pub struct Message {
     pub content: String,
     pub created_at: Option<i64>,
     pub model: Option<String>,
+    /// JSON-encoded `ChatImage[]` payload. `None` for plain-text messages.
+    /// Frontend `JSON.parse`s this back into the `images` field on `Message`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<String>,
 }
 
 pub fn create_conversation(title: &str, model: Option<&str>) -> Result<i64> {
@@ -221,12 +285,18 @@ pub fn rename_conversation(id: i64, title: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn add_message(conv_id: i64, role: &str, content: &str, model: Option<&str>) -> Result<i64> {
+pub fn add_message(
+    conv_id: i64,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+    images_json: Option<&str>,
+) -> Result<i64> {
     let conn = get_db()?;
     conn.execute(
-        "INSERT INTO messages (conversation_id, role, content, created_at, model)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![conv_id, role, content, now_unix(), model],
+        "INSERT INTO messages (conversation_id, role, content, created_at, model, images)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![conv_id, role, content, now_unix(), model, images_json],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -234,7 +304,7 @@ pub fn add_message(conv_id: i64, role: &str, content: &str, model: Option<&str>)
 pub fn list_messages(conv_id: i64) -> Result<Vec<Message>> {
     let conn = get_db()?;
     let mut stmt = conn.prepare(
-        "SELECT id, conversation_id, role, content, created_at, model FROM messages
+        "SELECT id, conversation_id, role, content, created_at, model, images FROM messages
          WHERE conversation_id = ?1 ORDER BY id ASC",
     )?;
     let rows = stmt
@@ -246,8 +316,49 @@ pub fn list_messages(conv_id: i64) -> Result<Vec<Message>> {
                 content: r.get(3)?,
                 created_at: Some(r.get(4)?),
                 model: r.get(5)?,
+                images: r.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Build a fresh in-memory DB pre-populated with the *pre-images* schema
+    /// shape, then run the migration twice. Tests both correctness (column
+    /// appears) and idempotence (re-running does not error out on the
+    /// "duplicate column name" SQLite raises).
+    #[test]
+    fn images_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                model TEXT
+            );",
+        )
+        .unwrap();
+
+        ensure_messages_images_column(&conn).expect("first migration");
+        ensure_messages_images_column(&conn).expect("second migration must not error");
+        ensure_messages_images_column(&conn).expect("third migration must not error");
+
+        // The column must now be present.
+        let has: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('messages') WHERE name = 'images'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap();
+        assert!(has, "images column should exist after migration");
+    }
 }

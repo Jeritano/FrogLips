@@ -37,6 +37,23 @@ export interface ToolCall {
   };
 }
 
+/**
+ * Image attachment carried alongside a user message for vision-capable models.
+ *
+ * - `base64` is the *raw* base64 payload (no `data:` URI prefix). Ollama wants
+ *   the bare string in its `images: []` array; the OpenAI-style backends
+ *   (MLX, mistralrs) wrap it back into a `data:` URL at send time.
+ * - We re-encode every drop to PNG via Canvas to strip EXIF (privacy) before
+ *   base64-ing, so `mime` is always `image/png` for newly attached images but
+ *   may be other types for images round-tripped from older sessions.
+ */
+export interface ChatImage {
+  base64: string;
+  mime: string;
+  filename?: string;
+  size_bytes: number;
+}
+
 export interface Message {
   id?: number;
   conversation_id: number;
@@ -52,6 +69,8 @@ export interface Message {
   tool_call_id?: string;
   /** Display name of the tool that produced this result (agent mode only). */
   tool_name?: string;
+  /** Image attachments (vision-capable models only). Persisted as JSON. */
+  images?: ChatImage[];
 }
 
 export interface DirEntry {
@@ -353,6 +372,56 @@ export interface AgentAuditStats {
   total_calls_24h: number;
   top_tools_24h: Array<{ tool_name: string; count: number }>;
   avg_duration_ms_24h: Array<{ tool_name: string; avg_ms: number }>;
+}
+
+/* ── Session metrics (one row per `runAgentLoop` execution) ── */
+
+export interface AgentSessionMetricsEntry {
+  ts?: number;
+  conversation_id: string;
+  iterations: number;
+  tool_calls: number;
+  total_tool_ms: number;
+  total_llm_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+export interface AgentSessionMetricsRow {
+  id: number;
+  ts: number;
+  conversation_id: string;
+  iterations: number;
+  tool_calls: number;
+  total_tool_ms: number;
+  total_llm_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+export interface ToolLatencyRow {
+  tool_name: string;
+  count: number;
+  avg_ms: number;
+  p50_ms: number;
+  p95_ms: number;
+  max_ms: number;
+}
+
+export interface ApprovalCount {
+  approval: string;
+  count: number;
+}
+
+export interface DashboardSummary {
+  window_since_ts: number;
+  window_until_ts: number;
+  tool_counts: Array<{ tool_name: string; count: number }>;
+  tool_latency: ToolLatencyRow[];
+  approval_counts: ApprovalCount[];
+  session_metrics: AgentSessionMetricsRow[];
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
 }
 
 /* ── Filesystem watcher ─────────────────────────────────────────────────── */

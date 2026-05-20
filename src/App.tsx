@@ -7,6 +7,7 @@ import type { Conversation, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
+import { Dashboard } from "./components/Dashboard";
 import "./App.css";
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
   const [err, setErr] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [convSearch, setConvSearch] = useState("");
+  const [dashboardOpen, setDashboardOpen] = useState(false);
   const editInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -264,6 +266,16 @@ function App() {
           workspaceRoot={panelWorkspace}
           conversationId={current?.id ?? null}
         />
+        <button
+          type="button"
+          className="dashboard-btn"
+          data-testid="open-dashboard"
+          onClick={() => setDashboardOpen(true)}
+          title="Open usage dashboard"
+        >
+          <span aria-hidden="true">📊</span>
+          Dashboard
+        </button>
       </aside>
       <main className="main">
         <header>
@@ -279,6 +291,7 @@ function App() {
           onMemoriesChanged={() => setMemoryTick((t) => t + 1)}
         />
       </main>
+      <Dashboard open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
     </div>
   );
 }

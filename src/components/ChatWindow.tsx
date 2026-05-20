@@ -14,7 +14,7 @@ import {
 import type { AgentPreset } from "../lib/agent-presets";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { Conversation, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
+import type { ChatImage, Conversation, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { McpSettings } from "./McpSettings";
@@ -277,7 +277,20 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
    * the closure yet. Passing the truth explicitly avoids dup'd user messages
    * and stale-history pollution.
    */
-  async function send(text: string, priorHistory?: Message[]) {
+  async function send(text: string, imagesOrPriorHistory?: ChatImage[] | Message[], priorHistoryArg?: Message[]) {
+    // Overload-style dispatch: ChatInput passes images as the 2nd arg, the
+    // regenerate path passes priorHistory. Distinguish by shape — Message
+    // objects have a `role` field, ChatImage objects have `base64`.
+    let images: ChatImage[] | undefined;
+    let priorHistory: Message[] | undefined = priorHistoryArg;
+    if (Array.isArray(imagesOrPriorHistory) && imagesOrPriorHistory.length > 0) {
+      const first = imagesOrPriorHistory[0] as unknown as Record<string, unknown>;
+      if ("base64" in first) {
+        images = imagesOrPriorHistory as ChatImage[];
+      } else {
+        priorHistory = imagesOrPriorHistory as Message[];
+      }
+    }
     if (!status?.running || !status.model) {
       setErr("Start a model first");
       return;
@@ -298,10 +311,11 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       conversation_id: conv.id,
       role: "user",
       content: text,
+      images,
     };
     let userId: number;
     try {
-      userId = await api.addMessage(conv.id, "user", text);
+      userId = await api.addMessage(conv.id, "user", text, null, images);
     } catch (e) {
       setErr(`Failed to save message: ${e}`);
       return;
@@ -873,6 +887,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           onSend={send}
           onAbort={abort}
           streaming={isWorking}
+          currentModel={status?.running ? status.model : null}
         />
       </div>
 

@@ -4,6 +4,19 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.14] — 2026-05-20
+
+### Added (v1.3 batch A)
+- **Prompt library + slash commands**: 5 built-in templates (`/explain`, `/refactor`, `/test`, `/summarize`, `/commit`) + user-defined custom templates. Slash autocomplete in ChatInput w/ ArrowUp/Down/Enter/Tab/Esc nav. Variable extraction (`{foo}` → `[foo]` placeholders w/ first-placeholder auto-select). New `PromptLibrary.tsx` modal manager (book-icon button next to mic): list/add/edit/delete custom, hide/unhide built-ins. Persisted to `localStorage["prompt.templates"]` + `localStorage["prompt.templates.hiddenBuiltIns"]`. Custom override built-in via same trigger.
+- **Multi-modal vision input**: drag-drop image overlay in ChatInput (PNG/JPG/WebP). Max 4 images per message, max 4 MiB each, EXIF stripped via Canvas re-encode to PNG. Capability gating via `modelSupportsVision()` (heuristic patterns: `llava`, `vision`, `qwen2-vl`, `gemma-3`, `minicpm-v`, `pixtral`). New `messages.images_json` SQLite column (idempotent migration). Ollama path emits `{role, content, images: [base64]}` (raw base64, no `data:` prefix). MLX path wraps in OpenAI multi-content array `[{type:"text"}, {type:"image_url", image_url:{url:"data:..."}}]`. Native path deferred (mistralrs IPC bridge needs Rust-side struct change).
+- **Usage dashboard**: 5-section modal accessible via 📊 button next to Memories. (1) Top 15 tools bar chart, (2) per-tool latency p50/p95/max sortable table, (3) agent iteration histogram, (4) tok/s throughput line chart, (5) approval source pie (auto/session_allowed/user_allowed/denied/dry_run). Window selector (1h/24h/7d/all) + 30s auto-refresh. All charts inline SVG, zero deps. New SQLite table `agent_session_metrics` (idempotent migration). Runner records one row per `runAgentLoop` execution in a `finally` block — completion/abort/throw/iter-cap all captured. Backend percentile computation in Rust.
+
+### Tests
+- Rust: **67 passing** (was 64). +1 multi-modal migration, +2 dashboard schema/aggregation.
+- Vitest: **112 passing** (was 78). +18 prompt-templates, +4 ChatInput slash autocomplete, +2 model-capabilities, +5 vision-payload, +3 Dashboard render.
+- Playwright: **11 passing** (unchanged).
+- **Grand total: 190 tests across 3 runners.**
+
 ## [0.9.13] — 2026-05-20
 
 ### Added (v1.2 batch B — v1.2 sprint complete)
