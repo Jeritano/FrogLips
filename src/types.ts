@@ -308,7 +308,7 @@ export type PolicyDecision = "auto" | "needs-confirm" | "denied";
 /* ── Agent audit log ── */
 
 export type AuditApproval = "auto" | "user_allowed" | "session_allowed" | "denied";
-export type AuditOutcome = "ok" | "error" | "denied" | "stall_guard" | "duplicate";
+export type AuditOutcome = "ok" | "error" | "denied" | "stall_guard" | "duplicate" | "dry_run";
 
 export interface AgentAuditEntry {
   ts?: number;

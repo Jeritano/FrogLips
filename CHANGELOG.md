@@ -4,6 +4,29 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.11] — 2026-05-20
+
+### Added (v1.1 final batch)
+- **Dry-run mode**: checkbox in agent settings + yellow chat-header banner. When ON, `write_file`/`edit_file`/`multi_edit`/`run_shell`/`applescript_run`/`browser_navigate`/`browser_click`/`browser_fill` short-circuit in frontend dispatch shim — return `{ok:true, dry_run:true, would_*: ...}` (incl. in-memory unified diff for edits) without invoking Tauri. Read-only tools execute normally. `browser_navigate` still runs SSRF preflight in dry-run (rejected URLs report `blocked_by_safety` reason). Audit log records every dry-run with `outcome: "dry_run"` for visibility. Persisted to `localStorage["agent.dryRun"]`.
+- **llama-cpp-2 backend (Phase 2 of cross-platform Native rollout)**: behind new `native-llamacpp` Cargo feature (default off). `chromiumoxide`-style optional dep. `LlamaCppRuntime` implements `NativeBackend` trait. Local GGUF path loading; HF repo download deferred to Phase 3. ChatML fallback prompt rendering; sampler chain (top-p + temp + dist). `compile_error!` if both `native-mistralrs` + `native-llamacpp` enabled. Feature flag scheme: `native-inference` (umbrella) ← `native-mistralrs` (macos-aarch64) / `native-llamacpp` (cross-platform). `release.sh` switched from `--features native-inference` to `--features native-mistralrs`. Default + mistralrs `cargo check` clean. Real-world native-llamacpp build deferred (cmake compile of llama.cpp takes 3-6 min on M-series).
+
+### v1.1 sprint complete
+| # | Item | Shipped |
+|---|---|---|
+| 11 | Tool-call audit log | v0.9.9 |
+| 12 | Per-project policy | v0.9.9 |
+| 13 | Prompt-injection scan | v0.9.9 |
+| 15 | Parallel subagents | v0.9.10 |
+| 16 | Filesystem watcher | v0.9.10 |
+| 17 | Browser automation | v0.9.10 |
+| 14 | Dry-run mode | v0.9.11 |
+
+### Tests
+- Rust: **51 passing** (no change).
+- Vitest: **55 passing** (was 37). +16 dry-run dispatch + 2 dry-run audit integration.
+- Playwright: **10 passing** (unchanged).
+- **Grand total: 116 tests across 3 runners.**
+
 ## [0.9.10] — 2026-05-20
 
 ### Added (v1.1 batch B)

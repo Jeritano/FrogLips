@@ -62,6 +62,7 @@ function buildSubOpts(
       : parent.toolAllowlist,
     approveAllShell: parent.approveAllShell,
     approveAllWrite: parent.approveAllWrite,
+    dryRun: parent.dryRun,
     approvedShellPrefixes: parent.approvedShellPrefixes,
     onApproveShellPrefix: parent.onApproveShellPrefix,
     // Suppress UI noise: subagent runs are background work; parent's

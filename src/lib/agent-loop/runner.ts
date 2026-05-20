@@ -1,4 +1,4 @@
-import type { AuditApproval, Message, ProjectPolicy, ToolCall } from "../../types";
+import type { AuditApproval, AuditOutcome, Message, ProjectPolicy, ToolCall } from "../../types";
 import type { AgentMetrics, AgentRunOptions } from "./types";
 import { TOOLS } from "./tools";
 import {
@@ -122,6 +122,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     workspaceRoot, systemPromptOverride,
     toolAllowlist = [], approveAllShell, approveAllWrite,
     approvedShellPrefixes = [], onApproveShellPrefix,
+    dryRun = false,
   } = opts;
   const msgs: Message[] = [...opts.messages];
 
@@ -555,7 +556,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         } else if (fnName === "list_subagents") {
           result = listSubagents();
         } else {
-          result = await executeTool(fnName, args);
+          result = await executeTool(fnName, args, { dryRun });
         }
       } catch (e) {
         result = formatToolError(e);
@@ -568,18 +569,26 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
 
       // Determine final outcome by sniffing the result body — many tool
       // wrappers return `{ok:false, kind:...}` rather than throwing.
-      let outcome: "ok" | "error" = toolErrorKind ? "error" : "ok";
+      let outcome: AuditOutcome = toolErrorKind ? "error" : "ok";
       if (!toolErrorKind) {
         try {
           const parsedResult = JSON.parse(result);
-          if (
-            parsedResult &&
-            typeof parsedResult === "object" &&
-            parsedResult.ok === false
-          ) {
-            outcome = "error";
-            if (typeof parsedResult.kind === "string") {
-              toolErrorKind = parsedResult.kind;
+          if (parsedResult && typeof parsedResult === "object") {
+            // Dry-run results take precedence — they're recorded as `dry_run`
+            // regardless of `ok` status so the suppressed call shows up
+            // distinctly in the audit log.
+            if (parsedResult.dry_run === true) {
+              outcome = "dry_run";
+              if (parsedResult.ok === false && typeof parsedResult.blocked_by_safety === "string") {
+                toolErrorKind = "blocked_by_safety";
+              } else if (parsedResult.ok === false && typeof parsedResult.kind === "string") {
+                toolErrorKind = parsedResult.kind;
+              }
+            } else if (parsedResult.ok === false) {
+              outcome = "error";
+              if (typeof parsedResult.kind === "string") {
+                toolErrorKind = parsedResult.kind;
+              }
             }
           }
         } catch {

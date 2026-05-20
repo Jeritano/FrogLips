@@ -223,10 +223,13 @@ export function AuditLog() {
                             ? undefined
                             : r.outcome === "denied"
                             ? "var(--accent, #c66)"
+                            : r.outcome === "dry_run"
+                            ? "var(--info, #6cb6ff)"
                             : "var(--warning, #d9a86c)",
                       }}
+                      title={r.outcome === "dry_run" ? "Tool side-effect suppressed by dry-run mode" : undefined}
                     >
-                      {r.outcome}
+                      {r.outcome === "dry_run" ? "dry-run" : r.outcome}
                       {r.error_kind ? `:${r.error_kind}` : ""}
                     </td>
                     <td style={{ padding: "2px 6px", textAlign: "right" }}>{r.duration_ms}</td>

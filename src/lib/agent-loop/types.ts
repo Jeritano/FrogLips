@@ -29,6 +29,14 @@ export interface AgentRunOptions {
   /** Session-scoped flags: dangerous tools auto-approved if true. */
   approveAllShell?: boolean;
   approveAllWrite?: boolean;
+  /**
+   * Dry-run mode. When true, side-effectful tools (`write_file`, `edit_file`,
+   * `multi_edit`, `run_shell`, `applescript_run`, `browser_navigate`,
+   * `browser_click`, `browser_fill`) are short-circuited in the dispatcher —
+   * they return a `{ok:true, dry_run:true, would_*:...}` payload instead of
+   * invoking the Tauri command. Read-only tools execute normally.
+   */
+  dryRun?: boolean;
   /** Shell command prefixes auto-approved this session (e.g. "git", "ls"). */
   approvedShellPrefixes?: string[];
   /** Called when user opts into "remember this command pattern". */

@@ -1,27 +1,34 @@
 //! Native in-process LLM inference.
 //!
-//! Phase 1 of the cross-platform Native backend rollout (see
-//! `docs/research/llamacpp-backend.md`): the monolithic implementation has
-//! been split into a trait + per-platform backend so a second backend
-//! (llama.cpp via `llama-cpp-2`) can drop in later behind a feature flag.
+//! Cross-platform Native backend (see `docs/research/llamacpp-backend.md`).
+//! Phase 1 split the monolithic implementation into a trait + per-platform
+//! backend; Phase 2 added the llama.cpp (`llama-cpp-2`) backend behind its
+//! own feature flag. Backends are mutually exclusive — see the
+//! `compile_error!` below.
 //!
-//! Today only `mistralrs_backend` exists (macOS aarch64 + the
-//! `native-inference` feature). Every other platform/feature combo falls
-//! through to `stub`, which returns "Native backend not available on this
-//! platform" so the Ollama + MLX paths keep working.
+//! Feature scheme:
+//! * `native-inference` — umbrella, no-op base (kept for back-compat).
+//! * `native-mistralrs` — mistralrs + candle + Metal (macOS aarch64 only).
+//! * `native-llamacpp`  — llama.cpp via `llama-cpp-2` (cross-platform GGUF).
+//!
+//! When no backend feature is active — or `native-mistralrs` is set on a
+//! non-mac-aarch64 target — dispatch falls through to `stub`, which returns
+//! "Native backend not available on this platform" so the Ollama + MLX
+//! paths keep working.
 
 #![allow(dead_code)]
 
 use std::path::PathBuf;
 
-/// Identifier for a model the backend should load. Today only `HfRepo`
-/// is constructed at call sites; `GgufPath` is reserved for the Phase 2
-/// llama.cpp backend.
+/// Identifier for a model the backend should load. The mistralrs backend
+/// accepts `HfRepo` (and rejects `GgufPath`); the llama.cpp backend
+/// accepts `GgufPath` (and rejects `HfRepo` until Phase 3 wires up the
+/// HF GGUF download path).
 #[derive(Clone, Debug)]
 pub enum ModelRef {
     /// Hugging Face repo id, e.g. `"mlx-community/Llama-3.2-3B-Instruct-4bit"`.
     HfRepo(String),
-    /// Local path to a `.gguf` file (Phase 2; unused today).
+    /// Local path to a `.gguf` file (llama.cpp backend).
     GgufPath(PathBuf),
 }
 
@@ -67,27 +74,53 @@ pub trait NativeBackend: Clone + Send + Sync {
 
 /* ── Backend dispatch ─────────────────────────────────────────────────── */
 
-#[cfg(all(feature = "native-inference", target_os = "macos", target_arch = "aarch64"))]
+// Two backends cannot coexist: they pull in incompatible native libraries
+// (Candle/Metal vs llama.cpp) and would also collide on `NativeRuntime`
+// re-exports below. Pick exactly one at build time.
+#[cfg(all(feature = "native-mistralrs", feature = "native-llamacpp"))]
+compile_error!(
+    "features `native-mistralrs` and `native-llamacpp` are mutually exclusive; \
+     enable exactly one (see docs/research/llamacpp-backend.md)."
+);
+
+// mistralrs is gated on macOS aarch64 — it depends on candle-metal and only
+// builds usefully on Apple Silicon. On other platforms with the feature on,
+// fall through to the stub so the build still succeeds.
+#[cfg(all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"))]
 mod mistralrs_backend;
 
-#[cfg(not(all(feature = "native-inference", target_os = "macos", target_arch = "aarch64")))]
+#[cfg(feature = "native-llamacpp")]
+mod llamacpp_backend;
+
+#[cfg(not(any(
+    all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"),
+    feature = "native-llamacpp",
+)))]
 mod stub;
 
-#[cfg(all(feature = "native-inference", target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"))]
 pub use mistralrs_backend::{new_shared, NativeRuntime, SharedRuntime};
 
-#[cfg(not(all(feature = "native-inference", target_os = "macos", target_arch = "aarch64")))]
+#[cfg(all(
+    feature = "native-llamacpp",
+    not(all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64")),
+))]
+pub use llamacpp_backend::{new_shared, NativeRuntime, SharedRuntime};
+
+#[cfg(not(any(
+    all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"),
+    feature = "native-llamacpp",
+)))]
 pub use stub::{new_shared, NativeRuntime, SharedRuntime};
 
 /// Convenience: human label for the current build.
 ///
-/// `true` only when the `native-inference` feature is on AND we're on
-/// macOS aarch64 (where mistralrs currently runs). Returns `false`
-/// everywhere else so the frontend can hide the Native backend toggle.
+/// `true` whenever a real backend is compiled in (mistralrs on macOS aarch64,
+/// or llama.cpp on any platform with `native-llamacpp`). Returns `false` when
+/// the stub is active so the frontend can hide the Native backend toggle.
 pub fn native_enabled() -> bool {
-    cfg!(all(
-        feature = "native-inference",
-        target_os = "macos",
-        target_arch = "aarch64"
+    cfg!(any(
+        all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"),
+        feature = "native-llamacpp",
     ))
 }

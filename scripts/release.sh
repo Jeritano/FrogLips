@@ -25,11 +25,15 @@ fi
 # Native inference enabled by default; set FROGLIPS_SKIP_NATIVE=1 to skip the
 # heavy mistralrs+candle+Metal compile (faster builds when you only need
 # Ollama / MLX paths).
+#
+# Phase 2 split the umbrella `native-inference` feature into per-backend
+# flags. On macos-aarch64 we still ship mistralrs; the cross-platform
+# llama.cpp backend (`native-llamacpp`) lives behind its own feature.
 build_attempt() {
   if [[ "${FROGLIPS_SKIP_NATIVE:-}" == "1" ]]; then
     npm run tauri build
   else
-    npm run tauri build -- --features native-inference
+    npm run tauri build -- --features native-mistralrs
   fi
 }
 

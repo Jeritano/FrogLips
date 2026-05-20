@@ -66,6 +66,15 @@ function saveAllowlist(list: string[]) {
   localStorage.setItem("agent.allowlist", JSON.stringify(list));
 }
 
+function loadDryRun(): boolean {
+  try {
+    return localStorage.getItem("agent.dryRun") === "true";
+  } catch { return false; }
+}
+function saveDryRun(v: boolean) {
+  try { localStorage.setItem("agent.dryRun", v ? "true" : "false"); } catch {/* ignore */}
+}
+
 function tmpKey(): string {
   return `tmp:${crypto.randomUUID()}`;
 }
@@ -84,6 +93,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [allowlist, setAllowlist] = useState<string[]>(() => loadAllowlist());
   const [approveAllShell, setApproveAllShell] = useState(false);
   const [approveAllWrite, setApproveAllWrite] = useState(false);
+  const [dryRun, setDryRun] = useState<boolean>(() => loadDryRun());
   const [approvedShellPrefixes, setApprovedShellPrefixes] = useState<string[]>([]);
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [rememberPrefix, setRememberPrefix] = useState(false);
@@ -369,6 +379,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           toolAllowlist: effectiveAllowlist,
           approveAllShell,
           approveAllWrite,
+          dryRun,
           approvedShellPrefixes,
           onApproveShellPrefix: (p) => {
             setApprovedShellPrefixes((prev) => (prev.includes(p) ? prev : [...prev, p]));
@@ -580,6 +591,22 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
   return (
     <div className="chat-window">
+      {agentMode && dryRun && (
+        <div
+          className="dry-run-banner"
+          data-testid="agent-dry-run-banner"
+          style={{
+            background: "#3a2e0a",
+            color: "#f5d76e",
+            border: "1px solid #d9a86c",
+            padding: "6px 10px",
+            fontSize: "0.85rem",
+            textAlign: "center",
+          }}
+        >
+          🛡️ Dry-run: tool side-effects suppressed
+        </div>
+      )}
       <MessageList
         messages={messages}
         streaming={streaming}
@@ -709,6 +736,23 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
                        onChange={(e) => setApproveAllWrite(e.target.checked)} />
                 writes/edits
               </label>
+            </div>
+            <div className="agent-settings-row">
+              <span className="agent-settings-label">Safety:</span>
+              <label data-testid="agent-dry-run-toggle">
+                <input
+                  type="checkbox"
+                  checked={dryRun}
+                  onChange={(e) => {
+                    setDryRun(e.target.checked);
+                    saveDryRun(e.target.checked);
+                  }}
+                />
+                Dry-run mode
+              </label>
+              <span className="agent-settings-hint">
+                Side-effectful tools report what they would do without executing.
+              </span>
             </div>
             <div className="agent-settings-row">
               <span className="agent-settings-label">Allowed tools:</span>
