@@ -9,8 +9,10 @@
 // unused-import noise rather than narrow the surface.
 #![allow(unused_imports)]
 
+pub mod browser;
 pub mod code;
 pub mod fs;
+pub mod fs_watcher;
 pub mod git;
 pub mod injection_scan;
 pub mod shell;
@@ -41,3 +43,7 @@ pub use system::{
 };
 
 pub use code::{find_definition, find_references, format_code, read_pdf, FormatResult, PdfResult};
+
+pub use browser::{
+    BrowserNavigateResult, BrowserOkResult, BrowserScreenshotResult, BrowserTextResult,
+};

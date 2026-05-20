@@ -642,6 +642,68 @@ async fn agent_format_code(path: String) -> Result<agent::FormatResult, String> 
     agent::format_code(path).await
 }
 
+/* ── Browser automation ──────────────────────────────────────────────────── */
+
+#[tauri::command]
+async fn agent_browser_navigate(url: String) -> Result<agent::BrowserNavigateResult, String> {
+    agent::browser::navigate(url).await
+}
+
+#[tauri::command]
+async fn agent_browser_click(selector: String) -> Result<agent::BrowserOkResult, String> {
+    agent::browser::click(selector).await
+}
+
+#[tauri::command]
+async fn agent_browser_fill(selector: String, value: String) -> Result<agent::BrowserOkResult, String> {
+    agent::browser::fill(selector, value).await
+}
+
+#[tauri::command]
+async fn agent_browser_screenshot() -> Result<agent::BrowserScreenshotResult, String> {
+    agent::browser::screenshot().await
+}
+
+#[tauri::command]
+async fn agent_browser_get_text(selector: Option<String>) -> Result<agent::BrowserTextResult, String> {
+    agent::browser::get_text(selector).await
+}
+
+#[tauri::command]
+async fn agent_browser_close() -> Result<agent::BrowserOkResult, String> {
+    agent::browser::close().await
+}
+
+/* ── Filesystem watcher ─────────────────────────────────────────────────── */
+
+#[tauri::command]
+async fn agent_watch_path(
+    path: String,
+    glob: Option<String>,
+    debounce_ms: Option<u64>,
+) -> Result<agent::fs_watcher::WatchHandle, String> {
+    agent::fs_watcher::watch_path(path, glob, debounce_ms).await
+}
+
+#[tauri::command]
+fn agent_list_watches() -> Vec<agent::fs_watcher::WatchInfo> {
+    agent::fs_watcher::list_watches()
+}
+
+#[tauri::command]
+async fn agent_poll_watch(
+    id: String,
+    since_ms: Option<u64>,
+    max_events: Option<u32>,
+) -> Result<agent::fs_watcher::WatchPoll, String> {
+    agent::fs_watcher::poll_watch(id, since_ms, max_events).await
+}
+
+#[tauri::command]
+fn agent_stop_watch(id: String) -> Result<(), String> {
+    agent::fs_watcher::stop_watch(id)
+}
+
 /* ── Task queue ──────────────────────────────────────────────────────────── */
 
 #[tauri::command]
@@ -1105,6 +1167,16 @@ pub fn run() {
             agent_find_definition,
             agent_find_references,
             agent_format_code,
+            agent_browser_navigate,
+            agent_browser_click,
+            agent_browser_fill,
+            agent_browser_screenshot,
+            agent_browser_get_text,
+            agent_browser_close,
+            agent_watch_path,
+            agent_list_watches,
+            agent_poll_watch,
+            agent_stop_watch,
             task_create,
             task_status,
             task_list,
@@ -1145,7 +1217,9 @@ pub fn run() {
             tauri::async_runtime::block_on(async move {
                 s.stop().await;
                 mcp::shutdown_all().await;
+                agent::browser::shutdown().await;
             });
+            agent::fs_watcher::shutdown_all();
         }
     });
 }

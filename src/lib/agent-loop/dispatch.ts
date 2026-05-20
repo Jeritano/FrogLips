@@ -6,6 +6,11 @@ export const DANGEROUS_TOOLS = new Set([
   "run_shell", "write_file", "edit_file", "multi_edit",
   "git_commit", "clipboard_set", "open_app",
   "applescript_run", "http_request",
+  // Browser automation — every call can navigate to or interact with arbitrary
+  // public sites. SSRF-blocked at the Rust layer, but still gated behind a
+  // confirm dialog so the user sees each action.
+  "browser_navigate", "browser_click", "browser_fill",
+  "browser_screenshot", "browser_get_text", "browser_close",
 ]);
 export const SHELL_TOOL = "run_shell";
 export const WRITE_TOOLS = new Set([
@@ -310,6 +315,35 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       const r = await api.agentFormatCode(String(args.path ?? ""));
       return JSON.stringify(r);
     }
+    case "browser_navigate": {
+      const r = await api.agentBrowserNavigate(String(args.url ?? ""));
+      return JSON.stringify(r);
+    }
+    case "browser_click": {
+      const r = await api.agentBrowserClick(String(args.selector ?? ""));
+      return JSON.stringify(r);
+    }
+    case "browser_fill": {
+      const r = await api.agentBrowserFill(
+        String(args.selector ?? ""),
+        String(args.value ?? ""),
+      );
+      return JSON.stringify(r);
+    }
+    case "browser_screenshot": {
+      const r = await api.agentBrowserScreenshot();
+      return JSON.stringify(r);
+    }
+    case "browser_get_text": {
+      const r = await api.agentBrowserGetText(
+        args.selector ? String(args.selector) : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "browser_close": {
+      const r = await api.agentBrowserClose();
+      return JSON.stringify(r);
+    }
     case "task_create": {
       const r = await api.taskCreate(
         String(args.command ?? ""),
@@ -366,6 +400,30 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
         String(args.new_string ?? ""),
         typeof args.replace_all === "boolean" ? args.replace_all : undefined,
       );
+      return JSON.stringify(r);
+    }
+    case "watch_path": {
+      const r = await api.agentWatchPath(
+        String(args.path ?? ""),
+        args.glob ? String(args.glob) : undefined,
+        typeof args.debounce_ms === "number" ? args.debounce_ms : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "poll_watch": {
+      const r = await api.agentPollWatch(
+        String(args.id ?? ""),
+        typeof args.since_ms === "number" ? args.since_ms : undefined,
+        typeof args.max_events === "number" ? args.max_events : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "stop_watch": {
+      await api.agentStopWatch(String(args.id ?? ""));
+      return JSON.stringify({ ok: true });
+    }
+    case "list_watches": {
+      const r = await api.agentListWatches();
       return JSON.stringify(r);
     }
     default:

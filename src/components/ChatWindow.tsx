@@ -51,7 +51,7 @@ const ALL_TOOL_NAMES = [
   "applescript_run", "http_request",
   "find_definition", "find_references", "format_code",
   "task_create", "task_status", "task_list", "task_cancel",
-  "ask_user", "spawn_subagent",
+  "ask_user", "spawn_subagent", "await_subagents", "list_subagents",
 ] as const;
 
 function loadAllowlist(): string[] {

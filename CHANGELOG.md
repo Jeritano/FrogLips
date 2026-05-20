@@ -4,6 +4,22 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.10] — 2026-05-20
+
+### Added (v1.1 batch B)
+- **Parallel subagents**: `spawn_subagent` accepts new optional `mode: "sync"|"async"`. Async returns `{subagent_id, status: "running"}` immediately. New `await_subagents(ids, timeout_seconds)` tool joins; new `list_subagents()` snapshot tool. `MAX_SUBAGENT_DEPTH=3` still enforced on both paths. Parent abort propagates to child via AbortController. Completed handles GC'd after 60s. Tool count: 33 → 35.
+- **Filesystem watcher**: new `notify = "8"` + `globset = "0.4"` deps. Four tools: `watch_path(path, glob?, debounce_ms?)`, `poll_watch(id, since_ms?, max_events?)`, `stop_watch(id)`, `list_watches()`. Per-watch ring buffer 4096 events, overflow tracked in `dropped` counter. Auto-GC watchers after 30 min poll inactivity. Cleanup wired into `RunEvent::Exit`. NOT in DANGEROUS_TOOLS (read-only). Tool count: 35 → 39.
+- **Browser automation** (behind `browser-automation` feature; default off — needs Chrome/Chromium): `chromiumoxide = "0.7"` + `futures-util`. Six tools: `browser_navigate`, `browser_click`, `browser_fill`, `browser_screenshot`, `browser_get_text`, `browser_close`. Persistent one-tab CDP session via `tokio::sync::Mutex<Option<Session>>`. All marked DANGEROUS (confirmation gated). SSRF preflight via shared `is_safe_public_host` + `resolve_to_safe_addrs` — blocks loopback / RFC1918 / `*.local` / `*.internal` / `file://` / `chrome://`. Auto-shutdown on `RunEvent::Exit`. +19.8 MB debug binary w/ feature; 0 MB default. Tool count: 39 → 45.
+
+### Tests
+- Rust: **51 passing** (was 42). +3 fs_watcher, +6 browser SSRF preflight (both feature configs).
+- Vitest: **37 passing** (was 32). +5 parallel subagents.
+- Playwright: **10 passing** (unchanged).
+- **Grand total: 98 tests across 3 runners.**
+
+### Tool count
+33 → **45** (+12 in this release: +2 subagents, +4 fs watcher, +6 browser).
+
 ## [0.9.9] — 2026-05-20
 
 ### Added (v1.1 batch A)

@@ -15,7 +15,7 @@ pub struct WebFetchResult {
 const WEB_FETCH_MAX_BYTES: usize = 1_048_576; // 1 MiB
 const WEB_FETCH_TIMEOUT_SECS: u64 = 15;
 
-fn is_safe_public_host(host: &str) -> bool {
+pub fn is_safe_public_host(host: &str) -> bool {
     // Reject localhost + RFC1918 + link-local + .local — defends against SSRF.
     let h = host.to_ascii_lowercase();
     if h.is_empty() || h == "localhost" || h.ends_with(".local") || h.ends_with(".internal") {
@@ -73,7 +73,7 @@ fn is_safe_ip(ip: &std::net::IpAddr) -> bool {
 /// Returns the safe set so callers can pin reqwest's resolver to exactly
 /// those addresses — closes the TOCTOU window where reqwest would re-query
 /// DNS at connect time and possibly land on a poisoned IP.
-async fn resolve_to_safe_addrs(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
+pub async fn resolve_to_safe_addrs(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
     let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
         .await
         .map_err(|e| err_string(ToolError::invalid(format!("hostname does not resolve: {e}"))))?

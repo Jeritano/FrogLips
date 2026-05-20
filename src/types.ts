@@ -139,6 +139,25 @@ export interface HttpResp {
   truncated: boolean;
 }
 
+export interface BrowserNavigateResult {
+  status: number;
+  title: string;
+  url: string;
+  screenshot_base64: string;
+}
+
+export interface BrowserOkResult {
+  ok: boolean;
+}
+
+export interface BrowserScreenshotResult {
+  base64: string;
+}
+
+export interface BrowserTextResult {
+  text: string;
+}
+
 export interface FormatResult {
   formatter: string;
   stdout: string;
@@ -330,4 +349,34 @@ export interface AgentAuditStats {
   total_calls_24h: number;
   top_tools_24h: Array<{ tool_name: string; count: number }>;
   avg_duration_ms_24h: Array<{ tool_name: string; avg_ms: number }>;
+}
+
+/* ── Filesystem watcher ─────────────────────────────────────────────────── */
+
+export interface WatchHandle {
+  watch_id: string;
+  path: string;
+  glob: string | null;
+}
+
+export interface WatchInfo {
+  watch_id: string;
+  path: string;
+  glob: string | null;
+  started_at: number;
+  events_seen: number;
+  buffered: number;
+  dropped: number;
+}
+
+export interface WatchEvent {
+  kind: "created" | "modified" | "deleted" | "renamed" | "other";
+  path: string;
+  ts: number;
+}
+
+export interface WatchPoll {
+  events: WatchEvent[];
+  next_ts: number;
+  dropped: number;
 }

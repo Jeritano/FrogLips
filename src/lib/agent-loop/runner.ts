@@ -14,7 +14,7 @@ import {
 } from "./dispatch";
 import { buildSystemPrompt } from "./system-prompt";
 import { OLLAMA_BASE, RETRY_BACKOFF_MS, RETRY_MAX, streamOllamaChat, toOllamaMessages } from "./ollama-client";
-import { runSubagent } from "./subagent";
+import { awaitSubagents, listSubagents, runSubagent, spawnSubagentAsync } from "./subagent";
 import { fetchMcpTools } from "./mcp-tools";
 import { api } from "../tauri-api";
 
@@ -540,7 +540,20 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       let toolErrorKind: string | null = null;
       try {
         if (fnName === "spawn_subagent") {
-          result = await runSubagent(args, opts);
+          const mode = typeof args.mode === "string" ? args.mode : "sync";
+          if (mode === "async") {
+            result = await spawnSubagentAsync(args, opts);
+          } else {
+            result = await runSubagent(args, opts);
+          }
+        } else if (fnName === "await_subagents") {
+          const ids = Array.isArray(args.subagent_ids)
+            ? (args.subagent_ids as unknown[]).map((v) => String(v))
+            : [];
+          const timeoutSecs = typeof args.timeout_seconds === "number" ? args.timeout_seconds : 600;
+          result = await awaitSubagents(ids, Math.max(0, timeoutSecs) * 1000);
+        } else if (fnName === "list_subagents") {
+          result = listSubagents();
         } else {
           result = await executeTool(fnName, args);
         }

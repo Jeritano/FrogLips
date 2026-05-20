@@ -6,6 +6,10 @@ import type {
   AgentAuditStats,
   AllModels,
   AppSettings,
+  BrowserNavigateResult,
+  BrowserOkResult,
+  BrowserScreenshotResult,
+  BrowserTextResult,
   Conversation,
   DirListing,
   EditOp,
@@ -30,6 +34,9 @@ import type {
   ShellOpts,
   ShellResult,
   TaskInfo,
+  WatchHandle,
+  WatchInfo,
+  WatchPoll,
   WebFetchResult,
   WebSearchResult,
 } from "../types";
@@ -172,6 +179,36 @@ export const api = {
     invoke<SearchResult>("agent_find_references", { symbol, path: path ?? null }),
   agentFormatCode: (path: string) =>
     invoke<FormatResult>("agent_format_code", { path }),
+
+  // Browser automation
+  agentBrowserNavigate: (url: string) =>
+    invoke<BrowserNavigateResult>("agent_browser_navigate", { url }),
+  agentBrowserClick: (selector: string) =>
+    invoke<BrowserOkResult>("agent_browser_click", { selector }),
+  agentBrowserFill: (selector: string, value: string) =>
+    invoke<BrowserOkResult>("agent_browser_fill", { selector, value }),
+  agentBrowserScreenshot: () =>
+    invoke<BrowserScreenshotResult>("agent_browser_screenshot"),
+  agentBrowserGetText: (selector?: string) =>
+    invoke<BrowserTextResult>("agent_browser_get_text", { selector: selector ?? null }),
+  agentBrowserClose: () =>
+    invoke<BrowserOkResult>("agent_browser_close"),
+
+  // Filesystem watcher
+  agentWatchPath: (path: string, glob?: string, debounceMs?: number) =>
+    invoke<WatchHandle>("agent_watch_path", {
+      path,
+      glob: glob ?? null,
+      debounceMs: debounceMs ?? null,
+    }),
+  agentListWatches: () => invoke<WatchInfo[]>("agent_list_watches"),
+  agentPollWatch: (id: string, sinceMs?: number, maxEvents?: number) =>
+    invoke<WatchPoll>("agent_poll_watch", {
+      id,
+      sinceMs: sinceMs ?? null,
+      maxEvents: maxEvents ?? null,
+    }),
+  agentStopWatch: (id: string) => invoke<void>("agent_stop_watch", { id }),
 
   // Task queue
   taskCreate: (command: string, cwd?: string) =>

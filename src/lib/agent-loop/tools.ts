@@ -450,16 +450,188 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "watch_path",
+      description:
+        "Start watching a file or directory for changes. Returns {watch_id: 'w_xxx', path, glob}. Use poll_watch repeatedly to drain events. Pair this with run_shell/task_create for build-watch or test-watch loops. Cross-platform (FSEvents/inotify/ReadDirectoryChangesW).",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute or ~/relative path. Directories are watched recursively." },
+          glob: { type: "string", description: "Optional glob to filter events by path, e.g. '**/*.ts' or '**/*.rs'." },
+          debounce_ms: { type: "number", description: "Optional debounce window in ms — collapses same-path same-kind bursts. Useful for editor-save patterns." },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "poll_watch",
+      description:
+        "Drain filesystem events accumulated by a watcher since `since_ms` (or all if unset). Returns {events: [{kind, path, ts}], next_ts, dropped}. Pass next_ts back as since_ms on the next call. `dropped` reports events elided by the per-call max (ring-buffer overflow is in list_watches).",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "watch_id returned by watch_path." },
+          since_ms: { type: "number", description: "Unix-ms cursor — drain only events with ts > since_ms." },
+          max_events: { type: "number", description: "Cap on events returned (default 100). Overflow stays buffered for the next poll." },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "stop_watch",
+      description: "Stop a filesystem watcher and release its OS-level watch handle.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "watch_id to stop." },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_watches",
+      description: "List active filesystem watchers — id, path, glob, started_at, events_seen, buffered, dropped.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_navigate",
+      description:
+        "Open a URL in a controlled Chrome/Chromium instance and return the page title + URL + a base64 PNG screenshot. SSRF-protected (no loopback/private/link-local hosts; no file://, chrome://). One persistent browser session per app run — subsequent browser_* calls reuse the same tab. Requires a Chrome/Chromium binary installed on the user's machine. The browser_ prefix means actions are visible to the user — there are no silent navigations.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "http(s) URL to open. data: URLs are also allowed for offline payloads." },
+        },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_click",
+      description:
+        "Click an element in the current browser session. Selector is a CSS selector. Fails if no browser session is open or the selector matches nothing.",
+      parameters: {
+        type: "object",
+        properties: {
+          selector: { type: "string", description: "CSS selector to click." },
+        },
+        required: ["selector"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_fill",
+      description:
+        "Focus an input via CSS selector and type a value into it. Fails if no browser session is open or the selector matches nothing.",
+      parameters: {
+        type: "object",
+        properties: {
+          selector: { type: "string", description: "CSS selector of the input/textarea." },
+          value: { type: "string", description: "Text to type." },
+        },
+        required: ["selector", "value"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_screenshot",
+      description:
+        "Capture a PNG screenshot of the current browser tab. Returns {base64}. Fails if no browser session is open.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_get_text",
+      description:
+        "Return innerText for the matched element (defaults to body). Output capped at 64 KiB. Fails if no browser session is open.",
+      parameters: {
+        type: "object",
+        properties: {
+          selector: { type: "string", description: "CSS selector; defaults to 'body'." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_close",
+      description:
+        "Close the persistent browser session. Idempotent — safe to call when no session exists.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "spawn_subagent",
-      description: "Run a fresh agent in an isolated context to handle a sub-task. Useful for parallel research or scoped exploration. Returns the sub-agent's final text. Max recursion depth 3.",
+      description:
+        "Run a fresh agent in an isolated context to handle a sub-task. Default mode 'sync' awaits the sub-agent and returns its final text. Pass mode='async' for parallel fan-out — returns {subagent_id, status:'running'} immediately; join with await_subagents. Max recursion depth 3.",
       parameters: {
         type: "object",
         properties: {
           prompt: { type: "string" },
           preset: { type: "string", description: "Optional: general / coder / researcher / shell." },
+          mode: {
+            type: "string",
+            enum: ["sync", "async"],
+            description: "'sync' (default) blocks until the subagent finishes. 'async' returns immediately with a subagent_id; use await_subagents to join.",
+          },
         },
         required: ["prompt"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "await_subagents",
+      description:
+        "Block until all listed subagent_ids finish (or timeout). Returns per-id {id, status, result}. Finished subagents include their full answer; timed-out ones keep running in the background.",
+      parameters: {
+        type: "object",
+        properties: {
+          subagent_ids: {
+            type: "array",
+            items: { type: "string" },
+            description: "IDs returned from spawn_subagent (mode='async').",
+          },
+          timeout_seconds: {
+            type: "number",
+            description: "Max seconds to wait for all subagents (default 600).",
+          },
+        },
+        required: ["subagent_ids"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_subagents",
+      description:
+        "List currently-tracked subagents (running, plus recently-completed within ~60s). Returns [{id, status, started_at, prompt_preview, depth}].",
+      parameters: { type: "object", properties: {} },
     },
   },
 ] as const;

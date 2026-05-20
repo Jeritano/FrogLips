@@ -1,6 +1,6 @@
 [package]
 name = "local-llm-app"
-version = "0.9.9"
+version = "0.9.10"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["joseph"]
 edition = "2021"
@@ -34,6 +34,8 @@ base64 = "0.22"
 pdf-extract = "0.7"
 html2text = "0.13"
 sha2 = "0.10"
+notify = "8"
+globset = "0.4"
 
 # Native inference (alpha) — fast in-process LLM via mistralrs + candle + Metal.
 # Enabled via the "native-inference" feature so existing builds aren't blocked
@@ -44,6 +46,13 @@ indexmap = { version = "2", optional = true }
 either = { version = "1", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 
+# Browser automation (alpha) — agent-controlled headless Chrome via CDP.
+# Enabled via the "browser-automation" feature; requires a Chrome/Chromium
+# binary on the user's machine (chromiumoxide does NOT bundle one).
+chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
+futures-util = { version = "0.3", optional = true }
+
 [features]
 default = []
 native-inference = ["dep:mistralrs-core", "dep:candle-core", "dep:indexmap", "dep:either", "dep:serde_yaml"]
+browser-automation = ["dep:chromiumoxide", "dep:futures-util"]
