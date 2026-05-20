@@ -1111,6 +1111,98 @@ fn is_safe_public_host(host: &str) -> bool {
     true
 }
 
+/// Pre-flight: resolve hostname to socket addresses and reject if any one of
+/// them lands in a private / loopback / link-local range. Closes the gap
+/// where `is_safe_public_host()` only catches IP-literal hosts and explicit
+/// `.local` / `.internal` names — services like `localtest.me` and
+/// `1.lvh.me` resolve to 127.0.0.1 while passing the string check.
+///
+/// We do this regardless of whether `host` parsed as an IP literal (which
+/// our string-level check already covered) so the same call covers both
+/// hostname and IP-literal cases.
+async fn assert_resolved_host_safe(host: &str, default_port: u16) -> Result<(), String> {
+    // Already-IP-literal hosts can skip lookup; is_safe_public_host already
+    // verified them. But still cheap to re-check via the same path.
+    let addrs = tokio::net::lookup_host(format!("{host}:{default_port}"))
+        .await
+        .map_err(|e| err_string(ToolError::invalid(format!("hostname does not resolve: {e}"))))?;
+    let mut saw_any = false;
+    for addr in addrs {
+        saw_any = true;
+        let ip = addr.ip();
+        let safe = match ip {
+            std::net::IpAddr::V4(a) => {
+                let oct = a.octets();
+                !(a.is_loopback() || a.is_private() || a.is_link_local()
+                    || a.is_unspecified() || a.is_multicast() || a.is_broadcast()
+                    || oct[0] == 0 || oct[0] == 127)
+            }
+            std::net::IpAddr::V6(a) => {
+                let segs = a.segments();
+                !(a.is_loopback() || a.is_unspecified() || a.is_multicast()
+                    || segs[0] == 0xfe80 || segs[0] == 0xfc00 || segs[0] == 0xfd00)
+            }
+        };
+        if !safe {
+            return Err(err_string(ToolError::Protected {
+                message: format!(
+                    "host '{host}' resolves to a private/loopback address ({ip}) — blocked"
+                ),
+            }));
+        }
+    }
+    if !saw_any {
+        return Err(err_string(ToolError::invalid(format!(
+            "host '{host}' yielded no addresses"
+        ))));
+    }
+    Ok(())
+}
+
+/// Custom redirect policy: re-validate each hop against is_safe_public_host
+/// + scheme. Default `Policy::limited(5)` would happily follow a 302 to
+/// http://127.0.0.1/secrets.
+fn ssrf_safe_redirect() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            return attempt.error("too many redirects");
+        }
+        let url = attempt.url();
+        if url.scheme() != "https" && url.scheme() != "http" {
+            return attempt.error("redirect to non-http(s) scheme");
+        }
+        let host = url.host_str().unwrap_or("");
+        if !is_safe_public_host(host) {
+            return attempt.error("redirect to private/loopback host");
+        }
+        attempt.follow()
+    })
+}
+
+/// Stream the response body, accumulating up to `cap` bytes. Bails as soon as
+/// the cap is hit — defends against a server replying with a huge body that
+/// would otherwise OOM us via reqwest's all-at-once `.bytes()`.
+async fn read_capped(resp: reqwest::Response, cap: usize) -> Result<(Vec<u8>, u64, bool), String> {
+    use futures::StreamExt;
+    let content_len_hint = resp.content_length().unwrap_or(0);
+    let mut out = Vec::with_capacity(content_len_hint.min(cap as u64) as usize);
+    let mut stream = resp.bytes_stream();
+    let mut total: u64 = 0;
+    let mut truncated = false;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| err_string(ToolError::io(e.to_string())))?;
+        total += chunk.len() as u64;
+        if out.len() + chunk.len() > cap {
+            let remaining = cap.saturating_sub(out.len());
+            out.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok((out, total, truncated))
+}
+
 pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
     let url = url::Url::parse(&url_str)
         .map_err(|e| err_string(ToolError::invalid(format!("bad url: {e}"))))?;
@@ -1123,11 +1215,13 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
             message: format!("host '{host}' is private/loopback/link-local — blocked to prevent SSRF"),
         }));
     }
+    let default_port = url.port_or_known_default().unwrap_or(443);
+    assert_resolved_host_safe(host, default_port).await?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS))
-        .user_agent("Froglips/0.8 (+https://github.com/Jeritano/FrogLips)")
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .user_agent("Froglips/0.9 (+https://github.com/Jeritano/FrogLips)")
+        .redirect(ssrf_safe_redirect())
         .build()
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
 
@@ -1135,11 +1229,8 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     let status = resp.status().as_u16();
 
-    let bytes = resp.bytes().await
-        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
-    let total = bytes.len() as u64;
-    let truncated = bytes.len() > WEB_FETCH_MAX_BYTES;
-    let cap = bytes.len().min(WEB_FETCH_MAX_BYTES);
+    let (bytes, total, truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;
+    let cap = bytes.len();
     let body_text = String::from_utf8_lossy(&bytes[..cap]).into_owned();
 
     // Strip HTML if it looks like HTML — agent gets clean text.
@@ -1522,11 +1613,13 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
             message: format!("host '{host}' is private/loopback — blocked (SSRF)"),
         }));
     }
+    let default_port = url.port_or_known_default().unwrap_or(443);
+    assert_resolved_host_safe(host, default_port).await?;
     let timeout = std::time::Duration::from_secs(input.timeout_secs.unwrap_or(15).min(60));
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .user_agent("Froglips/0.9 (+https://github.com/Jeritano/FrogLips)")
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(ssrf_safe_redirect())
         .build()
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     let method_obj = reqwest::Method::from_bytes(method.as_bytes())
@@ -1560,11 +1653,8 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
             hdrs.insert(k.as_str().to_string(), s.to_string());
         }
     }
-    let bytes = resp.bytes().await.map_err(|e| err_string(ToolError::io(e.to_string())))?;
-    let total = bytes.len() as u64;
-    let truncated = bytes.len() > WEB_FETCH_MAX_BYTES;
-    let cap = bytes.len().min(WEB_FETCH_MAX_BYTES);
-    let body = String::from_utf8_lossy(&bytes[..cap]).into_owned();
+    let (bytes, total, truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;
+    let body = String::from_utf8_lossy(&bytes).into_owned();
     Ok(HttpResp { status, headers: hdrs, body, bytes: total, truncated })
 }
 
@@ -1668,11 +1758,25 @@ pub async fn format_code(path: String) -> Result<FormatResult, String> {
 }
 
 pub async fn show_notification(title: String, body: String) -> Result<(), String> {
-    // Both fields go into osascript — must escape double quotes to prevent
-    // breaking out of the string literal. AppleScript also doesn't have a
-    // standard backslash escape so we just strip quotes.
-    let safe_title = title.replace('"', "'");
-    let safe_body = body.replace('"', "'");
+    // Both fields go into osascript via a `-e` arg. Three rules to keep the
+    // model from escaping the string literal:
+    //  - swap " for ' (closing the title/body string literal early)
+    //  - swap \ for / (backslash escape sequences in AppleScript strings)
+    //  - swap any C0 control character (newline, CR, tab, etc.) for a single
+    //    space. A literal newline inside a quoted string truncates the
+    //    AppleScript line and lets the model append additional statements.
+    fn sanitize(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                '"' => '\'',
+                '\\' => '/',
+                c if (c as u32) < 0x20 || c as u32 == 0x7F => ' ',
+                c => c,
+            })
+            .collect()
+    }
+    let safe_title = sanitize(&title);
+    let safe_body = sanitize(&body);
     if safe_title.len() + safe_body.len() > 4096 {
         return Err(err_string(ToolError::invalid("notification text too long")));
     }
