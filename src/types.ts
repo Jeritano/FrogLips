@@ -60,10 +60,55 @@ export interface DirEntry {
   size?: number;
 }
 
+export interface DirListing {
+  entries: DirEntry[];
+  truncated: boolean;
+}
+
+export interface ReadResult {
+  content: string;
+  bytes_read: number;
+  total_bytes: number;
+  truncated: boolean;
+}
+
 export interface ShellResult {
   stdout: string;
   stderr: string;
   exit_code: number;
+  duration_ms: number;
+  timed_out: boolean;
+}
+
+export interface EditResult {
+  replacements: number;
+  new_size: number;
+}
+
+export interface ExistsResult {
+  exists: boolean;
+  kind?: "file" | "dir" | "symlink";
+  size?: number;
+}
+
+export interface SearchHit {
+  path: string;
+  line: number;
+  text: string;
+}
+
+export interface SearchResult {
+  hits: SearchHit[];
+  files_scanned: number;
+  truncated_hits: boolean;
+  truncated_scan: boolean;
+}
+
+export type ShellRisk = "normal" | "destructive" | "pipe-from-network" | "privileged";
+
+export interface ShellOpts {
+  cwd?: string;
+  env?: [string, string][];
 }
 
 export interface Memory {

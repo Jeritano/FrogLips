@@ -1281,3 +1281,96 @@ button.cancel {
   transition: opacity 0.15s;
 }
 .agent-confirm-allow:hover { opacity: 0.85; }
+
+.agent-metrics {
+  font-size: 11px;
+  font-family: var(--mono, monospace);
+  color: var(--text-muted);
+  padding: 2px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.agent-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 6px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.agent-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.agent-settings-label { color: var(--text-muted); min-width: 100px; }
+.agent-settings-value {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  word-break: break-all;
+  flex: 1;
+}
+.agent-settings-btn {
+  padding: 3px 10px;
+  background: var(--surface-hover);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.agent-settings-btn:hover { background: var(--accent-bg); color: var(--accent); }
+.agent-settings-hint { color: var(--text-muted); font-style: italic; }
+.agent-tool-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.agent-tool-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.agent-tool-pill.on { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+.agent-tool-pill.off { opacity: 0.5; }
+.agent-tool-pill input { margin: 0; }
+
+.agent-risk-badge {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.agent-risk-badge.risk-destructive { background: rgba(220,38,38,0.2); color: #ef4444; }
+.agent-risk-badge.risk-pipe-from-network { background: rgba(234,179,8,0.2); color: #eab308; }
+.agent-risk-badge.risk-privileged { background: rgba(234,179,8,0.2); color: #eab308; }
+
+.agent-confirm-box.risk-destructive { border: 2px solid #ef4444; }
+.agent-risk-warning {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: rgba(220,38,38,0.1);
+  border-left: 3px solid #ef4444;
+  color: #fca5a5;
+  font-size: 12px;
+  border-radius: 4px;
+}

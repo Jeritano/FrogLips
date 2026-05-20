@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
 import { runAgentLoop } from "../lib/agent-loop";
-import type { AgentStatus } from "../lib/agent-loop";
+import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
 import type { Conversation, Memory, Message, ServerStatus } from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
@@ -24,6 +24,29 @@ interface Props {
 interface ConfirmState {
   toolName: string;
   args: Record<string, unknown>;
+  risk: string;
+}
+
+const ALL_TOOL_NAMES = [
+  "read_file",
+  "list_dir",
+  "search_files",
+  "file_exists",
+  "run_shell",
+  "write_file",
+  "edit_file",
+] as const;
+
+function loadAllowlist(): string[] {
+  try {
+    const raw = localStorage.getItem("agent.allowlist");
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter((v) => typeof v === "string") : [];
+  } catch { return []; }
+}
+function saveAllowlist(list: string[]) {
+  localStorage.setItem("agent.allowlist", JSON.stringify(list));
 }
 
 function tmpKey(): string {
@@ -38,10 +61,21 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [agentMode, setAgentMode] = useState(false);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("idle");
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const [showAgentSettings, setShowAgentSettings] = useState(false);
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
+  const [workspaceErr, setWorkspaceErr] = useState<string | null>(null);
+  const [allowlist, setAllowlist] = useState<string[]>(() => loadAllowlist());
+  const [approveAllShell, setApproveAllShell] = useState(false);
+  const [approveAllWrite, setApproveAllWrite] = useState(false);
+  const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const creatingConvRef = useRef<Promise<Conversation> | null>(null);
   const convRef = useRef<Conversation | null>(null);
   const confirmResolveRef = useRef<((v: boolean) => void) | null>(null);
+
+  useEffect(() => {
+    api.agentGetWorkspace().then(setWorkspaceRoot).catch(() => {});
+  }, []);
 
   useEffect(() => {
     convRef.current = conversation;
@@ -75,10 +109,37 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
   /* ── Confirmation gate for dangerous agent tools ── */
 
-  function requestConfirmation(toolName: string, args: Record<string, unknown>): Promise<boolean> {
+  function requestConfirmation(
+    toolName: string,
+    args: Record<string, unknown>,
+    risk: string,
+  ): Promise<boolean> {
     return new Promise((resolve) => {
       confirmResolveRef.current = resolve;
-      setConfirmState({ toolName, args });
+      setConfirmState({ toolName, args, risk });
+    });
+  }
+
+  async function chooseWorkspace() {
+    setWorkspaceErr(null);
+    const path = window.prompt(
+      "Workspace root (agent confined to this dir; blank = full FS):",
+      workspaceRoot ?? "",
+    );
+    if (path === null) return;
+    try {
+      const set = await api.agentSetWorkspace(path.trim() || null);
+      setWorkspaceRoot(set);
+    } catch (e) {
+      setWorkspaceErr(String(e));
+    }
+  }
+
+  function toggleAllowed(name: string) {
+    setAllowlist((prev) => {
+      const next = prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name];
+      saveAllowlist(next);
+      return next;
     });
   }
 
@@ -152,18 +213,25 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     if (agentMode && status.backend === "ollama") {
       if (isStreamConvActive()) setAgentStatus("thinking");
       try {
+        setAgentMetrics(null);
         const finalText = await runAgentLoop({
           model: status.model,
           messages: historyForApi,
           conversationId: conv.id,
+          workspaceRoot,
+          toolAllowlist: allowlist,
+          approveAllShell,
+          approveAllWrite,
           onUpdate: (msgs) => {
             if (isStreamConvActive()) {
-              // Strip ephemeral system recall message from display
               setMessages(msgs.filter((m) => m.role !== "system"));
             }
           },
           onStatusChange: (s) => {
             if (isStreamConvActive()) setAgentStatus(s);
+          },
+          onMetrics: (m) => {
+            if (isStreamConvActive()) setAgentMetrics(m);
           },
           requestConfirmation,
           signal: ctrl.signal,
@@ -330,13 +398,76 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             </svg>
             Agent
           </button>
+          {agentMode && (
+            <button
+              className="agent-toggle"
+              onClick={() => setShowAgentSettings((v) => !v)}
+              disabled={isWorking}
+              title="Agent settings"
+            >
+              ⚙
+            </button>
+          )}
           {agentMode && agentStatus !== "idle" && (
             <span className={`agent-status-pill status-${agentStatus}`}>
               {agentStatus === "thinking" && "Thinking…"}
               {agentStatus === "tool" && "Running tool…"}
             </span>
           )}
+          {agentMetrics && agentMode && (
+            <span className="agent-metrics" title="iterations · tool calls · llm ms · tool ms · retries">
+              i{agentMetrics.iterations}·t{agentMetrics.toolCalls}·llm {Math.round(agentMetrics.totalLlmMs)}ms·tool {Math.round(agentMetrics.totalToolMs)}ms
+              {agentMetrics.retries > 0 && `·r${agentMetrics.retries}`}
+            </span>
+          )}
         </div>
+
+        {agentMode && showAgentSettings && (
+          <div className="agent-settings">
+            <div className="agent-settings-row">
+              <span className="agent-settings-label">Workspace:</span>
+              <code className="agent-settings-value">{workspaceRoot ?? "(full filesystem)"}</code>
+              <button className="agent-settings-btn" onClick={chooseWorkspace}>Set…</button>
+            </div>
+            {workspaceErr && <div className="error-bar">{workspaceErr}</div>}
+            <div className="agent-settings-row">
+              <span className="agent-settings-label">Approve all this session:</span>
+              <label>
+                <input type="checkbox" checked={approveAllShell}
+                       onChange={(e) => setApproveAllShell(e.target.checked)} />
+                shell (normal-risk only)
+              </label>
+              <label>
+                <input type="checkbox" checked={approveAllWrite}
+                       onChange={(e) => setApproveAllWrite(e.target.checked)} />
+                writes/edits
+              </label>
+            </div>
+            <div className="agent-settings-row">
+              <span className="agent-settings-label">Allowed tools:</span>
+              <span className="agent-settings-hint">
+                {allowlist.length === 0 ? "(all enabled)" : `${allowlist.length} selected`}
+              </span>
+            </div>
+            <div className="agent-tool-grid">
+              {ALL_TOOL_NAMES.map((n) => {
+                const enabled = allowlist.length === 0 || allowlist.includes(n);
+                return (
+                  <label key={n} className={`agent-tool-pill ${enabled ? "on" : "off"}`}>
+                    <input type="checkbox" checked={enabled}
+                           onChange={() => toggleAllowed(n)} />
+                    {n}
+                  </label>
+                );
+              })}
+            </div>
+            {allowlist.length > 0 && (
+              <button className="agent-settings-btn" onClick={() => { setAllowlist([]); saveAllowlist([]); }}>
+                Reset to all enabled
+              </button>
+            )}
+          </div>
+        )}
 
         <ChatInput
           disabled={!status?.running}
@@ -349,10 +480,20 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       {/* Tool confirmation modal */}
       {confirmState && (
         <div className="agent-confirm-overlay" onClick={(e) => e.target === e.currentTarget && handleConfirm(false)}>
-          <div className="agent-confirm-box">
+          <div className={`agent-confirm-box risk-${confirmState.risk}`}>
             <div className="agent-confirm-title">
               Allow <code>{confirmState.toolName}</code>?
+              {confirmState.risk !== "normal" && (
+                <span className={`agent-risk-badge risk-${confirmState.risk}`}>
+                  {confirmState.risk}
+                </span>
+              )}
             </div>
+            {confirmState.risk === "destructive" && (
+              <div className="agent-risk-warning">
+                ⚠ This command matches a known destructive pattern. Read carefully before approving.
+              </div>
+            )}
             <pre className="agent-confirm-args">
               {JSON.stringify(confirmState.args, null, 2)}
             </pre>

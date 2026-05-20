@@ -446,23 +446,69 @@ async fn find_duplicate_memory(
 /* ── Agent tool commands ── */
 
 #[tauri::command]
-async fn agent_read_file(path: String) -> Result<String, String> {
-    agent::read_file(path).await
+async fn agent_read_file(
+    path: String,
+    offset: Option<u64>,
+    limit: Option<u64>,
+) -> Result<agent::ReadResult, String> {
+    agent::read_file(path, offset, limit).await
 }
 
 #[tauri::command]
-async fn agent_list_dir(path: String) -> Result<Vec<agent::DirEntry>, String> {
+async fn agent_list_dir(path: String) -> Result<agent::DirListing, String> {
     agent::list_dir(path).await
 }
 
 #[tauri::command]
-async fn agent_run_shell(command: String) -> Result<agent::ShellResult, String> {
-    agent::run_shell(command).await
+async fn agent_run_shell(
+    command: String,
+    opts: Option<agent::ShellOpts>,
+) -> Result<agent::ShellResult, String> {
+    agent::run_shell(command, opts).await
 }
 
 #[tauri::command]
 async fn agent_write_file(path: String, content: String) -> Result<(), String> {
     agent::write_file(path, content).await
+}
+
+#[tauri::command]
+async fn agent_edit_file(
+    path: String,
+    old_string: String,
+    new_string: String,
+    replace_all: Option<bool>,
+) -> Result<agent::EditResult, String> {
+    agent::edit_file(path, old_string, new_string, replace_all).await
+}
+
+#[tauri::command]
+async fn agent_file_exists(path: String) -> Result<agent::ExistsResult, String> {
+    agent::file_exists(path).await
+}
+
+#[tauri::command]
+async fn agent_search_files(
+    path: String,
+    pattern: String,
+    glob: Option<String>,
+) -> Result<agent::SearchResult, String> {
+    agent::search_files(path, pattern, glob).await
+}
+
+#[tauri::command]
+fn agent_classify_shell(command: String) -> String {
+    agent::classify_shell_risk(&command).to_string()
+}
+
+#[tauri::command]
+fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, String> {
+    agent::set_workspace_root(path)
+}
+
+#[tauri::command]
+fn agent_get_workspace() -> Option<String> {
+    agent::get_workspace_root()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -563,6 +609,12 @@ pub fn run() {
             agent_list_dir,
             agent_run_shell,
             agent_write_file,
+            agent_edit_file,
+            agent_file_exists,
+            agent_search_files,
+            agent_classify_shell,
+            agent_set_workspace,
+            agent_get_workspace,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

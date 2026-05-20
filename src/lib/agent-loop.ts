@@ -2,42 +2,48 @@ import { api } from "./tauri-api";
 import type { Message, ToolCall } from "../types";
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Agentic loop for locally-running tool-calling models (e.g. Hermes 3, Qwen3,
-   Mistral-Nemo) via Ollama's /api/chat endpoint.
+   Agentic loop for locally-running tool-calling models via Ollama's /api/chat.
 
    Flow per iteration:
    1. POST messages + tool defs to Ollama (non-streaming)
-   2. If response has tool_calls → confirm dangerous ones → execute → inject results → loop
+   2. If response has tool_calls → confirm dangerous ones → execute → loop
    3. If no tool_calls → that's the final text answer → return it
    ──────────────────────────────────────────────────────────────────────────── */
 
 const OLLAMA_BASE = "http://127.0.0.1:11434";
 const MAX_ITERATIONS = 20;
-
-const AGENT_SYSTEM_PROMPT = `You are an autonomous agent running on the user's local machine with direct access to their filesystem and shell via tools.
-
-Available tools:
-- read_file(path): read a file's contents
-- list_dir(path): list directory entries
-- run_shell(command): execute a shell command via sh -c (e.g. "open -a Safari https://example.com" on macOS)
-- write_file(path, content): write a file
-
-Rules:
-1. When the user asks you to do something actionable on the system (open an app, read files, run a command, modify files), CALL THE TOOLS. Do not just describe what you would do.
-2. Never claim you "don't have access" or "can't" perform an action — you have full tool access. Use it.
-3. Chain tool calls as needed. After each result, decide the next step.
-4. Only respond with prose when (a) you've completed the task and are reporting results, or (b) you genuinely need clarification from the user.
-5. The host OS is macOS (Darwin). Use macOS-native commands (e.g. \`open\` to launch apps/URLs).`;
+const DEDUPE_WINDOW = 3;
+const RETRY_MAX = 2;
+const RETRY_BACKOFF_MS = 500;
 
 export type AgentStatus = "idle" | "thinking" | "tool" | "done" | "error";
+
+export interface AgentMetrics {
+  iterations: number;
+  toolCalls: number;
+  totalToolMs: number;
+  totalLlmMs: number;
+  retries: number;
+}
 
 export interface AgentRunOptions {
   model: string;
   messages: Message[];
   conversationId: number;
+  workspaceRoot: string | null;
+  /** Tools the user has allowed for this conversation. Empty = all allowed. */
+  toolAllowlist?: string[];
+  /** Session-scoped flags: dangerous tools auto-approved if true. */
+  approveAllShell?: boolean;
+  approveAllWrite?: boolean;
   onUpdate: (msgs: Message[]) => void;
   onStatusChange: (status: AgentStatus) => void;
-  requestConfirmation: (toolName: string, args: Record<string, unknown>) => Promise<boolean>;
+  onMetrics?: (m: AgentMetrics) => void;
+  requestConfirmation: (
+    toolName: string,
+    args: Record<string, unknown>,
+    risk: string,
+  ) => Promise<boolean>;
   signal: AbortSignal;
 }
 
@@ -48,11 +54,14 @@ const TOOLS = [
     type: "function",
     function: {
       name: "read_file",
-      description: "Read the text contents of a file. Returns the content, truncated at 64 KB for large files.",
+      description:
+        "Read text contents of a file. Supports pagination via offset/limit (bytes). Returns content, bytes_read, total_bytes, truncated.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute path or ~/relative path to the file." },
+          path: { type: "string", description: "Absolute path or ~/relative path." },
+          offset: { type: "number", description: "Byte offset to start reading (default 0)." },
+          limit: { type: "number", description: "Max bytes to read (default 65536)." },
         },
         required: ["path"],
       },
@@ -62,11 +71,12 @@ const TOOLS = [
     type: "function",
     function: {
       name: "list_dir",
-      description: "List the contents of a directory. Returns an array of entries with name, kind (file/dir/symlink), and size in bytes.",
+      description:
+        "List directory entries (max 500). Returns {entries: [{name, kind, size}], truncated}.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute path or ~/relative path to the directory." },
+          path: { type: "string", description: "Absolute path or ~/relative path." },
         },
         required: ["path"],
       },
@@ -75,12 +85,46 @@ const TOOLS = [
   {
     type: "function",
     function: {
-      name: "run_shell",
-      description: "Execute a shell command via sh -c. Returns stdout, stderr, and exit_code. Times out after 30 s. ALWAYS requires explicit user approval.",
+      name: "search_files",
+      description:
+        "Search for a literal text pattern across files under a directory (line-grep, recursive). Skips .git/node_modules/target/etc.",
       parameters: {
         type: "object",
         properties: {
-          command: { type: "string", description: "Shell command string (passed verbatim to sh -c)." },
+          path: { type: "string", description: "Root directory to search." },
+          pattern: { type: "string", description: "Literal text to find." },
+          glob: {
+            type: "string",
+            description: "Optional filename glob, e.g. '*.ts' or '*.py'. Defaults to '*'.",
+          },
+        },
+        required: ["path", "pattern"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "file_exists",
+      description: "Check whether a path exists; returns {exists, kind, size}.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_shell",
+      description:
+        "Execute a shell command via sh -c. Optional cwd + env. 30s timeout. ALWAYS requires user approval. Returns stdout, stderr, exit_code, duration_ms, timed_out.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "Shell command string passed to sh -c." },
+          cwd: { type: "string", description: "Optional working directory." },
         },
         required: ["command"],
       },
@@ -90,65 +134,148 @@ const TOOLS = [
     type: "function",
     function: {
       name: "write_file",
-      description: "Write text content to a file, creating parent directories as needed. ALWAYS requires explicit user approval.",
+      description:
+        "Write text content to a file, creating parents. ALWAYS requires user approval. Prefer edit_file for changes to existing files.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute path or ~/relative path to write to." },
-          content: { type: "string", description: "Text content to write." },
+          path: { type: "string" },
+          content: { type: "string" },
         },
         required: ["path", "content"],
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "edit_file",
+      description:
+        "Find-and-replace edit on an existing file. old_string must appear exactly once unless replace_all=true. Returns {replacements, new_size}. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          old_string: { type: "string" },
+          new_string: { type: "string" },
+          replace_all: { type: "boolean" },
+        },
+        required: ["path", "old_string", "new_string"],
+      },
+    },
+  },
 ] as const;
 
-const DANGEROUS_TOOLS = new Set(["run_shell", "write_file"]);
+const DANGEROUS_TOOLS = new Set(["run_shell", "write_file", "edit_file"]);
+const SHELL_TOOL = "run_shell";
+const WRITE_TOOLS = new Set(["write_file", "edit_file"]);
 
 /* ── Tool execution ── */
 
-function parseArgs(raw: unknown): Record<string, unknown> {
+function parseArgs(raw: unknown): { ok: true; args: Record<string, unknown> } | { ok: false; err: string } {
   if (typeof raw === "string") {
-    try { return JSON.parse(raw); } catch { return {}; }
+    try {
+      return { ok: true, args: JSON.parse(raw) };
+    } catch (e) {
+      return { ok: false, err: `Could not parse tool arguments as JSON: ${e}` };
+    }
   }
-  if (raw != null && typeof raw === "object") return raw as Record<string, unknown>;
-  return {};
+  if (raw != null && typeof raw === "object") {
+    return { ok: true, args: raw as Record<string, unknown> };
+  }
+  return { ok: true, args: {} };
+}
+
+function formatToolError(raw: unknown): string {
+  const s = String((raw as { message?: string })?.message ?? raw);
+  try {
+    const parsed = JSON.parse(s);
+    if (parsed && typeof parsed === "object" && parsed.kind && parsed.message) {
+      return JSON.stringify({ ok: false, kind: parsed.kind, message: parsed.message });
+    }
+  } catch {/* fallthrough */}
+  return JSON.stringify({ ok: false, kind: "unknown", message: s });
 }
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
   switch (name) {
-    case "read_file":
-      return api.agentReadFile(String(args.path ?? ""));
-
+    case "read_file": {
+      const r = await api.agentReadFile(
+        String(args.path ?? ""),
+        typeof args.offset === "number" ? args.offset : undefined,
+        typeof args.limit === "number" ? args.limit : undefined,
+      );
+      return JSON.stringify(r);
+    }
     case "list_dir": {
-      const entries = await api.agentListDir(String(args.path ?? ""));
-      return JSON.stringify(entries, null, 2);
+      const r = await api.agentListDir(String(args.path ?? ""));
+      return JSON.stringify(r);
     }
-
+    case "search_files": {
+      const r = await api.agentSearchFiles(
+        String(args.path ?? ""),
+        String(args.pattern ?? ""),
+        args.glob ? String(args.glob) : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "file_exists": {
+      const r = await api.agentFileExists(String(args.path ?? ""));
+      return JSON.stringify(r);
+    }
     case "run_shell": {
-      const r = await api.agentRunShell(String(args.command ?? ""));
-      const parts: string[] = [];
-      if (r.stdout) parts.push(`stdout:\n${r.stdout}`);
-      if (r.stderr) parts.push(`stderr:\n${r.stderr}`);
-      parts.push(`exit_code: ${r.exit_code}`);
-      return parts.join("\n\n") || "(no output)";
+      const cwd = args.cwd ? String(args.cwd) : undefined;
+      const r = await api.agentRunShell(String(args.command ?? ""), cwd ? { cwd } : undefined);
+      return JSON.stringify(r);
     }
-
     case "write_file":
       await api.agentWriteFile(String(args.path ?? ""), String(args.content ?? ""));
-      return `Successfully wrote to ${args.path}`;
-
+      return JSON.stringify({ ok: true, path: args.path });
+    case "edit_file": {
+      const r = await api.agentEditFile(
+        String(args.path ?? ""),
+        String(args.old_string ?? ""),
+        String(args.new_string ?? ""),
+        typeof args.replace_all === "boolean" ? args.replace_all : undefined,
+      );
+      return JSON.stringify(r);
+    }
     default:
-      return `Unknown tool: ${name}`;
+      return JSON.stringify({ ok: false, kind: "unknown_tool", message: `Unknown tool: ${name}` });
   }
 }
 
-/* ── Ollama message serialisation ── */
+/* ── Dynamic system prompt ── */
+
+function buildSystemPrompt(workspaceRoot: string | null, allowlist: string[]): string {
+  const tools = allowlist.length
+    ? TOOLS.filter((t) => allowlist.includes(t.function.name)).map((t) => t.function.name)
+    : TOOLS.map((t) => t.function.name);
+  const ws = workspaceRoot
+    ? `Workspace root: ${workspaceRoot} — all file access is confined to this directory.`
+    : "No workspace root set — you have full filesystem access (within OS permissions).";
+  return `You are an autonomous agent running on the user's local machine.
+
+${ws}
+Host OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).
+
+Available tools: ${tools.join(", ")}
+
+Rules:
+1. When the user asks you to do something actionable (open an app, read files, run a command, modify files), CALL THE TOOLS. Don't describe what you would do.
+2. You have full tool access — never claim you "can't".
+3. Prefer edit_file over write_file for existing files (smaller, safer).
+4. After each tool result (returned as JSON), inspect it before deciding the next step.
+5. If a tool returns {"ok": false, "kind": "...", "message": "..."}, read the kind and adapt — e.g. on "not_found" try a different path, on "outside_workspace" stay in scope.
+6. Only respond with prose when (a) you've completed the task and are reporting results, or (b) you genuinely need clarification.
+7. Don't loop: if you've called the same tool with the same arguments twice, try a different approach.`;
+}
+
+/* ── Message serialisation ── */
 
 function toOllamaMessages(msgs: Message[]) {
   return msgs.map((m) => {
     if (m.role === "tool") {
-      // Ollama tool result format
       return { role: "tool" as const, content: m.content };
     }
     if (m.tool_calls?.length) {
@@ -162,71 +289,162 @@ function makeTmpKey() {
   return `tmp:${crypto.randomUUID()}`;
 }
 
+function toolCallSig(tc: ToolCall): string {
+  const name = tc.function?.name ?? "";
+  const args = tc.function?.arguments;
+  const argStr = typeof args === "string" ? args : JSON.stringify(args ?? {});
+  return `${name}::${argStr}`;
+}
+
+async function callOllamaWithRetry(
+  url: string,
+  body: unknown,
+  signal: AbortSignal,
+  onRetry: () => void,
+): Promise<Record<string, unknown>> {
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= RETRY_MAX; attempt++) {
+    if (signal.aborted) throw new Error("aborted");
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (res.status >= 500 && attempt < RETRY_MAX) {
+        onRetry();
+        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
+        continue;
+      }
+      if (!res.ok) {
+        throw new Error(`Ollama ${res.status}: ${await res.text().catch(() => "")}`);
+      }
+      return (await res.json()) as Record<string, unknown>;
+    } catch (e) {
+      lastErr = e;
+      if (signal.aborted) throw e;
+      // network / fetch errors retry up to RETRY_MAX
+      if (attempt < RETRY_MAX) {
+        onRetry();
+        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr ?? new Error("Ollama call failed");
+}
+
 /* ── Main loop ── */
 
-/**
- * Runs the agentic tool-calling loop.
- * Returns the final assistant response text, or null if aborted / limit hit.
- */
 export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null> {
-  const { model, onUpdate, onStatusChange, requestConfirmation, signal } = opts;
+  const {
+    model, onUpdate, onStatusChange, onMetrics, requestConfirmation, signal,
+    workspaceRoot, toolAllowlist = [], approveAllShell, approveAllWrite,
+  } = opts;
   const msgs: Message[] = [...opts.messages];
 
-  // Inject agent system prompt at the front. If a system message already
-  // exists (e.g. memory recall block), prepend so the agent prompt is read first.
   const sysMsg: Message = {
     conversation_id: opts.conversationId,
     role: "system",
-    content: AGENT_SYSTEM_PROMPT,
+    content: buildSystemPrompt(workspaceRoot, toolAllowlist),
   };
   msgs.unshift(sysMsg);
 
+  const metrics: AgentMetrics = {
+    iterations: 0,
+    toolCalls: 0,
+    totalToolMs: 0,
+    totalLlmMs: 0,
+    retries: 0,
+  };
+  const recentSigs: string[] = [];
+
   onStatusChange("thinking");
+
+  // Filter tool defs by allowlist
+  const tools = toolAllowlist.length
+    ? TOOLS.filter((t) => toolAllowlist.includes(t.function.name))
+    : TOOLS;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     if (signal.aborted) return null;
+    metrics.iterations = i + 1;
 
+    const llmStart = performance.now();
     let data: Record<string, unknown>;
     try {
-      const res = await fetch(`${OLLAMA_BASE}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      data = await callOllamaWithRetry(
+        `${OLLAMA_BASE}/api/chat`,
+        {
           model,
           stream: false,
           options: { temperature: 0.4 },
           messages: toOllamaMessages(msgs),
-          tools: TOOLS,
-        }),
+          tools,
+        },
         signal,
-      });
-      if (!res.ok) {
-        throw new Error(`Ollama ${res.status}: ${await res.text().catch(() => "")}`);
-      }
-      data = await res.json() as Record<string, unknown>;
+        () => { metrics.retries++; },
+      );
     } catch (e) {
       if (signal.aborted) return null;
       throw e;
     }
+    metrics.totalLlmMs += performance.now() - llmStart;
+    onMetrics?.({ ...metrics });
 
     const message = data?.message as Record<string, unknown> | undefined;
     if (!message) throw new Error("No message in Ollama response");
 
     const toolCalls = (message.tool_calls as ToolCall[] | undefined) ?? [];
+    const preludeText = String(message.content ?? "");
 
     if (toolCalls.length === 0) {
       // Final text response
-      const content = String(message.content ?? "");
       const finalMsg: Message = {
         _tmpKey: makeTmpKey(),
         conversation_id: opts.conversationId,
         role: "assistant",
-        content,
+        content: preludeText,
       };
       msgs.push(finalMsg);
       onUpdate([...msgs]);
       onStatusChange("done");
-      return content;
+      return preludeText;
+    }
+
+    // Dedupe: if every tool call this turn was already seen in the recent window,
+    // inject a hint and break.
+    const sigs = toolCalls.map(toolCallSig);
+    const allRepeated = sigs.every((s) => recentSigs.includes(s));
+    if (allRepeated && recentSigs.length > 0) {
+      msgs.push({
+        _tmpKey: makeTmpKey(),
+        conversation_id: opts.conversationId,
+        role: "assistant",
+        content: preludeText,
+        tool_calls: toolCalls,
+      });
+      msgs.push({
+        _tmpKey: makeTmpKey(),
+        conversation_id: opts.conversationId,
+        role: "tool",
+        content: JSON.stringify({
+          ok: false,
+          kind: "duplicate_call",
+          message:
+            "You just called this exact tool with these exact arguments. Try a different approach or report what you've learned to the user.",
+        }),
+        tool_call_id: toolCalls[0]?.id ?? "dedupe",
+        tool_name: toolCalls[0]?.function?.name ?? "",
+      });
+      onUpdate([...msgs]);
+      continue;
+    }
+    for (const s of sigs) {
+      recentSigs.push(s);
+      while (recentSigs.length > DEDUPE_WINDOW * 2) recentSigs.shift();
     }
 
     // Assistant turn with tool calls
@@ -234,42 +452,93 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       _tmpKey: makeTmpKey(),
       conversation_id: opts.conversationId,
       role: "assistant",
-      content: String(message.content ?? ""),
+      content: preludeText,
       tool_calls: toolCalls,
     };
     msgs.push(asstMsg);
     onUpdate([...msgs]);
     onStatusChange("tool");
 
-    // Execute each tool call
     for (const tc of toolCalls) {
       if (signal.aborted) return null;
 
       const fnName = tc.function?.name ?? "";
-      const args = parseArgs(tc.function?.arguments);
 
+      // Allowlist gate
+      if (toolAllowlist.length && !toolAllowlist.includes(fnName)) {
+        msgs.push({
+          _tmpKey: makeTmpKey(),
+          conversation_id: opts.conversationId,
+          role: "tool",
+          content: JSON.stringify({
+            ok: false,
+            kind: "tool_not_allowed",
+            message: `Tool '${fnName}' is not enabled for this conversation.`,
+          }),
+          tool_call_id: tc.id,
+          tool_name: fnName,
+        });
+        onUpdate([...msgs]);
+        continue;
+      }
+
+      const parsed = parseArgs(tc.function?.arguments);
+      if (!parsed.ok) {
+        msgs.push({
+          _tmpKey: makeTmpKey(),
+          conversation_id: opts.conversationId,
+          role: "tool",
+          content: JSON.stringify({ ok: false, kind: "bad_arguments", message: parsed.err }),
+          tool_call_id: tc.id,
+          tool_name: fnName,
+        });
+        onUpdate([...msgs]);
+        continue;
+      }
+      const args = parsed.args;
+
+      // Confirmation gate for dangerous tools
       if (DANGEROUS_TOOLS.has(fnName)) {
-        const approved = await requestConfirmation(fnName, args);
-        if (!approved) {
-          msgs.push({
-            _tmpKey: makeTmpKey(),
-            conversation_id: opts.conversationId,
-            role: "tool",
-            content: "User denied this tool call.",
-            tool_call_id: tc.id,
-            tool_name: fnName,
-          });
-          onUpdate([...msgs]);
-          continue;
+        let risk = "normal";
+        if (fnName === SHELL_TOOL) {
+          try {
+            risk = await api.agentClassifyShell(String(args.command ?? ""));
+          } catch {/* keep normal */}
+        }
+        const sessionApproved =
+          (fnName === SHELL_TOOL && approveAllShell && risk === "normal") ||
+          (WRITE_TOOLS.has(fnName) && approveAllWrite);
+        if (!sessionApproved) {
+          const approved = await requestConfirmation(fnName, args, risk);
+          if (!approved) {
+            msgs.push({
+              _tmpKey: makeTmpKey(),
+              conversation_id: opts.conversationId,
+              role: "tool",
+              content: JSON.stringify({
+                ok: false,
+                kind: "user_denied",
+                message: "User denied this tool call.",
+              }),
+              tool_call_id: tc.id,
+              tool_name: fnName,
+            });
+            onUpdate([...msgs]);
+            continue;
+          }
         }
       }
 
+      const toolStart = performance.now();
       let result: string;
       try {
         result = await executeTool(fnName, args);
       } catch (e) {
-        result = `Error: ${e}`;
+        result = formatToolError(e);
       }
+      metrics.totalToolMs += performance.now() - toolStart;
+      metrics.toolCalls++;
+      onMetrics?.({ ...metrics });
 
       msgs.push({
         _tmpKey: makeTmpKey(),
@@ -285,7 +554,6 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     onStatusChange("thinking");
   }
 
-  // Hit iteration cap
   const limitMsg: Message = {
     _tmpKey: makeTmpKey(),
     conversation_id: opts.conversationId,

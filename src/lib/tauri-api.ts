@@ -2,10 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AllModels,
   Conversation,
-  DirEntry,
+  DirListing,
+  EditResult,
+  ExistsResult,
   Memory,
   Message,
+  ReadResult,
+  SearchResult,
   ServerStatus,
+  ShellOpts,
   ShellResult,
 } from "../types";
 
@@ -75,12 +80,29 @@ export const api = {
     invoke<number | null>("find_duplicate_memory", { embedding, threshold: threshold ?? 0.85 }),
 
   // Agent tools
-  agentReadFile: (path: string) =>
-    invoke<string>("agent_read_file", { path }),
+  agentReadFile: (path: string, offset?: number, limit?: number) =>
+    invoke<ReadResult>("agent_read_file", { path, offset: offset ?? null, limit: limit ?? null }),
   agentListDir: (path: string) =>
-    invoke<DirEntry[]>("agent_list_dir", { path }),
-  agentRunShell: (command: string) =>
-    invoke<ShellResult>("agent_run_shell", { command }),
+    invoke<DirListing>("agent_list_dir", { path }),
+  agentRunShell: (command: string, opts?: ShellOpts) =>
+    invoke<ShellResult>("agent_run_shell", { command, opts: opts ?? null }),
   agentWriteFile: (path: string, content: string) =>
     invoke<void>("agent_write_file", { path, content }),
+  agentEditFile: (path: string, oldString: string, newString: string, replaceAll?: boolean) =>
+    invoke<EditResult>("agent_edit_file", {
+      path,
+      oldString,
+      newString,
+      replaceAll: replaceAll ?? null,
+    }),
+  agentFileExists: (path: string) =>
+    invoke<ExistsResult>("agent_file_exists", { path }),
+  agentSearchFiles: (path: string, pattern: string, glob?: string) =>
+    invoke<SearchResult>("agent_search_files", { path, pattern, glob: glob ?? null }),
+  agentClassifyShell: (command: string) =>
+    invoke<string>("agent_classify_shell", { command }),
+  agentSetWorkspace: (path: string | null) =>
+    invoke<string | null>("agent_set_workspace", { path }),
+  agentGetWorkspace: () =>
+    invoke<string | null>("agent_get_workspace"),
 };
