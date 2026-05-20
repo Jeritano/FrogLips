@@ -4,6 +4,32 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.15] — 2026-05-20
+
+### Added (v1.3 batch B — v1.3 sprint complete)
+- **Conversation branching**: fork from any user message → new conversation with messages up to cutoff deep-copied. Idempotent SQLite migration adds `parent_conv_id` + `parent_message_id` columns. Three Tauri cmds (`conversation_fork`, `conversation_list_branches`, `conversation_fork_tree`, depth-cap 10). "🌿 Fork from here" button on each user message in MessageList. Sidebar indents children under parent w/ `↳` marker. New "🌳 Branches" button opens `ForkTree.tsx` modal w/ click-to-select tree view.
+- **Menu-bar quick prompt**: `Cmd+Shift+L` global hotkey + tray menu item open a 600×120 frameless always-on-top window centered on screen. Auto-focused textarea, Enter to submit, Shift+Enter newline, Esc to hide. Streams response via MLX or Ollama (whichever is default). Strict ephemeral — no DB writes, no memory recall. Main window flashes "Quick reply ready ↗" toast on completion. Added `tauri-plugin-global-shortcut = "2"`.
+- **Multi-window mode**: detach any conversation into its own window via `⧉` button next to each sidebar row. New Tauri cmds `open_conversation_window(conversation_id, title?)` (dedup-by-label so double-click focuses existing) + `list_open_conversation_windows`. `main.tsx` branches on `?detached=1&conversation_id=N` URL → renders `DetachedChatView` instead of full App. Cross-window sync via `conversation-updated` Tauri event emitted after `add_message`/`delete_message`. Each window has its own React tree; no state-management lib.
+
+### Fixed
+- `QuickPrompt.test.tsx` vi.mock hoisting bug (`Cannot access 'invokeMock' before initialization`) — wrapped mock setup in `vi.hoisted()`. Also fixed textarea-value React-tracking issue by using the native setter so `onChange` fires correctly.
+
+### v1.3 sprint complete (6/6)
+| # | Item | Shipped |
+|---|---|---|
+| 23 | Prompt library + slash commands | v0.9.14 |
+| 24 | Multi-modal vision input | v0.9.14 |
+| 26 | Usage dashboard | v0.9.14 |
+| 22 | Conversation branching | v0.9.15 |
+| 25 | Menu-bar quick prompt | v0.9.15 |
+| 27 | Multi-window mode | v0.9.15 |
+
+### Tests
+- Rust: **72 passing** (was 67). +3 fork, +2 multi-window.
+- Vitest: **129 passing** (was 112). +4 fork, +10 detached-params, +3 QuickPrompt.
+- Playwright: **11 passing** (unchanged).
+- **Grand total: 212 tests across 3 runners.**
+
 ## [0.9.14] — 2026-05-20
 
 ### Added (v1.3 batch A)

@@ -15,6 +15,12 @@ interface Props {
   agentStatus?: AgentStatus;
   onRegenerate?: () => void;
   onEditUser?: (msg: Message) => void;
+  /**
+   * Invoked when the user confirms a fork from a specific message. The host
+   * is expected to call `api.conversationFork`, refresh the conversation
+   * list, and switch the active selection to the new fork.
+   */
+  onFork?: (msg: Message) => void;
 }
 
 interface Row {
@@ -149,9 +155,12 @@ interface RowProps {
   canPinConversation: boolean;
   onRegenerate?: () => void;
   onEditUser?: (m: Message) => void;
+  /** Whether fork-from-here is currently offered (needs persisted msg + conv). */
+  canFork: boolean;
+  onFork?: (m: Message) => void;
 }
 
-function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowKey, canPinProject, canPinConversation, onRegenerate, onEditUser }: RowProps) {
+function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowKey, canPinProject, canPinConversation, onRegenerate, onEditUser, canFork, onFork }: RowProps) {
   if (msg.role === "tool") {
     return <ToolResultBlockMemo name={msg.tool_name} content={msg.content} />;
   }
@@ -203,8 +212,39 @@ function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowK
           canPinProject={canPinProject}
           canPinConversation={canPinConversation}
         />
+        {isUser && canFork && onFork && (
+          <ForkButton msg={msg} onFork={onFork} />
+        )}
       </div>
     </>
+  );
+}
+
+/**
+ * Per-message "Fork from here" button. Renders only on user-role messages
+ * (per spec). Wraps the click in a `confirm()` modal so accidental clicks
+ * don't spawn stray forks.
+ */
+function ForkButton({ msg, onFork }: { msg: Message; onFork: (m: Message) => void }) {
+  const handle = useCallback(() => {
+    // Native confirm — keeps the component dependency-free. The host wires up
+    // the actual fork call + conversation selection.
+    const ok = typeof window !== "undefined" && typeof window.confirm === "function"
+      ? window.confirm("Create a new conversation starting from this point?")
+      : true;
+    if (ok) onFork(msg);
+  }, [msg, onFork]);
+  return (
+    <button
+      type="button"
+      data-testid="fork-btn"
+      className="fork-btn"
+      onClick={handle}
+      title="Fork from here — start a new conversation seeded with messages up to this point"
+      aria-label="Fork from here"
+    >
+      🌿 Fork from here
+    </button>
   );
 }
 
@@ -285,7 +325,7 @@ const StreamingMessage = memo(function StreamingMessage({ text }: { text: string
   );
 });
 
-export function MessageList({ messages, streaming, conversationId, workspaceRoot, currentModel, agentStatus, onRegenerate, onEditUser }: Props) {
+export function MessageList({ messages, streaming, conversationId, workspaceRoot, currentModel, agentStatus, onRegenerate, onEditUser, onFork }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef<number | null>(null);
   const [pinned, setPinned] = useState<Set<string>>(new Set());
@@ -347,6 +387,9 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
 
   const canPinProject = !!workspaceRoot;
   const canPinConversation = conversationId != null;
+  // Forking requires both a persisted conversation AND a persisted message id —
+  // an in-flight (still-streaming) message has no id to use as the cutoff.
+  const canForkBase = conversationId != null && !!onFork;
 
   const showEndFooter =
     messages.length > 0 && streaming === undefined && agentStatus === "idle" && lastAsstModel;
@@ -368,6 +411,8 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
             canPinConversation={canPinConversation}
             onRegenerate={onRegenerate}
             onEditUser={onEditUser}
+            canFork={canForkBase && m.id != null}
+            onFork={onFork}
           />
         </div>
       ))}

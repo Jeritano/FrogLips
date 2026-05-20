@@ -26,6 +26,28 @@ export interface Conversation {
   title: string;
   model: string | null;
   created_at: number;
+  /** Source conversation id when this conv was forked from another. */
+  parent_conv_id?: number | null;
+  /** Cutoff message id from the parent — messages with id ≤ this were copied. */
+  parent_message_id?: number | null;
+}
+
+/** Direct-child branch summary, returned by `conversationListBranches`. */
+export interface BranchInfo {
+  id: number;
+  title: string;
+  created_at: number;
+  parent_message_id?: number | null;
+}
+
+/** Recursive fork tree, returned by `conversationForkTree`. */
+export interface ForkTree {
+  id: number;
+  title: string;
+  created_at: number;
+  parent_conv_id?: number | null;
+  parent_message_id?: number | null;
+  children: ForkTree[];
 }
 
 export interface ToolCall {

@@ -4,6 +4,7 @@ import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/ap
 import { api } from "./lib/tauri-api";
 import { configureMemory } from "./lib/memory-client";
 import type { Conversation, ServerStatus } from "./types";
+import { ForkTreeModal } from "./components/ForkTree";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
@@ -22,6 +23,7 @@ function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [convSearch, setConvSearch] = useState("");
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [forkTreeOpen, setForkTreeOpen] = useState(false);
   const editInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -155,6 +157,45 @@ function App() {
     !convSearch.trim() || c.title.toLowerCase().includes(convSearch.trim().toLowerCase()),
   );
 
+  /**
+   * Order conversations as a forest: each root is followed immediately by its
+   * descendants (BFS-ordered) so the sidebar reads top-down as "root → branches".
+   * Returns rows annotated with a depth count so the renderer can indent and
+   * prefix children with `↳`. Cycle-safe via a visited set (paranoid — a
+   * conversation cannot legally fork itself but bad data shouldn't lock the UI).
+   */
+  const orderedConversations = (() => {
+    const byParent = new Map<number | null, Conversation[]>();
+    for (const c of filteredConversations) {
+      const parent = c.parent_conv_id ?? null;
+      const arr = byParent.get(parent) ?? [];
+      arr.push(c);
+      byParent.set(parent, arr);
+    }
+    const knownIds = new Set(filteredConversations.map((c) => c.id));
+    // A conv is a "root" for sidebar purposes if its parent isn't in the
+    // currently-visible (search-filtered) list — that way filtered children
+    // still appear at depth 0 rather than vanishing.
+    const roots = filteredConversations.filter((c) =>
+      c.parent_conv_id == null || !knownIds.has(c.parent_conv_id),
+    );
+    const out: { conv: Conversation; depth: number }[] = [];
+    const visited = new Set<number>();
+    const walk = (c: Conversation, depth: number) => {
+      if (visited.has(c.id)) return;
+      visited.add(c.id);
+      out.push({ conv: c, depth });
+      const kids = byParent.get(c.id) ?? [];
+      for (const k of kids) walk(k, depth + 1);
+    };
+    for (const r of roots) walk(r, 0);
+    // Any orphan that didn't get walked (shouldn't happen, but…) — append.
+    for (const c of filteredConversations) {
+      if (!visited.has(c.id)) out.push({ conv: c, depth: 0 });
+    }
+    return out;
+  })();
+
   async function deleteConv(id: number) {
     try {
       await api.deleteConversation(id);
@@ -222,14 +263,16 @@ function App() {
           </div>
         )}
         <ul className="conv-list" data-testid="conv-list">
-          {filteredConversations.map((c) => (
+          {orderedConversations.map(({ conv: c, depth }) => (
             <li
               key={c.id}
               data-testid="conv-item"
+              data-depth={depth}
               className={current?.id === c.id ? "active" : ""}
               onClick={() => editingId !== c.id && setCurrent(c)}
               onDoubleClick={(e) => startEdit(c, e)}
-              title="Double-click to rename"
+              title={depth > 0 ? "Branch — forked from another conversation" : "Double-click to rename"}
+              style={depth > 0 ? { paddingLeft: 8 + depth * 14 } : undefined}
             >
               {editingId === c.id ? (
                 <input
@@ -246,8 +289,29 @@ function App() {
                   autoFocus
                 />
               ) : (
-                <span className="conv-title">{c.title}</span>
+                <span className="conv-title">
+                  {depth > 0 && (
+                    <span className="conv-branch-marker" aria-hidden="true">↳ </span>
+                  )}
+                  {c.title}
+                </span>
               )}
+              <button
+                className="del detach"
+                title="Open in a new window"
+                aria-label="Detach into new window"
+                data-testid="detach-conv"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // Fire-and-forget; the Rust side focuses an existing
+                  // window when one already exists for this conv id.
+                  api.openConversationWindow(c.id, c.title).catch((err) => {
+                    setErr(`Failed to open window: ${err}`);
+                  });
+                }}
+              >
+                ⧉
+              </button>
               <button
                 className="del"
                 title="Delete"
@@ -276,6 +340,18 @@ function App() {
           <span aria-hidden="true">📊</span>
           Dashboard
         </button>
+        {current && (
+          <button
+            type="button"
+            className="dashboard-btn"
+            data-testid="open-fork-tree"
+            onClick={() => setForkTreeOpen(true)}
+            title="Visualize the fork tree rooted at the current conversation"
+          >
+            <span aria-hidden="true">🌳</span>
+            Branches
+          </button>
+        )}
       </aside>
       <main className="main">
         <header>
@@ -289,9 +365,30 @@ function App() {
             refreshConversations().catch(() => {});
           }}
           onMemoriesChanged={() => setMemoryTick((t) => t + 1)}
+          onForked={async (newConvId) => {
+            // Pull the refreshed list, then switch the active selection to
+            // the freshly-created fork so the user lands inside the new
+            // branch with all copied messages already populated.
+            await refreshConversations();
+            try {
+              const all = await api.listConversations();
+              const created = all.find((c) => c.id === newConvId);
+              if (created) setCurrent(created);
+            } catch {/* ignore — sidebar still reflects the new conv */}
+          }}
         />
       </main>
       <Dashboard open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
+      <ForkTreeModal
+        open={forkTreeOpen}
+        onClose={() => setForkTreeOpen(false)}
+        rootId={current?.id ?? null}
+        onSelect={(id) => {
+          const c = conversations.find((x) => x.id === id);
+          if (c) setCurrent(c);
+          setForkTreeOpen(false);
+        }}
+      />
     </div>
   );
 }

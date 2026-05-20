@@ -35,6 +35,11 @@ interface Props {
   conversation: Conversation | null;
   onConversationCreated: (c: Conversation) => void;
   onMemoriesChanged?: () => void;
+  /**
+   * Invoked after a fork is created. Receives the new conversation id so the
+   * host can refresh the sidebar and switch the active selection to it.
+   */
+  onForked?: (newConvId: number) => void;
 }
 
 interface ConfirmState {
@@ -80,7 +85,7 @@ function tmpKey(): string {
   return `tmp:${crypto.randomUUID()}`;
 }
 
-export function ChatWindow({ status, conversation, onConversationCreated, onMemoriesChanged }: Props) {
+export function ChatWindow({ status, conversation, onConversationCreated, onMemoriesChanged, onForked }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streaming, setStreaming] = useState<string | undefined>();
   const [err, setErr] = useState<string | null>(null);
@@ -107,6 +112,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [activePresetId, setActivePresetIdState] = useState<string>(() => getActivePresetId());
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(null);
+  const [quickToast, setQuickToast] = useState<{ reply: string; error: string | null } | null>(null);
   const activePreset = presets.find((p) => p.id === activePresetId) ?? presets[0];
   const abortRef = useRef<AbortController | null>(null);
   const creatingConvRef = useRef<Promise<Conversation> | null>(null);
@@ -140,6 +146,25 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       setAskUserAnswer("");
     }).then((fn) => { off = fn; }).catch(() => {});
     return () => { if (off) off(); };
+  }, []);
+
+  // Quick-prompt result toast. Backend fires `quick-prompt-completed` after
+  // a menu-bar prompt finishes; we flash a small "Quick reply ready ↗" chip
+  // that the user can click to inspect (or just dismiss). Auto-clears after
+  // 8s so it doesn't linger forever.
+  useEffect(() => {
+    let off: UnlistenFn | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    listen<{ reply: string; error: string | null }>("quick-prompt-completed", (e) => {
+      const payload = e.payload;
+      setQuickToast({ reply: payload.reply ?? "", error: payload.error ?? null });
+      if (timeout) clearTimeout(timeout);
+      timeout = setTimeout(() => setQuickToast(null), 8000);
+    }).then((fn) => { off = fn; }).catch(() => {});
+    return () => {
+      if (off) off();
+      if (timeout) clearTimeout(timeout);
+    };
   }, []);
 
   async function submitAskUser() {
@@ -660,6 +685,19 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         currentModel={status?.running ? status.model : null}
         agentStatus={agentStatus}
         onRegenerate={onRegenerate}
+        onFork={async (msg) => {
+          // Fork-from-here. The button already confirmed with the user; we
+          // just need the persisted message id + current conv id. Missing
+          // either is a no-op (the row's `canFork` gate prevents this in
+          // practice — kept as a belt-and-suspenders check).
+          if (!conversation?.id || msg.id == null) return;
+          try {
+            const newId = await api.conversationFork(conversation.id, msg.id);
+            onForked?.(newId);
+          } catch (e) {
+            setErr(`Fork failed: ${e}`);
+          }
+        }}
       />
       <div className="chat-input-wrap">
         {recalled.length > 0 && (
@@ -993,6 +1031,30 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {quickToast && (
+        <div
+          className="quick-toast"
+          data-testid="quick-prompt-toast"
+          role="button"
+          tabIndex={0}
+          onClick={() => {
+            if (quickToast.error) { setQuickToast(null); return; }
+            // Click → dump the reply into the input area as a starting point.
+            // Strict v1.3: no auto-resubmit, no conversation creation.
+            try {
+              navigator.clipboard.writeText(quickToast.reply).catch(() => {});
+            } catch {/* ignore */}
+            setQuickToast(null);
+          }}
+        >
+          {quickToast.error ? (
+            <span>Quick prompt failed: {quickToast.error}</span>
+          ) : (
+            <span>Quick reply ready ↗ <em style={{ color: "var(--text-muted)", fontStyle: "normal" }}>(click to copy)</em></span>
+          )}
         </div>
       )}
     </div>

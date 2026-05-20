@@ -9,12 +9,14 @@ import type {
   AllModels,
   DashboardSummary,
   AppSettings,
+  BranchInfo,
   BrowserNavigateResult,
   BrowserOkResult,
   BrowserScreenshotResult,
   BrowserTextResult,
   ChatImage,
   Conversation,
+  ForkTree,
   DirListing,
   EditOp,
   EditResult,
@@ -105,6 +107,17 @@ export const api = {
     imagesJson: images && images.length > 0 ? JSON.stringify(images) : null,
   }),
   deleteMessage: (id: number) => invoke<void>("delete_message", { id }),
+
+  // Conversation branching — `conversationFork` deep-copies messages from
+  // `sourceId` up to (and including) `atMessageId` into a fresh conversation
+  // and records the parent ref on the new row. The two list APIs let callers
+  // render branch trees in the sidebar / a dedicated visualizer.
+  conversationFork: (sourceId: number, atMessageId: number) =>
+    invoke<number>("conversation_fork", { sourceId, atMessageId }),
+  conversationListBranches: (convId: number) =>
+    invoke<BranchInfo[]>("conversation_list_branches", { convId }),
+  conversationForkTree: (rootId: number) =>
+    invoke<ForkTree>("conversation_fork_tree", { rootId }),
 
   // Memory
   addMemory: (args: {
@@ -298,6 +311,15 @@ export const api = {
     invoke<string | null>("agent_set_workspace", { path }),
   agentGetWorkspace: () =>
     invoke<string | null>("agent_get_workspace"),
+
+  // Multi-window: detached per-conversation windows
+  openConversationWindow: (conversationId: number, title?: string | null) =>
+    invoke<string>("open_conversation_window", {
+      conversationId,
+      title: title ?? null,
+    }),
+  listOpenConversationWindows: () =>
+    invoke<string[]>("list_open_conversation_windows"),
 
   // Per-project policy (`.froglips/policy.json`)
   policyLoad: (cwd: string) =>

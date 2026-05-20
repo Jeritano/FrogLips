@@ -221,6 +221,34 @@ pub struct Conversation {
     pub title: String,
     pub model: Option<String>,
     pub created_at: i64,
+    /// Source conversation if this conv is a fork. None for root conversations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_conv_id: Option<i64>,
+    /// Cutoff message id from the parent — messages with id <= this were
+    /// deep-copied into this fork at creation time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_message_id: Option<i64>,
+}
+
+/// Direct-child branch summary, returned by `list_branches`.
+#[derive(Serialize, Clone)]
+pub struct BranchInfo {
+    pub id: i64,
+    pub title: String,
+    pub created_at: i64,
+    pub parent_message_id: Option<i64>,
+}
+
+/// Recursive tree node returned by `get_fork_tree`. Depth-capped to bound the
+/// response — deeper descendants are silently truncated at the cap.
+#[derive(Serialize, Clone)]
+pub struct ForkTree {
+    pub id: i64,
+    pub title: String,
+    pub created_at: i64,
+    pub parent_conv_id: Option<i64>,
+    pub parent_message_id: Option<i64>,
+    pub children: Vec<ForkTree>,
 }
 
 #[derive(Serialize, Clone)]
@@ -249,7 +277,8 @@ pub fn create_conversation(title: &str, model: Option<&str>) -> Result<i64> {
 pub fn list_conversations() -> Result<Vec<Conversation>> {
     let conn = get_db()?;
     let mut stmt = conn.prepare(
-        "SELECT id, title, model, created_at FROM conversations ORDER BY created_at DESC",
+        "SELECT id, title, model, created_at, parent_conv_id, parent_message_id
+         FROM conversations ORDER BY created_at DESC",
     )?;
     let rows = stmt
         .query_map([], |r| {
@@ -258,6 +287,8 @@ pub fn list_conversations() -> Result<Vec<Conversation>> {
                 title: r.get(1)?,
                 model: r.get(2)?,
                 created_at: r.get(3)?,
+                parent_conv_id: r.get(4)?,
+                parent_message_id: r.get(5)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -323,6 +354,146 @@ pub fn list_messages(conv_id: i64) -> Result<Vec<Message>> {
     Ok(rows)
 }
 
+/// Maximum fork-tree recursion depth. Bounds the response so a pathological
+/// chain of forks can't blow the stack or balloon the JSON payload.
+const FORK_TREE_MAX_DEPTH: usize = 10;
+
+/// Deep-copy a conversation up to (and including) `at_message_id`.
+///
+/// 1. Inserts a new `conversations` row with `parent_conv_id = source_id` and
+///    `parent_message_id = at_message_id`. Title is the source title + " (fork)".
+/// 2. Copies every message from the source with `id <= at_message_id` into the
+///    new conversation, **assigning fresh ids** — modifying the fork after
+///    creation will never touch the parent's rows.
+///
+/// All writes run inside a single transaction; if any step fails the whole
+/// thing rolls back and no partial fork remains in the DB.
+pub fn fork_conversation(source_id: i64, at_message_id: i64) -> Result<i64> {
+    let mut conn = get_db()?;
+    fork_conversation_in(&mut conn, source_id, at_message_id)
+}
+
+/// Connection-scoped fork implementation. Pulled out so tests can drive it on
+/// an in-memory DB without standing up the global pool.
+pub(crate) fn fork_conversation_in(
+    conn: &mut Connection,
+    source_id: i64,
+    at_message_id: i64,
+) -> Result<i64> {
+    let tx = conn.transaction()?;
+
+    // Look up the source row. Bail loudly if it doesn't exist — silently
+    // creating an orphan fork would just hide caller bugs.
+    let (title, model): (String, Option<String>) = tx
+        .query_row(
+            "SELECT title, model FROM conversations WHERE id = ?1",
+            params![source_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        )
+        .context("source conversation not found")?;
+
+    let fork_title = format!("{title} (fork)");
+    tx.execute(
+        "INSERT INTO conversations (title, model, created_at, parent_conv_id, parent_message_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![fork_title, model, now_unix(), source_id, at_message_id],
+    )?;
+    let new_id = tx.last_insert_rowid();
+
+    // Copy messages with id <= cutoff. `INSERT … SELECT` keeps the per-row
+    // work in SQLite and assigns new autoincrement ids automatically.
+    tx.execute(
+        "INSERT INTO messages (conversation_id, role, content, created_at, model, images)
+         SELECT ?1, role, content, created_at, model, images
+         FROM messages
+         WHERE conversation_id = ?2 AND id <= ?3
+         ORDER BY id ASC",
+        params![new_id, source_id, at_message_id],
+    )?;
+
+    tx.commit()?;
+    Ok(new_id)
+}
+
+/// Direct children of `conv_id` — does not recurse. Use `get_fork_tree` for
+/// the full descendant tree.
+pub fn list_branches(conv_id: i64) -> Result<Vec<BranchInfo>> {
+    let conn = get_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, title, created_at, parent_message_id
+         FROM conversations
+         WHERE parent_conv_id = ?1
+         ORDER BY created_at ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![conv_id], |r| {
+            Ok(BranchInfo {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                created_at: r.get(2)?,
+                parent_message_id: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Recursive walk producing a tree of conversation nodes rooted at
+/// `root_conv_id`. Depth-capped at `FORK_TREE_MAX_DEPTH` — descendants past
+/// the cap are silently dropped (their parent node is still returned with
+/// `children = []`).
+pub fn get_fork_tree(root_conv_id: i64) -> Result<ForkTree> {
+    let conn = get_db()?;
+    fork_tree_node(&conn, root_conv_id, 0)
+}
+
+fn fork_tree_node(
+    conn: &Connection,
+    id: i64,
+    depth: usize,
+) -> Result<ForkTree> {
+    let (title, created_at, parent_conv_id, parent_message_id): (
+        String,
+        i64,
+        Option<i64>,
+        Option<i64>,
+    ) = conn
+        .query_row(
+            "SELECT title, created_at, parent_conv_id, parent_message_id
+             FROM conversations WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .context("conversation not found")?;
+
+    let children = if depth >= FORK_TREE_MAX_DEPTH {
+        // Cap reached — return the node but stop recursing. Truncation is
+        // silent; the frontend can show an ellipsis if it tracks depth.
+        Vec::new()
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM conversations WHERE parent_conv_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let child_ids: Vec<i64> = stmt
+            .query_map(params![id], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut nodes = Vec::with_capacity(child_ids.len());
+        for cid in child_ids {
+            nodes.push(fork_tree_node(conn, cid, depth + 1)?);
+        }
+        nodes
+    };
+
+    Ok(ForkTree {
+        id,
+        title,
+        created_at,
+        parent_conv_id,
+        parent_message_id,
+        children,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +531,194 @@ mod tests {
             )
             .unwrap();
         assert!(has, "images column should exist after migration");
+    }
+
+    /// Build an in-memory DB with the post-fork-migration schema and seed a
+    /// conversation with `n` messages. Returns (conn, conversation_id).
+    fn fresh_db_with_conv(n: usize) -> (Connection, i64) {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                model TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                model TEXT,
+                images TEXT
+            );",
+        )
+        .unwrap();
+        // Run the migration twice to confirm idempotence under realistic boot.
+        ensure_conversation_fork_columns(&conn).expect("fork migration 1");
+        ensure_conversation_fork_columns(&conn).expect("fork migration 2 must not error");
+
+        conn.execute(
+            "INSERT INTO conversations (title, model, created_at) VALUES (?1, ?2, ?3)",
+            params!["seed", Some("test-model"), 1000_i64],
+        )
+        .unwrap();
+        let conv_id = conn.last_insert_rowid();
+        for i in 0..n {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            conn.execute(
+                "INSERT INTO messages (conversation_id, role, content, created_at, model, images)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![conv_id, role, format!("msg-{i}"), 1000_i64 + i as i64, "m", Option::<String>::None],
+            )
+            .unwrap();
+        }
+        // Sanity check that we actually have the parent columns.
+        let _: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('conversations') WHERE name = 'parent_conv_id'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap();
+        (conn, conv_id)
+    }
+
+    fn message_count(conn: &Connection, conv_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+            params![conv_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fork_copies_messages_up_to_cutoff() {
+        let (mut conn, src) = fresh_db_with_conv(5);
+        // Cutoff at the 3rd message (id = 3 since autoincrement starts at 1
+        // and we seeded a single conversation).
+        let cutoff = 3;
+        let fork_id = fork_conversation_in(&mut conn, src, cutoff).expect("fork");
+        assert_ne!(fork_id, src, "fork must have a distinct id");
+
+        // Exactly the first `cutoff` messages should be present.
+        assert_eq!(message_count(&conn, fork_id), cutoff);
+        assert_eq!(message_count(&conn, src), 5, "parent untouched at fork time");
+
+        // Parent link is recorded on the fork row.
+        let (parent, parent_msg, title): (Option<i64>, Option<i64>, String) = conn
+            .query_row(
+                "SELECT parent_conv_id, parent_message_id, title FROM conversations WHERE id = ?1",
+                params![fork_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(parent, Some(src));
+        assert_eq!(parent_msg, Some(cutoff));
+        assert!(title.ends_with(" (fork)"));
+
+        // Messages on the fork must have *new* ids, not the originals — proving
+        // we did a deep copy rather than re-pointing.
+        let original_ids: Vec<i64> = {
+            let mut s = conn
+                .prepare("SELECT id FROM messages WHERE conversation_id = ?1 ORDER BY id")
+                .unwrap();
+            s.query_map(params![src], |r| r.get::<_, i64>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let fork_ids: Vec<i64> = {
+            let mut s = conn
+                .prepare("SELECT id FROM messages WHERE conversation_id = ?1 ORDER BY id")
+                .unwrap();
+            s.query_map(params![fork_id], |r| r.get::<_, i64>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        for fid in &fork_ids {
+            assert!(
+                !original_ids.contains(fid),
+                "fork message id {fid} collided with parent — copy was shallow"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_unchanged_after_fork_is_mutated() {
+        let (mut conn, src) = fresh_db_with_conv(4);
+        let fork_id = fork_conversation_in(&mut conn, src, 2).expect("fork");
+
+        // Snapshot parent before mutating the fork.
+        let parent_before: Vec<(i64, String)> = {
+            let mut s = conn
+                .prepare("SELECT id, content FROM messages WHERE conversation_id = ?1 ORDER BY id")
+                .unwrap();
+            s.query_map(params![src], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+
+        // Mutate the fork: append a new message AND rewrite an existing one.
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at, model, images)
+             VALUES (?1, 'user', 'fork-only', 9999, 'm', NULL)",
+            params![fork_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE messages SET content = 'rewritten in fork'
+             WHERE conversation_id = ?1 AND role = 'user'",
+            params![fork_id],
+        )
+        .unwrap();
+        // Also delete a fork message — must not cascade to parent.
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1 AND content = 'fork-only'",
+            params![fork_id],
+        )
+        .unwrap();
+
+        let parent_after: Vec<(i64, String)> = {
+            let mut s = conn
+                .prepare("SELECT id, content FROM messages WHERE conversation_id = ?1 ORDER BY id")
+                .unwrap();
+            s.query_map(params![src], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+
+        assert_eq!(parent_before, parent_after, "parent rows must be identical after fork mutation");
+        assert_eq!(message_count(&conn, src), 4, "parent count untouched");
+    }
+
+    #[test]
+    fn fork_columns_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                model TEXT,
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        ensure_conversation_fork_columns(&conn).expect("first");
+        ensure_conversation_fork_columns(&conn).expect("second");
+        ensure_conversation_fork_columns(&conn).expect("third");
+        let has: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('conversations') WHERE name = 'parent_conv_id'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap();
+        assert!(has);
     }
 }

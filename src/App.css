@@ -347,6 +347,16 @@ body {
   background: var(--surface-2);
 }
 
+/* Detach (open-in-new-window) button — shares .del's hover-to-reveal pattern
+   but uses the muted accent color so it reads "secondary action" rather
+   than the destructive-red feel of the delete button. */
+.conv-list .del.detach {
+  font-size: 13px;
+}
+.conv-list .del.detach:hover {
+  color: var(--accent) !important;
+}
+
 /* ── Main ── */
 
 .main {
@@ -2147,4 +2157,124 @@ button.cancel {
   .dashboard-bar-row {
     grid-template-columns: 80px 1fr 40px;
   }
+}
+
+/* ── Quick prompt (frameless floating window) ───────────────────────── */
+.quick-root {
+  /* Dark glass: backdrop-filter for the macOS vibrancy feel; degrades to a
+     solid surface where backdrop-filter is unsupported. */
+  background: rgba(17, 17, 19, 0.78);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  color: var(--text);
+  height: 100vh;
+  width: 100vw;
+  margin: 0;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+}
+.quick-input-wrap {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.quick-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+}
+.quick-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+}
+.quick-send {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 0 14px;
+  height: 36px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.quick-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.quick-reply {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.quick-reply-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: inherit;
+  font-size: 12px;
+}
+.quick-error {
+  color: #fca5a5;
+  font-size: 12px;
+}
+.quick-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.quick-actions button {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.quick-actions button:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+.quick-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Toast on the main window when a quick prompt finishes. */
+.quick-toast {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  z-index: 200;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: quickToastIn 200ms ease-out;
+}
+.quick-toast:hover { background: var(--surface-hover); }
+@keyframes quickToastIn {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
 }

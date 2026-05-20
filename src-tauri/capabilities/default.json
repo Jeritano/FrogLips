@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main, quick-prompt, and detached per-conversation windows (conv-*)",
+  "windows": ["main", "quick", "conv-*"],
   "permissions": [
     "core:default",
     "core:window:default",
@@ -10,9 +10,18 @@
     "core:window:allow-set-position",
     "core:window:allow-inner-size",
     "core:window:allow-outer-position",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:webview:allow-create-webview-window",
     "opener:default",
     "updater:default",
     "process:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "global-shortcut:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
   ]
 }

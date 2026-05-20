@@ -9,6 +9,7 @@ mod mlx_server;
 mod models;
 mod native_inference;
 mod policy;
+mod quick_prompt;
 mod rag;
 mod settings;
 
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Emitter, Manager, State,
+    Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_opener::OpenerExt;
 
@@ -315,6 +316,7 @@ async fn add_message(
     content: String,
     model: Option<String>,
     images_json: Option<String>,
+    app: tauri::AppHandle,
 ) -> Result<i64, String> {
     if content.len() > MAX_MESSAGE_BYTES {
         return Err(format!("message exceeds {MAX_MESSAGE_BYTES} bytes"));
@@ -329,7 +331,7 @@ async fn add_message(
             ));
         }
     }
-    tauri::async_runtime::spawn_blocking(move || {
+    let id = tauri::async_runtime::spawn_blocking(move || {
         history::add_message(
             conversation_id,
             &role,
@@ -340,12 +342,55 @@ async fn add_message(
     })
     .await
     .map_err(map_err)?
+    .map_err(map_err)?;
+    // Multi-window sync: every persisted message is broadcast so any
+    // detached window viewing the same conversation can re-fetch. Streaming
+    // deltas are NOT broadcast (per design — only finalized messages cross
+    // window boundaries to avoid token-by-token cross-window thrash).
+    let _ = app.emit("conversation-updated", conversation_id);
+    Ok(id)
+}
+
+#[tauri::command]
+async fn delete_message(id: i64, app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || history::delete_message(id))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)?;
+    // We don't know the conv id post-delete; broadcast id=-1 as a wildcard
+    // "something changed, re-fetch if you care" hint. Receivers ignore
+    // unknown ids (their conv id check fails) so the cost is one cheap
+    // event per delete.
+    let _ = app.emit("conversation-updated", -1i64);
+    Ok(())
+}
+
+/* ── Conversation branching ── */
+
+#[tauri::command]
+async fn conversation_fork(source_id: i64, at_message_id: i64) -> Result<i64, String> {
+    if at_message_id < 0 {
+        return Err("at_message_id must be non-negative".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        history::fork_conversation(source_id, at_message_id)
+    })
+    .await
+    .map_err(map_err)?
     .map_err(map_err)
 }
 
 #[tauri::command]
-async fn delete_message(id: i64) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || history::delete_message(id))
+async fn conversation_list_branches(conv_id: i64) -> Result<Vec<history::BranchInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || history::list_branches(conv_id))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn conversation_fork_tree(root_id: i64) -> Result<history::ForkTree, String> {
+    tauri::async_runtime::spawn_blocking(move || history::get_fork_tree(root_id))
         .await
         .map_err(map_err)?
         .map_err(map_err)
@@ -895,6 +940,82 @@ fn agent_get_workspace() -> Option<String> {
     agent::get_workspace_root()
 }
 
+/* ── Multi-window: detached conversations ────────────────────────────── */
+
+/// Stable, filesystem/label-safe label for a detached conversation window.
+///
+/// Tauri rejects labels containing slashes/whitespace and requires uniqueness,
+/// so we derive the label deterministically from the conversation id. Reusing
+/// the same convId twice intentionally yields the same label — that lets
+/// `open_conversation_window` focus the existing window rather than crash on
+/// duplicate-label.
+fn detached_window_label(conversation_id: i64) -> String {
+    format!("conv-{conversation_id}")
+}
+
+#[tauri::command]
+async fn open_conversation_window(
+    conversation_id: i64,
+    title: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    open_conversation_window_impl(&app, conversation_id, title.as_deref())
+}
+
+/// Synchronous core for `open_conversation_window` so unit tests can exercise
+/// the dedup-and-focus path without an async runtime. Generic over the Tauri
+/// `Runtime` so `tauri::test::MockRuntime` can drive it in `#[cfg(test)]`.
+fn open_conversation_window_impl<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    conversation_id: i64,
+    title: Option<&str>,
+) -> Result<String, String> {
+    let label = detached_window_label(conversation_id);
+    // If a window with this label is already open, focus it and bail. This
+    // mirrors Slack/VSCode behavior where double-detach reopens the existing
+    // window instead of stacking duplicates.
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.show();
+        let _ = existing.unminimize();
+        let _ = existing.set_focus();
+        return Ok(label);
+    }
+    let display_title = match title {
+        Some(t) if !t.trim().is_empty() => format!("Froglips — {}", t.trim()),
+        _ => format!("Froglips — Conversation {conversation_id}"),
+    };
+    // URL: same frontend bundle, query-string toggles the detached single-conv
+    // view. The hash fragment isn't used because Tauri's WebviewUrl::App
+    // collapses query strings cleanly via `index.html?…`.
+    let url_path = format!(
+        "index.html?detached=1&conversation_id={conversation_id}"
+    );
+    WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url_path.into()))
+        .title(display_title)
+        .inner_size(700.0, 500.0)
+        .min_inner_size(420.0, 320.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(label)
+}
+
+#[tauri::command]
+fn list_open_conversation_windows(app: tauri::AppHandle) -> Vec<String> {
+    list_open_conversation_windows_impl(&app)
+}
+
+fn list_open_conversation_windows_impl<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Vec<String> {
+    // Only return labels matching our convention so callers can map them
+    // back to conversation ids. The main window's "main" label is filtered.
+    app.webview_windows()
+        .keys()
+        .filter(|l| l.starts_with("conv-"))
+        .cloned()
+        .collect()
+}
+
 /* ── Native inference (alpha; behind `--features native-inference`) ───── */
 
 type NativeHandle = native_inference::SharedRuntime;
@@ -1036,6 +1157,33 @@ async fn mcp_server_stderr(name: String) -> Option<String> {
 #[tauri::command]
 fn settings_get() -> settings::Settings {
     settings::load()
+}
+
+/* ── Quick prompt (menu-bar ephemeral prompt) ──────────────────────────── */
+
+#[tauri::command]
+async fn quick_prompt_submit(
+    op_id: String,
+    text: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if op_id.is_empty() || op_id.len() > 128 {
+        return Err("invalid op_id".into());
+    }
+    quick_prompt::run(app, op_id, text).await
+}
+
+#[tauri::command]
+fn quick_prompt_open(app: tauri::AppHandle) -> Result<(), String> {
+    quick_prompt::ensure_window(&app).map_err(map_err)
+}
+
+#[tauri::command]
+fn quick_prompt_hide(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window(quick_prompt::QUICK_LABEL) {
+        let _ = w.hide();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1249,10 +1397,26 @@ pub fn run() {
     let server_state: ServerHandle = Arc::new(ServerState::default());
     let native_state: NativeHandle = native_inference::new_shared();
 
+    // Global-shortcut plugin: Cmd+Shift+L toggles the quick-prompt window.
+    // The handler closure receives the AppHandle, so we wake the window
+    // without needing extra shared state.
+    let global_shortcut_plugin = {
+        use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+        let quick_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyL);
+        tauri_plugin_global_shortcut::Builder::new()
+            .with_handler(move |app, shortcut, event| {
+                if shortcut == &quick_shortcut && event.state() == ShortcutState::Pressed {
+                    quick_prompt::toggle_window(app);
+                }
+            })
+            .build()
+    };
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(global_shortcut_plugin)
         .manage(server_state.clone())
         .manage(native_state.clone())
         .setup({
@@ -1266,9 +1430,22 @@ pub fn run() {
                         let _ = s.status().await; // emits if child died
                     }
                 });
+
+                // Register the default Cmd+Shift+L hotkey. Failure is logged
+                // but non-fatal — the tray menu "Quick Prompt" entry still
+                // opens the window.
+                {
+                    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+                    let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyL);
+                    if let Err(e) = app.global_shortcut().register(sc) {
+                        eprintln!("[quick-prompt] failed to register Cmd+Shift+L: {e}");
+                    }
+                }
+
                 let show_i = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+                let quick_i = MenuItem::with_id(app, "quick", "Quick Prompt (⇧⌘L)", true, None::<&str>)?;
                 let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+                let menu = Menu::with_items(app, &[&show_i, &quick_i, &quit_i])?;
                 let mut tray = TrayIconBuilder::new().menu(&menu);
                 if let Some(icon) = app.default_window_icon() {
                     tray = tray.icon(icon.clone());
@@ -1281,6 +1458,9 @@ pub fn run() {
                                 let _ = w.show();
                                 let _ = w.set_focus();
                             }
+                        }
+                        "quick" => {
+                            quick_prompt::toggle_window(app);
                         }
                         _ => {}
                     })
@@ -1305,6 +1485,9 @@ pub fn run() {
             list_messages,
             add_message,
             delete_message,
+            conversation_fork,
+            conversation_list_branches,
+            conversation_fork_tree,
             add_memory,
             list_memories,
             delete_memory,
@@ -1329,6 +1512,8 @@ pub fn run() {
             agent_classify_http,
             agent_set_workspace,
             agent_get_workspace,
+            open_conversation_window,
+            list_open_conversation_windows,
             agent_cancel_shell,
             agent_multi_edit,
             agent_git_status,
@@ -1396,6 +1581,9 @@ pub fn run() {
             rag_search,
             rag_list_corpora,
             rag_delete_corpus,
+            quick_prompt_submit,
+            quick_prompt_open,
+            quick_prompt_hide,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -1413,4 +1601,51 @@ pub fn run() {
             agent::fs_watcher::shutdown_all();
         }
     });
+}
+
+#[cfg(test)]
+mod multi_window_tests {
+    use super::*;
+
+    #[test]
+    fn detached_label_is_stable_and_safe() {
+        // Same id → same label (so dedup-by-label in open_conversation_window
+        // can map convId back to an existing window).
+        assert_eq!(detached_window_label(42), "conv-42");
+        assert_eq!(detached_window_label(42), detached_window_label(42));
+        // Negative ids are still label-safe (only alnum + '-').
+        let label = detached_window_label(-1);
+        assert!(label.starts_with("conv-"));
+        assert!(label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+
+    #[test]
+    fn open_conversation_window_dedups_to_focus() {
+        // Build a real-but-mocked Tauri app so we can exercise the
+        // get_webview_window + WebviewWindowBuilder code paths.
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        // First open: builder runs, returns label.
+        let first = open_conversation_window_impl(&handle, 7, Some("Hello"))
+            .expect("first open should succeed");
+        assert_eq!(first, "conv-7");
+
+        // Second open with same id MUST NOT error on duplicate label —
+        // it should detect the existing window and focus instead.
+        let second = open_conversation_window_impl(&handle, 7, Some("Hello"))
+            .expect("second open should focus, not crash");
+        assert_eq!(second, "conv-7");
+
+        // list_open_conversation_windows should report only conv-* labels
+        // (excludes any "main" window). MockRuntime may or may not surface
+        // the window — accept either, the load-bearing check is the
+        // no-crash invariant above.
+        let open = list_open_conversation_windows_impl(&handle);
+        if !open.is_empty() {
+            assert!(open.iter().any(|l| l == "conv-7"));
+        }
+    }
 }
