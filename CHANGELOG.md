@@ -4,6 +4,32 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.3] — 2026-05-20
+
+### Security
+- **HIGH — SSRF via HTTP redirect**: replaced `redirect::Policy::limited(5)` with a custom policy that re-validates each hop's scheme + host against the SSRF allowlist. Affects `web_fetch` and `http_request`.
+- **MEDIUM — DNS rebinding-class hosts**: added `assert_resolved_host_safe()` pre-flight `lookup_host` so names like `localtest.me` / `*.lvh.me` that resolve to loopback are caught before any socket opens.
+- **MEDIUM — Response-body OOM**: `read_capped()` streams the body via `bytes_stream()` and bails at `WEB_FETCH_MAX_BYTES`. Previously `resp.bytes()` buffered the whole body before we truncated.
+- **MEDIUM — AppleScript injection in `show_notification`**: sanitiser now swaps `"` → `'`, `\` → `/`, and any C0 control (newline / CR / tab / etc.) + DEL → space. Newline-based script-line truncation closed.
+
+## [0.9.2] — 2026-05-20
+
+### Fixed
+- `looks_binary` only checked NUL bytes; ELF/Mach-O/PE/PNG/JPG were classified as text. Now scans first 8 KiB for NUL + C0 controls (except tab/LF/CR) + DEL. Caught by `cargo test`'s `looks_binary_detection`.
+
+### Changed
+- Removed unused `ask()` helper in ask_user.rs.
+- `thread_local` SEED initialiser now const-able.
+- `type EmbeddingMap` alias factored out of the verbose `Lazy<RwLock<Option<HashMap<i64, Vec<f32>>>>>`.
+- 3× `.map_or(true, …)` → `.is_none_or(…)`.
+- `push_str("…")` → `push('…')`.
+- Removed `.map_err(|e| e)` no-op.
+
+### Verified
+- 71 Tauri commands ↔ 71 frontend invokes (set-equal).
+- 33 tool defs ↔ 32 executeTool cases (subagent intentionally special-cased).
+- 10/10 Rust unit tests passing.
+
 ## [0.9.1] — 2026-05-20
 
 ### Fixed
