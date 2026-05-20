@@ -5,6 +5,26 @@ export interface ChatChunk {
   done: boolean;
 }
 
+// Time-to-first-byte cap. Aborts the request if the server hasn't replied
+// with response headers within this window — prevents the UI from wedging
+// on a dead Ollama / MLX daemon. Streaming itself isn't bounded; tokens
+// arriving keeps the connection alive.
+const STREAM_CONNECT_TIMEOUT_MS = 30_000;
+
+function withTimeout(parent: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const ctrl = new AbortController();
+  if (parent) {
+    if (parent.aborted) ctrl.abort(parent.reason);
+    else parent.addEventListener("abort", () => ctrl.abort(parent.reason), { once: true });
+  }
+  const t = setTimeout(
+    () => ctrl.abort(new DOMException("stream connect timed out", "TimeoutError")),
+    timeoutMs,
+  );
+  ctrl.signal.addEventListener("abort", () => clearTimeout(t), { once: true });
+  return ctrl.signal;
+}
+
 export async function* streamChat(
   status: ServerStatus,
   messages: Message[],
@@ -23,7 +43,7 @@ export async function* streamChat(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    signal: opts.signal,
+    signal: withTimeout(opts.signal, STREAM_CONNECT_TIMEOUT_MS),
   });
 
   if (!res.ok || !res.body) {

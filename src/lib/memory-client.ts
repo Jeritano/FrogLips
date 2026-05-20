@@ -292,14 +292,28 @@ export async function extractFacts(
 
 /* ── Format recalled memories as a system block ── */
 
+// Bidi / zero-width characters that can rearrange visible text and mask
+// prompt injection. Built from explicit code points so the source is readable
+// and reviewable (literal characters render as invisible and trip diff tools).
+//  - U+200B..U+200F : zero-width + bidi marks
+//  - U+202A..U+202E : explicit directional overrides
+//  - U+2066..U+2069 : bidi isolates
+//  - U+FEFF         : byte-order mark / zero-width no-break space
+const BIDI_AND_ZERO_WIDTH = new RegExp(
+  "[\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF]",
+  "g",
+);
+// C0 (U+0000..U+001F) + DEL (U+007F) + C1 (U+0080..U+009F), excluding common
+// whitespace (\t = 09, \n = 0A, \r = 0D) which are safe to keep.
+const CONTROL_CHARS = new RegExp(
+  "[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F]",
+  "g",
+);
+
 function sanitizeMemoryContent(s: string): string {
-  // Strip Unicode RTL/LRO/BIDI controls + zero-width chars that could mask
-  // injection text; escape < and > so a memory cannot close our wrapping tag.
-  // U+200B..U+200F: zero-width / BIDI marks; U+202A..U+202E: explicit overrides;
-  // U+2066..U+2069: BIDI isolates.
   return s
-    .replace(/[​-‏‪-‮⁦-⁩]/g, "")
-    .replace(/[ --]/g, "")
+    .replace(BIDI_AND_ZERO_WIDTH, "")
+    .replace(CONTROL_CHARS, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");

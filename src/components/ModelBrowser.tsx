@@ -537,7 +537,11 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
         params.set("author", "mlx-community");
       }
       const url = `https://huggingface.co/api/models?${params.toString()}`;
-      const res = await fetch(url, { signal: ctrl.signal });
+      const timeoutId = window.setTimeout(() => ctrl.abort(new DOMException("HF request timed out", "TimeoutError")), 15_000);
+      let res: Response;
+      try {
+        res = await fetch(url, { signal: ctrl.signal });
+      } finally { window.clearTimeout(timeoutId); }
       if (!res.ok) throw new Error(`HF API ${res.status}`);
       const data: HfModel[] = await res.json();
       if (ctrl.signal.aborted) return;
@@ -567,7 +571,11 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
       });
       if (q.trim()) params.set("query", q.trim());
       const url = `https://civitai.com/api/v1/models?${params.toString()}`;
-      const res = await fetch(url, { signal: ctrl.signal });
+      const timeoutId = window.setTimeout(() => ctrl.abort(new DOMException("Civitai request timed out", "TimeoutError")), 15_000);
+      let res: Response;
+      try {
+        res = await fetch(url, { signal: ctrl.signal });
+      } finally { window.clearTimeout(timeoutId); }
       if (!res.ok) throw new Error(`Civitai API ${res.status}`);
       const data = await res.json();
       if (ctrl.signal.aborted) return;

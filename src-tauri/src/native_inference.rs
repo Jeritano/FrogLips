@@ -6,8 +6,6 @@
 
 #![allow(dead_code)]
 
-use anyhow::Result;
-
 #[cfg(feature = "native-inference")]
 pub mod runtime {
     use anyhow::{anyhow, Context, Result};
@@ -18,7 +16,6 @@ pub mod runtime {
         ModelDType, NormalLoaderBuilder, NormalRequest, NormalSpecificConfig, Request,
         RequestMessage, Response, SamplingParams, SchedulerConfig, TokenSource,
     };
-    use serde_json::Value;
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -214,10 +211,6 @@ pub mod runtime {
         Ok(candle_core::Device::Cpu)
     }
 
-    // Unused warning suppressor — Value is held in MessageContent's Right branch.
-    #[allow(dead_code)]
-    fn _value_used(_: Value) {}
-
     pub type SharedRuntime = Arc<Mutex<Option<NativeRuntime>>>;
 
     pub fn new_shared() -> SharedRuntime {
@@ -272,7 +265,3 @@ pub fn native_enabled() -> bool {
     cfg!(feature = "native-inference")
 }
 
-#[allow(dead_code)]
-pub fn _api_check() -> Result<()> {
-    Ok(())
-}
