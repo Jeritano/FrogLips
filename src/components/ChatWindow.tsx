@@ -245,9 +245,23 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       if (isStreamConvActive()) setRecalled([]);
     }
 
-    const historyForApi: Message[] = recallBlock
-      ? [{ conversation_id: conv.id, role: "system", content: recallBlock }, ...baseHistory]
-      : baseHistory;
+    // Authoritative model-identity preamble. Some cloud-routed Ollama tags
+    // (e.g. *:cloud) return inconsistent self-identity in reply text — this
+    // pins the model to its actual tag so "what model are you?" answers
+    // truthfully regardless of the upstream training data.
+    const identityPrompt =
+      `You are model "${status.model}" running via the ${status.backend} backend on the user's machine. ` +
+      `When asked about your identity, name, version, or which model you are, respond with the exact identifier above ("${status.model}"). ` +
+      `Do not claim to be GPT, Claude, Gemini, DeepSeek, Kimi, Llama, Qwen, or any other model unless that name appears literally inside "${status.model}". ` +
+      `If you genuinely don't know, say "I'm running as ${status.model}; I don't have additional details about my training."`;
+
+    const systemPreamble: Message[] = [
+      { conversation_id: conv.id, role: "system", content: identityPrompt },
+    ];
+    if (recallBlock) {
+      systemPreamble.push({ conversation_id: conv.id, role: "system", content: recallBlock });
+    }
+    const historyForApi: Message[] = [...systemPreamble, ...baseHistory];
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
