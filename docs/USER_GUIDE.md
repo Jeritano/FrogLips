@@ -1,12 +1,12 @@
 # Froglips — User Guide
 
-Version 0.7.2 · macOS (Apple Silicon)
+Version 0.9.1 · macOS (Apple Silicon)
 
 ## 1. Install
 
 ### From a release
 
-1. Download `Froglips_0.7.2_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
+1. Download `Froglips_0.9.1_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
 2. Open the DMG and drag `Froglips.app` to `/Applications`.
 3. First launch: macOS may show "unidentified developer". Right-click the app → Open. Confirm.
 4. Optional one-line fix to strip Gatekeeper quarantine entirely:
@@ -120,20 +120,61 @@ You can delete, promote pending → active, or add manually.
 
 Toggle the **Agent** button next to the chat input. Available only with the Ollama backend.
 
-The agent has direct access to the user's filesystem and shell via 10 tools:
+The agent has direct access via 32 tools. Grouped:
 
+**Filesystem**
 | Tool | What it does |
 |---|---|
-| `read_file` | Read file contents (paginated, 64 KB chunks); non-UTF8 detected → returns `{binary: true}` |
+| `read_file` | Read file contents (paginated, 64 KB chunks); non-UTF8 → `{binary: true}` |
 | `list_dir` | List directory entries with kind + size |
-| `search_files` | Recursive grep w/ filename glob (`*.ts`). Set `regex: true` for Rust regex syntax |
+| `search_files` | Recursive grep w/ filename glob. `regex: true` for Rust regex syntax |
 | `file_exists` | Check whether a path exists + its kind |
 | `edit_file` | Find-and-replace edit on existing files |
-| `multi_edit` | Apply multiple find-and-replace edits to one file atomically |
+| `multi_edit` | Apply N find-and-replace edits to one file atomically |
 | `write_file` | Write or overwrite a file (requires approval) |
-| `run_shell` | Execute via `sh -c` (requires approval, 30 s timeout) |
-| `git_status` | `git status --short --branch` in workspace or given path |
-| `git_diff` | `git diff` (optional `staged: true`) in workspace or given path |
+| `read_pdf` | Extract text from a PDF |
+
+**Shell + macOS automation**
+| Tool | What it does |
+|---|---|
+| `run_shell` | Execute via `sh -c` (approval, 30 s timeout, optional cwd+env) |
+| `applescript_run` | Execute AppleScript via osascript (approval) |
+| `open_app` | Launch an app by name via `open -a` (approval) |
+| `show_notification` | Native notification |
+| `screenshot` | `screencapture -x -t png` |
+| `clipboard_get` / `clipboard_set` | pbpaste / pbcopy (set requires approval) |
+
+**Git**
+| Tool | What it does |
+|---|---|
+| `git_status` | `git status --short --branch` |
+| `git_diff` | `git diff` (optional `staged: true`) |
+| `git_log` | Oneline log (default 20, max 200) |
+| `git_show` | Inspect a commit / tag / ref |
+| `git_branches` | List local + remote branches |
+| `git_commit` | Commit already-staged changes (approval) |
+
+**Web**
+| Tool | What it does |
+|---|---|
+| `web_fetch` | GET + auto-HTML-strip. SSRF-blocked on loopback/private/link-local |
+| `web_search` | DuckDuckGo search (no API key) |
+| `http_request` | Generic HTTP w/ headers + body (approval) |
+
+**Code intelligence**
+| Tool | What it does |
+|---|---|
+| `find_definition` | Heuristic regex for fn/def/class/struct/etc. defs of a symbol |
+| `find_references` | Word-boundary regex references |
+| `format_code` | prettier / rustfmt / black / gofmt / swift-format by extension |
+
+**Background tasks + control flow**
+| Tool | What it does |
+|---|---|
+| `task_create` | Start a background `run_shell` task; returns task_id |
+| `task_status` / `task_list` / `task_cancel` | Inspect / cancel background tasks |
+| `ask_user` | Pause agent + pop a modal; agent receives user's typed answer |
+| `spawn_subagent` | Recursive agent run, depth-capped at 3 |
 
 ### Agent presets
 
@@ -141,9 +182,9 @@ Next to the Agent toggle is a dropdown of presets:
 
 | Preset | Tools | Best for |
 |---|---|---|
-| **General** | All | Mixed tasks |
-| **Coder** | read, list, search, exists, edit, write, run_shell | Software work |
-| **Researcher** | read, list, search, exists | Read-only investigation |
+| **General** | All 32 | Mixed tasks |
+| **Coder** | FS + shell + multi_edit + full git | Software work |
+| **Researcher** | Read-only FS + git + web + read_pdf | Investigation without writes |
 | **Shell** | run_shell, list, exists, read | Terminal-style tasks |
 
 Each preset comes with a system prompt tailored to its purpose. Switching presets mid-conversation changes the prompt for the next turn.

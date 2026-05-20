@@ -2,7 +2,7 @@
 
 Native macOS chat app for local LLMs. Apple Silicon. Three backends — **Native** (in-process mistralrs + Metal, zero install), MLX, and Ollama. Agent mode w/ 32 filesystem/shell/web/code/task tools, vector-recall memory, signed auto-updates.
 
-![version](https://img.shields.io/badge/version-0.7.2-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20arm64-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
+![version](https://img.shields.io/badge/version-0.9.1-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20arm64-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
 
 ## What it does
 
@@ -13,7 +13,7 @@ Native macOS chat app for local LLMs. Apple Silicon. Three backends — **Native
 - **Light + dark themes**, ☀/☾ toggle in sidebar, persisted
 - **Conversation search** in sidebar, **Markdown export** per conversation
 - **Memory system**: vector recall (`nomic-embed-text`), automatic fact extraction, dedup at 0.85 cosine, Unicode injection sanitization
-- **Agent mode**: tool-calling loop with `read_file`, `list_dir`, `search_files` (literal+regex), `file_exists`, `edit_file`, `multi_edit`, `write_file`, `run_shell`, `git_status`, `git_diff` — sandboxed by an optional workspace root, structured errors, per-call confirmation
+- **Agent mode**: 32-tool calling loop — filesystem (`read_file`/`list_dir`/`search_files` literal+regex/`file_exists`/`edit_file`/`multi_edit`/`write_file`), shell (`run_shell` + `applescript_run`), full git (`status`/`diff`/`log`/`show`/`branches`/`commit`), web (`web_fetch` + `web_search` + `http_request`, all SSRF-guarded), code intel (`find_definition`/`find_references`/`format_code`), macOS (`screenshot`/`clipboard_get`+`set`/`open_app`/`show_notification`), docs (`read_pdf`), background tasks (`task_create`/`status`/`list`/`cancel`), and recursive `spawn_subagent` + `ask_user` for human-in-the-loop. Sandboxed by optional workspace root, structured errors, per-call confirmation w/ destructive-pattern badges.
 - **Agent presets**: General / Coder / Researcher / Shell — selectable per turn
 - **Tool-history slide-out panel** for debugging agent runs (⌖ Tools button)
 - **Model library**: curated Ollama + MLX catalogs, live HuggingFace + Civitai search, inline pull/delete, dedicated *Installed* tab w/ sizes + total disk usage

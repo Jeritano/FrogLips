@@ -4,6 +4,52 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-20
+
+### Fixed
+- User-message bubble: skip Markdown render pipeline (typed plain text doesn't need it), tighter padding + line-height. Single-line bubble height drops ~60 px → ~30 px.
+
+## [0.9.0] — 2026-05-20
+
+### Added — agent tools (10 → 32 total)
+- `applescript_run` — osascript wrap (dangerous, requires approval).
+- `http_request` — generic HTTP w/ method + headers + body, SSRF + Host-header guards.
+- `find_definition` / `find_references` — heuristic regex code intelligence.
+- `format_code` — prettier / rustfmt / black / gofmt / swift-format by extension.
+- `task_create` / `task_status` / `task_list` / `task_cancel` / `task_prune` — fire-and-forget background shell tasks. New `task_queue.rs` module.
+- `ask_user` — agent pauses, modal pops up in ChatWindow w/ a textarea, user submits answer, agent receives it. New `ask_user.rs` module + Tauri event-driven request/response.
+- `spawn_subagent` — recursive agent run in isolated context, depth-capped at 3.
+
+### Changed
+- `ShellResult` gains `#[derive(Clone)]` so the task queue can snapshot task state.
+
+## [0.8.0] — 2026-05-20
+
+### Added — agent tools (10 → 23 total)
+- `web_fetch` — GET + auto-HTML-strip. SSRF-protected (rejects loopback / RFC1918 / link-local / .local / .internal).
+- `web_search` — DuckDuckGo HTML scrape, no API key.
+- `git_log` / `git_show` / `git_branches` — read-only.
+- `git_commit` — dangerous, requires approval.
+- `read_pdf` — pdf-extract on a blocking thread.
+- `screenshot` — macOS `screencapture -x`.
+- `clipboard_get` / `clipboard_set` — pbpaste / pbcopy. `clipboard_set` dangerous.
+- `open_app` — `open -a` w/ name regex validation. Dangerous.
+- `show_notification` — osascript display-notification.
+- New deps: `reqwest` (rustls), `base64`, `pdf-extract`, `html2text`.
+
+## [0.7.4] — 2026-05-20
+
+### Performance
+- Streaming render rate coalesced via `requestAnimationFrame` — 100+ tok/s no longer thrashes the renderer.
+- `memory.rs` placeholder build: `String::with_capacity` + `write!` instead of one `format!` per id. ~500 mini-allocs → 1.
+
+## [0.7.3] — 2026-05-20
+
+### Performance
+- `MessageRow` + `StreamingMessage` + tool blocks wrapped in `React.memo`. Streaming chunks no longer re-render every prior message.
+- Per-content Markdown cache w/ FIFO eviction.
+- Stable `onRegenerate` handler via ref-pattern so memoized rows don't bust on each parent render.
+
 ## [0.6.3] — 2026-05-20
 
 ### Fixed
