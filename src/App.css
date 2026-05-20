@@ -474,11 +474,12 @@ header {
 .message.user .content {
   background: var(--accent);
   color: #fff;
-  padding: 9px 15px;
+  padding: 7px 14px;
   border-radius: 18px 18px 4px 18px;
   max-width: 70%;
   white-space: pre-wrap;
   word-wrap: break-word;
+  line-height: 1.4;
 }
 
 /* Assistant row */

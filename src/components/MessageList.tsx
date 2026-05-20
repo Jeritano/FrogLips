@@ -164,7 +164,11 @@ function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowK
     );
   }
 
-  const html = cachedMarkdown(msg.content);
+  // User input is plain text — typed by a human, no markdown intent. Skipping
+  // the marked + DOMPurify pipeline keeps the bubble height tight (no <p>
+  // margin quirks) and avoids spending parser time on content that won't
+  // benefit from rendering.
+  const isUser = msg.role === "user";
   return (
     <>
       {divider && (
@@ -178,7 +182,11 @@ function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowK
         </div>
       )}
       <div className={`message ${msg.role}`}>
-        <div className="content markdown" dangerouslySetInnerHTML={{ __html: html }} />
+        {isUser ? (
+          <div className="content">{msg.content}</div>
+        ) : (
+          <div className="content markdown" dangerouslySetInnerHTML={{ __html: cachedMarkdown(msg.content) }} />
+        )}
         <MessageActions msg={msg} isLast={isLast} onRegenerate={onRegenerate} onEditUser={onEditUser} />
         <button
           className={`pin-btn ${isPinned ? "pinned" : ""}`}
