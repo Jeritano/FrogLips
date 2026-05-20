@@ -11,6 +11,8 @@ import type {
   GitResult,
   HttpReqInput,
   HttpResp,
+  McpServerInfo,
+  McpToolDescriptor,
   Memory,
   Message,
   MultiEditResult,
@@ -196,6 +198,28 @@ export const api = {
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsSet: (patch: Partial<AppSettings>) =>
     invoke<AppSettings>("settings_set", { patch }),
+
+  // MCP (Model Context Protocol)
+  mcpStartServer: (
+    name: string,
+    command: string,
+    args?: string[],
+    env?: Record<string, string>,
+  ) => invoke<McpToolDescriptor[]>("mcp_start_server", {
+    name,
+    command,
+    args: args ?? null,
+    env: env ?? null,
+  }),
+  mcpStopServer: (name: string) =>
+    invoke<void>("mcp_stop_server", { name }),
+  mcpListServers: () => invoke<McpServerInfo[]>("mcp_list_servers"),
+  mcpListTools: (name: string) =>
+    invoke<McpToolDescriptor[]>("mcp_list_tools", { name }),
+  mcpCallTool: (server: string, tool: string, args: Record<string, unknown>) =>
+    invoke<string>("mcp_call_tool", { server, tool, args }),
+  mcpServerStderr: (name: string) =>
+    invoke<string | null>("mcp_server_stderr", { name }),
 
   // Native inference (alpha)
   nativeSupported: () => invoke<boolean>("native_supported"),

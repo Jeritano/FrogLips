@@ -17,6 +17,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import type { Conversation, Memory, Message, ServerStatus } from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
+import { McpSettings } from "./McpSettings";
 import { ToolHistory } from "./ToolHistory";
 import { conversationToMarkdown, downloadText, safeFilename } from "../lib/export";
 import {
@@ -328,6 +329,20 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         // Preset's allowedTools wins when non-empty; otherwise fall back to manual allowlist
         const effectiveAllowlist =
           activePreset && activePreset.allowedTools.length > 0 ? activePreset.allowedTools : allowlist;
+        // rAF-coalesce the per-delta onUpdate firehose. The runner mutates
+        // its message snapshot once per token; without coalescing we'd thrash
+        // React at 100+ tok/s. Latest snapshot wins; we never drop the final
+        // state because the runner also emits onUpdate after stream end.
+        let pendingMsgs: Message[] | null = null;
+        let rafHandle = 0;
+        const flush = () => {
+          rafHandle = 0;
+          const snap = pendingMsgs;
+          pendingMsgs = null;
+          if (snap && isStreamConvActive()) {
+            setMessages(snap.filter((m) => m.role !== "system"));
+          }
+        };
         const finalText = await runAgentLoop({
           model: status.model,
           messages: historyForApi,
@@ -342,9 +357,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             setApprovedShellPrefixes((prev) => (prev.includes(p) ? prev : [...prev, p]));
           },
           onUpdate: (msgs) => {
-            if (isStreamConvActive()) {
-              setMessages(msgs.filter((m) => m.role !== "system"));
-            }
+            if (!isStreamConvActive()) return;
+            pendingMsgs = msgs;
+            if (!rafHandle) rafHandle = requestAnimationFrame(flush);
+          },
+          onAssistantDelta: () => {
+            // onUpdate already carries the streaming text; this hook exists
+            // so callers can wire side-effects (e.g. token-level metrics)
+            // without re-scanning the message list. No-op here.
           },
           onStatusChange: (s) => {
             if (isStreamConvActive()) setAgentStatus(s);
@@ -355,6 +375,12 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           requestConfirmation,
           signal: ctrl.signal,
         });
+        // Flush any pending rAF snapshot so the final state lands before we
+        // persist the assistant turn below.
+        if (rafHandle) {
+          cancelAnimationFrame(rafHandle);
+          flush();
+        }
 
         if (finalText != null) {
           // Persist final assistant response to DB and assign id to message in state
@@ -687,6 +713,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               <button className="agent-settings-btn" onClick={checkUpdates}>Check now</button>
               {updateMsg && <span className="agent-settings-hint">{updateMsg}</span>}
             </div>
+            <McpSettings />
           </div>
         )}
 

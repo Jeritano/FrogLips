@@ -2,6 +2,7 @@ mod agent;
 mod ask_user;
 mod history;
 mod task_queue;
+mod mcp;
 mod memory;
 mod mlx_server;
 mod models;
@@ -814,6 +815,53 @@ async fn native_chat_stream(
     Ok(final_text)
 }
 
+/* ── MCP (Model Context Protocol) ─────────────────────────────────────── */
+
+#[tauri::command]
+async fn mcp_start_server(
+    name: String,
+    command: String,
+    args: Option<Vec<String>>,
+    env: Option<std::collections::HashMap<String, String>>,
+) -> Result<Vec<mcp::ToolDescriptor>, String> {
+    let args = args.unwrap_or_default();
+    mcp::start_server(name, command, args, env)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mcp_stop_server(name: String) -> Result<(), String> {
+    mcp::stop_server(&name).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mcp_list_servers() -> Vec<mcp::ServerInfo> {
+    mcp::list_servers()
+}
+
+#[tauri::command]
+fn mcp_list_tools(name: String) -> Result<Vec<mcp::ToolDescriptor>, String> {
+    mcp::list_tools(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mcp_call_tool(
+    server: String,
+    tool: String,
+    args: Option<serde_json::Value>,
+) -> Result<String, String> {
+    let args = args.unwrap_or(serde_json::json!({}));
+    mcp::call_tool(&server, &tool, args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mcp_server_stderr(name: String) -> Option<String> {
+    mcp::server_stderr(&name).await
+}
+
 #[tauri::command]
 fn settings_get() -> settings::Settings {
     settings::load()
@@ -873,6 +921,27 @@ pub fn run() {
     let persisted = settings::load();
     if let Some(ws) = persisted.workspace_root.clone() {
         let _ = agent::set_workspace_root(Some(ws));
+    }
+
+    // Auto-start configured MCP servers in the background. Failures are
+    // logged but never block app launch — the app must boot even with zero
+    // MCP servers configured or every one of them broken.
+    let configured_mcp = persisted.mcp_servers.clone().unwrap_or_default();
+    if !configured_mcp.is_empty() {
+        tauri::async_runtime::spawn(async move {
+            for cfg in configured_mcp {
+                if !cfg.enabled {
+                    continue;
+                }
+                let name = cfg.name.clone();
+                let env_opt = if cfg.env.is_empty() { None } else { Some(cfg.env) };
+                if let Err(e) =
+                    mcp::start_server(cfg.name, cfg.command, cfg.args, env_opt).await
+                {
+                    eprintln!("[mcp] auto-start '{}' failed: {}", name, e);
+                }
+            }
+        });
     }
 
     let server_state: ServerHandle = Arc::new(ServerState::default());
@@ -991,6 +1060,12 @@ pub fn run() {
             native_unload_model,
             native_current_model,
             native_chat_stream,
+            mcp_start_server,
+            mcp_stop_server,
+            mcp_list_servers,
+            mcp_list_tools,
+            mcp_call_tool,
+            mcp_server_stderr,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -1000,7 +1075,10 @@ pub fn run() {
     app.run(move |_app, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             let s = cleanup.clone();
-            tauri::async_runtime::block_on(async move { s.stop().await; });
+            tauri::async_runtime::block_on(async move {
+                s.stop().await;
+                mcp::shutdown_all().await;
+            });
         }
     });
 }

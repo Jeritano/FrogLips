@@ -1,5 +1,6 @@
 import { api } from "../tauri-api";
 import type { ToolCall } from "../../types";
+import { dispatchMcpTool, isMcpToolName } from "./mcp-tools";
 
 export const DANGEROUS_TOOLS = new Set([
   "run_shell", "write_file", "edit_file", "multi_edit",
@@ -87,6 +88,10 @@ export async function classifyToolRisk(
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+  // MCP-routed tools: names prefixed `mcp__server__tool`.
+  if (isMcpToolName(name)) {
+    return dispatchMcpTool(name, args);
+  }
   switch (name) {
     case "read_file": {
       const r = await api.agentReadFile(

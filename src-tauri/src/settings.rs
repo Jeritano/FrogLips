@@ -22,6 +22,7 @@ pub struct Settings {
     pub window: Option<WindowGeometry>,
     pub theme: Option<String>, // "dark" | "light"
     pub custom_backends: Option<Vec<CustomBackend>>,
+    pub mcp_servers: Option<Vec<McpServerConfig>>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -32,6 +33,21 @@ pub struct CustomBackend {
     pub model: String,
     pub api_key: Option<String>,
 }
+
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    /// Whether this server should be auto-started when the app launches.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool { true }
 
 fn settings_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("Froglips/settings.json"))

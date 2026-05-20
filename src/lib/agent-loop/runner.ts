@@ -12,8 +12,9 @@ import {
   toolCallSig,
 } from "./dispatch";
 import { buildSystemPrompt } from "./system-prompt";
-import { OLLAMA_BASE, callOllamaWithRetry, toOllamaMessages } from "./ollama-client";
+import { OLLAMA_BASE, RETRY_BACKOFF_MS, RETRY_MAX, streamOllamaChat, toOllamaMessages } from "./ollama-client";
 import { runSubagent } from "./subagent";
+import { fetchMcpTools } from "./mcp-tools";
 
 const MAX_ITERATIONS = 40;
 const DEDUPE_WINDOW = 3;
@@ -29,7 +30,7 @@ function makeTmpKey() {
 
 export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null> {
   const {
-    model, onUpdate, onStatusChange, onMetrics, requestConfirmation, signal,
+    model, onUpdate, onStatusChange, onMetrics, onAssistantDelta, requestConfirmation, signal,
     workspaceRoot, systemPromptOverride,
     toolAllowlist = [], approveAllShell, approveAllWrite,
     approvedShellPrefixes = [], onApproveShellPrefix,
@@ -59,46 +60,108 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
 
   onStatusChange("thinking");
 
-  // Filter tool defs by allowlist
+  // Discover MCP-provided tools once per run. Failures are swallowed inside
+  // fetchMcpTools so the loop never blocks on a broken server.
+  const mcpTools = await fetchMcpTools();
+
+  // Filter tool defs by allowlist. The allowlist applies to both built-in
+  // and MCP tools — if a user-set allowlist is in effect, MCP tool names
+  // (`mcp__server__tool`) must appear explicitly to be exposed.
+  const allTools = [
+    ...TOOLS,
+    ...mcpTools,
+  ] as unknown as typeof TOOLS;
   const tools = toolAllowlist.length
-    ? TOOLS.filter((t) => toolAllowlist.includes(t.function.name))
-    : TOOLS;
+    ? allTools.filter((t) => toolAllowlist.includes(t.function.name))
+    : allTools;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     if (signal.aborted) return null;
     metrics.iterations = i + 1;
 
     const llmStart = performance.now();
-    let data: Record<string, unknown>;
+    // Streaming placeholder: pushed into msgs so consumers see in-flight text.
+    // After the stream resolves we either (a) leave it as the final reply, or
+    // (b) annotate it with tool_calls and proceed to dispatch.
+    const streamingKey = makeTmpKey();
+    const streamingMsg: Message = {
+      _tmpKey: streamingKey,
+      conversation_id: opts.conversationId,
+      role: "assistant",
+      content: "",
+    };
+    msgs.push(streamingMsg);
+    let streamPushed = true;
+
+    let result: { content: string; tool_calls: ToolCall[]; prompt_eval_count?: number; eval_count?: number };
     try {
-      data = await callOllamaWithRetry(
-        `${OLLAMA_BASE}/api/chat`,
-        {
-          model,
-          stream: false,
-          options: { temperature: 0.4 },
-          messages: toOllamaMessages(msgs),
-          tools,
-        },
-        signal,
-        () => { metrics.retries++; },
-      );
+      let lastErr: unknown = null;
+      let finalResult:
+        | { content: string; tool_calls: ToolCall[]; prompt_eval_count?: number; eval_count?: number }
+        | null = null;
+      for (let attempt = 0; attempt <= RETRY_MAX; attempt++) {
+        if (signal.aborted) return null;
+        try {
+          // Reset the placeholder's content on retry so the bubble doesn't
+          // duplicate partial text from a half-streamed previous attempt.
+          streamingMsg.content = "";
+          finalResult = await streamOllamaChat(
+            `${OLLAMA_BASE}/api/chat`,
+            {
+              model,
+              options: { temperature: 0.4 },
+              messages: toOllamaMessages(msgs.filter((m) => m._tmpKey !== streamingKey)),
+              tools,
+            },
+            signal,
+            (delta) => {
+              streamingMsg.content += delta;
+              onAssistantDelta?.(delta);
+              onUpdate([...msgs]);
+            },
+          );
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (signal.aborted) throw e;
+          const msgErr = e instanceof Error ? e.message : String(e);
+          const isRetriable = /Ollama 5\d\d:/.test(msgErr) || !/Ollama \d{3}:/.test(msgErr);
+          if (isRetriable && attempt < RETRY_MAX) {
+            metrics.retries++;
+            await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
+            continue;
+          }
+          throw e;
+        }
+      }
+      if (!finalResult) throw lastErr ?? new Error("Ollama call failed");
+      result = finalResult;
     } catch (e) {
+      // Drop the streaming placeholder so error paths don't leak a stub bubble.
+      if (streamPushed) {
+        const idx = msgs.findIndex((m) => m._tmpKey === streamingKey);
+        if (idx !== -1) msgs.splice(idx, 1);
+        streamPushed = false;
+      }
       if (signal.aborted) return null;
       throw e;
     }
     metrics.totalLlmMs += performance.now() - llmStart;
-    const promptTok = data?.prompt_eval_count as number | undefined;
-    const evalTok = data?.eval_count as number | undefined;
+    const promptTok = result.prompt_eval_count;
+    const evalTok = result.eval_count;
     if (typeof promptTok === "number") metrics.promptTokens += promptTok;
     if (typeof evalTok === "number") metrics.completionTokens += evalTok;
     onMetrics?.({ ...metrics });
 
-    const message = data?.message as Record<string, unknown> | undefined;
-    if (!message) throw new Error("No message in Ollama response");
-
-    const toolCalls = (message.tool_calls as ToolCall[] | undefined) ?? [];
-    const preludeText = String(message.content ?? "");
+    const toolCalls = result.tool_calls;
+    const preludeText = result.content;
+    // Pop the streaming placeholder; the loop below re-pushes the canonical
+    // message (final reply OR assistant-with-tool-calls) using makeTmpKey.
+    if (streamPushed) {
+      const idx = msgs.findIndex((m) => m._tmpKey === streamingKey);
+      if (idx !== -1) msgs.splice(idx, 1);
+      streamPushed = false;
+    }
 
     if (toolCalls.length === 0) {
       // Final text response

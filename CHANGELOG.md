@@ -4,6 +4,19 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.7] — 2026-05-20
+
+### Added
+- **Streaming agent loop**: agent mode now streams content + tool_calls progressively (NDJSON parse via `TextDecoderStream`, line-buffered, tool_call chunks merged by index). Renders into the in-flight assistant bubble. `callOllamaWithRetry` preserved as a compat wrapper. New `streamOllamaChat` in `ollama-client.ts`. `onAssistantDelta` opt threaded through runner → ChatWindow w/ rAF coalesce. +2.15 kB raw / +0.69 kB gzip.
+- **MCP (Model Context Protocol) client**: spawn user-configured MCP servers via stdio, expose their tools as agent tools (prefixed `mcp__{server}__{tool}` to avoid collisions). Hand-rolled JSON-RPC 2.0 over stdio (~536 LOC in `src-tauri/src/mcp/mod.rs`), zero new crates. Six new Tauri commands: `mcp_start_server`, `mcp_stop_server`, `mcp_list_servers`, `mcp_list_tools`, `mcp_call_tool`, `mcp_server_stderr`. Settings persisted to `settings.rs`, auto-start on app launch, graceful shutdown on `RunEvent::Exit`. New `McpSettings.tsx` UI (list/add/remove/start/stop/restart/stderr). `runAgentLoop` fetches MCP tools once per run and merges into TOOLS dynamically. +9.22 kB raw / +1.9% gzip.
+
+### Fixed
+- `clippy::items_after_test_module` warning in `src-tauri/src/models.rs` — `dir_size` helper moved above test module so `cargo clippy --all-targets -D warnings` now passes (required for the CI gate added in v0.9.6).
+
+### Tests
+- TypeScript: 17 passing (5 baseline + 3 streaming + 7 MCP + 2 invariant updates).
+- Rust: 13 passing (10 baseline + 3 MCP).
+
 ## [0.9.6] — 2026-05-20
 
 ### Refactor

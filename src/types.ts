@@ -191,6 +191,30 @@ export interface AppSettings {
   window?: WindowGeometry | null;
   theme?: "dark" | "light" | null;
   custom_backends?: CustomBackend[] | null;
+  mcp_servers?: McpServerConfig[] | null;
+}
+
+export interface McpServerConfig {
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  enabled?: boolean;
+}
+
+export interface McpServerInfo {
+  name: string;
+  command: string;
+  args: string[];
+  status: string;
+  tool_count: number;
+  last_error?: string | null;
+}
+
+export interface McpToolDescriptor {
+  name: string;
+  description: string;
+  inputSchema: unknown;
 }
 
 export interface ShellResult {

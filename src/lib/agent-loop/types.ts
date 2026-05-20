@@ -36,6 +36,13 @@ export interface AgentRunOptions {
   onUpdate: (msgs: Message[]) => void;
   onStatusChange: (status: AgentStatus) => void;
   onMetrics?: (m: AgentMetrics) => void;
+  /**
+   * Optional: fires for each raw content delta from the streaming LLM
+   * response. Use this to render an in-flight assistant bubble; the runner
+   * also pushes the partial message into `onUpdate(msgs)` so consumers that
+   * ignore this callback still see streaming progress.
+   */
+  onAssistantDelta?: (text: string) => void;
   requestConfirmation: (
     toolName: string,
     args: Record<string, unknown>,
