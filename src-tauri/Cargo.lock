@@ -3723,7 +3723,7 @@ dependencies = [
 
 [[package]]
 name = "local-llm-app"
-version = "0.9.8"
+version = "0.9.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3744,6 +3744,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

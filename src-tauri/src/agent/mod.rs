@@ -12,6 +12,7 @@
 pub mod code;
 pub mod fs;
 pub mod git;
+pub mod injection_scan;
 pub mod shell;
 pub mod system;
 pub mod web;

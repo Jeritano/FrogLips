@@ -483,7 +483,12 @@ pub async fn call_tool(server: &str, tool: &str, args_json: Value) -> Result<Str
         // envelope, matching how built-in tool failures look.
         return Err(anyhow!(out.trim().to_string()));
     }
-    Ok(out.trim_end().to_string())
+    // External MCP servers are not trusted by default — their text
+    // content blocks can contain prompt-injection payloads. Scan and
+    // wrap with a DATA-only marker if any heuristic patterns hit.
+    let trimmed = out.trim_end().to_string();
+    let (wrapped, _n) = crate::agent::injection_scan::scan_and_wrap(&trimmed);
+    Ok(wrapped)
 }
 
 /// Returns recent stderr from a server (for surfacing failure diagnostics).

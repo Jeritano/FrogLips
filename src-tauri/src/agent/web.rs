@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::fs::{err_string, ToolError};
+use super::injection_scan;
 
 #[derive(Serialize)]
 pub struct WebFetchResult {
@@ -187,6 +188,11 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
         body_text
     };
 
+    // Treat the fetched page as untrusted external content: scan for
+    // prompt-injection patterns and wrap with a DATA-only warning if any
+    // are found. The agent still gets the substantive text.
+    let (content, _n_findings) = injection_scan::scan_and_wrap(&content);
+
     Ok(WebFetchResult { url: url_str, status, content, bytes: total, truncated })
 }
 
@@ -260,6 +266,25 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
             snippet: strip_tags(snippet_html),
         });
     }
+
+    // Search snippets are untrusted attacker-controlled text — concat and
+    // scan. If any hits contain injection patterns we re-wrap the
+    // *individual* offending snippets so the agent sees the DATA-only
+    // markers right next to the bad string.
+    let joined: String = hits
+        .iter()
+        .map(|h| h.snippet.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !injection_scan::scan(&joined).is_empty() {
+        for h in hits.iter_mut() {
+            let (wrapped, n) = injection_scan::scan_and_wrap(&h.snippet);
+            if n > 0 {
+                h.snippet = wrapped;
+            }
+        }
+    }
+
     Ok(WebSearchResult { query, hits })
 }
 
@@ -377,6 +402,29 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
     }
     let (bytes, total, truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;
     let body = String::from_utf8_lossy(&bytes).into_owned();
+
+    // Only scan responses that are likely human-readable text — binary
+    // payloads (images, archives) would just trip false positives or
+    // waste cycles. Bound at < 1 MiB (the same cap we used to read), and
+    // require a text-ish Content-Type header.
+    let ct = hdrs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.to_ascii_lowercase())
+        .unwrap_or_default();
+    let text_like = ct.starts_with("text/")
+        || ct.contains("json")
+        || ct.contains("xml")
+        || ct.contains("html")
+        || ct.contains("javascript")
+        || ct.contains("yaml")
+        || ct.is_empty(); // unknown → treat as text, the body is already UTF-8 lossy
+    let body = if text_like && body.len() < WEB_FETCH_MAX_BYTES {
+        injection_scan::scan_and_wrap(&body).0
+    } else {
+        body
+    };
+
     Ok(HttpResp { status, headers: hdrs, body, bytes: total, truncated })
 }
 

@@ -1,5 +1,5 @@
 import { api } from "../tauri-api";
-import type { ToolCall } from "../../types";
+import type { AuditApproval, AuditOutcome, ToolCall } from "../../types";
 import { dispatchMcpTool, isMcpToolName } from "./mcp-tools";
 
 export const DANGEROUS_TOOLS = new Set([
@@ -59,6 +59,86 @@ export function cancelActiveShell(): boolean {
     return true;
   }
   return false;
+}
+
+/* ── Audit helpers ── */
+
+/**
+ * Bound on the args payload we persist for the audit log. Bulky write fields
+ * (`content`, `old_string`, `new_string`) are truncated client-side so the
+ * DB never holds whole-file write blobs.
+ */
+const ARG_TRUNCATE_FIELDS: Record<string, string[]> = {
+  write_file: ["content"],
+  edit_file: ["old_string", "new_string"],
+  multi_edit: [], // each edit's old_string/new_string handled below
+};
+
+function truncateString(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}...`;
+}
+
+export function redactArgsForAudit(name: string, args: Record<string, unknown>): string {
+  const copy: Record<string, unknown> = { ...args };
+  const fields = ARG_TRUNCATE_FIELDS[name] ?? [];
+  for (const f of fields) {
+    const v = copy[f];
+    if (typeof v === "string") copy[f] = truncateString(v, 256);
+  }
+  // multi_edit has an `edits` array with old_string/new_string in each.
+  if (name === "multi_edit" && Array.isArray(copy.edits)) {
+    copy.edits = (copy.edits as Array<Record<string, unknown>>).map((e) => {
+      const out: Record<string, unknown> = { ...e };
+      if (typeof out.old_string === "string") out.old_string = truncateString(out.old_string, 256);
+      if (typeof out.new_string === "string") out.new_string = truncateString(out.new_string, 256);
+      return out;
+    });
+  }
+  try {
+    return JSON.stringify(copy);
+  } catch {
+    return "{}";
+  }
+}
+
+export interface AuditInput {
+  toolName: string;
+  args: Record<string, unknown>;
+  resultBody: string;
+  durationMs: number;
+  approval: AuditApproval;
+  outcome: AuditOutcome;
+  errorKind?: string | null;
+  conversationId?: number | string | null;
+}
+
+/**
+ * Best-effort audit write — never throws. Errors are logged to console so the
+ * agent loop is unaffected by an audit failure (db locked, disk full, etc.).
+ */
+export function recordAuditSafe(input: AuditInput): void {
+  try {
+    void api
+      .agentAuditRecord({
+        tool_name: input.toolName,
+        args_json: redactArgsForAudit(input.toolName, input.args),
+        result_body: input.resultBody,
+        duration_ms: Math.max(0, Math.round(input.durationMs)),
+        approval: input.approval,
+        outcome: input.outcome,
+        error_kind: input.errorKind ?? null,
+        conversation_id:
+          input.conversationId == null ? null : String(input.conversationId),
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn("[audit] record failed:", e);
+      });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn("[audit] record sync error:", e);
+  }
 }
 
 /* ── Risk classifier hookups for dangerous tools ── */

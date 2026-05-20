@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentAuditEntry,
+  AgentAuditFilter,
+  AgentAuditRow,
+  AgentAuditStats,
   AllModels,
   AppSettings,
   Conversation,
@@ -17,6 +21,8 @@ import type {
   Message,
   MultiEditResult,
   PdfResult,
+  PolicyDecision,
+  ProjectPolicy,
   ReadResult,
   ScreenshotResult,
   SearchResult,
@@ -194,6 +200,14 @@ export const api = {
   agentGetWorkspace: () =>
     invoke<string | null>("agent_get_workspace"),
 
+  // Per-project policy (`.froglips/policy.json`)
+  policyLoad: (cwd: string) =>
+    invoke<ProjectPolicy | null>("policy_load", { cwd }),
+  policyEvaluateShell: (cwd: string, command: string) =>
+    invoke<PolicyDecision>("policy_evaluate_shell", { cwd, command }),
+  policyEvaluateWrite: (cwd: string, path: string) =>
+    invoke<PolicyDecision>("policy_evaluate_write", { cwd, path }),
+
   // Settings
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsSet: (patch: Partial<AppSettings>) =>
@@ -220,6 +234,15 @@ export const api = {
     invoke<string>("mcp_call_tool", { server, tool, args }),
   mcpServerStderr: (name: string) =>
     invoke<string | null>("mcp_server_stderr", { name }),
+
+  // Agent audit log
+  agentAuditRecord: (entry: AgentAuditEntry) =>
+    invoke<void>("agent_audit_record", { entry }),
+  agentAuditList: (filter?: AgentAuditFilter) =>
+    invoke<AgentAuditRow[]>("agent_audit_list", { filter: filter ?? null }),
+  agentAuditPurge: (days: number) =>
+    invoke<number>("agent_audit_purge", { days }),
+  agentAuditStats: () => invoke<AgentAuditStats>("agent_audit_stats"),
 
   // Native inference (alpha)
   nativeSupported: () => invoke<boolean>("native_supported"),

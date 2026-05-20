@@ -1,4 +1,4 @@
-import type { Message } from "../../types";
+import type { Message, ProjectPolicy } from "../../types";
 
 export type AgentStatus = "idle" | "thinking" | "tool" | "done" | "error";
 
@@ -51,4 +51,10 @@ export interface AgentRunOptions {
   signal: AbortSignal;
   /** Internal: depth counter for spawn_subagent recursion guard. */
   _subagentDepth?: number;
+  /**
+   * Optional pre-loaded project policy. The runner will also load one
+   * lazily from `workspaceRoot` on start, but callers can short-circuit
+   * that by passing the policy directly (used in tests).
+   */
+  projectPolicy?: ProjectPolicy | null;
 }

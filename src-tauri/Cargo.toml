@@ -1,6 +1,6 @@
 [package]
 name = "local-llm-app"
-version = "0.9.8"
+version = "0.9.9"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["joseph"]
 edition = "2021"
@@ -33,6 +33,7 @@ futures = "0.3"
 base64 = "0.22"
 pdf-extract = "0.7"
 html2text = "0.13"
+sha2 = "0.10"
 
 # Native inference (alpha) — fast in-process LLM via mistralrs + candle + Metal.
 # Enabled via the "native-inference" feature so existing builds aren't blocked

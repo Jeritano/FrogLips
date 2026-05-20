@@ -269,3 +269,65 @@ export interface Memory {
 }
 
 export type MemoryMode = "off" | "manual" | "queue" | "direct";
+
+/** Mirror of `.froglips/policy.json` — see `src-tauri/src/policy.rs`. */
+export interface ProjectPolicy {
+  schema?: number | null;
+  allowed_shell_prefixes?: string[] | null;
+  allowed_write_paths?: string[] | null;
+  denied_write_paths?: string[] | null;
+  allowed_env_vars?: string[] | null;
+  auto_approve_dangerous_tools?: string[] | null;
+  max_iterations?: number | null;
+  notes?: string | null;
+  source_path?: string | null;
+}
+
+/** Tagged-decision returned by `policy_evaluate_*` Tauri commands. */
+export type PolicyDecision = "auto" | "needs-confirm" | "denied";
+
+/* ── Agent audit log ── */
+
+export type AuditApproval = "auto" | "user_allowed" | "session_allowed" | "denied";
+export type AuditOutcome = "ok" | "error" | "denied" | "stall_guard" | "duplicate";
+
+export interface AgentAuditEntry {
+  ts?: number;
+  conversation_id?: string | null;
+  tool_name: string;
+  args_json: string;
+  result_body?: string;
+  duration_ms: number;
+  approval: AuditApproval;
+  outcome: AuditOutcome;
+  error_kind?: string | null;
+}
+
+export interface AgentAuditFilter {
+  conversation_id?: string | null;
+  tool_name?: string | null;
+  since_ts?: number | null;
+  until_ts?: number | null;
+  limit?: number | null;
+  offset?: number | null;
+}
+
+export interface AgentAuditRow {
+  id: number;
+  ts: number;
+  conversation_id: string | null;
+  tool_name: string;
+  args_json: string;
+  result_hash: string;
+  result_size: number;
+  duration_ms: number;
+  approval: AuditApproval;
+  outcome: AuditOutcome;
+  error_kind: string | null;
+}
+
+export interface AgentAuditStats {
+  total_calls_24h: number;
+  top_tools_24h: Array<{ tool_name: string; count: number }>;
+  avg_duration_ms_24h: Array<{ tool_name: string; avg_ms: number }>;
+}

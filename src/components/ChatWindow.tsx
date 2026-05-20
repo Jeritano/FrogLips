@@ -14,10 +14,11 @@ import {
 import type { AgentPreset } from "../lib/agent-presets";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { Conversation, Memory, Message, ServerStatus } from "../types";
+import type { Conversation, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { McpSettings } from "./McpSettings";
+import { AuditLog } from "./AuditLog";
 import { ToolHistory } from "./ToolHistory";
 import { conversationToMarkdown, downloadText, safeFilename } from "../lib/export";
 import {
@@ -93,6 +94,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [presets, setPresets] = useState<AgentPreset[]>(() => loadAllPresets());
   const [activePresetId, setActivePresetIdState] = useState<string>(() => getActivePresetId());
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(null);
   const activePreset = presets.find((p) => p.id === activePresetId) ?? presets[0];
   const abortRef = useRef<AbortController | null>(null);
   const creatingConvRef = useRef<Promise<Conversation> | null>(null);
@@ -102,6 +104,20 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   useEffect(() => {
     api.agentGetWorkspace().then(setWorkspaceRoot).catch(() => {});
   }, []);
+
+  // Refresh the active project policy whenever the workspace changes.
+  // Missing / malformed `.froglips/policy.json` → null (silent).
+  useEffect(() => {
+    if (!workspaceRoot) {
+      setProjectPolicy(null);
+      return;
+    }
+    let cancelled = false;
+    api.policyLoad(workspaceRoot)
+      .then((p) => { if (!cancelled) setProjectPolicy(p ?? null); })
+      .catch(() => { if (!cancelled) setProjectPolicy(null); });
+    return () => { cancelled = true; };
+  }, [workspaceRoot]);
 
   // Listen for agent ask_user requests. One modal at a time — if a second
   // request fires before the first resolves, the new one replaces (rare).
@@ -348,6 +364,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           messages: historyForApi,
           conversationId: conv.id,
           workspaceRoot,
+          projectPolicy,
           systemPromptOverride: activePreset?.systemPromptOverride,
           toolAllowlist: effectiveAllowlist,
           approveAllShell,
@@ -646,6 +663,19 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               {agentStatus === "tool" && "Running tool…"}
             </span>
           )}
+          {agentMode && projectPolicy && (
+            <span
+              className="agent-status-pill policy-pill"
+              data-testid="agent-policy-chip"
+              title={
+                `Project policy active${projectPolicy.source_path ? ` (${projectPolicy.source_path})` : ""}${
+                  projectPolicy.notes ? `\n\n${projectPolicy.notes}` : ""
+                }`
+              }
+            >
+              Policy: project{projectPolicy.notes ? ` — ${projectPolicy.notes.slice(0, 40)}${projectPolicy.notes.length > 40 ? "…" : ""}` : ""}
+            </span>
+          )}
           {agentMetrics && agentMode && (
             <span
               className="agent-metrics"
@@ -718,6 +748,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               {updateMsg && <span className="agent-settings-hint">{updateMsg}</span>}
             </div>
             <McpSettings />
+            <AuditLog />
           </div>
         )}
 

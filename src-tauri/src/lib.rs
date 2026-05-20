@@ -1,4 +1,5 @@
 mod agent;
+mod agent_audit;
 mod ask_user;
 mod history;
 mod task_queue;
@@ -7,6 +8,7 @@ mod memory;
 mod mlx_server;
 mod models;
 mod native_inference;
+mod policy;
 mod settings;
 
 use once_cell::sync::Lazy;
@@ -701,6 +703,27 @@ fn agent_classify_shell(command: String) -> String {
 }
 
 #[tauri::command]
+fn policy_load(cwd: String) -> Option<policy::ProjectPolicy> {
+    policy::load_for_cwd(std::path::Path::new(&cwd))
+}
+
+#[tauri::command]
+fn policy_evaluate_shell(cwd: String, command: String) -> policy::Decision {
+    match policy::load_for_cwd(std::path::Path::new(&cwd)) {
+        Some(p) => policy::evaluate_shell(&command, &p),
+        None => policy::Decision::NeedsConfirm,
+    }
+}
+
+#[tauri::command]
+fn policy_evaluate_write(cwd: String, path: String) -> policy::Decision {
+    match policy::load_for_cwd(std::path::Path::new(&cwd)) {
+        Some(p) => policy::evaluate_write(std::path::Path::new(&path), &p),
+        None => policy::Decision::NeedsConfirm,
+    }
+}
+
+#[tauri::command]
 fn agent_classify_applescript(script: String) -> String {
     agent::classify_applescript_risk(&script).to_string()
 }
@@ -879,6 +902,43 @@ fn settings_set(patch: serde_json::Value) -> Result<settings::Settings, String> 
         serde_json::from_value(current).map_err(|e| e.to_string())?;
     settings::save(&updated).map_err(|e| e.to_string())?;
     Ok(updated)
+}
+
+/* ── Agent audit log ────────────────────────────────────────────────────── */
+
+#[tauri::command]
+async fn agent_audit_record(entry: agent_audit::AuditEntry) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || agent_audit::record(entry))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn agent_audit_list(
+    filter: Option<agent_audit::AuditFilter>,
+) -> Result<Vec<agent_audit::AuditRow>, String> {
+    let filter = filter.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || agent_audit::list(filter))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn agent_audit_purge(days: u32) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || agent_audit::purge_older_than(days))
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn agent_audit_stats() -> Result<agent_audit::AuditStats, String> {
+    tauri::async_runtime::spawn_blocking(agent_audit::stats)
+        .await
+        .map_err(map_err)?
+        .map_err(map_err)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1066,6 +1126,13 @@ pub fn run() {
             mcp_list_tools,
             mcp_call_tool,
             mcp_server_stderr,
+            policy_load,
+            policy_evaluate_shell,
+            policy_evaluate_write,
+            agent_audit_record,
+            agent_audit_list,
+            agent_audit_purge,
+            agent_audit_stats,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

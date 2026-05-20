@@ -4,6 +4,19 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.9] — 2026-05-20
+
+### Added (v1.1 batch A)
+- **Tool-call audit log**: every agent tool invocation persisted to SQLite (`agent_audit` table). Captures `ts, conversation_id, tool_name, args_json, result_hash` (sha256 first 16 hex chars), `result_size, duration_ms, approval, outcome, error_kind`. Four Tauri cmds (`agent_audit_record`/`list`/`purge`/`stats`). Args redaction client-side truncates `content`/`old_string`/`new_string` to 256 chars before IPC. Runner records every outcome branch (auto, session_allowed, user_allowed, denied, stall_guard, duplicate_call, policy_denied, error). New `AuditLog.tsx` UI: filterable table + 24h stats + purge control. Audit failures swallowed both sides — never breaks the agent loop. Added `sha2 = "0.10"` dep.
+- **Per-project policy** (`.froglips/policy.json`): walks up from workspace cwd looking for the file. Schema: `allowed_shell_prefixes`, `allowed_write_paths`, `denied_write_paths`, `allowed_env_vars`, `auto_approve_dangerous_tools`, `max_iterations`, `notes`. Three Tauri cmds (`policy_load`, `policy_evaluate_shell`, `policy_evaluate_write`). Runner consults policy first in the confirmation gate: `auto` skips prompt, `denied` injects `policy_denied` tool result without executing. Green chip "Policy: project — <notes>" near agent toggle when active. Bad JSON → eprintln + treat as absent. Glob matcher (`*.key`, `secrets/`) in-file, no new crates.
+- **Prompt-injection scan**: scans `web_fetch` / `web_search` / `http_request` / `read_pdf` / MCP tool results for injection patterns (ignore-previous-instructions, ChatML tokens `<|im_start|>`/`<|im_end|>`, Llama `[INST]`/`[/INST]`, `</s>`/`<s>`, role-mimic at line start, ≥500-space padding, repeated-token spam). Findings cap at 10. Wraps suspicious results with `[!] prompt_injection_warning: ...` header + `---BEGIN/END UNTRUSTED CONTENT---` markers. Pattern names in warning use U+00B7 middle-dot to avoid re-tripping detector on idempotent rescan. Defensive against malformed UTF-8 + huge inputs.
+
+### Tests
+- Rust: **42 passing** (was 13). New: 5 audit, 6 policy, 18 injection scan.
+- Vitest: **32 passing** (was 17). New: 6 audit, 5 policy, 3 injection wrapper, +1 invariant.
+- Playwright: **10 passing** (no change).
+- **Grand total: 84 tests across 3 runners.**
+
 ## [0.9.8] — 2026-05-20
 
 ### Refactor

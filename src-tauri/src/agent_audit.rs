@@ -1,0 +1,434 @@
+//! Persistent audit log for agent tool invocations.
+//!
+//! Every tool dispatch (from the frontend agent loop) writes a single row to
+//! `agent_audit`. Rows are queryable for debugging + analytics. Schema is
+//! defined here and installed by `ensure_schema` which is invoked from
+//! `history::setup_schema` (idempotent — safe to run on every boot).
+//!
+//! Failure policy: callers should treat `record()` as best-effort. The
+//! frontend wraps the call in a try/catch and never lets a failed audit
+//! break the agent loop.
+
+use anyhow::Result;
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+
+use crate::history::get_db;
+
+/* ── Schema installer ── */
+
+/// Create the audit table + indexes if absent. Safe to call repeatedly.
+/// Invoked from `history::setup_schema` so the migration runs as part of
+/// the existing init pass.
+pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            conversation_id TEXT,
+            tool_name TEXT NOT NULL,
+            args_json TEXT NOT NULL,
+            result_hash TEXT NOT NULL,
+            result_size INTEGER NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            approval TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            error_kind TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_agent_audit_ts ON agent_audit(ts);
+         CREATE INDEX IF NOT EXISTS idx_agent_audit_conv ON agent_audit(conversation_id);",
+    )?;
+    Ok(())
+}
+
+/* ── Public types (serde) ── */
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditEntry {
+    /// Unix epoch millis. If absent / zero, computed at insert time.
+    #[serde(default)]
+    pub ts: i64,
+    pub conversation_id: Option<String>,
+    pub tool_name: String,
+    pub args_json: String,
+    /// Raw result body — hashed + sized at insert time. Pass `""` if unknown.
+    #[serde(default)]
+    pub result_body: String,
+    pub duration_ms: i64,
+    pub approval: String,
+    pub outcome: String,
+    pub error_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AuditFilter {
+    pub conversation_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub since_ts: Option<i64>,
+    pub until_ts: Option<i64>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditRow {
+    pub id: i64,
+    pub ts: i64,
+    pub conversation_id: Option<String>,
+    pub tool_name: String,
+    pub args_json: String,
+    pub result_hash: String,
+    pub result_size: i64,
+    pub duration_ms: i64,
+    pub approval: String,
+    pub outcome: String,
+    pub error_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct AuditStats {
+    /// Total tool invocations in the last 24h.
+    pub total_calls_24h: i64,
+    /// Top 5 most-used tools in the last 24h (descending by count).
+    pub top_tools_24h: Vec<TopToolEntry>,
+    /// Average duration_ms per tool over the last 24h.
+    pub avg_duration_ms_24h: Vec<AvgDurationEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TopToolEntry {
+    pub tool_name: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AvgDurationEntry {
+    pub tool_name: String,
+    pub avg_ms: f64,
+}
+
+/* ── Helpers ── */
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// SHA-256 truncated to first 16 hex chars (64 bits) — enough to dedupe
+/// identical results without bloating the index.
+fn hash_result(body: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(body.as_bytes());
+    let digest = h.finalize();
+    let full = format!("{:x}", digest);
+    full.chars().take(16).collect()
+}
+
+/* ── Public API ── */
+
+/// Insert one audit row. Errors are returned (caller decides whether to swallow).
+pub fn record(entry: AuditEntry) -> Result<()> {
+    let conn = get_db()?;
+    let ts = if entry.ts > 0 { entry.ts } else { now_millis() };
+    let hash = hash_result(&entry.result_body);
+    let size = entry.result_body.len() as i64;
+    conn.execute(
+        "INSERT INTO agent_audit
+            (ts, conversation_id, tool_name, args_json, result_hash, result_size,
+             duration_ms, approval, outcome, error_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            ts,
+            entry.conversation_id,
+            entry.tool_name,
+            entry.args_json,
+            hash,
+            size,
+            entry.duration_ms,
+            entry.approval,
+            entry.outcome,
+            entry.error_kind,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Paginated query. Defaults: limit=100 (capped at 1000), offset=0.
+pub fn list(filter: AuditFilter) -> Result<Vec<AuditRow>> {
+    let conn = get_db()?;
+    let limit = filter.limit.unwrap_or(100).clamp(1, 1000);
+    let offset = filter.offset.unwrap_or(0).max(0);
+
+    // Build a dynamic WHERE while keeping all values parameterised.
+    let mut sql = String::from(
+        "SELECT id, ts, conversation_id, tool_name, args_json, result_hash,
+                result_size, duration_ms, approval, outcome, error_kind
+         FROM agent_audit",
+    );
+    let mut clauses: Vec<&'static str> = Vec::new();
+    let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if filter.conversation_id.is_some() {
+        clauses.push("conversation_id = ?");
+        binds.push(Box::new(filter.conversation_id.clone().unwrap()));
+    }
+    if filter.tool_name.is_some() {
+        clauses.push("tool_name = ?");
+        binds.push(Box::new(filter.tool_name.clone().unwrap()));
+    }
+    if let Some(s) = filter.since_ts {
+        clauses.push("ts >= ?");
+        binds.push(Box::new(s));
+    }
+    if let Some(u) = filter.until_ts {
+        clauses.push("ts <= ?");
+        binds.push(Box::new(u));
+    }
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
+    }
+    sql.push_str(" ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?");
+    binds.push(Box::new(limit));
+    binds.push(Box::new(offset));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params_refs: Vec<&dyn rusqlite::ToSql> =
+        binds.iter().map(|b| b.as_ref() as &dyn rusqlite::ToSql).collect();
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params_refs), |r| {
+            Ok(AuditRow {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                conversation_id: r.get(2)?,
+                tool_name: r.get(3)?,
+                args_json: r.get(4)?,
+                result_hash: r.get(5)?,
+                result_size: r.get(6)?,
+                duration_ms: r.get(7)?,
+                approval: r.get(8)?,
+                outcome: r.get(9)?,
+                error_kind: r.get(10)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Housekeeping: drop rows older than `days` days. Returns rows deleted.
+pub fn purge_older_than(days: u32) -> Result<usize> {
+    let cutoff = now_millis() - (days as i64) * 86_400_000;
+    let conn = get_db()?;
+    let n = conn.execute("DELETE FROM agent_audit WHERE ts < ?1", params![cutoff])?;
+    Ok(n)
+}
+
+/// Quick counts: 24h totals, top 5 tools, avg duration per tool.
+pub fn stats() -> Result<AuditStats> {
+    let conn = get_db()?;
+    let cutoff = now_millis() - 24 * 60 * 60 * 1000;
+
+    let total_calls_24h: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM agent_audit WHERE ts >= ?1",
+        params![cutoff],
+        |r| r.get(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT tool_name, COUNT(*) AS c
+           FROM agent_audit
+          WHERE ts >= ?1
+          GROUP BY tool_name
+          ORDER BY c DESC
+          LIMIT 5",
+    )?;
+    let top_tools_24h = stmt
+        .query_map(params![cutoff], |r| {
+            Ok(TopToolEntry { tool_name: r.get(0)?, count: r.get(1)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+
+    let mut stmt = conn.prepare(
+        "SELECT tool_name, AVG(duration_ms) AS avg_ms
+           FROM agent_audit
+          WHERE ts >= ?1
+          GROUP BY tool_name
+          ORDER BY avg_ms DESC",
+    )?;
+    let avg_duration_ms_24h = stmt
+        .query_map(params![cutoff], |r| {
+            Ok(AvgDurationEntry { tool_name: r.get(0)?, avg_ms: r.get::<_, f64>(1)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+
+    Ok(AuditStats {
+        total_calls_24h,
+        top_tools_24h,
+        avg_duration_ms_24h,
+    })
+}
+
+/* ── Internal: small helper for callers that want a structured args map ── */
+
+/// Convenience: serialize args (truncating large `content` fields for
+/// write_file / edit_file / multi_edit) to bounded JSON. Exposed for any
+/// future Rust-side caller that wants to record an audit row directly;
+/// the live agent loop performs the equivalent truncation in TS before
+/// sending args over IPC.
+#[allow(dead_code)]
+pub fn redact_args(tool: &str, args: &serde_json::Value) -> String {
+    fn truncate_str(s: &str, max: usize) -> String {
+        if s.chars().count() <= max {
+            s.to_string()
+        } else {
+            let mut out: String = s.chars().take(max).collect();
+            out.push_str("...");
+            out
+        }
+    }
+
+    if let Some(obj) = args.as_object() {
+        let mut copy: HashMap<String, serde_json::Value> = obj
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let bulky_fields: &[&str] = match tool {
+            "write_file" => &["content"],
+            "edit_file" => &["old_string", "new_string"],
+            "multi_edit" => &[],
+            _ => &[],
+        };
+        for f in bulky_fields {
+            if let Some(serde_json::Value::String(s)) = copy.get(*f) {
+                copy.insert(
+                    (*f).to_string(),
+                    serde_json::Value::String(truncate_str(s, 256)),
+                );
+            }
+        }
+        serde_json::to_string(&copy).unwrap_or_else(|_| "{}".to_string())
+    } else {
+        args.to_string()
+    }
+}
+
+/* ── Tests ── */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Build an isolated in-memory connection so tests don't touch the real
+    // db pool used by other modules. We exercise the SQL we actually run
+    // in production by sharing `ensure_schema` + the exact statements.
+    fn fresh_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        ensure_schema(&conn).expect("schema install");
+        conn
+    }
+
+    fn insert(conn: &Connection, e: AuditEntry) -> i64 {
+        let ts = if e.ts > 0 { e.ts } else { now_millis() };
+        let hash = hash_result(&e.result_body);
+        let size = e.result_body.len() as i64;
+        conn.execute(
+            "INSERT INTO agent_audit
+                (ts, conversation_id, tool_name, args_json, result_hash, result_size,
+                 duration_ms, approval, outcome, error_kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                ts,
+                e.conversation_id,
+                e.tool_name,
+                e.args_json,
+                hash,
+                size,
+                e.duration_ms,
+                e.approval,
+                e.outcome,
+                e.error_kind,
+            ],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn schema_is_idempotent() {
+        let conn = fresh_db();
+        // Re-running ensure_schema must not error.
+        ensure_schema(&conn).unwrap();
+        ensure_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn record_and_list_round_trip() {
+        let conn = fresh_db();
+        let now = now_millis();
+        insert(
+            &conn,
+            AuditEntry {
+                ts: now,
+                conversation_id: Some("c1".into()),
+                tool_name: "read_file".into(),
+                args_json: r#"{"path":"/tmp/x"}"#.into(),
+                result_body: r#"{"ok":true}"#.into(),
+                duration_ms: 12,
+                approval: "auto".into(),
+                outcome: "ok".into(),
+                error_kind: None,
+            },
+        );
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT tool_name, conversation_id, approval, outcome, result_size
+                 FROM agent_audit ORDER BY id DESC LIMIT 1",
+            )
+            .unwrap();
+        let row: (String, Option<String>, String, String, i64) = stmt
+            .query_row([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap();
+        assert_eq!(row.0, "read_file");
+        assert_eq!(row.1.as_deref(), Some("c1"));
+        assert_eq!(row.2, "auto");
+        assert_eq!(row.3, "ok");
+        assert_eq!(row.4, r#"{"ok":true}"#.len() as i64);
+    }
+
+    #[test]
+    fn redact_args_truncates_write_file_content() {
+        let big: String = "x".repeat(1000);
+        let args = serde_json::json!({ "path": "/a", "content": big });
+        let s = redact_args("write_file", &args);
+        // Should contain the path verbatim but not the entire 1000-char content.
+        assert!(s.contains("\"/a\""));
+        assert!(!s.contains(&"x".repeat(1000)));
+        assert!(s.contains("..."));
+    }
+
+    #[test]
+    fn redact_args_leaves_other_tools_alone() {
+        let args = serde_json::json!({ "path": "/a", "pattern": "abc" });
+        let s = redact_args("search_files", &args);
+        assert!(s.contains("\"abc\""));
+        assert!(s.contains("\"/a\""));
+    }
+
+    #[test]
+    fn hash_is_stable_and_truncated() {
+        let a = hash_result("hello");
+        let b = hash_result("hello");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
+        // SHA-256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+        assert_eq!(a, "2cf24dba5fb0a30e");
+    }
+}

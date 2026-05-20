@@ -1369,6 +1369,15 @@ button.cancel {
 }
 .agent-status-pill.status-thinking { background: rgba(99,102,241,0.15); color: var(--accent); }
 .agent-status-pill.status-tool { background: rgba(234,179,8,0.15); color: #eab308; }
+.agent-status-pill.policy-pill {
+  background: rgba(16,185,129,0.15);
+  color: #10b981;
+  cursor: help;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .agent-thinking-row {
   display: flex;

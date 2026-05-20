@@ -7,6 +7,7 @@ use super::fs::{
     err_string, search_files, validate_for_read, validate_for_write, workspace_root_clone,
     SearchResult, ToolError, MAX_READ_BYTES,
 };
+use super::injection_scan;
 
 /* ── find_definition / find_references ───────────────────────────────────── */
 
@@ -137,5 +138,9 @@ pub async fn read_pdf(path: String, limit: Option<u64>) -> Result<PdfResult, Str
     } else {
         extracted
     };
+    // PDFs are often pulled from the web or user-shared sources — scan the
+    // extracted text for prompt-injection patterns before handing it back
+    // to the agent.
+    let (content, _n) = injection_scan::scan_and_wrap(&content);
     Ok(PdfResult { content, bytes_read, total_bytes: total, truncated })
 }

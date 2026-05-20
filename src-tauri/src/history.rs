@@ -88,6 +88,8 @@ fn setup_schema(conn: &Connection) -> Result<()> {
     if !has_model {
         conn.execute("ALTER TABLE messages ADD COLUMN model TEXT", [])?;
     }
+    // Install audit table (idempotent — CREATE TABLE IF NOT EXISTS).
+    crate::agent_audit::ensure_schema(conn)?;
     Ok(())
 }
 
