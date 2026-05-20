@@ -544,8 +544,11 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       return preludeText;
     }
 
-    // Dedupe: if every tool call this turn was already seen in the recent window,
-    // inject a hint and break.
+    // Dedupe: if every tool call this turn was already seen in the recent
+    // window, inject a hint as the tool response instead of executing.
+    // Every tool_call needs a matching tool message (per OpenAI tool-call
+    // protocol) or the backend will reject the next request — so push one
+    // duplicate_call response per call, not just the first.
     const sigs = toolCalls.map(toolCallSig);
     const allRepeated = sigs.every((s) => recentSigs.includes(s));
     if (allRepeated && recentSigs.length > 0) {
@@ -556,19 +559,22 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         content: preludeText,
         tool_calls: toolCalls,
       });
-      msgs.push({
-        _tmpKey: makeTmpKey(),
-        conversation_id: opts.conversationId,
-        role: "tool",
-        content: JSON.stringify({
-          ok: false,
-          kind: "duplicate_call",
-          message:
-            "You just called this exact tool with these exact arguments. Try a different approach or report what you've learned to the user.",
-        }),
-        tool_call_id: toolCalls[0]?.id ?? "dedupe",
-        tool_name: toolCalls[0]?.function?.name ?? "",
+      const dupBody = JSON.stringify({
+        ok: false,
+        kind: "duplicate_call",
+        message:
+          "You just called this exact tool with these exact arguments. Try a different approach or report what you've learned to the user.",
       });
+      for (const tc of toolCalls) {
+        msgs.push({
+          _tmpKey: makeTmpKey(),
+          conversation_id: opts.conversationId,
+          role: "tool",
+          content: dupBody,
+          tool_call_id: tc.id,
+          tool_name: tc.function?.name ?? "",
+        });
+      }
       onUpdate([...msgs]);
       continue;
     }

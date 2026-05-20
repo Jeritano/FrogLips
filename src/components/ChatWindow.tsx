@@ -195,7 +195,16 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
   /* ── Send ── */
 
-  async function send(text: string) {
+  /**
+   * Send a user message and stream the response.
+   *
+   * `priorHistory` overrides the React closure's `messages` when regenerating —
+   * the caller will have already mutated `messages` (e.g. removing the prior
+   * user/assistant pair) but those updates aren't visible to this function via
+   * the closure yet. Passing the truth explicitly avoids dup'd user messages
+   * and stale-history pollution.
+   */
+  async function send(text: string, priorHistory?: Message[]) {
     if (!status?.running || !status.model) {
       setErr("Start a model first");
       return;
@@ -225,7 +234,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       return;
     }
     userMsg.id = userId;
-    const baseHistory = [...messages, userMsg];
+    const baseHistory = [...(priorHistory ?? messages), userMsg];
     const streamConvId = conv.id;
     const isStreamConvActive = () => convRef.current?.id === streamConvId;
     if (isStreamConvActive()) setMessages(baseHistory);
@@ -448,27 +457,42 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         currentModel={status?.running ? status.model : null}
         agentStatus={agentStatus}
         onRegenerate={async () => {
-          // Pop the last assistant message and resend the last user message
+          // Walk backwards: find last regular assistant (skip tool-call ones),
+          // then the user message immediately before it. Delete BOTH from DB
+          // + state and resend — send() recreates the user message itself,
+          // so leaving the original behind would dup it.
           if (isWorking || !conversation) return;
-          let lastUser: Message | undefined;
-          let lastAsst: Message | undefined;
+          let lastUserIdx = -1;
+          let lastAsstIdx = -1;
           for (let i = messages.length - 1; i >= 0; i--) {
             const m = messages[i];
-            if (!lastAsst && m.role === "assistant" && !m.tool_calls?.length) lastAsst = m;
-            else if (lastAsst && !lastUser && m.role === "user") { lastUser = m; break; }
+            if (lastAsstIdx === -1 && m.role === "assistant" && !m.tool_calls?.length) {
+              lastAsstIdx = i;
+            } else if (lastAsstIdx !== -1 && lastUserIdx === -1 && m.role === "user") {
+              lastUserIdx = i;
+              break;
+            }
           }
-          if (!lastUser) return;
-          // Remove last assistant from DB + state
-          if (lastAsst?.id) {
-            try { await api.deleteMessage(lastAsst.id); } catch {/* best effort */}
+          if (lastUserIdx === -1 || lastAsstIdx === -1) return;
+          const userText = messages[lastUserIdx].content;
+          // Delete assistant + user from DB (best-effort), and any tool
+          // messages between them (agent mode leaves tool_calls + tool
+          // results scattered; clean them out so the conversation isn't
+          // left with orphan tool responses).
+          for (let i = lastUserIdx; i <= lastAsstIdx; i++) {
+            const id = messages[i]?.id;
+            if (id != null) {
+              try { await api.deleteMessage(id); } catch {/* best effort */}
+            }
           }
-          // Also remove from state (last assistant)
-          setMessages((ms) => {
-            const idx = [...ms].reverse().findIndex((m) => m.role === "assistant" && !m.tool_calls?.length);
-            if (idx < 0) return ms;
-            return ms.slice(0, ms.length - 1 - idx).concat(ms.slice(ms.length - idx));
-          });
-          await send(lastUser.content);
+          // Drop the range from state in a single update so the UI doesn't
+          // flicker between partial states. Also pass the truncated history
+          // to send() explicitly — React's `messages` closure inside send()
+          // is still the stale, pre-deletion value, so without this the LLM
+          // would see + the UI would re-add the messages we just removed.
+          const truncated = messages.slice(0, lastUserIdx).concat(messages.slice(lastAsstIdx + 1));
+          setMessages(truncated);
+          await send(userText, truncated);
         }}
       />
       <div className="chat-input-wrap">

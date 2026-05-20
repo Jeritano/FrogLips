@@ -105,16 +105,11 @@ export function ChatInput({ disabled, onSend, onAbort, streaming }: Props) {
       r.interimResults = true;
       r.lang = navigator.language || "en-US";
       baseTextRef.current = text ? text + (text.endsWith(" ") ? "" : " ") : "";
-      let lastResultLen = 0;
 
       r.onresult = (e: any) => {
         let combined = "";
         for (let i = 0; i < e.results.length; i++) {
           combined += e.results[i][0].transcript;
-        }
-        // If the user typed since the last recognition event, rebase
-        if (e.results.length > lastResultLen) {
-          lastResultLen = e.results.length;
         }
         const next = baseTextRef.current + combined;
         lastVoiceTextRef.current = next;
