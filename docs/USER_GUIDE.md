@@ -27,38 +27,43 @@ This kills any running Froglips, builds, ad-hoc signs, and installs to `/Applica
 
 ## 2. Prerequisites
 
-Froglips has three backends — install whichever you want:
+Froglips has three backends. **Native works out of the box — install nothing.** The other two are opt-in.
 
-### Ollama (easiest, cloud + local)
+### Native (recommended; zero install)
+
+No setup. Pick "⚡ Load a HuggingFace model natively…" from the model dropdown and enter a repo id (e.g. `NousResearch/Llama-3.2-1B`). First load downloads weights from HuggingFace into `~/.cache/huggingface/hub`; subsequent loads are instant. Runs in-process via embedded `mistralrs` + candle + Metal kernels.
+
+### Ollama (optional — broader catalog + cloud routing)
+
+Install only if you want Ollama's local + `:cloud` model library or stronger tool-call support on some smaller models.
 
 1. Install from <https://ollama.com>
 2. Start it: it lives in the menu bar
-3. If you want cloud models: `ollama signin`
+3. For cloud models: `ollama signin`
 
-### MLX (Apple's Metal-accelerated local inference, via subprocess)
+### MLX (optional — Apple first-party inference via Python)
+
+Install only if you already use MLX models elsewhere. Froglips spawns `mlx_lm.server` automatically when you pick an MLX model.
 
 ```bash
 python3 -m venv ~/.venvs/mlx
 ~/.venvs/mlx/bin/pip install mlx-lm
 ```
 
-Froglips spawns `mlx_lm.server` automatically when you pick an MLX model.
-
-### Native (in-process, no daemon, no Python)
-
-Nothing to install — Froglips loads models directly via `mistralrs` + candle + Metal kernels embedded in the app binary. First-time model use downloads weights from HuggingFace into `~/.cache/huggingface/hub`. Lowest per-token latency of the three backends.
-
-Pick "⚡ Load a HuggingFace model natively…" in the model dropdown and enter a repo id (e.g. `NousResearch/Llama-3.2-1B`).
-
 ## 3. First chat
 
+Fastest path — Native, no install:
+
 1. Click **+ New chat** in the sidebar.
-2. Click the model dropdown at the top → **Browse & download models…**
-3. The Model Library opens. Default tab is **Installed** (empty on a fresh install).
-4. Switch to the **Ollama** tab. Pick something small to start, like `llama3.2:3b` or `qwen3:4b`. Click **Pull**. (First pull downloads ~2 GB, takes a few minutes.)
-5. After it finishes, close the library. The model now appears in the dropdown.
-6. Pick the model, click **Start**. Status will go `stopped → loading → ready`.
-7. Type a message and press Enter. Stream the response.
+2. Click the model dropdown → **⚡ Load a HuggingFace model natively…**
+3. Enter a small repo id, e.g. `NousResearch/Llama-3.2-1B`. Click **Start**.
+4. First load downloads weights (~2 GB for 1B-class models). After that, type and hit Enter.
+
+If you installed Ollama instead:
+
+1. Model dropdown → **Browse & download models…** → switch to the **Ollama** tab.
+2. Pick something small like `llama3.2:3b` or `qwen3:4b`. Click **Pull**.
+3. Close the library; the model appears in the dropdown. Pick it → **Start** → chat.
 
 ## 4. The Model Library
 

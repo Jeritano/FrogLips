@@ -1,6 +1,6 @@
 # Froglips
 
-Native macOS chat app for local LLMs. Apple Silicon, MLX + Ollama backends, agent mode w/ filesystem and shell tools, vector-recall memory, signed auto-updates.
+Native macOS chat app for local LLMs. Apple Silicon. Three backends — **Native** (in-process mistralrs + Metal, zero install), MLX, and Ollama. Agent mode w/ 32 filesystem/shell/web/code/task tools, vector-recall memory, signed auto-updates.
 
 ![version](https://img.shields.io/badge/version-0.7.2-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20arm64-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
 
@@ -32,9 +32,16 @@ Native macOS chat app for local LLMs. Apple Silicon, MLX + Ollama backends, agen
      ```bash
      xattr -dr com.apple.quarantine /Applications/Froglips.app
      ```
-5. Install **Ollama** (the easiest backend): https://ollama.com/download
-6. Open Froglips → *Browse & download models…* → pick something small (`llama3.2:3b`, `qwen3:4b`) → **Pull**
-7. Hit **Start** in the dropdown, type a message, send
+5. Open Froglips → model dropdown → **⚡ Load a HuggingFace model natively…** → enter a small repo id like `NousResearch/Llama-3.2-1B` → **Start**
+
+That's it. No daemon, no Python, no separate downloads — the Native backend runs the model in-process via embedded Metal kernels. First model load pulls weights from HuggingFace into `~/.cache/huggingface/hub`; subsequent loads are instant.
+
+### Optional backends
+
+- **Ollama** — separate daemon (https://ollama.com/download), broader catalog including `:cloud` models, better agent-mode behavior on some local models.
+- **MLX** — Apple's first-party Python inference (`pip install mlx-lm` into `~/.venvs/mlx`). Useful if you already use MLX models elsewhere.
+
+Pick whichever fits — all three plug into the same chat / agent / memory UI.
 
 Optional: clone the repo and run `bash scripts/first-run.sh` for an automated dependency check.
 
@@ -44,14 +51,14 @@ See [User Guide](docs/USER_GUIDE.md) for full walkthrough.
 
 ### Runtime (end user)
 - Apple Silicon Mac (M1+)
-- For MLX backend: Python 3.10+ with `mlx-lm` at `~/.venvs/mlx`
-  ```bash
-  python3 -m venv ~/.venvs/mlx
-  ~/.venvs/mlx/bin/pip install mlx-lm
-  ```
-- For Ollama backend: [Ollama](https://ollama.com) installed and running
-- For agent cloud models: `ollama signin` once
-- For Native backend: nothing — runs in-process. Downloads HF models on demand into `~/.cache/huggingface/hub`
+- **Native backend: zero install.** Models load directly via embedded mistralrs + Metal kernels. HuggingFace model weights download on demand into `~/.cache/huggingface/hub`.
+- _Optional — only if you want these backends:_
+  - **Ollama**: [install](https://ollama.com) the daemon. For `:cloud` models also run `ollama signin` once.
+  - **MLX (Python subprocess)**: Python 3.10+ with `mlx-lm` at `~/.venvs/mlx`
+    ```bash
+    python3 -m venv ~/.venvs/mlx
+    ~/.venvs/mlx/bin/pip install mlx-lm
+    ```
 
 ### Build (developer)
 - Full **Xcode** (from App Store, not just Command Line Tools — `mistralrs` needs the `metal` compiler)
