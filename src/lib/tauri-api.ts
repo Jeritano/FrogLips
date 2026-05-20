@@ -133,4 +133,18 @@ export const api = {
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsSet: (patch: Partial<AppSettings>) =>
     invoke<AppSettings>("settings_set", { patch }),
+
+  // Native inference (alpha)
+  nativeSupported: () => invoke<boolean>("native_supported"),
+  nativeLoadModel: (modelId: string) =>
+    invoke<void>("native_load_model", { modelId }),
+  nativeUnloadModel: () => invoke<void>("native_unload_model"),
+  nativeCurrentModel: () => invoke<string | null>("native_current_model"),
+  nativeChatStream: (args: {
+    op_id: string;
+    messages: { role: string; content: string }[];
+    temperature?: number;
+    top_p?: number;
+    max_tokens?: number;
+  }) => invoke<string>("native_chat_stream", { args }),
 };

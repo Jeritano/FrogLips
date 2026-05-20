@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
+import { streamNativeChat } from "../lib/native-client";
 import { runAgentLoop, cancelActiveShell } from "../lib/agent-loop";
 import type { AgentMetrics, AgentStatus, ConfirmDecision } from "../lib/agent-loop";
 import {
@@ -355,7 +356,10 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     let aborted = false;
     const ACC_MAX = 262_144;
     try {
-      for await (const chunk of streamChat(status, historyForApi, { signal: ctrl.signal })) {
+      const stream = status.backend === "native"
+        ? streamNativeChat(historyForApi, { signal: ctrl.signal })
+        : streamChat(status, historyForApi, { signal: ctrl.signal });
+      for await (const chunk of stream) {
         if (chunk.done) break;
         acc += chunk.delta;
         if (acc.length > ACC_MAX) {

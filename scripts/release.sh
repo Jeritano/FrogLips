@@ -22,8 +22,15 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "$HOME/.tauri/froglips.key" ]]; 
 fi
 
 # Try the build up to 2 times if DMG bundling flakes out
+# Native inference enabled by default; set FROGLIPS_SKIP_NATIVE=1 to skip the
+# heavy mistralrs+candle+Metal compile (faster builds when you only need
+# Ollama / MLX paths).
 build_attempt() {
-  npm run tauri build
+  if [[ "${FROGLIPS_SKIP_NATIVE:-}" == "1" ]]; then
+    npm run tauri build
+  else
+    npm run tauri build -- --features native-inference
+  fi
 }
 
 if ! build_attempt; then

@@ -3,6 +3,7 @@ mod history;
 mod memory;
 mod mlx_server;
 mod models;
+mod native_inference;
 mod settings;
 
 use once_cell::sync::Lazy;
@@ -570,6 +571,97 @@ fn agent_get_workspace() -> Option<String> {
     agent::get_workspace_root()
 }
 
+/* ── Native inference (alpha; behind `--features native-inference`) ───── */
+
+type NativeHandle = native_inference::SharedRuntime;
+
+#[tauri::command]
+async fn native_supported() -> bool {
+    native_inference::native_enabled()
+}
+
+#[tauri::command]
+async fn native_load_model(
+    model_id: String,
+    state: tauri::State<'_, NativeHandle>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if !native_inference::native_enabled() {
+        return Err(
+            "native inference not compiled in (rebuild with --features native-inference)".into(),
+        );
+    }
+    let _ = app.emit("native-loading", &model_id);
+    let rt = native_inference::NativeRuntime::load(model_id.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut g = state.lock().await;
+    *g = Some(rt);
+    let _ = app.emit("native-loaded", &model_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn native_unload_model(state: tauri::State<'_, NativeHandle>) -> Result<(), String> {
+    let mut g = state.lock().await;
+    *g = None;
+    Ok(())
+}
+
+#[tauri::command]
+async fn native_current_model(
+    state: tauri::State<'_, NativeHandle>,
+) -> Result<Option<String>, String> {
+    let g = state.lock().await;
+    Ok(g.as_ref().map(|r| r.model_id().to_string()))
+}
+
+#[derive(serde::Deserialize)]
+struct NativeChatArgs {
+    op_id: String,
+    messages: Vec<NativeMsg>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    max_tokens: Option<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct NativeMsg {
+    role: String,
+    content: String,
+}
+
+#[tauri::command]
+async fn native_chat_stream(
+    args: NativeChatArgs,
+    state: tauri::State<'_, NativeHandle>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let rt_opt = state.lock().await.clone();
+    let rt = rt_opt.ok_or("no model loaded — call native_load_model first")?;
+    let op_id = args.op_id.clone();
+    let app_for_chunks = app.clone();
+    let on_chunk = move |chunk: String| {
+        let _ = app_for_chunks.emit(&format!("native-chunk:{op_id}"), chunk);
+    };
+    let opts = native_inference::SamplingOpts {
+        temperature: args.temperature,
+        top_p: args.top_p,
+        max_tokens: args.max_tokens,
+    };
+    let msgs: Vec<(String, String)> = args
+        .messages
+        .into_iter()
+        .map(|m| (m.role, m.content))
+        .collect();
+    let final_text = rt
+        .chat_stream(msgs, opts, on_chunk)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit(&format!("native-done:{}", args.op_id), &final_text);
+    Ok(final_text)
+}
+
 #[tauri::command]
 fn settings_get() -> settings::Settings {
     settings::load()
@@ -632,12 +724,14 @@ pub fn run() {
     }
 
     let server_state: ServerHandle = Arc::new(ServerState::default());
+    let native_state: NativeHandle = native_inference::new_shared();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(server_state.clone())
+        .manage(native_state.clone())
         .setup({
             let state = server_state.clone();
             move |app| {
@@ -711,6 +805,11 @@ pub fn run() {
             agent_git_diff,
             settings_get,
             settings_set,
+            native_supported,
+            native_load_model,
+            native_unload_model,
+            native_current_model,
+            native_chat_stream,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

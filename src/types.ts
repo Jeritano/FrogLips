@@ -1,7 +1,7 @@
 export interface ModelEntry {
   id: string;
   size_bytes: number;
-  backend: "mlx" | "ollama";
+  backend: "mlx" | "ollama" | "native";
 }
 
 export interface AllModels {

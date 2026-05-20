@@ -51,6 +51,15 @@ export function ModelPicker({ status, onStatusChange }: Props) {
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const v = e.target.value;
     if (v === "__browse__") { setBrowserOpen(true); return; }
+    if (v === "__native__") {
+      const id = window.prompt(
+        "HuggingFace repo id for native inference (e.g. NousResearch/Llama-3.2-1B):",
+        "NousResearch/Llama-3.2-1B",
+      );
+      if (!id) return;
+      setSelected({ id, size_bytes: 0, backend: "native" });
+      return;
+    }
     const [backend, ...rest] = v.split(":");
     const id = rest.join(":");
     const all = [...models.mlx, ...models.ollama];
@@ -62,8 +71,22 @@ export function ModelPicker({ status, onStatusChange }: Props) {
     if (!selected) return;
     setBusy(true); setErr(null);
     try {
-      const s = await api.startServer(selected.id, selected.backend);
-      onStatusChange(s);
+      if (selected.backend === "native") {
+        await api.nativeLoadModel(selected.id);
+        // Synthesize a status object — native runs in-process, no host:port.
+        onStatusChange({
+          running: true,
+          ready: true,
+          model: selected.id,
+          backend: "native",
+          host: "",
+          port: 0,
+          last_error: null,
+        });
+      } else {
+        const s = await api.startServer(selected.id, selected.backend);
+        onStatusChange(s);
+      }
     } catch (e) { setErr(String(e)); }
     finally { setBusy(false); }
   }
@@ -71,8 +94,21 @@ export function ModelPicker({ status, onStatusChange }: Props) {
   async function stop() {
     setBusy(true);
     try {
-      await api.stopServer();
-      onStatusChange(await api.serverStatus());
+      if (status?.backend === "native") {
+        await api.nativeUnloadModel();
+        onStatusChange({
+          running: false,
+          ready: false,
+          model: null,
+          backend: null,
+          host: "",
+          port: 0,
+          last_error: null,
+        });
+      } else {
+        await api.stopServer();
+        onStatusChange(await api.serverStatus());
+      }
     } finally { setBusy(false); }
   }
 
@@ -99,6 +135,9 @@ export function ModelPicker({ status, onStatusChange }: Props) {
               ))}
             </optgroup>
           )}
+          <optgroup label="Native (alpha — in-process Metal inference)">
+            <option value="__native__">⚡ Load a HuggingFace model natively…</option>
+          </optgroup>
           <optgroup label="Add model">
             <option value="__browse__">⬇ Browse &amp; download models…</option>
           </optgroup>
