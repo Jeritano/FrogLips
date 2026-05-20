@@ -154,6 +154,7 @@ export function ChatInput({ disabled, onSend, onAbort, streaming }: Props) {
       >
         <textarea
           ref={taRef}
+          data-testid="chat-input"
           value={text}
           onChange={(e) => onTextChange(e.target.value)}
           onKeyDown={onKey}
@@ -174,9 +175,9 @@ export function ChatInput({ disabled, onSend, onAbort, streaming }: Props) {
           </svg>
         </button>
         {streaming ? (
-          <button onClick={onAbort} className="send-btn stop" title="Stop">■</button>
+          <button data-testid="stop-btn" onClick={onAbort} className="send-btn stop" title="Stop">■</button>
         ) : (
-          <button onClick={send} disabled={disabled || !text.trim()} className="send-btn" title="Send">↑</button>
+          <button data-testid="send-btn" onClick={send} disabled={disabled || !text.trim()} className="send-btn" title="Send">↑</button>
         )}
       </div>
     </>

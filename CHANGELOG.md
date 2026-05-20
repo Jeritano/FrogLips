@@ -4,6 +4,24 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.8] — 2026-05-20
+
+### Refactor
+- **`native_inference.rs` split into trait + backend modules** (Phase 1 of cross-platform Native rollout). New layout:
+  - `native_inference/mod.rs` — `NativeBackend` trait, `ModelRef::{HfRepo, GgufPath}`, `SamplingOpts`, `ChatMsg`, `native_enabled()`, cfg-gated dispatch.
+  - `native_inference/mistralrs_backend.rs` — current mistralrs impl moved verbatim + `NativeBackend` trait impl. cfg = `all(feature="native-inference", target_os="macos", target_arch="aarch64")`.
+  - `native_inference/stub.rs` — error stub for all other targets.
+  - Phase 2 (add `llama-cpp-2` behind `native-llamacpp` feature), Phase 3 (GGUF picker UI), Phase 4 (CI matrix) tracked as follow-up tasks.
+
+### Added
+- **Playwright e2e suite** — 10 happy-path tests under `e2e/` driving the Vite dev server with a mocked `__TAURI_INTERNALS__` shim. Covers new chat, send/stream, agent tool dispatch, settings, model browser, agent confirm/deny, abort mid-stream, export, memory save, preset switch. `npm run e2e` exits 0 in ~2s. Test infra: `playwright.config.ts`, `e2e/fixtures/tauri-mock.ts`, 12 `data-testid` attrs added across 6 React components.
+
+### Tests
+- Rust: 13 passing (no change).
+- Vitest: 17 passing (no change).
+- Playwright: 10 passing (new).
+- **Total: 40 tests across 3 runners.**
+
 ## [0.9.7] — 2026-05-20
 
 ### Added

@@ -74,7 +74,7 @@ function ToolResultBlock({ name, content }: { name?: string; content: string }) 
   const isLong = content.length > 400;
   const displayed = !isLong || expanded ? content : content.slice(0, 400) + "…";
   return (
-    <div className="tool-result-block">
+    <div className="tool-result-block" data-testid="tool-result">
       {name && <span className="tool-result-name">{name} result</span>}
       <pre className="tool-result-content">{displayed}</pre>
       {isLong && (
@@ -181,7 +181,7 @@ function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowK
           <span className="model-divider-line" />
         </div>
       )}
-      <div className={`message ${msg.role}`}>
+      <div className={`message ${msg.role}`} data-testid={`message-${msg.role}`}>
         {isUser ? (
           <div className="content">{msg.content}</div>
         ) : (
@@ -189,6 +189,7 @@ function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowK
         )}
         <MessageActions msg={msg} isLast={isLast} onRegenerate={onRegenerate} onEditUser={onEditUser} />
         <button
+          data-testid="pin-btn"
           className={`pin-btn ${isPinned ? "pinned" : ""}`}
           onClick={() => onPin(msg, rowKey)}
           disabled={isPinning || isPinned}
@@ -215,7 +216,7 @@ const MessageRow = memo(MessageRowImpl);
 
 const StreamingMessage = memo(function StreamingMessage({ text }: { text: string }) {
   return (
-    <div className="message assistant">
+    <div className="message assistant" data-testid="streaming-bubble">
       <div className="content markdown" dangerouslySetInnerHTML={{ __html: cachedMarkdown(text) + '<span class="cursor">▍</span>' }} />
     </div>
   );

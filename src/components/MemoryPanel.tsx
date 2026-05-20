@@ -68,7 +68,7 @@ export function MemoryPanel({ refreshToken }: Props) {
 
   return (
     <div className={`memory-panel ${open ? "open" : ""}`}>
-      <button className="memory-toggle" onClick={() => setOpen(!open)}>
+      <button data-testid="memories-toggle" className="memory-toggle" onClick={() => setOpen(!open)}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
         Memories
         <span className="memory-count">{active.length}{pending.length > 0 && ` · ${pending.length}!`}</span>
@@ -76,7 +76,7 @@ export function MemoryPanel({ refreshToken }: Props) {
       </button>
 
       {open && (
-        <div className="memory-body">
+        <div className="memory-body" data-testid="memory-body">
           {/* Mode selector */}
           <div className="memory-mode-row">
             <label className="memory-mode-label">Mode</label>

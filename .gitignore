@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Playwright e2e — tests under e2e/ are tracked, but reports/results/cache are not
+playwright-report/
+test-results/
+playwright/.cache/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

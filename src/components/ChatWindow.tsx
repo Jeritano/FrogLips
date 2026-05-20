@@ -583,6 +583,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         {/* Agent mode toggle */}
         <div className="agent-toolbar">
           <button
+            data-testid="export-btn"
             className="agent-toggle"
             disabled={!conversation || messages.length === 0}
             onClick={() => {
@@ -603,6 +604,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             ⌖ Tools
           </button>
           <button
+            data-testid="agent-toggle"
             className={`agent-toggle ${agentMode ? "active" : ""}`}
             onClick={() => setAgentMode((v) => !v)}
             disabled={isWorking || !agentAvailable}
@@ -615,6 +617,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           </button>
           {agentMode && (
             <select
+              data-testid="agent-preset-select"
               className="agent-preset-select"
               value={activePresetId}
               onChange={(e) => selectPreset(e.target.value)}
@@ -628,6 +631,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           )}
           {agentMode && (
             <button
+              data-testid="agent-settings-gear"
               className="agent-toggle"
               onClick={() => setShowAgentSettings((v) => !v)}
               disabled={isWorking}
@@ -656,7 +660,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         </div>
 
         {agentMode && showAgentSettings && (
-          <div className="agent-settings">
+          <div className="agent-settings" data-testid="agent-settings-panel">
             <div className="agent-settings-row">
               <span className="agent-settings-label">Workspace:</span>
               <code className="agent-settings-value">{workspaceRoot ?? "(full filesystem)"}</code>
@@ -772,7 +776,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
       {/* Tool confirmation modal */}
       {confirmState && (
-        <div className="agent-confirm-overlay" onClick={(e) => e.target === e.currentTarget && handleConfirm(false)}>
+        <div className="agent-confirm-overlay" data-testid="agent-confirm-modal" onClick={(e) => e.target === e.currentTarget && handleConfirm(false)}>
           <div className={`agent-confirm-box risk-${confirmState.risk}`}>
             <div className="agent-confirm-title">
               Allow <code>{confirmState.toolName}</code>?
@@ -816,8 +820,9 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               );
             })()}
             <div className="agent-confirm-actions">
-              <button className="agent-confirm-deny" onClick={() => handleConfirm(false)}>Deny</button>
+              <button data-testid="agent-confirm-deny" className="agent-confirm-deny" onClick={() => handleConfirm(false)}>Deny</button>
               <button
+                data-testid="agent-confirm-allow"
                 className="agent-confirm-allow"
                 onClick={() => handleConfirm(true)}
                 disabled={confirmState.risk === "destructive" && !destructiveAck}

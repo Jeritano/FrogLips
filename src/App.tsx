@@ -181,10 +181,10 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className="app" data-testid="app-ready">
       <aside className="sidebar">
         <div className="sidebar-top">
-          <button className="new-chat" onClick={newChat}>+ New chat</button>
+          <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
           <button
             className="theme-toggle"
             onClick={toggleTheme}
@@ -206,10 +206,11 @@ function App() {
             {err}
           </div>
         )}
-        <ul className="conv-list">
+        <ul className="conv-list" data-testid="conv-list">
           {filteredConversations.map((c) => (
             <li
               key={c.id}
+              data-testid="conv-item"
               className={current?.id === c.id ? "active" : ""}
               onClick={() => editingId !== c.id && setCurrent(c)}
               onDoubleClick={(e) => startEdit(c, e)}

@@ -632,6 +632,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
         <div className="mb-header">
           <div className="mb-title">Model Library</div>
           <input
+            data-testid="model-search"
             className="mb-search"
             placeholder={
               tab === "ollama" ? "Filter Ollama models…" :
@@ -845,7 +846,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                 const updated = relativeTime(m.lastModified);
                 const author = m.id.includes("/") ? m.id.split("/")[0] : "mlx-community";
                 return (
-                  <div key={m.id} className="mb-card">
+                  <div key={m.id} className="mb-card" data-testid="hf-model-card">
                     <div className="mb-card-info">
                       <div className="mb-card-top">
                         <span className="mb-card-label">{label}</span>
