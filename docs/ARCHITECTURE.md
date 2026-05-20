@@ -1,6 +1,10 @@
 # Architecture
 
-Froglips is a Tauri 2 app with a Rust core, a React 19 + TypeScript frontend, and three optional sidecar processes (`mlx_lm.server`, `ollama`, and a `nomic-embed-text` model loaded by Ollama).
+Froglips is a Tauri 2 app with a Rust core, a React 19 + TypeScript frontend, and three backends:
+
+1. **Ollama** — external daemon at `127.0.0.1:11434`, HTTP IPC
+2. **MLX** — `mlx_lm.server` Python subprocess, HTTP IPC
+3. **Native** — `mistralrs-core` + candle + Metal kernels embedded directly in the Tauri Rust process (no subprocess, no HTTP, no Python)
 
 ## High-level diagram
 
@@ -70,6 +74,10 @@ Embedding cache (`RwLock<Option<HashMap<i64, Vec<f32>>>>` with double-checked lo
 
 Lists MLX (scans HF hub directory, decodes `models--org--name` → `org/name`) and Ollama (parses `ollama list` stdout with 5 s timeout and child-kill on timeout). `delete_mlx_model` canonicalizes the path and verifies containment within the hub root to defeat any symlink escape. `delete_ollama_model` shells `ollama rm`.
 
+### `native_inference.rs` (feature-gated `native-inference`)
+
+Wraps `mistralrs-core` 0.8.1 + candle + Metal. Holds `Arc<MistralRs>` per loaded model. `NativeRuntime::load(model_id)` spawns the heavy HF download + model load on a blocking thread; `chat_stream(messages, opts, on_chunk)` builds a `Request::Normal` with `is_streaming: true`, sends it to mistralrs via `get_sender()`, and forwards `Response::Chunk` deltas through a callback so the Tauri layer can re-emit them as `native-chunk:<op_id>` events. Five Tauri commands (`native_supported`, `native_load_model`, `native_unload_model`, `native_current_model`, `native_chat_stream`) gate access. Falls back to CPU if Metal init fails. Requires full Xcode + Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) at build time.
+
 ### `mlx_server.rs`
 
 Owns the spawned `mlx_lm.server` child. Captures stderr to a 64-line ring buffer (`VecDeque`). TCP readiness probe with a 90 s timeout. An `AtomicU64` generation counter prevents stale-probe emissions emitting `ready` for a process that has since been killed.
@@ -114,7 +122,19 @@ Embeddings via Ollama (`/api/embeddings` w/ `nomic-embed-text`). 16-entry LRU ca
 
 ### `lib/mlx-client.ts`
 
-`streamChat()` async generator over the OpenAI-compatible `/v1/chat/completions` endpoint with `stream: true`. Handles abort signal.
+`streamChat()` async generator over the OpenAI-compatible `/v1/chat/completions` endpoint with `stream: true`. Handles abort signal. 30 s connect timeout via `withTimeout(signal, ...)` so a hung daemon can't wedge the UI.
+
+### `lib/native-client.ts`
+
+`streamNativeChat()` async generator that subscribes to `native-chunk:<op_id>` Tauri events for each token delta, drains via an internal queue, and yields `{delta, done}` chunks. Drop-in replacement for `streamChat()` — `ChatWindow` picks branches by `status.backend === "native"`. Listeners cleaned up in `finally`.
+
+### `lib/markdown.ts`
+
+`renderMarkdown(md)` pipes user/assistant content through `marked` (GFM enabled) and `highlight.js` (20+ languages registered) for syntax highlighting, then through DOMPurify with a strict tag + attribute allowlist. Custom `afterSanitizeAttributes` hook blocks `javascript:` / `vbscript:` / `data:` hrefs and forces `target="_blank" rel="noopener noreferrer"` on anchors. All `dangerouslySetInnerHTML` callers in MessageList go through this single sanitization path.
+
+### `components/ToolHistory.tsx`
+
+Slide-out panel listing every tool call in the current conversation. Walks message history, pairs `assistant.tool_calls` entries with their matching `role: "tool"` results by `tool_call_id`, and displays each with an ok/err status badge + collapsible args + JSON result.
 
 ### `lib/tauri-api.ts`
 

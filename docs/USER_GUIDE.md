@@ -1,12 +1,12 @@
 # Froglips — User Guide
 
-Version 0.6.3 · macOS (Apple Silicon)
+Version 0.7.2 · macOS (Apple Silicon)
 
 ## 1. Install
 
 ### From a release
 
-1. Download `Froglips_0.6.3_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
+1. Download `Froglips_0.7.2_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
 2. Open the DMG and drag `Froglips.app` to `/Applications`.
 3. First launch: macOS may show "unidentified developer". Right-click the app → Open. Confirm.
 4. Optional one-line fix to strip Gatekeeper quarantine entirely:
@@ -27,7 +27,7 @@ This kills any running Froglips, builds, ad-hoc signs, and installs to `/Applica
 
 ## 2. Prerequisites
 
-Froglips uses one or both of these backends. You can install only what you need.
+Froglips has three backends — install whichever you want:
 
 ### Ollama (easiest, cloud + local)
 
@@ -35,7 +35,7 @@ Froglips uses one or both of these backends. You can install only what you need.
 2. Start it: it lives in the menu bar
 3. If you want cloud models: `ollama signin`
 
-### MLX (Apple's Metal-accelerated local inference)
+### MLX (Apple's Metal-accelerated local inference, via subprocess)
 
 ```bash
 python3 -m venv ~/.venvs/mlx
@@ -43,6 +43,12 @@ python3 -m venv ~/.venvs/mlx
 ```
 
 Froglips spawns `mlx_lm.server` automatically when you pick an MLX model.
+
+### Native (in-process, no daemon, no Python)
+
+Nothing to install — Froglips loads models directly via `mistralrs` + candle + Metal kernels embedded in the app binary. First-time model use downloads weights from HuggingFace into `~/.cache/huggingface/hub`. Lowest per-token latency of the three backends.
+
+Pick "⚡ Load a HuggingFace model natively…" in the model dropdown and enter a repo id (e.g. `NousResearch/Llama-3.2-1B`).
 
 ## 3. First chat
 
@@ -109,17 +115,20 @@ You can delete, promote pending → active, or add manually.
 
 Toggle the **Agent** button next to the chat input. Available only with the Ollama backend.
 
-The agent has direct access to the user's filesystem and shell via 7 tools:
+The agent has direct access to the user's filesystem and shell via 10 tools:
 
 | Tool | What it does |
 |---|---|
-| `read_file` | Read file contents (paginated, 64 KB chunks) |
+| `read_file` | Read file contents (paginated, 64 KB chunks); non-UTF8 detected → returns `{binary: true}` |
 | `list_dir` | List directory entries with kind + size |
-| `search_files` | Recursive grep with filename glob (`*.ts` etc.) |
+| `search_files` | Recursive grep w/ filename glob (`*.ts`). Set `regex: true` for Rust regex syntax |
 | `file_exists` | Check whether a path exists + its kind |
 | `edit_file` | Find-and-replace edit on existing files |
+| `multi_edit` | Apply multiple find-and-replace edits to one file atomically |
 | `write_file` | Write or overwrite a file (requires approval) |
 | `run_shell` | Execute via `sh -c` (requires approval, 30 s timeout) |
+| `git_status` | `git status --short --branch` in workspace or given path |
+| `git_diff` | `git diff` (optional `staged: true`) in workspace or given path |
 
 ### Agent presets
 
@@ -155,15 +164,33 @@ The cog button next to the Agent toggle opens a panel:
 
 While the agent is running, a small pill shows `i<iters>·t<tools>·llm<ms>·tool<ms>·r<retries>·<prompt>+<completion>tok`. Updates live.
 
-## 7. Voice input
+### Tool history
+
+⌖ Tools button in the agent toolbar opens a slide-out panel listing every tool call in the current conversation with name, ok/err status badge, collapsible args + JSON result. Useful for debugging agent runs.
+
+## 7. Conversation search + export
+
+- **Search**: search input at the top of the sidebar filters conversations by title substring.
+- **Export**: ⤓ Export button in the agent toolbar saves the current conversation as Markdown (timestamps, model tags, tool calls + results included).
+- **Per-message actions**: hover any message — Copy (clipboard), Regenerate (assistant only, deletes the prior pair and re-asks), Edit (user only, drafts the text back into the input).
+
+## 8. Themes + keyboard shortcuts
+
+- ☀/☾ in sidebar toggles **light/dark theme**. Persisted across restarts.
+- **Markdown rendering**: assistant + user messages render Markdown with code-block syntax highlighting for 20+ languages.
+- Cmd+N — new chat
+- Cmd+L — open model library
+- Cmd+K — focus model picker
+
+## 9. Voice input
 
 Click the microphone icon next to the chat input. Uses Web Speech API. Speak, then click again to stop. Manual edits while listening are preserved — the transcript rebases around them.
 
-## 8. File drag-drop
+## 10. File drag-drop
 
 Drag any text file into the chat input area. Its path gets attached. The model sees the path in context. Total attached bytes capped at 1 MiB per turn.
 
-## 9. Updates
+## 11. Updates
 
 Two ways to get a new version:
 
@@ -172,7 +199,7 @@ Two ways to get a new version:
 
 Updates are minisign-signed; the public key is embedded in the app. A tampered build will fail verification and refuse to install.
 
-## 10. Troubleshooting
+## 12. Troubleshooting
 
 **"Ollama: ollama not found on PATH"**
 The app prepends common bin dirs (`/usr/local/bin`, `/opt/homebrew/bin`, `~/.local/bin`, `~/.cargo/bin`, `~/.venvs/mlx/bin`) at startup. If Ollama lives elsewhere, symlink it into one of those.

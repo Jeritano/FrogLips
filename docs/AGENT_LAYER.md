@@ -87,6 +87,35 @@ Returns:
 }
 ```
 
+### `search_files(path, pattern, glob?, regex?)`
+
+Recursive line-grep. Default glob `*`. Skips `.git`, `node_modules`, `target`, `dist`, `build`, `.venv`, `venv`, `__pycache__`, `.next`, `.cache`, and dotfiles. Files >2 MiB skipped. Hard caps: 200 hits, 2000 files scanned. Set `regex: true` for Rust regex syntax; default is literal substring.
+
+```json
+{ "hits": [{"path": "...", "line": 42, "text": "..."}], "files_scanned": 187, "truncated_hits": false, "truncated_scan": false }
+```
+
+### `multi_edit(path, edits[])`
+
+Apply N find-and-replace edits to one file atomically. Edits accumulate in memory then a single `tokio::fs::write` lands the result. If any individual edit fails (old_string not found, ambiguous match without `replace_all`), the whole call errors out and the file is untouched. Cap: 100 edits per call. Requires user approval.
+
+```json
+[
+  { "old_string": "foo", "new_string": "bar" },
+  { "old_string": "spam", "new_string": "ham", "replace_all": true }
+]
+```
+
+Returns `{ edits_applied, total_replacements, new_size }`.
+
+### `git_status(path?)`
+
+Runs `git status --short --branch` with `current_dir = path ?? workspace_root`. Returns `{stdout, stderr, exit_code, cwd}`. 10 s timeout. Read-only — does not require user approval.
+
+### `git_diff(path?, staged?)`
+
+Runs `git diff --no-color` (or `git diff --no-color --staged` when `staged: true`). Same return shape + timeout as `git_status`.
+
 ### `file_exists(path)`
 
 ```json

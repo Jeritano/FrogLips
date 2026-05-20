@@ -14,6 +14,20 @@ Patch (0.0.X) — bug fixes, no API change.
 Minor (0.X.0) — new features, no breaking change to user data.
 Major (X.0.0) — schema migrations, breaking config changes.
 
+## Build prerequisites
+
+- **Full Xcode** (App Store) — not just the Command Line Tools. `mistralrs` requires the `metal` compiler which only ships in `Xcode.app`.
+- After installing Xcode:
+  ```bash
+  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+  sudo xcodebuild -runFirstLaunch
+  sudo xcodebuild -license accept
+  xcodebuild -downloadComponent MetalToolchain
+  xcrun -f metal   # should print a path
+  ```
+- Node 22+, Rust stable
+- Updater minisign keypair at `~/.tauri/froglips.key` (gitignored)
+
 ## Build
 
 ```bash
@@ -24,7 +38,7 @@ This script (`scripts/release.sh`):
 
 1. Kills any running `Froglips.app` (so DMG bundling can mount cleanly)
 2. Exports `TAURI_SIGNING_PRIVATE_KEY=~/.tauri/froglips.key` if present
-3. Runs `npm run tauri build`
+3. Runs `npm run tauri build -- --features native-inference` (set `FROGLIPS_SKIP_NATIVE=1` to build a lean ~14 MB binary without mistralrs / candle / Metal kernels — useful for fast iteration when you only need Ollama / MLX)
 4. Replaces `/Applications/Froglips.app`
 5. Strips Gatekeeper quarantine
 6. Ad-hoc codesigns (`codesign --sign - --deep --force`)
