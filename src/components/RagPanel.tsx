@@ -56,7 +56,7 @@ export function RagPanel({ onCorporaChanged }: Props) {
   const refresh = useCallback(async () => {
     try {
       const list = await api.ragListCorpora();
-      setCorpora(list);
+      setCorpora(Array.isArray(list) ? list : []);
       setErr(null);
     } catch (e) {
       setErr(String(e));

@@ -25,19 +25,28 @@ pub fn is_safe_public_host(host: &str) -> bool {
         match ip {
             std::net::IpAddr::V4(a) => {
                 let oct = a.octets();
-                if a.is_loopback() || a.is_private() || a.is_link_local()
-                    || a.is_unspecified() || a.is_multicast() || a.is_broadcast() {
+                if a.is_loopback()
+                    || a.is_private()
+                    || a.is_link_local()
+                    || a.is_unspecified()
+                    || a.is_multicast()
+                    || a.is_broadcast()
+                {
                     return false;
                 }
                 // 169.254.169.254 + AWS/GCP metadata, etc. — caught by link_local
-                if oct[0] == 0 || oct[0] == 127 { return false; }
+                if oct[0] == 0 || oct[0] == 127 {
+                    return false;
+                }
             }
             std::net::IpAddr::V6(a) => {
                 if a.is_loopback() || a.is_unspecified() || a.is_multicast() {
                     return false;
                 }
                 let segs = a.segments();
-                if segs[0] == 0xfe80 || segs[0] == 0xfc00 || segs[0] == 0xfd00 { return false; }
+                if segs[0] == 0xfe80 || segs[0] == 0xfc00 || segs[0] == 0xfd00 {
+                    return false;
+                }
             }
         }
     }
@@ -57,14 +66,23 @@ fn is_safe_ip(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(a) => {
             let oct = a.octets();
-            !(a.is_loopback() || a.is_private() || a.is_link_local()
-                || a.is_unspecified() || a.is_multicast() || a.is_broadcast()
-                || oct[0] == 0 || oct[0] == 127)
+            !(a.is_loopback()
+                || a.is_private()
+                || a.is_link_local()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || a.is_broadcast()
+                || oct[0] == 0
+                || oct[0] == 127)
         }
         std::net::IpAddr::V6(a) => {
             let segs = a.segments();
-            !(a.is_loopback() || a.is_unspecified() || a.is_multicast()
-                || segs[0] == 0xfe80 || segs[0] == 0xfc00 || segs[0] == 0xfd00)
+            !(a.is_loopback()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || segs[0] == 0xfe80
+                || segs[0] == 0xfc00
+                || segs[0] == 0xfd00)
         }
     }
 }
@@ -73,10 +91,17 @@ fn is_safe_ip(ip: &std::net::IpAddr) -> bool {
 /// Returns the safe set so callers can pin reqwest's resolver to exactly
 /// those addresses — closes the TOCTOU window where reqwest would re-query
 /// DNS at connect time and possibly land on a poisoned IP.
-pub async fn resolve_to_safe_addrs(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
+pub async fn resolve_to_safe_addrs(
+    host: &str,
+    port: u16,
+) -> Result<Vec<std::net::SocketAddr>, String> {
     let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
         .await
-        .map_err(|e| err_string(ToolError::invalid(format!("hostname does not resolve: {e}"))))?
+        .map_err(|e| {
+            err_string(ToolError::invalid(format!(
+                "hostname does not resolve: {e}"
+            )))
+        })?
         .collect();
     if addrs.is_empty() {
         return Err(err_string(ToolError::invalid(format!(
@@ -149,7 +174,9 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
     let host = url.host_str().unwrap_or("").to_string();
     if !is_safe_public_host(&host) {
         return Err(err_string(ToolError::Protected {
-            message: format!("host '{host}' is private/loopback/link-local — blocked to prevent SSRF"),
+            message: format!(
+                "host '{host}' is private/loopback/link-local — blocked to prevent SSRF"
+            ),
         }));
     }
     let default_port = url.port_or_known_default().unwrap_or(443);
@@ -170,7 +197,10 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
         .build()
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
 
-    let resp = client.get(url.clone()).send().await
+    let resp = client
+        .get(url.clone())
+        .send()
+        .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     let status = resp.status().as_u16();
 
@@ -179,11 +209,12 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
     let body_text = String::from_utf8_lossy(&bytes[..cap]).into_owned();
 
     // Strip HTML if it looks like HTML — agent gets clean text.
-    let looks_html = body_text.contains("<html") || body_text.contains("<HTML")
-        || body_text.contains("<body") || body_text.contains("<!DOCTYPE");
+    let looks_html = body_text.contains("<html")
+        || body_text.contains("<HTML")
+        || body_text.contains("<body")
+        || body_text.contains("<!DOCTYPE");
     let content = if looks_html {
-        html2text::from_read(body_text.as_bytes(), 100)
-            .unwrap_or(body_text)
+        html2text::from_read(body_text.as_bytes(), 100).unwrap_or(body_text)
     } else {
         body_text
     };
@@ -193,7 +224,13 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
     // are found. The agent still gets the substantive text.
     let (content, _n_findings) = injection_scan::scan_and_wrap(&content);
 
-    Ok(WebFetchResult { url: url_str, status, content, bytes: total, truncated })
+    Ok(WebFetchResult {
+        url: url_str,
+        status,
+        content,
+        bytes: total,
+        truncated,
+    })
 }
 
 #[derive(Serialize)]
@@ -226,10 +263,18 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
         .build()
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
 
-    let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(&query));
-    let resp = client.get(&url).send().await
+    let url = format!(
+        "https://html.duckduckgo.com/html/?q={}",
+        urlencoding(&query)
+    );
+    let resp = client
+        .get(&url)
+        .send()
+        .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
-    let text = resp.text().await
+    let text = resp
+        .text()
+        .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
 
     // Parse <a class="result__a" href="..."> + <a class="result__snippet">
@@ -240,9 +285,15 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
     });
     fn strip_tags(s: &str) -> String {
         let no_tags = regex::Regex::new(r"<[^>]*>").unwrap().replace_all(s, "");
-        no_tags.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-            .replace("&quot;", "\"").replace("&#x27;", "'").replace("&#39;", "'")
-            .trim().to_string()
+        no_tags
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#x27;", "'")
+            .replace("&#39;", "'")
+            .trim()
+            .to_string()
     }
     fn unwrap_ddg_redirect(href: &str) -> String {
         // DDG returns //duckduckgo.com/l/?uddg=<url>&...
@@ -256,7 +307,9 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
 
     let mut hits = Vec::new();
     for cap in RESULT_RE.captures_iter(&text) {
-        if hits.len() >= n { break; }
+        if hits.len() >= n {
+            break;
+        }
         let href = cap.get(1).map(|m| m.as_str()).unwrap_or("");
         let title_html = cap.get(2).map(|m| m.as_str()).unwrap_or("");
         let snippet_html = cap.get(3).map(|m| m.as_str()).unwrap_or("");
@@ -292,8 +345,13 @@ fn urlencoding(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            _ => { use std::fmt::Write; let _ = write!(out, "%{:02X}", b); }
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(out, "%{:02X}", b);
+            }
         }
     }
     out
@@ -342,8 +400,13 @@ pub struct HttpResp {
 
 pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
     let method = input.method.to_ascii_uppercase();
-    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD") {
-        return Err(err_string(ToolError::invalid(format!("method not allowed: {method}"))));
+    if !matches!(
+        method.as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD"
+    ) {
+        return Err(err_string(ToolError::invalid(format!(
+            "method not allowed: {method}"
+        ))));
     }
     let url = url::Url::parse(&input.url)
         .map_err(|e| err_string(ToolError::invalid(format!("bad url: {e}"))))?;
@@ -375,24 +438,33 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
     if let Some(hm) = input.headers {
         for (k, v) in hm {
             if k.is_empty() || k.len() > 256 || v.len() > 4096 {
-                return Err(err_string(ToolError::invalid("header key/value out of range")));
+                return Err(err_string(ToolError::invalid(
+                    "header key/value out of range",
+                )));
             }
             // Block headers that could enable bypass of our SSRF guard (Host
             // override on a CDN, for example).
             let kl = k.to_ascii_lowercase();
             if kl == "host" {
-                return Err(err_string(ToolError::invalid("Host header override not allowed")));
+                return Err(err_string(ToolError::invalid(
+                    "Host header override not allowed",
+                )));
             }
             req = req.header(k, v);
         }
     }
     if let Some(b) = input.body {
         if b.len() > 1_048_576 {
-            return Err(err_string(ToolError::TooLarge { message: "body exceeds 1 MiB".into() }));
+            return Err(err_string(ToolError::TooLarge {
+                message: "body exceeds 1 MiB".into(),
+            }));
         }
         req = req.body(b);
     }
-    let resp = req.send().await.map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     let status = resp.status().as_u16();
     let mut hdrs = std::collections::HashMap::new();
     for (k, v) in resp.headers() {
@@ -425,7 +497,13 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
         body
     };
 
-    Ok(HttpResp { status, headers: hdrs, body, bytes: total, truncated })
+    Ok(HttpResp {
+        status,
+        headers: hdrs,
+        body,
+        bytes: total,
+        truncated,
+    })
 }
 
 /// Risk heuristic for HTTP requests beyond GET/HEAD. Read-only methods are

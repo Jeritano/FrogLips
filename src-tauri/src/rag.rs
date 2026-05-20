@@ -32,23 +32,31 @@ const MAX_CHUNKS_PER_INGEST: usize = 200_000;
 
 /// Directories we always skip — VCS, package caches, build artifacts.
 const SKIP_DIRS: &[&str] = &[
-    ".git", ".hg", ".svn",
-    "node_modules", "target", "dist", "build", "out",
-    ".venv", "venv", "__pycache__",
-    ".next", ".nuxt", ".cache", ".idea", ".vscode",
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".next",
+    ".nuxt",
+    ".cache",
+    ".idea",
+    ".vscode",
     "vendor",
 ];
 
 /// File extensions we ingest. Everything else is skipped — keeps binaries out.
 const TEXT_EXTS: &[&str] = &[
-    "md", "txt", "rst", "adoc",
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs",
-    "py", "rb", "go", "java", "kt", "swift", "c", "cc", "cpp", "h", "hpp",
-    "cs", "php", "lua", "sh", "bash", "zsh", "fish",
-    "json", "jsonc", "yaml", "yml", "toml", "ini", "cfg", "conf",
-    "html", "htm", "css", "scss", "sass", "less",
-    "sql", "graphql", "gql", "proto",
-    "tex", "bib",
+    "md", "txt", "rst", "adoc", "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "rb", "go",
+    "java", "kt", "swift", "c", "cc", "cpp", "h", "hpp", "cs", "php", "lua", "sh", "bash", "zsh",
+    "fish", "json", "jsonc", "yaml", "yml", "toml", "ini", "cfg", "conf", "html", "htm", "css",
+    "scss", "sass", "less", "sql", "graphql", "gql", "proto", "tex", "bib",
 ];
 
 /* ───────────────────────────── Schema ────────────────────────────────── */
@@ -140,11 +148,7 @@ pub fn chunk_text(text: &str) -> Vec<(usize, usize, String)> {
         let end = (start + MAX_CHUNK_CHARS).min(n);
         let start_byte = chars[start].0;
         // end_byte is the byte index just past the last included char.
-        let end_byte = if end == n {
-            text.len()
-        } else {
-            chars[end].0
-        };
+        let end_byte = if end == n { text.len() } else { chars[end].0 };
         let slice = &text[start_byte..end_byte];
         // Skip pure-whitespace tail chunks (e.g. trailing newlines).
         if !slice.trim().is_empty() {
@@ -254,7 +258,10 @@ fn validate_name(name: &str) -> Result<()> {
     if trimmed.is_empty() || trimmed.len() > 128 {
         anyhow::bail!("corpus name length must be 1..=128");
     }
-    if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
         anyhow::bail!("corpus name may only contain [A-Za-z0-9._-]");
     }
     Ok(())
@@ -358,7 +365,10 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         |r| r.get(0),
     )?;
     // Clear prior chunks for re-ingest semantics.
-    conn.execute("DELETE FROM rag_chunks WHERE corpus_id = ?1", params![corpus_id])?;
+    conn.execute(
+        "DELETE FROM rag_chunks WHERE corpus_id = ?1",
+        params![corpus_id],
+    )?;
     drop(conn);
 
     let mut files_indexed = 0usize;
@@ -560,7 +570,10 @@ mod tests {
         // Long single-line — multiple overlapping chunks, no panic
         let huge: String = "ab".repeat(2000); // 4000 chars
         let chunks = chunk_text(&huge);
-        assert!(chunks.len() >= 2, "expected multi-chunk for 4000-char input");
+        assert!(
+            chunks.len() >= 2,
+            "expected multi-chunk for 4000-char input"
+        );
         for (s, e, t) in &chunks {
             assert!(t.chars().count() <= MAX_CHUNK_CHARS);
             assert!(e > s);
@@ -604,8 +617,20 @@ mod tests {
 
         // Search ranking end-to-end: top hit beats noise on shared keyword.
         let mut hits: Vec<(f32, &str)> = vec![
-            (cosine(&embed("hello world greetings"), &embed("hello world greeting")), "match"),
-            (cosine(&embed("hello world greetings"), &embed("airplane mango piano")), "noise"),
+            (
+                cosine(
+                    &embed("hello world greetings"),
+                    &embed("hello world greeting"),
+                ),
+                "match",
+            ),
+            (
+                cosine(
+                    &embed("hello world greetings"),
+                    &embed("airplane mango piano"),
+                ),
+                "noise",
+            ),
         ];
         hits.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap());
         assert_eq!(hits[0].1, "match");

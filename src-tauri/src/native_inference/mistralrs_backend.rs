@@ -9,9 +9,9 @@ use anyhow::{anyhow, Context, Result};
 use either::Either;
 use indexmap::IndexMap;
 use mistralrs_core::{
-    Constraint, DefaultSchedulerMethod, DeviceMapSetting, MistralRs, MistralRsBuilder,
-    ModelDType, NormalLoaderBuilder, NormalRequest, NormalSpecificConfig, Request,
-    RequestMessage, Response, SamplingParams, SchedulerConfig, TokenSource,
+    Constraint, DefaultSchedulerMethod, DeviceMapSetting, MistralRs, MistralRsBuilder, ModelDType,
+    NormalLoaderBuilder, NormalRequest, NormalSpecificConfig, Request, RequestMessage, Response,
+    SamplingParams, SchedulerConfig, TokenSource,
 };
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -43,11 +43,11 @@ impl NativeRuntime {
             let device = candle_device()?;
             let loader = NormalLoaderBuilder::new(
                 NormalSpecificConfig::default(),
-                None,                       // chat_template
-                None,                       // tokenizer_json
-                Some(id_for_load.clone()),  // model_id
-                false,                      // no_kv_cache
-                None,                       // jinja_explicit
+                None,                      // chat_template
+                None,                      // tokenizer_json
+                Some(id_for_load.clone()), // model_id
+                false,                     // no_kv_cache
+                None,                      // jinja_explicit
             )
             .build(None)
             .with_context(|| format!("failed to build loader for {id_for_load}"))?;
@@ -59,9 +59,7 @@ impl NativeRuntime {
                     &ModelDType::Auto,
                     &device,
                     true, // silent
-                    DeviceMapSetting::Auto(
-                        mistralrs_core::AutoDeviceMapParams::default_text(),
-                    ),
+                    DeviceMapSetting::Auto(mistralrs_core::AutoDeviceMapParams::default_text()),
                     None, // no in-situ quant
                     None, // no paged-attn
                 )
@@ -232,10 +230,10 @@ impl NativeBackend for NativeRuntime {
         &self,
         messages: Vec<ChatMsg>,
         sampling: SamplingOpts,
-        mut on_chunk: Box<dyn FnMut(String) + Send + 'static>,
+        on_chunk: Box<dyn FnMut(String) + Send + 'static>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + '_>> {
-        Box::pin(async move {
-            NativeRuntime::chat_stream(self, messages, sampling, move |s| on_chunk(s)).await
-        })
+        Box::pin(
+            async move { NativeRuntime::chat_stream(self, messages, sampling, on_chunk).await },
+        )
     }
 }

@@ -30,8 +30,12 @@ pub fn set_workspace_root(path: Option<String>) -> Result<Option<String>, String
             Some(canon)
         }
     };
-    let display = normalized.as_ref().map(|p| p.to_string_lossy().into_owned());
-    *WORKSPACE_ROOT.write().map_err(|_| "workspace lock poisoned")? = normalized;
+    let display = normalized
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+    *WORKSPACE_ROOT
+        .write()
+        .map_err(|_| "workspace lock poisoned")? = normalized;
     Ok(display)
 }
 
@@ -73,7 +77,10 @@ pub(super) fn resolve_path(p: &str, must_exist: bool) -> Result<PathBuf> {
     let raw = expand_home(p)?;
     // Reject explicit `..` traversal in the source string outright — prevents
     // write-side path tricks even if the parent canonicalizes elsewhere.
-    if raw.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if raw
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(anyhow!("path may not contain '..'"));
     }
     if must_exist {
@@ -81,8 +88,8 @@ pub(super) fn resolve_path(p: &str, must_exist: bool) -> Result<PathBuf> {
     } else if let Ok(c) = std::fs::canonicalize(&raw) {
         Ok(c)
     } else if let Some(parent) = raw.parent() {
-        let cparent = std::fs::canonicalize(parent)
-            .map_err(|e| anyhow!("parent not accessible: {e}"))?;
+        let cparent =
+            std::fs::canonicalize(parent).map_err(|e| anyhow!("parent not accessible: {e}"))?;
         let name = raw
             .file_name()
             .ok_or_else(|| anyhow!("path has no file name"))?;
@@ -307,18 +314,19 @@ pub(super) fn looks_binary(bytes: &[u8]) -> bool {
     // - DEL (0x7F) is similarly non-text.
     let scan = &bytes[..bytes.len().min(8192)];
     scan.iter().any(|&b| {
-        b == 0
-            || (b < 0x09)
-            || b == 0x0B
-            || b == 0x0C
-            || (b > 0x0D && b < 0x20)
-            || b == 0x7F
+        b == 0 || (b < 0x09) || b == 0x0B || b == 0x0C || (b > 0x0D && b < 0x20) || b == 0x7F
     })
 }
 
-pub async fn read_file(path: String, offset: Option<u64>, limit: Option<u64>) -> Result<ReadResult, String> {
+pub async fn read_file(
+    path: String,
+    offset: Option<u64>,
+    limit: Option<u64>,
+) -> Result<ReadResult, String> {
     let resolved = validate_for_read(&path).map_err(err_string)?;
-    let bytes = tokio::fs::read(&resolved).await.map_err(|e| err_string(classify_io(&e)))?;
+    let bytes = tokio::fs::read(&resolved)
+        .await
+        .map_err(|e| err_string(classify_io(&e)))?;
     let total = bytes.len() as u64;
     if looks_binary(&bytes) {
         return Ok(ReadResult {
@@ -430,7 +438,9 @@ pub async fn edit_file(
 ) -> Result<EditResult, String> {
     let resolved = validate_for_write(&path).map_err(err_string)?;
     if old_string.is_empty() {
-        return Err(err_string(ToolError::invalid("old_string must not be empty")));
+        return Err(err_string(ToolError::invalid(
+            "old_string must not be empty",
+        )));
     }
     let bytes = tokio::fs::read(&resolved)
         .await
@@ -440,9 +450,8 @@ pub async fn edit_file(
             message: format!("file exceeds {MAX_WRITE_BYTES} bytes"),
         }));
     }
-    let original = String::from_utf8(bytes).map_err(|_| {
-        err_string(ToolError::invalid("file is not valid UTF-8 — cannot edit"))
-    })?;
+    let original = String::from_utf8(bytes)
+        .map_err(|_| err_string(ToolError::invalid("file is not valid UTF-8 — cannot edit")))?;
     let count = original.matches(&old_string).count();
     if count == 0 {
         return Err(err_string(ToolError::NotFound {
@@ -504,7 +513,11 @@ pub async fn file_exists(path: String) -> Result<ExistsResult, String> {
                 size: if m.is_file() { Some(m.len()) } else { None },
             })
         }
-        Err(_) => Ok(ExistsResult { exists: false, kind: None, size: None }),
+        Err(_) => Ok(ExistsResult {
+            exists: false,
+            kind: None,
+            size: None,
+        }),
     }
 }
 
@@ -611,11 +624,15 @@ fn walk_search(
             if *files_scanned as usize > MAX_SEARCH_FILES_SCANNED {
                 return true;
             }
-            let Ok(bytes) = std::fs::read(&p) else { continue };
+            let Ok(bytes) = std::fs::read(&p) else {
+                continue;
+            };
             if bytes.len() > 2 * 1024 * 1024 {
                 continue; // skip files > 2 MiB
             }
-            let Ok(text) = std::str::from_utf8(&bytes) else { continue };
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
             for (i, line) in text.lines().enumerate() {
                 if matcher.matches(line) {
                     let mut trimmed = line.to_string();
@@ -699,7 +716,9 @@ pub struct MultiEditResult {
 
 pub async fn multi_edit(path: String, edits: Vec<EditOp>) -> Result<MultiEditResult, String> {
     if edits.is_empty() {
-        return Err(err_string(ToolError::invalid("edits list must not be empty")));
+        return Err(err_string(ToolError::invalid(
+            "edits list must not be empty",
+        )));
     }
     if edits.len() > 100 {
         return Err(err_string(ToolError::invalid("at most 100 edits per call")));
@@ -713,9 +732,8 @@ pub async fn multi_edit(path: String, edits: Vec<EditOp>) -> Result<MultiEditRes
             message: format!("file exceeds {MAX_WRITE_BYTES} bytes"),
         }));
     }
-    let mut content = String::from_utf8(bytes).map_err(|_| {
-        err_string(ToolError::invalid("file is not valid UTF-8 — cannot edit"))
-    })?;
+    let mut content = String::from_utf8(bytes)
+        .map_err(|_| err_string(ToolError::invalid("file is not valid UTF-8 — cannot edit")))?;
 
     let mut total_replacements: u32 = 0;
     for (i, e) in edits.iter().enumerate() {

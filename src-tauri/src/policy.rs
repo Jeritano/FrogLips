@@ -318,10 +318,7 @@ mod tests {
             denied_write_paths: Some(vec![".env".into(), "secrets/".into(), "*.key".into()]),
             ..ProjectPolicy::default()
         };
-        assert_eq!(
-            evaluate_write(Path::new("src/main.rs"), &p),
-            Decision::Auto
-        );
+        assert_eq!(evaluate_write(Path::new("src/main.rs"), &p), Decision::Auto);
         assert_eq!(
             evaluate_write(Path::new("tests/foo.rs"), &p),
             Decision::Auto

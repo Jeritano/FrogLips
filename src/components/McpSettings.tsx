@@ -59,13 +59,14 @@ export function McpSettings({ onConfigsChanged }: Props) {
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api.mcpListServers();
+      const raw = await api.mcpListServers();
+      const list = Array.isArray(raw) ? raw : [];
       setServers(list);
       const toolMap: Record<string, string[]> = {};
       for (const s of list) {
         try {
           const ts = await api.mcpListTools(s.name);
-          toolMap[s.name] = ts.map((t) => t.name);
+          toolMap[s.name] = Array.isArray(ts) ? ts.map((t) => t.name) : [];
         } catch {/* ignore — server may be mid-restart */}
       }
       setTools(toolMap);

@@ -54,8 +54,9 @@ pub type ChatMsg = (String, String);
 pub trait NativeBackend: Clone + Send + Sync {
     /// Load a model. The current call sites pass a HF repo id; future
     /// callers will be able to pass a local GGUF path.
-    fn load(model_ref: ModelRef)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Self>> + Send>>
+    fn load(
+        model_ref: ModelRef,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Self>> + Send>>
     where
         Self: Sized;
 
@@ -86,29 +87,49 @@ compile_error!(
 // mistralrs is gated on macOS aarch64 — it depends on candle-metal and only
 // builds usefully on Apple Silicon. On other platforms with the feature on,
 // fall through to the stub so the build still succeeds.
-#[cfg(all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
 mod mistralrs_backend;
 
 #[cfg(feature = "native-llamacpp")]
 mod llamacpp_backend;
 
 #[cfg(not(any(
-    all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"),
+    all(
+        feature = "native-mistralrs",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ),
     feature = "native-llamacpp",
 )))]
 mod stub;
 
-#[cfg(all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
 pub use mistralrs_backend::{new_shared, NativeRuntime, SharedRuntime};
 
 #[cfg(all(
     feature = "native-llamacpp",
-    not(all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64")),
+    not(all(
+        feature = "native-mistralrs",
+        target_os = "macos",
+        target_arch = "aarch64"
+    )),
 ))]
 pub use llamacpp_backend::{new_shared, NativeRuntime, SharedRuntime};
 
 #[cfg(not(any(
-    all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"),
+    all(
+        feature = "native-mistralrs",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ),
     feature = "native-llamacpp",
 )))]
 pub use stub::{new_shared, NativeRuntime, SharedRuntime};
@@ -120,7 +141,11 @@ pub use stub::{new_shared, NativeRuntime, SharedRuntime};
 /// the stub is active so the frontend can hide the Native backend toggle.
 pub fn native_enabled() -> bool {
     cfg!(any(
-        all(feature = "native-mistralrs", target_os = "macos", target_arch = "aarch64"),
+        all(
+            feature = "native-mistralrs",
+            target_os = "macos",
+            target_arch = "aarch64"
+        ),
         feature = "native-llamacpp",
     ))
 }

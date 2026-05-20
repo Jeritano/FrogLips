@@ -93,7 +93,11 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
         error: None,
     };
     let (cancel_tx, cancel_rx) = oneshot::channel();
-    let entry = Arc::new(Mutex::new(TaskEntry { info, handle: None, cancel: Some(cancel_tx) }));
+    let entry = Arc::new(Mutex::new(TaskEntry {
+        info,
+        handle: None,
+        cancel: Some(cancel_tx),
+    }));
     let entry_for_task = entry.clone();
     let id_for_task = id.clone();
     let cmd_for_task = command;
@@ -102,7 +106,10 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
         // Flip to Running
         entry_for_task.lock().info.status = TaskStatus::Running;
 
-        let opts = ShellOpts { cwd: cwd_for_task, env: None };
+        let opts = ShellOpts {
+            cwd: cwd_for_task,
+            env: None,
+        };
         let work = run_shell(cmd_for_task, Some(opts), Some(id_for_task.clone()));
         tokio::select! {
             r = work => {
@@ -133,13 +140,24 @@ pub fn status(id: &str) -> Option<TaskInfo> {
 }
 
 pub fn list() -> Vec<TaskInfo> {
-    TASKS.lock().values().map(|e| e.lock().info.clone()).collect()
+    TASKS
+        .lock()
+        .values()
+        .map(|e| e.lock().info.clone())
+        .collect()
 }
 
 pub fn cancel(id: &str) -> Result<(), String> {
-    let entry = TASKS.lock().get(id).cloned().ok_or_else(|| format!("no task {id}"))?;
+    let entry = TASKS
+        .lock()
+        .get(id)
+        .cloned()
+        .ok_or_else(|| format!("no task {id}"))?;
     let mut g = entry.lock();
-    if matches!(g.info.status, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled) {
+    if matches!(
+        g.info.status,
+        TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled
+    ) {
         return Ok(()); // already terminal
     }
     if let Some(tx) = g.cancel.take() {

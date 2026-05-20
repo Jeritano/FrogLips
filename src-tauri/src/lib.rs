@@ -2,7 +2,6 @@ mod agent;
 mod agent_audit;
 mod ask_user;
 mod history;
-mod task_queue;
 mod mcp;
 mod memory;
 mod mlx_server;
@@ -12,6 +11,7 @@ mod policy;
 mod quick_prompt;
 mod rag;
 mod settings;
+mod task_queue;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -30,15 +30,14 @@ type ServerHandle = Arc<ServerState>;
 
 /* ── Input limits ── */
 const MAX_MESSAGE_BYTES: usize = 1_048_576; // 1 MiB
-const MAX_MEMORY_BYTES: usize = 16_384;     // 16 KiB
+const MAX_MEMORY_BYTES: usize = 16_384; // 16 KiB
 const MAX_TITLE_LEN: usize = 200;
 const MAX_TAGS_LEN: usize = 256;
 const MAX_QUERY_LEN: usize = 256;
 const MAX_EMBEDDING_DIMS: usize = 4096;
 
 /* ── Validators ── */
-static OLLAMA_MODEL_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[A-Za-z0-9._:@/-]+$").unwrap());
+static OLLAMA_MODEL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._:@/-]+$").unwrap());
 static HF_REPO_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$").unwrap());
 
@@ -186,18 +185,19 @@ fn open_external(url: String, app: tauri::AppHandle) -> Result<(), String> {
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
     let allowed = matches!(
         host.as_str(),
-        "civitai.com" | "www.civitai.com" |
-        "huggingface.co" | "www.huggingface.co" |
-        "ollama.com" | "www.ollama.com"
+        "civitai.com"
+            | "www.civitai.com"
+            | "huggingface.co"
+            | "www.huggingface.co"
+            | "ollama.com"
+            | "www.ollama.com"
     );
     if !allowed {
         return Err(format!("host not allowed: {host}"));
     }
     // Use Apple's LaunchServices via tauri-plugin-opener (no exec) — avoids
     // argv-injection risk of shelling out to /usr/bin/open with the URL.
-    app.opener()
-        .open_url(&url, None::<&str>)
-        .map_err(map_err)
+    app.opener().open_url(&url, None::<&str>).map_err(map_err)
 }
 
 #[tauri::command]
@@ -684,12 +684,18 @@ async fn agent_git_diff(
 }
 
 #[tauri::command]
-async fn agent_git_log(path: Option<String>, limit: Option<u32>) -> Result<agent::GitResult, String> {
+async fn agent_git_log(
+    path: Option<String>,
+    limit: Option<u32>,
+) -> Result<agent::GitResult, String> {
     agent::git_log(path, limit).await
 }
 
 #[tauri::command]
-async fn agent_git_show(reference: String, path: Option<String>) -> Result<agent::GitResult, String> {
+async fn agent_git_show(
+    reference: String,
+    path: Option<String>,
+) -> Result<agent::GitResult, String> {
     agent::git_show(reference, path).await
 }
 
@@ -699,7 +705,10 @@ async fn agent_git_branches(path: Option<String>) -> Result<agent::GitResult, St
 }
 
 #[tauri::command]
-async fn agent_git_commit(message: String, path: Option<String>) -> Result<agent::GitResult, String> {
+async fn agent_git_commit(
+    message: String,
+    path: Option<String>,
+) -> Result<agent::GitResult, String> {
     agent::git_commit(message, path).await
 }
 
@@ -709,7 +718,10 @@ async fn agent_web_fetch(url: String) -> Result<agent::WebFetchResult, String> {
 }
 
 #[tauri::command]
-async fn agent_web_search(query: String, n: Option<usize>) -> Result<agent::WebSearchResult, String> {
+async fn agent_web_search(
+    query: String,
+    n: Option<usize>,
+) -> Result<agent::WebSearchResult, String> {
     agent::web_search(query, n).await
 }
 
@@ -759,12 +771,18 @@ async fn agent_http_request(input: agent::HttpReqInput) -> Result<agent::HttpRes
 }
 
 #[tauri::command]
-async fn agent_find_definition(symbol: String, path: Option<String>) -> Result<agent::SearchResult, String> {
+async fn agent_find_definition(
+    symbol: String,
+    path: Option<String>,
+) -> Result<agent::SearchResult, String> {
     agent::find_definition(symbol, path).await
 }
 
 #[tauri::command]
-async fn agent_find_references(symbol: String, path: Option<String>) -> Result<agent::SearchResult, String> {
+async fn agent_find_references(
+    symbol: String,
+    path: Option<String>,
+) -> Result<agent::SearchResult, String> {
     agent::find_references(symbol, path).await
 }
 
@@ -786,7 +804,10 @@ async fn agent_browser_click(selector: String) -> Result<agent::BrowserOkResult,
 }
 
 #[tauri::command]
-async fn agent_browser_fill(selector: String, value: String) -> Result<agent::BrowserOkResult, String> {
+async fn agent_browser_fill(
+    selector: String,
+    value: String,
+) -> Result<agent::BrowserOkResult, String> {
     agent::browser::fill(selector, value).await
 }
 
@@ -796,7 +817,9 @@ async fn agent_browser_screenshot() -> Result<agent::BrowserScreenshotResult, St
 }
 
 #[tauri::command]
-async fn agent_browser_get_text(selector: Option<String>) -> Result<agent::BrowserTextResult, String> {
+async fn agent_browser_get_text(
+    selector: Option<String>,
+) -> Result<agent::BrowserTextResult, String> {
     agent::browser::get_text(selector).await
 }
 
@@ -987,9 +1010,7 @@ fn open_conversation_window_impl<R: tauri::Runtime>(
     // URL: same frontend bundle, query-string toggles the detached single-conv
     // view. The hash fragment isn't used because Tauri's WebviewUrl::App
     // collapses query strings cleanly via `index.html?…`.
-    let url_path = format!(
-        "index.html?detached=1&conversation_id={conversation_id}"
-    );
+    let url_path = format!("index.html?detached=1&conversation_id={conversation_id}");
     WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url_path.into()))
         .title(display_title)
         .inner_size(700.0, 500.0)
@@ -1194,8 +1215,7 @@ fn settings_set(patch: serde_json::Value) -> Result<settings::Settings, String> 
             c.insert(k.clone(), v.clone());
         }
     }
-    let updated: settings::Settings =
-        serde_json::from_value(current).map_err(|e| e.to_string())?;
+    let updated: settings::Settings = serde_json::from_value(current).map_err(|e| e.to_string())?;
     settings::save(&updated).map_err(|e| e.to_string())?;
     Ok(updated)
 }
@@ -1335,12 +1355,7 @@ async fn agent_dashboard_summary(
 fn ensure_path_for_gui() {
     // GUI apps launched from Finder/Dock get minimal PATH — extend so `ollama`,
     // `mlx_lm.server`, and other CLI tools installed in common dirs are findable.
-    let extra = [
-        "/usr/local/bin",
-        "/opt/homebrew/bin",
-        "/usr/bin",
-        "/bin",
-    ];
+    let extra = ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"];
     let mut parts: Vec<String> = std::env::var("PATH")
         .unwrap_or_default()
         .split(':')
@@ -1384,10 +1399,12 @@ pub fn run() {
                     continue;
                 }
                 let name = cfg.name.clone();
-                let env_opt = if cfg.env.is_empty() { None } else { Some(cfg.env) };
-                if let Err(e) =
-                    mcp::start_server(cfg.name, cfg.command, cfg.args, env_opt).await
-                {
+                let env_opt = if cfg.env.is_empty() {
+                    None
+                } else {
+                    Some(cfg.env)
+                };
+                if let Err(e) = mcp::start_server(cfg.name, cfg.command, cfg.args, env_opt).await {
                     eprintln!("[mcp] auto-start '{}' failed: {}", name, e);
                 }
             }
@@ -1435,7 +1452,9 @@ pub fn run() {
                 // but non-fatal — the tray menu "Quick Prompt" entry still
                 // opens the window.
                 {
-                    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+                    use tauri_plugin_global_shortcut::{
+                        Code, GlobalShortcutExt, Modifiers, Shortcut,
+                    };
                     let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyL);
                     if let Err(e) = app.global_shortcut().register(sc) {
                         eprintln!("[quick-prompt] failed to register Cmd+Shift+L: {e}");
@@ -1443,28 +1462,28 @@ pub fn run() {
                 }
 
                 let show_i = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
-                let quick_i = MenuItem::with_id(app, "quick", "Quick Prompt (⇧⌘L)", true, None::<&str>)?;
+                let quick_i =
+                    MenuItem::with_id(app, "quick", "Quick Prompt (⇧⌘L)", true, None::<&str>)?;
                 let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
                 let menu = Menu::with_items(app, &[&show_i, &quick_i, &quit_i])?;
                 let mut tray = TrayIconBuilder::new().menu(&menu);
                 if let Some(icon) = app.default_window_icon() {
                     tray = tray.icon(icon.clone());
                 }
-                tray
-                    .on_menu_event(|app, event| match event.id.as_ref() {
-                        "quit" => app.exit(0),
-                        "show" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
+                tray.on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => app.exit(0),
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
                         }
-                        "quick" => {
-                            quick_prompt::toggle_window(app);
-                        }
-                        _ => {}
-                    })
-                    .build(app)?;
+                    }
+                    "quick" => {
+                        quick_prompt::toggle_window(app);
+                    }
+                    _ => {}
+                })
+                .build(app)?;
                 Ok(())
             }
         })
@@ -1616,9 +1635,7 @@ mod multi_window_tests {
         // Negative ids are still label-safe (only alnum + '-').
         let label = detached_window_label(-1);
         assert!(label.starts_with("conv-"));
-        assert!(label
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-'));
+        assert!(label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
     }
 
     #[test]

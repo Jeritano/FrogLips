@@ -16,14 +16,20 @@ pub async fn find_definition(symbol: String, path: Option<String>) -> Result<Sea
         return Err(err_string(ToolError::invalid("symbol length invalid")));
     }
     // Word-boundary literal escape (no regex metachars in symbol — basic guard).
-    if !symbol.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(err_string(ToolError::invalid("symbol must be [A-Za-z0-9_]+")));
+    if !symbol
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(err_string(ToolError::invalid(
+            "symbol must be [A-Za-z0-9_]+",
+        )));
     }
     let root = match path {
         Some(p) => p,
         None => workspace_root_clone()
             .ok_or_else(|| err_string(ToolError::invalid("no workspace root set; pass path")))?
-            .to_string_lossy().into_owned(),
+            .to_string_lossy()
+            .into_owned(),
     };
     // Heuristic definition patterns across common languages.
     let pat = format!(
@@ -37,14 +43,20 @@ pub async fn find_references(symbol: String, path: Option<String>) -> Result<Sea
     if symbol.is_empty() || symbol.len() > 128 {
         return Err(err_string(ToolError::invalid("symbol length invalid")));
     }
-    if !symbol.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(err_string(ToolError::invalid("symbol must be [A-Za-z0-9_]+")));
+    if !symbol
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(err_string(ToolError::invalid(
+            "symbol must be [A-Za-z0-9_]+",
+        )));
     }
     let root = match path {
         Some(p) => p,
         None => workspace_root_clone()
             .ok_or_else(|| err_string(ToolError::invalid("no workspace root set; pass path")))?
-            .to_string_lossy().into_owned(),
+            .to_string_lossy()
+            .into_owned(),
     };
     let pat = format!(r"\b{}\b", regex::escape(&symbol));
     search_files(root, pat, None, Some(true)).await
@@ -86,18 +98,27 @@ pub async fn format_code(path: String) -> Result<FormatResult, String> {
     let started = Instant::now();
     let path_str = resolved.to_string_lossy().into_owned();
     let mut process_cmd = tokio::process::Command::new(cmd);
-    for a in base_args { process_cmd.arg(a); }
+    for a in base_args {
+        process_cmd.arg(a);
+    }
     process_cmd.arg(&path_str);
-    process_cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    process_cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let output = match tokio::time::timeout(
         std::time::Duration::from_secs(30),
         process_cmd.output(),
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
-        Err(_) => return Err(err_string(ToolError::Timeout {
-            message: format!("{cmd} timed out"),
-        })),
+        Err(_) => {
+            return Err(err_string(ToolError::Timeout {
+                message: format!("{cmd} timed out"),
+            }))
+        }
     };
     Ok(FormatResult {
         formatter: cmd.to_string(),
@@ -120,7 +141,8 @@ pub struct PdfResult {
 
 pub async fn read_pdf(path: String, limit: Option<u64>) -> Result<PdfResult, String> {
     let resolved = validate_for_read(&path).map_err(err_string)?;
-    let bytes = tokio::fs::read(&resolved).await
+    let bytes = tokio::fs::read(&resolved)
+        .await
         .map_err(|e| err_string(super::fs::classify_io(&e)))?;
     let total = bytes.len() as u64;
     // pdf-extract is sync + can block — push to a blocking thread.
@@ -133,7 +155,10 @@ pub async fn read_pdf(path: String, limit: Option<u64>) -> Result<PdfResult, Str
     let bytes_read = extracted.len().min(cap) as u64;
     let content = if truncated {
         let mut s = extracted[..cap].to_string();
-        s.push_str(&format!("\n[... truncated — full text is {} chars]", extracted.len()));
+        s.push_str(&format!(
+            "\n[... truncated — full text is {} chars]",
+            extracted.len()
+        ));
         s
     } else {
         extracted
@@ -142,5 +167,10 @@ pub async fn read_pdf(path: String, limit: Option<u64>) -> Result<PdfResult, Str
     // extracted text for prompt-injection patterns before handing it back
     // to the agent.
     let (content, _n) = injection_scan::scan_and_wrap(&content);
-    Ok(PdfResult { content, bytes_read, total_bytes: total, truncated })
+    Ok(PdfResult {
+        content,
+        bytes_read,
+        total_bytes: total,
+        truncated,
+    })
 }

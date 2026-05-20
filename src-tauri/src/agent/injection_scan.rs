@@ -54,7 +54,10 @@ struct Pattern {
 
 static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
     let raw: &[(&str, &str)] = &[
-        ("ignore previous instructions", r"(?i)ignore\s+(all\s+)?previous\s+instructions"),
+        (
+            "ignore previous instructions",
+            r"(?i)ignore\s+(all\s+)?previous\s+instructions",
+        ),
         ("ignore the above", r"(?i)ignore\s+the\s+above"),
         ("disregard prior", r"(?i)disregard\s+(all\s+)?prior"),
         // "you are now (DAN|developer mode|jailbroken|unrestricted)"
@@ -64,7 +67,10 @@ static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
         ),
         // role-marker hijack at start of a line
         ("system: role marker at line start", r"(?im)^\s*system\s*:"),
-        ("assistant: role marker at line start", r"(?im)^\s*assistant\s*:"),
+        (
+            "assistant: role marker at line start",
+            r"(?im)^\s*assistant\s*:",
+        ),
         // ChatML tokens — never appear in benign text
         ("ChatML <|im_start|> token", r"<\|im_start\|>"),
         ("ChatML <|im_end|> token", r"<\|im_end\|>"),
@@ -238,8 +244,7 @@ pub fn wrap_with_warning(text: &str, findings: &[InjectionFinding]) -> String {
         return text.to_string();
     }
     // Summarize pattern counts.
-    let mut counts: std::collections::BTreeMap<&str, usize> =
-        std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for f in findings {
         *counts.entry(f.pattern.as_str()).or_insert(0) += 1;
     }
@@ -328,7 +333,12 @@ mod tests {
         // Expect at least the two ChatML tokens; "system" at line start
         // may or may not match depending on the line layout — we only
         // assert >= 2.
-        assert!(f.len() >= 2, "expected >= 2 findings, got {}: {:?}", f.len(), f);
+        assert!(
+            f.len() >= 2,
+            "expected >= 2 findings, got {}: {:?}",
+            f.len(),
+            f
+        );
         let names: Vec<_> = f.iter().map(|x| x.pattern.as_str()).collect();
         assert!(names.iter().any(|n| n.contains("im_start")));
         assert!(names.iter().any(|n| n.contains("im_end")));
@@ -340,7 +350,11 @@ mod tests {
         let text = format!("hello{pad}world");
         let f = scan(&text);
         let names: Vec<_> = f.iter().map(|x| x.pattern.as_str()).collect();
-        assert!(names.iter().any(|n| n.contains("padding")), "got {:?}", names);
+        assert!(
+            names.iter().any(|n| n.contains("padding")),
+            "got {:?}",
+            names
+        );
     }
 
     #[test]
@@ -348,7 +362,9 @@ mod tests {
         // Stuff many distinct triggers into one input.
         let mut blob = String::new();
         for _ in 0..50 {
-            blob.push_str("<|im_start|> <|im_end|> [INST] [/INST] </s> ignore previous instructions\n");
+            blob.push_str(
+                "<|im_start|> <|im_end|> [INST] [/INST] </s> ignore previous instructions\n",
+            );
         }
         let f = scan(&blob);
         assert!(f.len() <= MAX_FINDINGS);
@@ -379,7 +395,9 @@ mod tests {
         // "system:" inside a sentence (not at line start) should NOT trip
         // the role-marker rule.
         let f = scan("On linux the system: works fine and the kernel is solid.");
-        assert!(!f.iter().any(|x| x.pattern.contains("system: role marker at line start")));
+        assert!(!f
+            .iter()
+            .any(|x| x.pattern.contains("system: role marker at line start")));
     }
 
     #[test]

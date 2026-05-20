@@ -37,8 +37,8 @@ impl ManageConnection for SqliteManager {
 static DB: Lazy<Pool<SqliteManager>> = Lazy::new(|| build_pool().expect("build db pool"));
 
 fn db_path() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
     let base = home.join(".local-llm-app");
     std::fs::create_dir_all(&base).context("failed to create ~/.local-llm-app")?;
     Ok(base.join("db.sqlite"))
@@ -447,11 +447,7 @@ pub fn get_fork_tree(root_conv_id: i64) -> Result<ForkTree> {
     fork_tree_node(&conn, root_conv_id, 0)
 }
 
-fn fork_tree_node(
-    conn: &Connection,
-    id: i64,
-    depth: usize,
-) -> Result<ForkTree> {
+fn fork_tree_node(conn: &Connection, id: i64, depth: usize) -> Result<ForkTree> {
     let (title, created_at, parent_conv_id, parent_message_id): (
         String,
         i64,
@@ -570,7 +566,14 @@ mod tests {
             conn.execute(
                 "INSERT INTO messages (conversation_id, role, content, created_at, model, images)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![conv_id, role, format!("msg-{i}"), 1000_i64 + i as i64, "m", Option::<String>::None],
+                params![
+                    conv_id,
+                    role,
+                    format!("msg-{i}"),
+                    1000_i64 + i as i64,
+                    "m",
+                    Option::<String>::None
+                ],
             )
             .unwrap();
         }
@@ -605,7 +608,11 @@ mod tests {
 
         // Exactly the first `cutoff` messages should be present.
         assert_eq!(message_count(&conn, fork_id), cutoff);
-        assert_eq!(message_count(&conn, src), 5, "parent untouched at fork time");
+        assert_eq!(
+            message_count(&conn, src),
+            5,
+            "parent untouched at fork time"
+        );
 
         // Parent link is recorded on the fork row.
         let (parent, parent_msg, title): (Option<i64>, Option<i64>, String) = conn
@@ -657,10 +664,12 @@ mod tests {
             let mut s = conn
                 .prepare("SELECT id, content FROM messages WHERE conversation_id = ?1 ORDER BY id")
                 .unwrap();
-            s.query_map(params![src], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap()
+            s.query_map(params![src], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
         };
 
         // Mutate the fork: append a new message AND rewrite an existing one.
@@ -687,13 +696,18 @@ mod tests {
             let mut s = conn
                 .prepare("SELECT id, content FROM messages WHERE conversation_id = ?1 ORDER BY id")
                 .unwrap();
-            s.query_map(params![src], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap()
+            s.query_map(params![src], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
         };
 
-        assert_eq!(parent_before, parent_after, "parent rows must be identical after fork mutation");
+        assert_eq!(
+            parent_before, parent_after,
+            "parent rows must be identical after fork mutation"
+        );
         assert_eq!(message_count(&conn, src), 4, "parent count untouched");
     }
 

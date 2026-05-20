@@ -7,9 +7,7 @@ use std::process::Stdio;
 use std::time::Instant;
 use tokio::task::AbortHandle;
 
-use super::fs::{
-    err_string, validate_for_read, workspace_root_clone, ToolError, MAX_SHELL_OUTPUT,
-};
+use super::fs::{err_string, validate_for_read, workspace_root_clone, ToolError, MAX_SHELL_OUTPUT};
 
 const SHELL_TIMEOUT_SECS: u64 = 30;
 
@@ -49,7 +47,10 @@ pub async fn run_shell(
     if command.is_empty() || command.len() > 4096 {
         return Err(err_string(ToolError::invalid("command length invalid")));
     }
-    let opts = opts.unwrap_or(ShellOpts { cwd: None, env: None });
+    let opts = opts.unwrap_or(ShellOpts {
+        cwd: None,
+        env: None,
+    });
 
     let cwd_path: Option<PathBuf> = match opts.cwd.as_ref() {
         Some(c) => Some(validate_for_read(c).map_err(err_string)?),
@@ -70,7 +71,9 @@ pub async fn run_shell(
         let started = Instant::now();
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c").arg(&cmd_str);
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         if let Some(c) = cwd_path {
             cmd.current_dir(c);
         }
@@ -84,7 +87,9 @@ pub async fn run_shell(
         let fut = cmd.output();
         let (output, timed_out) = match tokio::time::timeout(timeout, fut).await {
             Ok(Ok(o)) => (o, false),
-            Ok(Err(e)) => return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string()))),
+            Ok(Err(e)) => {
+                return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string())))
+            }
             Err(_) => {
                 return Ok(ShellResult {
                     stdout: String::new(),
@@ -202,7 +207,10 @@ mod tests {
 
     #[test]
     fn classify_shell_risk_privileged() {
-        assert_eq!(classify_shell_risk("sudo brew install ollama"), "privileged");
+        assert_eq!(
+            classify_shell_risk("sudo brew install ollama"),
+            "privileged"
+        );
     }
 
     #[test]

@@ -209,8 +209,10 @@ pub fn list(filter: AuditFilter) -> Result<Vec<AuditRow>> {
     binds.push(Box::new(offset));
 
     let mut stmt = conn.prepare(&sql)?;
-    let params_refs: Vec<&dyn rusqlite::ToSql> =
-        binds.iter().map(|b| b.as_ref() as &dyn rusqlite::ToSql).collect();
+    let params_refs: Vec<&dyn rusqlite::ToSql> = binds
+        .iter()
+        .map(|b| b.as_ref() as &dyn rusqlite::ToSql)
+        .collect();
     let rows = stmt
         .query_map(rusqlite::params_from_iter(params_refs), |r| {
             Ok(AuditRow {
@@ -260,7 +262,10 @@ pub fn stats() -> Result<AuditStats> {
     )?;
     let top_tools_24h = stmt
         .query_map(params![cutoff], |r| {
-            Ok(TopToolEntry { tool_name: r.get(0)?, count: r.get(1)? })
+            Ok(TopToolEntry {
+                tool_name: r.get(0)?,
+                count: r.get(1)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
@@ -274,7 +279,10 @@ pub fn stats() -> Result<AuditStats> {
     )?;
     let avg_duration_ms_24h = stmt
         .query_map(params![cutoff], |r| {
-            Ok(AvgDurationEntry { tool_name: r.get(0)?, avg_ms: r.get::<_, f64>(1)? })
+            Ok(AvgDurationEntry {
+                tool_name: r.get(0)?,
+                avg_ms: r.get::<_, f64>(1)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
@@ -369,8 +377,10 @@ pub fn session_metrics_query(filter: AuditFilter) -> Result<Vec<SessionMetricsRo
     binds.push(Box::new(offset));
 
     let mut stmt = conn.prepare(&sql)?;
-    let params_refs: Vec<&dyn rusqlite::ToSql> =
-        binds.iter().map(|b| b.as_ref() as &dyn rusqlite::ToSql).collect();
+    let params_refs: Vec<&dyn rusqlite::ToSql> = binds
+        .iter()
+        .map(|b| b.as_ref() as &dyn rusqlite::ToSql)
+        .collect();
     let rows = stmt
         .query_map(rusqlite::params_from_iter(params_refs), |r| {
             Ok(SessionMetricsRow {
@@ -453,7 +463,10 @@ pub fn dashboard_summary(filter: AuditFilter) -> Result<DashboardSummary> {
     )?;
     let tool_counts: Vec<TopToolEntry> = stmt
         .query_map(params![since, until], |r| {
-            Ok(TopToolEntry { tool_name: r.get(0)?, count: r.get(1)? })
+            Ok(TopToolEntry {
+                tool_name: r.get(0)?,
+                count: r.get(1)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
@@ -480,11 +493,22 @@ pub fn dashboard_summary(filter: AuditFilter) -> Result<DashboardSummary> {
             durs.sort_unstable();
             let count = durs.len() as i64;
             let sum: i64 = durs.iter().sum();
-            let avg_ms = if count > 0 { sum as f64 / count as f64 } else { 0.0 };
+            let avg_ms = if count > 0 {
+                sum as f64 / count as f64
+            } else {
+                0.0
+            };
             let p50 = percentile(&durs, 0.50);
             let p95 = percentile(&durs, 0.95);
             let max_ms = *durs.last().unwrap_or(&0);
-            ToolLatencyRow { tool_name: name, count, avg_ms, p50_ms: p50, p95_ms: p95, max_ms }
+            ToolLatencyRow {
+                tool_name: name,
+                count,
+                avg_ms,
+                p50_ms: p50,
+                p95_ms: p95,
+                max_ms,
+            }
         })
         .collect();
     tool_latency.sort_by_key(|r| std::cmp::Reverse(r.count));
@@ -498,7 +522,10 @@ pub fn dashboard_summary(filter: AuditFilter) -> Result<DashboardSummary> {
     )?;
     let mut approval_counts: Vec<ApprovalCount> = stmt
         .query_map(params![since, until], |r| {
-            Ok(ApprovalCount { approval: r.get(0)?, count: r.get(1)? })
+            Ok(ApprovalCount {
+                approval: r.get(0)?,
+                count: r.get(1)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     // Also include rows whose outcome is dry_run (those are recorded under approval=auto
@@ -512,7 +539,10 @@ pub fn dashboard_summary(filter: AuditFilter) -> Result<DashboardSummary> {
         |r| r.get(0),
     )?;
     if dry_run > 0 {
-        approval_counts.push(ApprovalCount { approval: "dry_run".into(), count: dry_run });
+        approval_counts.push(ApprovalCount {
+            approval: "dry_run".into(),
+            count: dry_run,
+        });
     }
 
     // Session metrics rows in the window.
@@ -557,10 +587,8 @@ pub fn redact_args(tool: &str, args: &serde_json::Value) -> String {
     }
 
     if let Some(obj) = args.as_object() {
-        let mut copy: HashMap<String, serde_json::Value> = obj
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let mut copy: HashMap<String, serde_json::Value> =
+            obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let bulky_fields: &[&str] = match tool {
             "write_file" => &["content"],
             "edit_file" => &["old_string", "new_string"],
@@ -698,11 +726,22 @@ mod tests {
                 (ts, conversation_id, iterations, tool_calls, total_tool_ms,
                  total_llm_ms, prompt_tokens, completion_tokens)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![now_millis(), "conv-1", 5_i64, 2_i64, 12_i64, 34_i64, 100_i64, 200_i64],
+            params![
+                now_millis(),
+                "conv-1",
+                5_i64,
+                2_i64,
+                12_i64,
+                34_i64,
+                100_i64,
+                200_i64
+            ],
         )
         .unwrap();
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM agent_session_metrics", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM agent_session_metrics", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 1);
     }
@@ -725,7 +764,9 @@ mod tests {
             .unwrap();
         assert_eq!(cnt, 0);
         let sm_cnt: i64 = conn
-            .query_row("SELECT COUNT(*) FROM agent_session_metrics", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM agent_session_metrics", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(sm_cnt, 0);
         // percentile helper handles empty + single element correctly.

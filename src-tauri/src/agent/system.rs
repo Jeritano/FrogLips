@@ -19,25 +19,36 @@ pub async fn applescript_run(script: String) -> Result<ShellResult, String> {
     let started = Instant::now();
     let mut cmd = tokio::process::Command::new("osascript");
     cmd.arg("-e").arg(&script);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let timeout = std::time::Duration::from_secs(APPLESCRIPT_TIMEOUT_SECS);
     let (output, timed_out) = match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(o)) => (o, false),
         Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
-        Err(_) => return Ok(ShellResult {
-            stdout: String::new(),
-            stderr: format!("timed out after {APPLESCRIPT_TIMEOUT_SECS}s"),
-            exit_code: -1,
-            duration_ms: started.elapsed().as_millis() as u64,
-            timed_out: true,
-        }),
+        Err(_) => {
+            return Ok(ShellResult {
+                stdout: String::new(),
+                stderr: format!("timed out after {APPLESCRIPT_TIMEOUT_SECS}s"),
+                exit_code: -1,
+                duration_ms: started.elapsed().as_millis() as u64,
+                timed_out: true,
+            })
+        }
     };
     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if stdout.len() > MAX_SHELL_OUTPUT { stdout.truncate(MAX_SHELL_OUTPUT); stdout.push_str("\n[truncated]"); }
-    if stderr.len() > MAX_SHELL_OUTPUT { stderr.truncate(MAX_SHELL_OUTPUT); stderr.push_str("\n[truncated]"); }
+    if stdout.len() > MAX_SHELL_OUTPUT {
+        stdout.truncate(MAX_SHELL_OUTPUT);
+        stdout.push_str("\n[truncated]");
+    }
+    if stderr.len() > MAX_SHELL_OUTPUT {
+        stderr.truncate(MAX_SHELL_OUTPUT);
+        stderr.push_str("\n[truncated]");
+    }
     Ok(ShellResult {
-        stdout, stderr,
+        stdout,
+        stderr,
         exit_code: output.status.code().unwrap_or(-1),
         duration_ms: started.elapsed().as_millis() as u64,
         timed_out,
@@ -119,10 +130,14 @@ pub async fn clipboard_set(text: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes()).await
+        stdin
+            .write_all(text.as_bytes())
+            .await
             .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     }
-    let status = child.wait().await
+    let status = child
+        .wait()
+        .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     if !status.success() {
         return Err(err_string(ToolError::io("pbcopy failed")));
@@ -134,14 +149,16 @@ pub async fn clipboard_set(text: String) -> Result<(), String> {
 
 pub async fn open_app(name: String) -> Result<(), String> {
     // Validate app name — alphanumeric + space + dot/dash. Block argv injection.
-    static APP_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
-        regex::Regex::new(r"^[A-Za-z0-9 ._-]+$").unwrap()
-    });
+    static APP_RE: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new(r"^[A-Za-z0-9 ._-]+$").unwrap());
     if name.is_empty() || name.len() > 128 || !APP_RE.is_match(&name) {
-        return Err(err_string(ToolError::invalid("app name has illegal characters")));
+        return Err(err_string(ToolError::invalid(
+            "app name has illegal characters",
+        )));
     }
     let status = tokio::process::Command::new("open")
-        .arg("-a").arg(&name)
+        .arg("-a")
+        .arg(&name)
         .kill_on_drop(true)
         .status()
         .await
@@ -180,7 +197,8 @@ pub async fn show_notification(title: String, body: String) -> Result<(), String
         safe_body, safe_title
     );
     let status = tokio::process::Command::new("osascript")
-        .arg("-e").arg(&script)
+        .arg("-e")
+        .arg(&script)
         .kill_on_drop(true)
         .status()
         .await
@@ -212,10 +230,7 @@ pub async fn show_notification(title: String, body: String) -> Result<(), String
 ///     Defends against a malicious model surfacing `/etc/passwd:1` and the
 ///     user clicking it open in their editor — VS Code itself is harmless,
 ///     but the behavior is still better confined to writable locations.
-pub async fn open_path_in_editor(
-    path: String,
-    line: Option<u32>,
-) -> Result<String, String> {
+pub async fn open_path_in_editor(path: String, line: Option<u32>) -> Result<String, String> {
     if path.is_empty() || path.len() > super::fs::MAX_PATH_LEN {
         return Err(err_string(ToolError::invalid("path length invalid")));
     }
@@ -260,14 +275,10 @@ pub async fn open_path_in_editor(
             // user can tell the editor was found but failed.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Ok(s) => {
-                return Err(err_string(ToolError::io(format!(
-                    "{prog} exited {s}"
-                ))));
+                return Err(err_string(ToolError::io(format!("{prog} exited {s}"))));
             }
             Err(e) => {
-                return Err(err_string(ToolError::io(format!(
-                    "{prog} failed: {e}"
-                ))));
+                return Err(err_string(ToolError::io(format!("{prog} failed: {e}"))));
             }
         }
     }
@@ -331,18 +342,26 @@ pub async fn screenshot(out_path: Option<String>) -> Result<ScreenshotResult, St
     let path_str = target.to_string_lossy().into_owned();
     let status = tokio::process::Command::new("screencapture")
         .arg("-x")
-        .arg("-t").arg("png")
+        .arg("-t")
+        .arg("png")
         .arg(&path_str)
         .kill_on_drop(true)
         .status()
         .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     if !status.success() {
-        return Err(err_string(ToolError::io(format!("screencapture exited {status}"))));
+        return Err(err_string(ToolError::io(format!(
+            "screencapture exited {status}"
+        ))));
     }
-    let bytes = tokio::fs::metadata(&target).await
-        .map(|m| m.len()).unwrap_or(0);
-    Ok(ScreenshotResult { path: path_str, bytes })
+    let bytes = tokio::fs::metadata(&target)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    Ok(ScreenshotResult {
+        path: path_str,
+        bytes,
+    })
 }
 
 /* ── Tests ───────────────────────────────────────────────────────────────── */
@@ -353,35 +372,49 @@ mod tests {
 
     #[tokio::test]
     async fn open_path_rejects_relative() {
-        let err = open_path_in_editor("relative/file.rs".into(), None).await.unwrap_err();
+        let err = open_path_in_editor("relative/file.rs".into(), None)
+            .await
+            .unwrap_err();
         assert!(err.contains("absolute"), "got: {err}");
     }
 
     #[tokio::test]
     async fn open_path_rejects_parent_traversal() {
-        let err = open_path_in_editor("/tmp/../etc/passwd".into(), None).await.unwrap_err();
+        let err = open_path_in_editor("/tmp/../etc/passwd".into(), None)
+            .await
+            .unwrap_err();
         // Either the `..` check trips inside resolve_path, or the resulting
         // canonical path falls outside the allowlist — both are acceptable.
         assert!(
-            err.contains("..") || err.contains("outside") || err.contains("restricted") || err.contains("not accessible"),
+            err.contains("..")
+                || err.contains("outside")
+                || err.contains("restricted")
+                || err.contains("not accessible"),
             "got: {err}"
         );
     }
 
     #[tokio::test]
     async fn open_path_rejects_nonexistent() {
-        let err = open_path_in_editor(
-            "/tmp/__froglips_does_not_exist_xyzzy_9999".into(),
-            None,
-        ).await.unwrap_err();
-        assert!(err.contains("not accessible") || err.contains("No such"), "got: {err}");
+        let err = open_path_in_editor("/tmp/__froglips_does_not_exist_xyzzy_9999".into(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("not accessible") || err.contains("No such"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
     async fn open_path_rejects_system_dir() {
         // `/etc` exists and canonicalizes, but lives outside the allowlist.
-        let err = open_path_in_editor("/etc/hosts".into(), None).await.unwrap_err();
-        assert!(err.contains("outside") || err.contains("restricted"), "got: {err}");
+        let err = open_path_in_editor("/etc/hosts".into(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("outside") || err.contains("restricted"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -393,8 +426,12 @@ mod tests {
             assert!(is_open_target_allowed(&canon));
         }
         assert!(is_open_target_allowed(std::path::Path::new("/tmp/foo")));
-        assert!(is_open_target_allowed(std::path::Path::new("/private/tmp/foo")));
+        assert!(is_open_target_allowed(std::path::Path::new(
+            "/private/tmp/foo"
+        )));
         assert!(!is_open_target_allowed(std::path::Path::new("/etc/passwd")));
-        assert!(!is_open_target_allowed(std::path::Path::new("/System/Library")));
+        assert!(!is_open_target_allowed(std::path::Path::new(
+            "/System/Library"
+        )));
     }
 }

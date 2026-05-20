@@ -34,7 +34,11 @@ pub fn list_mlx_models() -> Result<Vec<ModelEntry>> {
         // HF encodes "org/sub/name" as "org--sub--name"; replace ALL "--" → "/"
         let id = rest.replace("--", "/");
         let size_bytes = cached_dir_size(&entry.path()).unwrap_or(0);
-        out.push(ModelEntry { id, size_bytes, backend: "mlx".into() });
+        out.push(ModelEntry {
+            id,
+            size_bytes,
+            backend: "mlx".into(),
+        });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
@@ -91,9 +95,7 @@ pub fn list_ollama_models() -> Result<Vec<ModelEntry>> {
         let mut parts = line.split_whitespace();
         let Some(name) = parts.next() else { continue };
         let _ = parts.next(); // ID
-        let size_num: f64 = parts.next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.0);
+        let size_num: f64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let size_unit = parts.next().unwrap_or("B");
         let size_bytes = match size_unit {
             "GB" => (size_num * 1_000_000_000.0) as u64,
@@ -127,19 +129,17 @@ pub fn delete_mlx_model(repo_id: &str) -> Result<()> {
         return Err(anyhow::anyhow!("repo id must be org/name"));
     }
     let hub = hf_hub_dir();
-    let canon_hub = std::fs::canonicalize(&hub)
-        .context("HF hub directory not accessible")?;
+    let canon_hub = std::fs::canonicalize(&hub).context("HF hub directory not accessible")?;
     let encoded = format!("models--{}", repo_id.replace('/', "--"));
     let target = canon_hub.join(&encoded);
     // Canonicalize the target itself and re-check containment to defeat any
     // symlink in the encoded path.
-    let canon_target = std::fs::canonicalize(&target)
-        .map_err(|e| anyhow::anyhow!("model dir not found: {e}"))?;
+    let canon_target =
+        std::fs::canonicalize(&target).map_err(|e| anyhow::anyhow!("model dir not found: {e}"))?;
     if !canon_target.starts_with(&canon_hub) {
         return Err(anyhow::anyhow!("model path escapes hub root"));
     }
-    std::fs::remove_dir_all(&canon_target)
-        .context("failed to remove model directory")?;
+    std::fs::remove_dir_all(&canon_target).context("failed to remove model directory")?;
     DIR_SIZE_CACHE.lock().remove(&target);
     Ok(())
 }
@@ -169,7 +169,12 @@ pub fn list_all_models() -> Result<ModelLists> {
         Ok(v) => (v, None),
         Err(e) => (vec![], Some(e.to_string())),
     };
-    Ok(ModelLists { mlx, ollama, mlx_error, ollama_error })
+    Ok(ModelLists {
+        mlx,
+        ollama,
+        mlx_error,
+        ollama_error,
+    })
 }
 
 fn hf_hub_dir() -> PathBuf {

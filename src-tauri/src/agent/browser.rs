@@ -114,11 +114,11 @@ mod backend {
                 .request_timeout(Duration::from_secs(30))
                 .build()
                 .map_err(|e| err_string(ToolError::io(format!("browser config: {e}"))))?;
-            let (browser, mut handler) = Browser::launch(config)
-                .await
-                .map_err(|e| err_string(ToolError::io(format!(
+            let (browser, mut handler) = Browser::launch(config).await.map_err(|e| {
+                err_string(ToolError::io(format!(
                     "could not launch Chrome (is it installed and on PATH?): {e}"
-                ))))?;
+                )))
+            })?;
             let task = tokio::spawn(async move {
                 while let Some(ev) = handler.next().await {
                     // Swallow handler errors — they'd otherwise spam the log
@@ -131,7 +131,11 @@ mod backend {
                 .new_page("about:blank")
                 .await
                 .map_err(|e| err_string(ToolError::io(format!("new page: {e}"))))?;
-            *guard = Some(Session { browser, page, handler: task });
+            *guard = Some(Session {
+                browser,
+                page,
+                handler: task,
+            });
         }
         Ok(guard)
     }
@@ -149,7 +153,13 @@ mod backend {
             .wait_for_navigation()
             .await
             .map_err(|e| err_string(ToolError::io(format!("wait nav: {e}"))))?;
-        let title = session.page.get_title().await.ok().flatten().unwrap_or_default();
+        let title = session
+            .page
+            .get_title()
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         let landed = session
             .page
             .url()
@@ -168,21 +178,30 @@ mod backend {
             .unwrap_or_default();
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode(png);
-        Ok(BrowserNavigateResult { status, title, url: landed, screenshot_base64: b64 })
+        Ok(BrowserNavigateResult {
+            status,
+            title,
+            url: landed,
+            screenshot_base64: b64,
+        })
     }
 
     pub async fn click(selector: String) -> Result<BrowserOkResult, String> {
         let mut guard = ensure_session().await?;
-        let session = guard.as_mut().ok_or_else(|| err_string(ToolError::invalid(
-            "no browser session — call browser_navigate first",
-        )))?;
+        let session = guard.as_mut().ok_or_else(|| {
+            err_string(ToolError::invalid(
+                "no browser session — call browser_navigate first",
+            ))
+        })?;
         let el = session
             .page
             .find_element(selector.clone())
             .await
-            .map_err(|e| err_string(ToolError::invalid(format!(
-                "selector '{selector}' not found: {e}"
-            ))))?;
+            .map_err(|e| {
+                err_string(ToolError::invalid(format!(
+                    "selector '{selector}' not found: {e}"
+                )))
+            })?;
         el.click()
             .await
             .map_err(|e| err_string(ToolError::io(format!("click: {e}"))))?;
@@ -191,16 +210,20 @@ mod backend {
 
     pub async fn fill(selector: String, value: String) -> Result<BrowserOkResult, String> {
         let mut guard = ensure_session().await?;
-        let session = guard.as_mut().ok_or_else(|| err_string(ToolError::invalid(
-            "no browser session — call browser_navigate first",
-        )))?;
+        let session = guard.as_mut().ok_or_else(|| {
+            err_string(ToolError::invalid(
+                "no browser session — call browser_navigate first",
+            ))
+        })?;
         let el = session
             .page
             .find_element(selector.clone())
             .await
-            .map_err(|e| err_string(ToolError::invalid(format!(
-                "selector '{selector}' not found: {e}"
-            ))))?;
+            .map_err(|e| {
+                err_string(ToolError::invalid(format!(
+                    "selector '{selector}' not found: {e}"
+                )))
+            })?;
         el.click()
             .await
             .map_err(|e| err_string(ToolError::io(format!("focus: {e}"))))?;
@@ -212,9 +235,11 @@ mod backend {
 
     pub async fn screenshot() -> Result<BrowserScreenshotResult, String> {
         let mut guard = ensure_session().await?;
-        let session = guard.as_mut().ok_or_else(|| err_string(ToolError::invalid(
-            "no browser session — call browser_navigate first",
-        )))?;
+        let session = guard.as_mut().ok_or_else(|| {
+            err_string(ToolError::invalid(
+                "no browser session — call browser_navigate first",
+            ))
+        })?;
         let png = session
             .page
             .screenshot(chromiumoxide::page::ScreenshotParams::default())
@@ -228,17 +253,17 @@ mod backend {
 
     pub async fn get_text(selector: Option<String>) -> Result<BrowserTextResult, String> {
         let mut guard = ensure_session().await?;
-        let session = guard.as_mut().ok_or_else(|| err_string(ToolError::invalid(
-            "no browser session — call browser_navigate first",
-        )))?;
+        let session = guard.as_mut().ok_or_else(|| {
+            err_string(ToolError::invalid(
+                "no browser session — call browser_navigate first",
+            ))
+        })?;
         let sel = selector.unwrap_or_else(|| "body".into());
-        let el = session
-            .page
-            .find_element(sel.clone())
-            .await
-            .map_err(|e| err_string(ToolError::invalid(format!(
+        let el = session.page.find_element(sel.clone()).await.map_err(|e| {
+            err_string(ToolError::invalid(format!(
                 "selector '{sel}' not found: {e}"
-            ))))?;
+            )))
+        })?;
         let text = el
             .inner_text()
             .await
@@ -251,7 +276,9 @@ mod backend {
         } else {
             text
         };
-        Ok(BrowserTextResult { text: truncated_text })
+        Ok(BrowserTextResult {
+            text: truncated_text,
+        })
     }
 
     pub async fn close() -> Result<BrowserOkResult, String> {
@@ -284,12 +311,24 @@ mod backend {
         )))
     }
 
-    pub async fn navigate(_url: String) -> Result<BrowserNavigateResult, String> { disabled() }
-    pub async fn click(_selector: String) -> Result<BrowserOkResult, String> { disabled() }
-    pub async fn fill(_selector: String, _value: String) -> Result<BrowserOkResult, String> { disabled() }
-    pub async fn screenshot() -> Result<BrowserScreenshotResult, String> { disabled() }
-    pub async fn get_text(_selector: Option<String>) -> Result<BrowserTextResult, String> { disabled() }
-    pub async fn close() -> Result<BrowserOkResult, String> { Ok(BrowserOkResult { ok: true }) }
+    pub async fn navigate(_url: String) -> Result<BrowserNavigateResult, String> {
+        disabled()
+    }
+    pub async fn click(_selector: String) -> Result<BrowserOkResult, String> {
+        disabled()
+    }
+    pub async fn fill(_selector: String, _value: String) -> Result<BrowserOkResult, String> {
+        disabled()
+    }
+    pub async fn screenshot() -> Result<BrowserScreenshotResult, String> {
+        disabled()
+    }
+    pub async fn get_text(_selector: Option<String>) -> Result<BrowserTextResult, String> {
+        disabled()
+    }
+    pub async fn close() -> Result<BrowserOkResult, String> {
+        Ok(BrowserOkResult { ok: true })
+    }
     pub async fn shutdown() {}
 }
 
@@ -303,40 +342,58 @@ mod tests {
     /// browser feature is on. Runs in both build configurations.
     #[tokio::test]
     async fn rejects_loopback_url() {
-        let err = validate_navigate_url("http://127.0.0.1/admin").await.unwrap_err();
-        assert!(err.to_lowercase().contains("private") || err.to_lowercase().contains("loopback"),
-                "got: {err}");
+        let err = validate_navigate_url("http://127.0.0.1/admin")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_lowercase().contains("private") || err.to_lowercase().contains("loopback"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
     async fn rejects_localhost_url() {
-        let err = validate_navigate_url("http://localhost:8080/").await.unwrap_err();
-        assert!(err.to_lowercase().contains("private") || err.to_lowercase().contains("loopback"),
-                "got: {err}");
+        let err = validate_navigate_url("http://localhost:8080/")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_lowercase().contains("private") || err.to_lowercase().contains("loopback"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
     async fn rejects_dotlocal_url() {
-        let err = validate_navigate_url("http://router.local/").await.unwrap_err();
-        assert!(err.to_lowercase().contains("private") || err.to_lowercase().contains("loopback"),
-                "got: {err}");
+        let err = validate_navigate_url("http://router.local/")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_lowercase().contains("private") || err.to_lowercase().contains("loopback"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
     async fn rejects_file_scheme() {
-        let err = validate_navigate_url("file:///etc/passwd").await.unwrap_err();
+        let err = validate_navigate_url("file:///etc/passwd")
+            .await
+            .unwrap_err();
         assert!(err.contains("not allowed"), "got: {err}");
     }
 
     #[tokio::test]
     async fn rejects_chrome_scheme() {
-        let err = validate_navigate_url("chrome://settings").await.unwrap_err();
+        let err = validate_navigate_url("chrome://settings")
+            .await
+            .unwrap_err();
         assert!(err.contains("not allowed"), "got: {err}");
     }
 
     #[tokio::test]
     async fn accepts_data_url() {
-        let url = validate_navigate_url("data:text/html,<title>hi</title>").await.unwrap();
+        let url = validate_navigate_url("data:text/html,<title>hi</title>")
+            .await
+            .unwrap();
         assert_eq!(url.scheme(), "data");
     }
 

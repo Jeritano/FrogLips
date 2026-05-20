@@ -62,17 +62,21 @@ pub fn ensure_window(app: &AppHandle) -> Result<()> {
         existing.set_focus().ok();
         return Ok(());
     }
-    let win = WebviewWindowBuilder::new(app, QUICK_LABEL, WebviewUrl::App("index.html?quick=1".into()))
-        .title("Froglips Quick Prompt")
-        .inner_size(QUICK_WIDTH, QUICK_HEIGHT)
-        .always_on_top(true)
-        .decorations(false)
-        .resizable(false)
-        .skip_taskbar(true)
-        .focused(true)
-        .center()
-        .build()
-        .map_err(|e| anyhow!("create quick window failed: {e}"))?;
+    let win = WebviewWindowBuilder::new(
+        app,
+        QUICK_LABEL,
+        WebviewUrl::App("index.html?quick=1".into()),
+    )
+    .title("Froglips Quick Prompt")
+    .inner_size(QUICK_WIDTH, QUICK_HEIGHT)
+    .always_on_top(true)
+    .decorations(false)
+    .resizable(false)
+    .skip_taskbar(true)
+    .focused(true)
+    .center()
+    .build()
+    .map_err(|e| anyhow!("create quick window failed: {e}"))?;
 
     // Hide on blur — keep alive for fast reopen. Best-effort; if blur events
     // aren't delivered (some platforms) the user can still Esc to hide.
@@ -106,8 +110,12 @@ pub fn toggle_window(app: &AppHandle) {
 /// (read from settings.last_*), but does not start anything.
 fn resolve_default() -> Result<(String, String)> {
     let s = settings::load();
-    let backend = s.last_backend.ok_or_else(|| anyhow!("no default backend in settings — start a model first"))?;
-    let model = s.last_model.ok_or_else(|| anyhow!("no default model in settings — start a model first"))?;
+    let backend = s
+        .last_backend
+        .ok_or_else(|| anyhow!("no default backend in settings — start a model first"))?;
+    let model = s
+        .last_model
+        .ok_or_else(|| anyhow!("no default model in settings — start a model first"))?;
     if backend != "mlx" && backend != "ollama" {
         return Err(anyhow!("unsupported backend for quick prompt: {backend}"));
     }
@@ -116,8 +124,17 @@ fn resolve_default() -> Result<(String, String)> {
 
 /// Stream a reply from the OpenAI-compatible MLX endpoint. Emits per-chunk
 /// deltas on `quick-prompt-response:{op_id}`. Returns the accumulated reply.
-async fn stream_mlx(app: AppHandle, op_id: String, model: String, prompt: String) -> Result<String> {
-    let url = format!("http://{}:{}/v1/chat/completions", crate::mlx_server::MLX_HOST, crate::mlx_server::MLX_PORT);
+async fn stream_mlx(
+    app: AppHandle,
+    op_id: String,
+    model: String,
+    prompt: String,
+) -> Result<String> {
+    let url = format!(
+        "http://{}:{}/v1/chat/completions",
+        crate::mlx_server::MLX_HOST,
+        crate::mlx_server::MLX_PORT
+    );
     let body = serde_json::json!({
         "model": model,
         "stream": true,
@@ -151,11 +168,18 @@ async fn stream_mlx(app: AppHandle, op_id: String, model: String, prompt: String
         while let Some(nl) = buf.find('\n') {
             let line = buf[..nl].trim().to_string();
             buf.drain(..=nl);
-            if !line.starts_with("data:") { continue; }
+            if !line.starts_with("data:") {
+                continue;
+            }
             let payload = line[5..].trim();
-            if payload == "[DONE]" { return Ok(acc); }
+            if payload == "[DONE]" {
+                return Ok(acc);
+            }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
-                if let Some(delta) = v.pointer("/choices/0/delta/content").and_then(|x| x.as_str()) {
+                if let Some(delta) = v
+                    .pointer("/choices/0/delta/content")
+                    .and_then(|x| x.as_str())
+                {
                     if !delta.is_empty() {
                         acc.push_str(delta);
                         let _ = app.emit(
@@ -177,8 +201,17 @@ async fn stream_mlx(app: AppHandle, op_id: String, model: String, prompt: String
 
 /// Stream from Ollama's `/api/chat`. Uses its native NDJSON stream rather
 /// than the OpenAI-compat path so we don't depend on Ollama's compat-mode flags.
-async fn stream_ollama(app: AppHandle, op_id: String, model: String, prompt: String) -> Result<String> {
-    let url = format!("http://{}:{}/api/chat", crate::mlx_server::OLLAMA_HOST, crate::mlx_server::OLLAMA_PORT);
+async fn stream_ollama(
+    app: AppHandle,
+    op_id: String,
+    model: String,
+    prompt: String,
+) -> Result<String> {
+    let url = format!(
+        "http://{}:{}/api/chat",
+        crate::mlx_server::OLLAMA_HOST,
+        crate::mlx_server::OLLAMA_PORT
+    );
     let body = serde_json::json!({
         "model": model,
         "stream": true,
@@ -211,7 +244,9 @@ async fn stream_ollama(app: AppHandle, op_id: String, model: String, prompt: Str
         while let Some(nl) = buf.find('\n') {
             let line = buf[..nl].trim().to_string();
             buf.drain(..=nl);
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             if let Ok(parsed) = serde_json::from_str::<OllamaStreamLine>(&line) {
                 if let Some(msg) = parsed.message {
                     if !msg.content.is_empty() {
@@ -227,7 +262,9 @@ async fn stream_ollama(app: AppHandle, op_id: String, model: String, prompt: Str
                         );
                     }
                 }
-                if parsed.done { return Ok(acc); }
+                if parsed.done {
+                    return Ok(acc);
+                }
             }
         }
     }
@@ -252,7 +289,12 @@ pub async fn run(app: AppHandle, op_id: String, text: String) -> Result<(), Stri
         Err(e) => {
             let _ = app.emit(
                 &format!("quick-prompt-response:{op_id}"),
-                QuickPromptChunk { op_id: op_id.clone(), delta: String::new(), done: true, error: Some(e.to_string()) },
+                QuickPromptChunk {
+                    op_id: op_id.clone(),
+                    delta: String::new(),
+                    done: true,
+                    error: Some(e.to_string()),
+                },
             );
             let _ = app.emit(
                 "quick-prompt-completed",
@@ -278,7 +320,12 @@ pub async fn run(app: AppHandle, op_id: String, text: String) -> Result<(), Stri
         Ok(reply) => {
             let _ = app.emit(
                 &format!("quick-prompt-response:{op_id}"),
-                QuickPromptChunk { op_id: op_id.clone(), delta: String::new(), done: true, error: None },
+                QuickPromptChunk {
+                    op_id: op_id.clone(),
+                    delta: String::new(),
+                    done: true,
+                    error: None,
+                },
             );
             let _ = app.emit(
                 "quick-prompt-completed",
@@ -295,7 +342,12 @@ pub async fn run(app: AppHandle, op_id: String, text: String) -> Result<(), Stri
             let msg = e.to_string();
             let _ = app.emit(
                 &format!("quick-prompt-response:{op_id}"),
-                QuickPromptChunk { op_id: op_id.clone(), delta: String::new(), done: true, error: Some(msg.clone()) },
+                QuickPromptChunk {
+                    op_id: op_id.clone(),
+                    delta: String::new(),
+                    done: true,
+                    error: Some(msg.clone()),
+                },
             );
             let _ = app.emit(
                 "quick-prompt-completed",

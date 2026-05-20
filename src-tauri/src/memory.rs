@@ -32,7 +32,10 @@ pub struct MemoryContext {
 
 impl MemoryContext {
     pub fn new(workspace_root: Option<String>, conv_id: Option<i64>) -> Self {
-        Self { workspace_root, conv_id }
+        Self {
+            workspace_root,
+            conv_id,
+        }
     }
 }
 
@@ -61,14 +64,13 @@ fn scope_matches(m: &Memory, ctx: &MemoryContext) -> bool {
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
-   In-memory embedding cache. Lazily populated on first vector search.
-   Invalidated on add/delete. Avoids decoding the BLOBs from disk on every
-   recall + dedup check (~30 MB at 10k entries × 768 floats).
-   ─────────────────────────────────────────────────────────────────────── */
+In-memory embedding cache. Lazily populated on first vector search.
+Invalidated on add/delete. Avoids decoding the BLOBs from disk on every
+recall + dedup check (~30 MB at 10k entries × 768 floats).
+─────────────────────────────────────────────────────────────────────── */
 
 type EmbeddingMap = HashMap<i64, Vec<f32>>;
-static EMB_CACHE: Lazy<RwLock<Option<EmbeddingMap>>> =
-    Lazy::new(|| RwLock::new(None));
+static EMB_CACHE: Lazy<RwLock<Option<EmbeddingMap>>> = Lazy::new(|| RwLock::new(None));
 
 fn warm_cache() -> Result<()> {
     if EMB_CACHE.read().is_some() {
@@ -147,7 +149,9 @@ fn row_to_memory(r: &rusqlite::Row) -> rusqlite::Result<Memory> {
         status: r.get(5)?,
         created_at: r.get(6)?,
         last_used_at: r.get(7)?,
-        scope: r.get::<_, Option<String>>(8)?.unwrap_or_else(|| "global".to_string()),
+        scope: r
+            .get::<_, Option<String>>(8)?
+            .unwrap_or_else(|| "global".to_string()),
         project_root: r.get(9)?,
         score: None,
     })
@@ -168,7 +172,9 @@ fn fetch_by_ids(ids: &[i64]) -> Result<Vec<Memory>> {
     let mut placeholders = String::with_capacity(ids.len() * 6);
     use std::fmt::Write;
     for i in 0..ids.len() {
-        if i > 0 { placeholders.push(','); }
+        if i > 0 {
+            placeholders.push(',');
+        }
         let _ = write!(placeholders, "?{}", i + 1);
     }
     let sql = format!(
@@ -176,7 +182,8 @@ fn fetch_by_ids(ids: &[i64]) -> Result<Vec<Memory>> {
          FROM memories WHERE id IN ({placeholders})"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params_vec: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+    let params_vec: Vec<&dyn rusqlite::ToSql> =
+        ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
     // Score order is re-applied by caller — this query returns rows in arbitrary order.
     let rows = stmt
         .query_map(params_vec.as_slice(), row_to_memory)?
@@ -204,7 +211,9 @@ pub fn add_memory(
         return Err(anyhow::anyhow!("scope=project requires project_root"));
     }
     if scope == "conversation" && conversation_id.is_none() {
-        return Err(anyhow::anyhow!("scope=conversation requires conversation_id"));
+        return Err(anyhow::anyhow!(
+            "scope=conversation requires conversation_id"
+        ));
     }
     // Reject NaN/Inf embeddings — they corrupt cosine and become permanently
     // un-dedupable. Also reject empty vectors.
@@ -236,7 +245,11 @@ pub fn add_memory(
     let blob = embedding.as_ref().map(|v| embedding_to_blob(v));
     // project_root is only meaningful for scope='project'. Drop it otherwise
     // so it doesn't accidentally leak across scope changes via demote/promote.
-    let pr_for_insert: Option<&str> = if scope == "project" { project_root } else { None };
+    let pr_for_insert: Option<&str> = if scope == "project" {
+        project_root
+    } else {
+        None
+    };
     conn.execute(
         "INSERT INTO memories (content, conversation_id, source_msg_id, tags, embedding, status, created_at, scope, project_root)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -267,9 +280,7 @@ pub fn list_memories(status_filter: Option<&str>) -> Result<Vec<Memory>> {
     let sql_with = format!(
         "SELECT {MEM_COLS} FROM memories WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2"
     );
-    let sql_all = format!(
-        "SELECT {MEM_COLS} FROM memories ORDER BY created_at DESC LIMIT ?1"
-    );
+    let sql_all = format!("SELECT {MEM_COLS} FROM memories ORDER BY created_at DESC LIMIT ?1");
     let sql: &str = match status_filter {
         Some(_) => &sql_with,
         None => &sql_all,
@@ -350,15 +361,17 @@ pub fn touch_memories(ids: &[i64]) -> Result<()> {
     let mut placeholders = String::with_capacity(ids.len() * 6);
     use std::fmt::Write;
     for i in 0..ids.len() {
-        if i > 0 { placeholders.push(','); }
+        if i > 0 {
+            placeholders.push(',');
+        }
         let _ = write!(placeholders, "?{}", i + 2);
     }
     let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
     params_vec.push(&now);
-    for i in ids { params_vec.push(i); }
-    let sql = format!(
-        "UPDATE memories SET last_used_at = ?1 WHERE id IN ({placeholders})"
-    );
+    for i in ids {
+        params_vec.push(i);
+    }
+    let sql = format!("UPDATE memories SET last_used_at = ?1 WHERE id IN ({placeholders})");
     conn.execute(&sql, params_vec.as_slice())?;
     Ok(())
 }
@@ -423,7 +436,8 @@ pub fn search_vector(
     }
     mems.retain(|m| scope_matches(m, ctx));
     mems.sort_by(|a, b| {
-        b.score.unwrap_or(0.0)
+        b.score
+            .unwrap_or(0.0)
             .partial_cmp(&a.score.unwrap_or(0.0))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
@@ -494,7 +508,9 @@ pub fn demote_memory(id: i64) -> Result<()> {
         "global" => "project",
         "project" => "conversation",
         "conversation" => {
-            return Err(anyhow::anyhow!("memory already at bottom scope (conversation)"))
+            return Err(anyhow::anyhow!(
+                "memory already at bottom scope (conversation)"
+            ))
         }
         other => return Err(anyhow::anyhow!("unknown scope: {other}")),
     };
@@ -520,11 +536,7 @@ pub fn demote_memory(id: i64) -> Result<()> {
 /// attach context (project_root / conversation_id) prior to the scope
 /// transition — e.g. demoting a global memory to project requires us to
 /// know which project it belongs to.
-pub fn set_memory_context(
-    id: i64,
-    project_root: Option<&str>,
-    conv_id: Option<i64>,
-) -> Result<()> {
+pub fn set_memory_context(id: i64, project_root: Option<&str>, conv_id: Option<i64>) -> Result<()> {
     let conn = get_db()?;
     // Only update fields the caller actually supplied — pass-through NULLs
     // would clobber existing bindings.
@@ -667,12 +679,21 @@ mod tests {
         // Global → always candidate, regardless of ctx.
         let g = make("global", None, None);
         assert!(scope_matches(&g, &MemoryContext::default()));
-        assert!(scope_matches(&g, &MemoryContext::new(Some("/x".into()), Some(42))));
+        assert!(scope_matches(
+            &g,
+            &MemoryContext::new(Some("/x".into()), Some(42))
+        ));
 
         // Project → only when workspace_root matches exactly.
         let p = make("project", Some("/repo/foo"), None);
-        assert!(scope_matches(&p, &MemoryContext::new(Some("/repo/foo".into()), None)));
-        assert!(!scope_matches(&p, &MemoryContext::new(Some("/repo/bar".into()), None)));
+        assert!(scope_matches(
+            &p,
+            &MemoryContext::new(Some("/repo/foo".into()), None)
+        ));
+        assert!(!scope_matches(
+            &p,
+            &MemoryContext::new(Some("/repo/bar".into()), None)
+        ));
         assert!(!scope_matches(&p, &MemoryContext::default())); // no cwd → drop
 
         // Conversation → only when conv_id matches.

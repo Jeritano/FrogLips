@@ -4,6 +4,24 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.17] — 2026-05-20
+
+### Fixed (full code-review pass)
+- **CRITICAL — startup panic in v0.9.15**: `tauri.conf.json` had `"global-shortcut": {}` left by the menu-bar quick prompt feature. Tauri 2's plugin config expected `null` (unit). Removed the entry; the plugin self-registers from Rust at runtime. App now boots clean.
+- **`McpSettings.tsx` + `RagPanel.tsx` null-guard**: list-endpoint Tauri calls now `Array.isArray()`-guard the response. Previously a null return from the backend crashed the panel render on `null.length`.
+- **`mistralrs_backend.rs`**: removed redundant closure wrap + unneeded `mut` on `on_chunk` param (clippy `--features native-mistralrs --all-targets -D warnings` now clean).
+- **`cargo fmt`** drift fixed across 28 files touched during sprint (browser.rs, fs_watcher.rs, mcp/mod.rs, memory.rs, native_inference/*, quick_prompt.rs, rag.rs, etc.).
+
+### Verified
+- `cargo check` clean for: default, `native-mistralrs`, `browser-automation`.
+- `cargo clippy --all-targets -D warnings` clean for: default, `native-mistralrs`, `browser-automation`.
+- `cargo test`: **72 passed** (default), **73 passed** (`browser-automation`).
+- `npx tsc --noEmit`: clean.
+- Vitest: **129 passed** across 24 files.
+- Playwright: **11 passed**.
+- **Grand total: 212 tests** — all green.
+- Tool wiring audit: 46 unique tool schemas in `tools.ts`, 51 dispatch cases in `dispatch.ts` (extras for subagent + MCP routing + fallback). All schemas have matching dispatch routes.
+
 ## [0.9.15] — 2026-05-20
 
 ### Added (v1.3 batch B — v1.3 sprint complete)

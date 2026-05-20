@@ -83,7 +83,13 @@ impl ServerState {
         if errors.is_empty() {
             None
         } else {
-            Some(errors.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n"))
+            Some(
+                errors
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
         }
     }
 
@@ -126,8 +132,8 @@ impl ServerState {
         }
 
         // MLX backend — spawn mlx_lm.server with captured stderr
-        let binary = mlx_server_binary()
-            .context("mlx_lm.server not found — install: pip install mlx-lm")?;
+        let binary =
+            mlx_server_binary().context("mlx_lm.server not found — install: pip install mlx-lm")?;
         let mut child = Command::new(&binary)
             .arg("--model")
             .arg(&model)
@@ -193,15 +199,18 @@ impl ServerState {
                     }
                     ready.store(true, Ordering::Release);
                     if let Some(app) = app {
-                        let _ = app.emit("server-status", &ServerStatus {
-                            running: true,
-                            ready: true,
-                            model: Some(model_for_probe),
-                            backend: Some(backend_for_probe),
-                            host: MLX_HOST.into(),
-                            port: MLX_PORT,
-                            last_error: None,
-                        });
+                        let _ = app.emit(
+                            "server-status",
+                            &ServerStatus {
+                                running: true,
+                                ready: true,
+                                model: Some(model_for_probe),
+                                backend: Some(backend_for_probe),
+                                host: MLX_HOST.into(),
+                                port: MLX_PORT,
+                                last_error: None,
+                            },
+                        );
                     }
                     return;
                 }

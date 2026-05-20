@@ -351,10 +351,7 @@ pub async fn start_server(
             bail!(err_msg);
         }
         Err(_) => {
-            let err_msg = format!(
-                "initialize timed out after {}s",
-                INIT_TIMEOUT.as_secs()
-            );
+            let err_msg = format!("initialize timed out after {}s", INIT_TIMEOUT.as_secs());
             *handle.last_error.write() = Some(err_msg.clone());
             handle.shutdown().await;
             bail!(err_msg);
@@ -362,7 +359,9 @@ pub async fn start_server(
     }
 
     // Spec requires `notifications/initialized` after initialize succeeds.
-    let _ = handle.send_notify("notifications/initialized", json!({})).await;
+    let _ = handle
+        .send_notify("notifications/initialized", json!({}))
+        .await;
 
     // Fetch tools list.
     let tools_resp = handle
@@ -456,8 +455,10 @@ pub async fn call_tool(server: &str, tool: &str, args_json: Value) -> Result<Str
                     out.push_str(&format!("[image: {}]\n", mime));
                 }
                 "resource" => {
-                    if let Some(uri) =
-                        block.get("resource").and_then(|r| r.get("uri")).and_then(|u| u.as_str())
+                    if let Some(uri) = block
+                        .get("resource")
+                        .and_then(|r| r.get("uri"))
+                        .and_then(|u| u.as_str())
                     {
                         out.push_str(&format!("[resource: {}]\n", uri));
                     }

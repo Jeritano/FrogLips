@@ -17,9 +17,7 @@
 use anyhow::{anyhow, Result};
 use globset::{Glob, GlobMatcher};
 use notify::event::{ModifyKind, RenameMode};
-use notify::{
-    Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
-};
+use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -213,8 +211,8 @@ pub async fn watch_path(
     if !resolved.exists() {
         return Err(format!("path does not exist: {}", resolved.display()));
     }
-    let canonical = std::fs::canonicalize(&resolved)
-        .map_err(|e| format!("canonicalize failed: {e}"))?;
+    let canonical =
+        std::fs::canonicalize(&resolved).map_err(|e| format!("canonicalize failed: {e}"))?;
     let recursive = canonical.is_dir();
 
     let matcher: Option<GlobMatcher> = match glob.as_deref() {
@@ -261,13 +259,19 @@ pub async fn watch_path(
             if !debounce.is_zero() {
                 let mut g = last_seen_for_cb.lock();
                 if let Some((prev_ts, prev_kind)) = g.get(&p_str) {
-                    if *prev_kind == kind && ts.saturating_sub(*prev_ts) < debounce.as_millis() as u64 {
+                    if *prev_kind == kind
+                        && ts.saturating_sub(*prev_ts) < debounce.as_millis() as u64
+                    {
                         continue;
                     }
                 }
                 g.insert(p_str.clone(), (ts, kind.clone()));
             }
-            let ev = WatchEvent { kind: kind.clone(), path: p_str, ts };
+            let ev = WatchEvent {
+                kind: kind.clone(),
+                path: p_str,
+                ts,
+            };
             let entry_opt = REGISTRY.lock().get(&id_for_cb).cloned();
             if let Some(entry) = entry_opt {
                 push_event(&mut entry.lock(), ev);
@@ -277,7 +281,11 @@ pub async fn watch_path(
 
     let mut watcher: RecommendedWatcher =
         notify::recommended_watcher(cb_handler).map_err(|e| format!("watcher init: {e}"))?;
-    let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+    let mode = if recursive {
+        RecursiveMode::Recursive
+    } else {
+        RecursiveMode::NonRecursive
+    };
     watcher
         .watch(&canonical, mode)
         .map_err(|e| format!("watch failed: {e}"))?;
@@ -298,7 +306,9 @@ pub async fn watch_path(
         last_poll_ms: now_ms(),
         _watcher: watcher,
     };
-    REGISTRY.lock().insert(id.clone(), Arc::new(Mutex::new(entry)));
+    REGISTRY
+        .lock()
+        .insert(id.clone(), Arc::new(Mutex::new(entry)));
 
     Ok(WatchHandle {
         watch_id: id,
@@ -420,11 +430,12 @@ mod tests {
             !poll.events.is_empty(),
             "expected at least one event for created file, got 0"
         );
-        let any_for_path = poll
-            .events
-            .iter()
-            .any(|e| e.path.ends_with("hello.txt"));
-        assert!(any_for_path, "no event mentioned hello.txt: {:?}", poll.events);
+        let any_for_path = poll.events.iter().any(|e| e.path.ends_with("hello.txt"));
+        assert!(
+            any_for_path,
+            "no event mentioned hello.txt: {:?}",
+            poll.events
+        );
 
         let _ = stop_watch(handle.watch_id);
         let _ = fs::remove_dir_all(&tmp);
