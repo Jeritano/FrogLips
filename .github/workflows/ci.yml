@@ -6,30 +6,55 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  rust:
     runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --no-default-features -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --no-default-features
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        working-directory: src-tauri
+        run: cargo audit
+
+  frontend:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
-
-      - name: Cache Cargo registry + target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+          node-version: 20
+          cache: npm
 
       - name: npm ci
         run: npm ci
@@ -37,19 +62,9 @@ jobs:
       - name: TypeScript check
         run: npx tsc --noEmit
 
-      - name: cargo clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Vitest
+        if: hashFiles('vitest.config.ts') != ''
+        run: npm test
 
-      - name: cargo test
-        run: cargo test --manifest-path src-tauri/Cargo.toml --no-fail-fast
-
-      - name: npm audit (production deps)
-        run: npm audit --omit=dev --audit-level=moderate
-        continue-on-error: true
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked --quiet || true
-
-      - name: cargo audit
-        run: cargo audit --file src-tauri/Cargo.lock
-        continue-on-error: true
+      - name: Build
+        run: npm run build

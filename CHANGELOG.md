@@ -4,6 +4,17 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.9.6] — 2026-05-20
+
+### Refactor
+- **`agent.rs` split**: 1874-LOC single file → `agent/` directory with 7 submodules (`fs.rs`, `shell.rs`, `web.rs`, `git.rs`, `system.rs`, `code.rs`, `mod.rs`). `pub use` re-exports preserve the `agent::*` public surface — `lib.rs` untouched. `cargo test` still 10/10.
+- **`agent-loop.ts` split**: 1251-LOC single file → `agent-loop/` directory with 8 submodules (`tools.ts`, `runner.ts`, `dispatch.ts`, `ollama-client.ts`, `subagent.ts`, `types.ts`, `system-prompt.ts`, `index.ts` barrel). External imports unchanged.
+
+### Added
+- **Vitest** with first 5 unit tests (`tools.test.ts`, `stall-guard.test.ts`, `dedupe.test.ts`). `npm test` exits 0.
+- **CI gate** at `.github/workflows/ci.yml`: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo audit`, `tsc --noEmit`, `npm test`, `npm run build`. Runs on every PR + push to main.
+- **Roadmap research**: `docs/research/llamacpp-backend.md` — `llama-cpp-2` chosen for cross-platform Native backend (Phase 1 of v1.0 sprint).
+
 ## [0.9.5] — 2026-05-20
 
 ### Fixed
