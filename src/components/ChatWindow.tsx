@@ -364,6 +364,13 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     let acc = "";
     let aborted = false;
     const ACC_MAX = 262_144;
+    // Coalesce streaming updates to one per animation frame. At 100+ tok/s
+    // a setState per chunk thrashes the renderer; rAF caps it to ~60 Hz.
+    let scheduled = 0;
+    const flushStreaming = () => {
+      scheduled = 0;
+      if (isStreamConvActive()) setStreaming(acc);
+    };
     try {
       const stream = status.backend === "native"
         ? streamNativeChat(historyForApi, { signal: ctrl.signal })
@@ -375,7 +382,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           ctrl.abort();
           break;
         }
-        if (isStreamConvActive()) setStreaming(acc);
+        if (!scheduled) scheduled = requestAnimationFrame(flushStreaming);
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -384,7 +391,12 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         setErr(String(e));
       }
     } finally {
+      if (scheduled) cancelAnimationFrame(scheduled);
       abortRef.current = null;
+      // No need to flush the final acc here — the assistant message gets
+      // appended to `messages` below from `acc`, which renders the final
+      // text via the normal MessageRow path. Clearing streaming hides the
+      // cursor bubble.
       if (isStreamConvActive()) setStreaming(undefined);
     }
 

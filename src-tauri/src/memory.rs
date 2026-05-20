@@ -116,10 +116,13 @@ fn fetch_by_ids(ids: &[i64]) -> Result<Vec<Memory>> {
         return Ok(vec![]);
     }
     let conn = get_db()?;
-    let mut placeholders = String::new();
+    // Build "?1,?2,...,?n" without allocating one format! per id. Each id
+    // contributes at most ~6 chars; pre-reserve so we don't realloc.
+    let mut placeholders = String::with_capacity(ids.len() * 6);
+    use std::fmt::Write;
     for i in 0..ids.len() {
         if i > 0 { placeholders.push(','); }
-        placeholders.push_str(&format!("?{}", i + 1));
+        let _ = write!(placeholders, "?{}", i + 1);
     }
     let sql = format!(
         "SELECT id, content, conversation_id, source_msg_id, tags, status, created_at, last_used_at
@@ -274,10 +277,11 @@ pub fn touch_memories(ids: &[i64]) -> Result<()> {
     let now = now_unix();
     // Build numbered placeholders so the same param style is used throughout
     // ($1 = now, $2.. = ids). Avoids relying on rusqlite's mixed positional behavior.
-    let mut placeholders = String::new();
+    let mut placeholders = String::with_capacity(ids.len() * 6);
+    use std::fmt::Write;
     for i in 0..ids.len() {
         if i > 0 { placeholders.push(','); }
-        placeholders.push_str(&format!("?{}", i + 2));
+        let _ = write!(placeholders, "?{}", i + 2);
     }
     let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
     params_vec.push(&now);
