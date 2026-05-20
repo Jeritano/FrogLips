@@ -27,7 +27,8 @@ pub struct Memory {
    recall + dedup check (~30 MB at 10k entries × 768 floats).
    ─────────────────────────────────────────────────────────────────────── */
 
-static EMB_CACHE: Lazy<RwLock<Option<HashMap<i64, Vec<f32>>>>> =
+type EmbeddingMap = HashMap<i64, Vec<f32>>;
+static EMB_CACHE: Lazy<RwLock<Option<EmbeddingMap>>> =
     Lazy::new(|| RwLock::new(None));
 
 fn warm_cache() -> Result<()> {
@@ -40,7 +41,7 @@ fn warm_cache() -> Result<()> {
     let mut stmt = conn.prepare(
         "SELECT id, embedding FROM memories WHERE status = 'active' AND embedding IS NOT NULL",
     )?;
-    let mut map: HashMap<i64, Vec<f32>> = HashMap::new();
+    let mut map: EmbeddingMap = HashMap::new();
     let rows = stmt.query_map([], |r| {
         let id: i64 = r.get(0)?;
         let blob: Vec<u8> = r.get(1)?;
@@ -60,7 +61,7 @@ fn warm_cache() -> Result<()> {
     Ok(())
 }
 
-fn with_cache<R>(f: impl FnOnce(&HashMap<i64, Vec<f32>>) -> R) -> Result<R> {
+fn with_cache<R>(f: impl FnOnce(&EmbeddingMap) -> R) -> Result<R> {
     warm_cache()?;
     let guard = EMB_CACHE.read();
     let map = guard
@@ -163,7 +164,7 @@ pub fn add_memory(
                 .read()
                 .as_ref()
                 .and_then(|m| m.values().next().map(|v| v.len()))
-                .map_or(true, |existing_dim| existing_dim == emb.len());
+                .is_none_or(|existing_dim| existing_dim == emb.len());
             if !dim_ok {
                 return Err(anyhow::anyhow!(
                     "embedding dimension mismatch with existing memories (changing models requires clearing memories)"
@@ -185,7 +186,7 @@ pub fn add_memory(
             if let Some(map) = EMB_CACHE.write().as_mut() {
                 // Skip insertion if dim doesn't match existing entries — mixed
                 // dims would silently break cosine.
-                let dim_ok = map.values().next().map_or(true, |v| v.len() == emb.len());
+                let dim_ok = map.values().next().is_none_or(|v| v.len() == emb.len());
                 if dim_ok {
                     map.insert(id, emb);
                 }
@@ -249,7 +250,7 @@ pub fn update_memory_status(id: i64, status: &str) -> Result<()> {
                     // Same dim guard as add_memory — refuse to poison the
                     // cache with a mismatched-dim entry when activating a
                     // pending memory that was added with a different model.
-                    let dim_ok = map.values().next().map_or(true, |v| v.len() == emb.len());
+                    let dim_ok = map.values().next().is_none_or(|v| v.len() == emb.len());
                     if dim_ok {
                         map.insert(id, emb);
                     }

@@ -674,7 +674,7 @@ async fn agent_ask_user(
     hint: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let (req, rx) = ask_user::prepare(question, hint).map_err(|e| e)?;
+    let (req, rx) = ask_user::prepare(question, hint)?;
     let id = req.id.clone();
     let _ = app.emit("ask-user", &req);
     let result = ask_user::await_reply(rx, &id).await;

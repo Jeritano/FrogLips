@@ -21,41 +21,10 @@ pub struct AskUserRequest {
     pub hint: Option<String>,
 }
 
-pub async fn ask(question: String, hint: Option<String>) -> Result<String, String> {
-    if question.trim().is_empty() {
-        return Err("question must not be empty".into());
-    }
-    if question.len() > 4096 {
-        return Err("question too long".into());
-    }
-    let id = format!("ask-{:x}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos()).unwrap_or(0));
-    let (tx, rx) = oneshot::channel();
-    PENDING.lock().insert(id.clone(), tx);
-    let req = AskUserRequest { id: id.clone(), question, hint };
-
-    // Caller must emit the event itself (needs an AppHandle which lives in
-    // the Tauri command layer). Return early w/ the request payload via err
-    // would be ugly — instead we expose the pending request id back through
-    // a helper and emit from the command layer. See `ask_in_command()` below.
-    let _ = req; // suppress unused warning when used externally
-
-    let answer = tokio::time::timeout(Duration::from_secs(ASK_TIMEOUT_SECS), rx)
-        .await
-        .map_err(|_| {
-            PENDING.lock().remove(&id);
-            "ask_user timed out (10 min)".to_string()
-        })?
-        .map_err(|e| {
-            PENDING.lock().remove(&id);
-            format!("ask_user channel closed: {e}")
-        })?;
-    Ok(answer)
-}
-
-/// Variant that returns the request payload to the caller so they can emit
-/// it via Tauri before awaiting the answer. Returns (request, receiver).
+/// Returns the request payload + a receiver so the Tauri command layer can
+/// emit the event before awaiting the answer. (A single `ask()` flavor that
+/// hides the emit would be cleaner but the AppHandle lives in the command
+/// layer, not here.)
 pub fn prepare(question: String, hint: Option<String>) -> Result<(AskUserRequest, oneshot::Receiver<String>), String> {
     if question.trim().is_empty() {
         return Err("question must not be empty".into());

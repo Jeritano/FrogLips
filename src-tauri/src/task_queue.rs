@@ -65,7 +65,7 @@ fn random_id() -> String {
 fn rand_seed() -> u32 {
     // Cheap, not cryptographic — only used to avoid collisions on same-nanosecond calls.
     use std::cell::Cell;
-    thread_local!(static SEED: Cell<u32> = Cell::new(0xdead_beef));
+    thread_local!(static SEED: Cell<u32> = const { Cell::new(0xdead_beef) });
     SEED.with(|s| {
         let mut x = s.get();
         x ^= x << 13;

@@ -317,9 +317,21 @@ pub struct ReadResult {
 }
 
 fn looks_binary(bytes: &[u8]) -> bool {
-    // Treat as binary if NUL bytes appear in the first ~8 KB.
+    // Scan the first ~8 KB for bytes that text files never contain.
+    // - NUL is the classic binary tell.
+    // - C0 control codes outside tab (09), LF (0A), CR (0D) are also rare in
+    //   text; their presence flags formats like ELF (starts 0x7F), classic
+    //   Mach-O / PE binaries, compiled bytecode, etc.
+    // - DEL (0x7F) is similarly non-text.
     let scan = &bytes[..bytes.len().min(8192)];
-    scan.contains(&0u8)
+    scan.iter().any(|&b| {
+        b == 0
+            || (b < 0x09)
+            || b == 0x0B
+            || b == 0x0C
+            || (b > 0x0D && b < 0x20)
+            || b == 0x7F
+    })
 }
 
 pub async fn read_file(path: String, offset: Option<u64>, limit: Option<u64>) -> Result<ReadResult, String> {
@@ -769,7 +781,7 @@ fn walk_search(
                     let mut trimmed = line.to_string();
                     if trimmed.len() > MAX_GREP_LINE_BYTES {
                         trimmed.truncate(MAX_GREP_LINE_BYTES);
-                        trimmed.push_str("…");
+                        trimmed.push('…');
                     }
                     hits.push(SearchHit {
                         path: p.to_string_lossy().into_owned(),
