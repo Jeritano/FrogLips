@@ -58,7 +58,11 @@ export interface AgentRunOptions {
     risk: string,
   ) => Promise<ConfirmDecision>;
   signal: AbortSignal;
+  /** Internal: depth counter for spawn_subagent recursion guard. */
+  _subagentDepth?: number;
 }
+
+const MAX_SUBAGENT_DEPTH = 3;
 
 /* ── Tool definitions (OpenAI function format) ── */
 
@@ -373,14 +377,169 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "applescript_run",
+      description:
+        "Execute an AppleScript via osascript. Powerful — can drive any scriptable app. ALWAYS requires user approval. 30s timeout.",
+      parameters: {
+        type: "object",
+        properties: { script: { type: "string" } },
+        required: ["script"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "http_request",
+      description:
+        "Generic HTTP request (GET/POST/PUT/PATCH/DELETE/HEAD). SSRF-protected. Body capped at 1 MiB. Requires user approval — can exfil data or write to external services.",
+      parameters: {
+        type: "object",
+        properties: {
+          method: { type: "string" },
+          url: { type: "string" },
+          headers: { type: "object" },
+          body: { type: "string" },
+          timeout_secs: { type: "number" },
+        },
+        required: ["method", "url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_definition",
+      description: "Locate the definition of a symbol (function/class/struct/etc.) via heuristic regex across the workspace. Symbol must be [A-Za-z0-9_]+.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string" },
+          path: { type: "string" },
+        },
+        required: ["symbol"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_references",
+      description: "Locate all references to a symbol via word-boundary regex across the workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string" },
+          path: { type: "string" },
+        },
+        required: ["symbol"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "format_code",
+      description: "Format a code file via the right formatter for its extension (prettier for ts/js/json/css/md/yaml, rustfmt for .rs, black for .py, gofmt for .go, swift-format for .swift).",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_create",
+      description: "Start a long-running shell command in the background. Returns a task_id immediately. Use task_status/task_result/task_cancel to inspect.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string" },
+          cwd: { type: "string" },
+        },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_status",
+      description: "Get the current status + result (if finished) of a background task.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string" } },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_list",
+      description: "List all background tasks the agent has started this session.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_cancel",
+      description: "Cancel a running background task. Idempotent on terminal-state tasks.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string" } },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ask_user",
+      description: "Pause the agent and prompt the user for an answer. Use when you genuinely need info you can't get from tools (preference, missing parameter, ambiguity). Returns the user's typed text.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string" },
+          hint: { type: "string", description: "Optional helper text shown under the question." },
+        },
+        required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "spawn_subagent",
+      description: "Run a fresh agent in an isolated context to handle a sub-task. Useful for parallel research or scoped exploration. Returns the sub-agent's final text. Max recursion depth 3.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string" },
+          preset: { type: "string", description: "Optional: general / coder / researcher / shell." },
+        },
+        required: ["prompt"],
+      },
+    },
+  },
 ] as const;
 
 const DANGEROUS_TOOLS = new Set([
   "run_shell", "write_file", "edit_file", "multi_edit",
   "git_commit", "clipboard_set", "open_app",
+  "applescript_run", "http_request",
 ]);
 const SHELL_TOOL = "run_shell";
-const WRITE_TOOLS = new Set(["write_file", "edit_file", "multi_edit", "git_commit", "clipboard_set"]);
+const WRITE_TOOLS = new Set([
+  "write_file", "edit_file", "multi_edit",
+  "git_commit", "clipboard_set", "applescript_run", "http_request",
+]);
 
 /* ── Tool execution ── */
 
@@ -419,6 +578,60 @@ export function cancelActiveShell(): boolean {
     return true;
   }
   return false;
+}
+
+async function runSubagent(
+  args: Record<string, unknown>,
+  parent: AgentRunOptions,
+): Promise<string> {
+  const depth = (parent._subagentDepth ?? 0) + 1;
+  if (depth > MAX_SUBAGENT_DEPTH) {
+    return JSON.stringify({
+      ok: false,
+      kind: "depth_exceeded",
+      message: `spawn_subagent depth cap (${MAX_SUBAGENT_DEPTH}) reached`,
+    });
+  }
+  const prompt = String(args.prompt ?? "");
+  if (!prompt.trim()) {
+    return JSON.stringify({ ok: false, kind: "invalid_argument", message: "prompt is empty" });
+  }
+  const presetId = args.preset ? String(args.preset) : null;
+
+  // Lazy-load presets to avoid a static cycle.
+  const { loadAllPresets } = await import("./agent-presets");
+  const presets = loadAllPresets();
+  const chosen = presetId ? presets.find((p) => p.id === presetId) : undefined;
+
+  const subOpts: AgentRunOptions = {
+    model: parent.model,
+    messages: [
+      { conversation_id: parent.conversationId, role: "user", content: prompt },
+    ],
+    conversationId: parent.conversationId,
+    workspaceRoot: parent.workspaceRoot,
+    systemPromptOverride: chosen?.systemPromptOverride ?? parent.systemPromptOverride,
+    toolAllowlist: chosen?.allowedTools.length ? chosen.allowedTools : parent.toolAllowlist,
+    approveAllShell: parent.approveAllShell,
+    approveAllWrite: parent.approveAllWrite,
+    approvedShellPrefixes: parent.approvedShellPrefixes,
+    onApproveShellPrefix: parent.onApproveShellPrefix,
+    // Suppress UI noise: subagent runs are background work; parent's
+    // metrics + UI shouldn't see every intermediate step.
+    onUpdate: () => {},
+    onStatusChange: () => {},
+    onMetrics: () => {},
+    requestConfirmation: parent.requestConfirmation,
+    signal: parent.signal,
+    _subagentDepth: depth,
+  };
+  const final = await runAgentLoop(subOpts);
+  return JSON.stringify({
+    ok: true,
+    depth,
+    preset: presetId,
+    answer: final ?? "(subagent returned nothing)",
+  });
 }
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
@@ -523,6 +736,70 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       await api.agentShowNotification(String(args.title ?? ""), String(args.body ?? ""));
       return JSON.stringify({ ok: true });
     }
+    case "applescript_run": {
+      const r = await api.agentApplescriptRun(String(args.script ?? ""));
+      return JSON.stringify(r);
+    }
+    case "http_request": {
+      const method = String(args.method ?? "GET").toUpperCase() as
+        | "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
+      const headers = args.headers && typeof args.headers === "object"
+        ? (args.headers as Record<string, string>)
+        : undefined;
+      const r = await api.agentHttpRequest({
+        method,
+        url: String(args.url ?? ""),
+        headers,
+        body: args.body != null ? String(args.body) : undefined,
+        timeout_secs: typeof args.timeout_secs === "number" ? args.timeout_secs : undefined,
+      });
+      return JSON.stringify(r);
+    }
+    case "find_definition": {
+      const r = await api.agentFindDefinition(
+        String(args.symbol ?? ""),
+        args.path ? String(args.path) : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "find_references": {
+      const r = await api.agentFindReferences(
+        String(args.symbol ?? ""),
+        args.path ? String(args.path) : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "format_code": {
+      const r = await api.agentFormatCode(String(args.path ?? ""));
+      return JSON.stringify(r);
+    }
+    case "task_create": {
+      const r = await api.taskCreate(
+        String(args.command ?? ""),
+        args.cwd ? String(args.cwd) : undefined,
+      );
+      return JSON.stringify(r);
+    }
+    case "task_status": {
+      const r = await api.taskStatus(String(args.id ?? ""));
+      return JSON.stringify(r);
+    }
+    case "task_list": {
+      const r = await api.taskList();
+      return JSON.stringify(r);
+    }
+    case "task_cancel": {
+      await api.taskCancel(String(args.id ?? ""));
+      return JSON.stringify({ ok: true });
+    }
+    case "ask_user": {
+      const answer = await api.agentAskUser(
+        String(args.question ?? ""),
+        args.hint ? String(args.hint) : undefined,
+      );
+      return JSON.stringify({ ok: true, answer });
+    }
+    // spawn_subagent handled specially in the loop — needs access to opts.
     case "file_exists": {
       const r = await api.agentFileExists(String(args.path ?? ""));
       return JSON.stringify(r);
@@ -893,7 +1170,11 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       const toolStart = performance.now();
       let result: string;
       try {
-        result = await executeTool(fnName, args);
+        if (fnName === "spawn_subagent") {
+          result = await runSubagent(args, opts);
+        } else {
+          result = await executeTool(fnName, args);
+        }
       } catch (e) {
         result = formatToolError(e);
       }

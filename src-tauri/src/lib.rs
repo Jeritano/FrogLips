@@ -1,5 +1,7 @@
 mod agent;
+mod ask_user;
 mod history;
+mod task_queue;
 mod memory;
 mod mlx_server;
 mod models;
@@ -613,6 +615,86 @@ async fn agent_show_notification(title: String, body: String) -> Result<(), Stri
 }
 
 #[tauri::command]
+async fn agent_applescript_run(script: String) -> Result<agent::ShellResult, String> {
+    agent::applescript_run(script).await
+}
+
+#[tauri::command]
+async fn agent_http_request(input: agent::HttpReqInput) -> Result<agent::HttpResp, String> {
+    agent::http_request(input).await
+}
+
+#[tauri::command]
+async fn agent_find_definition(symbol: String, path: Option<String>) -> Result<agent::SearchResult, String> {
+    agent::find_definition(symbol, path).await
+}
+
+#[tauri::command]
+async fn agent_find_references(symbol: String, path: Option<String>) -> Result<agent::SearchResult, String> {
+    agent::find_references(symbol, path).await
+}
+
+#[tauri::command]
+async fn agent_format_code(path: String) -> Result<agent::FormatResult, String> {
+    agent::format_code(path).await
+}
+
+/* ── Task queue ──────────────────────────────────────────────────────────── */
+
+#[tauri::command]
+fn task_create(command: String, cwd: Option<String>) -> Result<task_queue::TaskInfo, String> {
+    task_queue::create(command, cwd)
+}
+
+#[tauri::command]
+fn task_status(id: String) -> Result<task_queue::TaskInfo, String> {
+    task_queue::status(&id).ok_or_else(|| format!("no task {id}"))
+}
+
+#[tauri::command]
+fn task_list() -> Vec<task_queue::TaskInfo> {
+    task_queue::list()
+}
+
+#[tauri::command]
+fn task_cancel(id: String) -> Result<(), String> {
+    task_queue::cancel(&id)
+}
+
+#[tauri::command]
+fn task_prune(older_than_secs: Option<u64>) -> usize {
+    task_queue::prune(older_than_secs.unwrap_or(3600))
+}
+
+/* ── ask_user ────────────────────────────────────────────────────────────── */
+
+#[tauri::command]
+async fn agent_ask_user(
+    question: String,
+    hint: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let (req, rx) = ask_user::prepare(question, hint).map_err(|e| e)?;
+    let id = req.id.clone();
+    let _ = app.emit("ask-user", &req);
+    let result = ask_user::await_reply(rx, &id).await;
+    if result.is_err() {
+        let _ = app.emit("ask-user-cancel", &id);
+    }
+    result
+}
+
+#[tauri::command]
+fn agent_ask_user_reply(id: String, answer: String) -> Result<(), String> {
+    ask_user::reply(&id, answer)
+}
+
+#[tauri::command]
+fn agent_ask_user_cancel(id: String) {
+    ask_user::cancel(&id);
+}
+
+#[tauri::command]
 fn agent_classify_shell(command: String) -> String {
     agent::classify_shell_risk(&command).to_string()
 }
@@ -877,6 +959,19 @@ pub fn run() {
             agent_clipboard_set,
             agent_open_app,
             agent_show_notification,
+            agent_applescript_run,
+            agent_http_request,
+            agent_find_definition,
+            agent_find_references,
+            agent_format_code,
+            task_create,
+            task_status,
+            task_list,
+            task_cancel,
+            task_prune,
+            agent_ask_user,
+            agent_ask_user_reply,
+            agent_ask_user_cancel,
             settings_get,
             settings_set,
             native_supported,

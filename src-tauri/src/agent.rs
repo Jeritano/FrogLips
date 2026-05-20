@@ -296,7 +296,7 @@ pub struct DirListing {
 
 /* ── Shell result ────────────────────────────────────────────────────────── */
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ShellResult {
     pub stdout: String,
     pub stderr: String,
@@ -1435,6 +1435,224 @@ pub async fn open_app(name: String) -> Result<(), String> {
         return Err(err_string(ToolError::io(format!("open -a {name} failed"))));
     }
     Ok(())
+}
+
+/* ── applescript_run ─────────────────────────────────────────────────────── */
+
+const APPLESCRIPT_TIMEOUT_SECS: u64 = 30;
+const APPLESCRIPT_MAX_SCRIPT_BYTES: usize = 16_384;
+
+pub async fn applescript_run(script: String) -> Result<ShellResult, String> {
+    if script.is_empty() || script.len() > APPLESCRIPT_MAX_SCRIPT_BYTES {
+        return Err(err_string(ToolError::invalid("script length invalid")));
+    }
+    let started = Instant::now();
+    let mut cmd = tokio::process::Command::new("osascript");
+    cmd.arg("-e").arg(&script);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    let timeout = std::time::Duration::from_secs(APPLESCRIPT_TIMEOUT_SECS);
+    let (output, timed_out) = match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(o)) => (o, false),
+        Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
+        Err(_) => return Ok(ShellResult {
+            stdout: String::new(),
+            stderr: format!("timed out after {APPLESCRIPT_TIMEOUT_SECS}s"),
+            exit_code: -1,
+            duration_ms: started.elapsed().as_millis() as u64,
+            timed_out: true,
+        }),
+    };
+    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if stdout.len() > MAX_SHELL_OUTPUT { stdout.truncate(MAX_SHELL_OUTPUT); stdout.push_str("\n[truncated]"); }
+    if stderr.len() > MAX_SHELL_OUTPUT { stderr.truncate(MAX_SHELL_OUTPUT); stderr.push_str("\n[truncated]"); }
+    Ok(ShellResult {
+        stdout, stderr,
+        exit_code: output.status.code().unwrap_or(-1),
+        duration_ms: started.elapsed().as_millis() as u64,
+        timed_out,
+    })
+}
+
+/* ── http_request (generic) ──────────────────────────────────────────────── */
+
+#[derive(Deserialize)]
+pub struct HttpReqInput {
+    pub method: String,
+    pub url: String,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    pub body: Option<String>,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct HttpResp {
+    pub status: u16,
+    pub headers: std::collections::HashMap<String, String>,
+    pub body: String,
+    pub bytes: u64,
+    pub truncated: bool,
+}
+
+pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
+    let method = input.method.to_ascii_uppercase();
+    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD") {
+        return Err(err_string(ToolError::invalid(format!("method not allowed: {method}"))));
+    }
+    let url = url::Url::parse(&input.url)
+        .map_err(|e| err_string(ToolError::invalid(format!("bad url: {e}"))))?;
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return Err(err_string(ToolError::invalid("only http(s) urls allowed")));
+    }
+    let host = url.host_str().unwrap_or("");
+    if !is_safe_public_host(host) {
+        return Err(err_string(ToolError::Protected {
+            message: format!("host '{host}' is private/loopback — blocked (SSRF)"),
+        }));
+    }
+    let timeout = std::time::Duration::from_secs(input.timeout_secs.unwrap_or(15).min(60));
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent("Froglips/0.9 (+https://github.com/Jeritano/FrogLips)")
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    let method_obj = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|e| err_string(ToolError::invalid(e.to_string())))?;
+    let mut req = client.request(method_obj, url);
+    if let Some(hm) = input.headers {
+        for (k, v) in hm {
+            if k.is_empty() || k.len() > 256 || v.len() > 4096 {
+                return Err(err_string(ToolError::invalid("header key/value out of range")));
+            }
+            // Block headers that could enable bypass of our SSRF guard (Host
+            // override on a CDN, for example).
+            let kl = k.to_ascii_lowercase();
+            if kl == "host" {
+                return Err(err_string(ToolError::invalid("Host header override not allowed")));
+            }
+            req = req.header(k, v);
+        }
+    }
+    if let Some(b) = input.body {
+        if b.len() > 1_048_576 {
+            return Err(err_string(ToolError::TooLarge { message: "body exceeds 1 MiB".into() }));
+        }
+        req = req.body(b);
+    }
+    let resp = req.send().await.map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    let status = resp.status().as_u16();
+    let mut hdrs = std::collections::HashMap::new();
+    for (k, v) in resp.headers() {
+        if let Ok(s) = v.to_str() {
+            hdrs.insert(k.as_str().to_string(), s.to_string());
+        }
+    }
+    let bytes = resp.bytes().await.map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    let total = bytes.len() as u64;
+    let truncated = bytes.len() > WEB_FETCH_MAX_BYTES;
+    let cap = bytes.len().min(WEB_FETCH_MAX_BYTES);
+    let body = String::from_utf8_lossy(&bytes[..cap]).into_owned();
+    Ok(HttpResp { status, headers: hdrs, body, bytes: total, truncated })
+}
+
+/* ── find_definition / find_references ───────────────────────────────────── */
+
+pub async fn find_definition(symbol: String, path: Option<String>) -> Result<SearchResult, String> {
+    if symbol.is_empty() || symbol.len() > 128 {
+        return Err(err_string(ToolError::invalid("symbol length invalid")));
+    }
+    // Word-boundary literal escape (no regex metachars in symbol — basic guard).
+    if !symbol.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(err_string(ToolError::invalid("symbol must be [A-Za-z0-9_]+")));
+    }
+    let root = match path {
+        Some(p) => p,
+        None => workspace_root_clone()
+            .ok_or_else(|| err_string(ToolError::invalid("no workspace root set; pass path")))?
+            .to_string_lossy().into_owned(),
+    };
+    // Heuristic definition patterns across common languages.
+    let pat = format!(
+        r"(\bfn\s+{s}\b|\bdef\s+{s}\b|\bfunction\s+{s}\b|\bclass\s+{s}\b|\bstruct\s+{s}\b|\benum\s+{s}\b|\btrait\s+{s}\b|\binterface\s+{s}\b|\btype\s+{s}\b|\bconst\s+{s}\b|\blet\s+{s}\b|\bvar\s+{s}\b|\bpub\s+(struct|enum|fn|trait|type|const|static)\s+{s}\b)",
+        s = regex::escape(&symbol),
+    );
+    search_files(root, pat, None, Some(true)).await
+}
+
+pub async fn find_references(symbol: String, path: Option<String>) -> Result<SearchResult, String> {
+    if symbol.is_empty() || symbol.len() > 128 {
+        return Err(err_string(ToolError::invalid("symbol length invalid")));
+    }
+    if !symbol.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(err_string(ToolError::invalid("symbol must be [A-Za-z0-9_]+")));
+    }
+    let root = match path {
+        Some(p) => p,
+        None => workspace_root_clone()
+            .ok_or_else(|| err_string(ToolError::invalid("no workspace root set; pass path")))?
+            .to_string_lossy().into_owned(),
+    };
+    let pat = format!(r"\b{}\b", regex::escape(&symbol));
+    search_files(root, pat, None, Some(true)).await
+}
+
+/* ── format_code ─────────────────────────────────────────────────────────── */
+
+#[derive(Serialize)]
+pub struct FormatResult {
+    pub formatter: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+}
+
+fn formatter_for(path: &Path) -> Option<(&'static str, Vec<&'static str>)> {
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    match ext {
+        "ts" | "tsx" | "js" | "jsx" | "json" | "css" | "html" | "md" | "yaml" | "yml" => {
+            Some(("prettier", vec!["--write"]))
+        }
+        "rs" => Some(("rustfmt", vec![])),
+        "py" => Some(("black", vec![])),
+        "go" => Some(("gofmt", vec!["-w"])),
+        "swift" => Some(("swift-format", vec!["-i"])),
+        _ => None,
+    }
+}
+
+pub async fn format_code(path: String) -> Result<FormatResult, String> {
+    let resolved = validate_for_write(&path).map_err(err_string)?;
+    let (cmd, base_args) = formatter_for(&resolved).ok_or_else(|| {
+        err_string(ToolError::invalid(format!(
+            "no formatter mapping for extension on {}",
+            resolved.display()
+        )))
+    })?;
+    let started = Instant::now();
+    let path_str = resolved.to_string_lossy().into_owned();
+    let mut process_cmd = tokio::process::Command::new(cmd);
+    for a in base_args { process_cmd.arg(a); }
+    process_cmd.arg(&path_str);
+    process_cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        process_cmd.output(),
+    ).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
+        Err(_) => return Err(err_string(ToolError::Timeout {
+            message: format!("{cmd} timed out"),
+        })),
+    };
+    Ok(FormatResult {
+        formatter: cmd.to_string(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code().unwrap_or(-1),
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 pub async fn show_notification(title: String, body: String) -> Result<(), String> {

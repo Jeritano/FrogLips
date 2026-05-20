@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
 import { streamNativeChat } from "../lib/native-client";
+import type { AskUserRequest } from "../types";
 import { runAgentLoop, cancelActiveShell } from "../lib/agent-loop";
 import type { AgentMetrics, AgentStatus, ConfirmDecision } from "../lib/agent-loop";
 import {
@@ -39,28 +41,15 @@ interface ConfirmState {
 }
 
 const ALL_TOOL_NAMES = [
-  "read_file",
-  "list_dir",
-  "search_files",
-  "file_exists",
-  "run_shell",
-  "write_file",
-  "edit_file",
-  "multi_edit",
-  "git_status",
-  "git_diff",
-  "git_log",
-  "git_show",
-  "git_branches",
-  "git_commit",
-  "web_fetch",
-  "web_search",
-  "read_pdf",
-  "screenshot",
-  "clipboard_get",
-  "clipboard_set",
-  "open_app",
-  "show_notification",
+  "read_file", "list_dir", "search_files", "file_exists",
+  "run_shell", "write_file", "edit_file", "multi_edit",
+  "git_status", "git_diff", "git_log", "git_show", "git_branches", "git_commit",
+  "web_fetch", "web_search", "read_pdf", "screenshot",
+  "clipboard_get", "clipboard_set", "open_app", "show_notification",
+  "applescript_run", "http_request",
+  "find_definition", "find_references", "format_code",
+  "task_create", "task_status", "task_list", "task_cancel",
+  "ask_user", "spawn_subagent",
 ] as const;
 
 function loadAllowlist(): string[] {
@@ -97,6 +86,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [rememberPrefix, setRememberPrefix] = useState(false);
   const [showToolHistory, setShowToolHistory] = useState(false);
+  const [askUserReq, setAskUserReq] = useState<AskUserRequest | null>(null);
+  const [askUserAnswer, setAskUserAnswer] = useState("");
   const [presets, setPresets] = useState<AgentPreset[]>(() => loadAllPresets());
   const [activePresetId, setActivePresetIdState] = useState<string>(() => getActivePresetId());
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
@@ -109,6 +100,35 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   useEffect(() => {
     api.agentGetWorkspace().then(setWorkspaceRoot).catch(() => {});
   }, []);
+
+  // Listen for agent ask_user requests. One modal at a time — if a second
+  // request fires before the first resolves, the new one replaces (rare).
+  useEffect(() => {
+    let off: UnlistenFn | undefined;
+    listen<AskUserRequest>("ask-user", (e) => {
+      setAskUserReq(e.payload);
+      setAskUserAnswer("");
+    }).then((fn) => { off = fn; }).catch(() => {});
+    return () => { if (off) off(); };
+  }, []);
+
+  async function submitAskUser() {
+    if (!askUserReq) return;
+    const id = askUserReq.id;
+    const answer = askUserAnswer.trim();
+    setAskUserReq(null);
+    setAskUserAnswer("");
+    try { await api.agentAskUserReply(id, answer); }
+    catch (e) { setErr(`ask_user reply failed: ${e}`); }
+  }
+
+  async function cancelAskUser() {
+    if (!askUserReq) return;
+    const id = askUserReq.id;
+    setAskUserReq(null);
+    setAskUserAnswer("");
+    try { await api.agentAskUserCancel(id); } catch {/* ignore */}
+  }
 
   useEffect(() => {
     convRef.current = conversation;
@@ -671,6 +691,47 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
       {showToolHistory && (
         <ToolHistory messages={messages} onClose={() => setShowToolHistory(false)} />
+      )}
+
+      {askUserReq && (
+        <div className="agent-confirm-overlay" onClick={(e) => e.target === e.currentTarget && cancelAskUser()}>
+          <div className="agent-confirm-box">
+            <div className="agent-confirm-title">Agent asks:</div>
+            <div style={{ padding: "8px 0", fontSize: 13 }}>{askUserReq.question}</div>
+            {askUserReq.hint && (
+              <div style={{ padding: "0 0 8px 0", fontSize: 11, color: "var(--text-muted)" }}>{askUserReq.hint}</div>
+            )}
+            <textarea
+              className="ask-user-input"
+              value={askUserAnswer}
+              onChange={(e) => setAskUserAnswer(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  submitAskUser();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelAskUser();
+                }
+              }}
+              placeholder="Your answer (Cmd+Enter to send, Esc to cancel)…"
+              autoFocus
+              rows={3}
+              style={{
+                width: "100%", boxSizing: "border-box",
+                background: "var(--surface)", color: "var(--text)",
+                border: "1px solid var(--border)", borderRadius: 6,
+                padding: 8, fontSize: 13, fontFamily: "inherit", resize: "vertical",
+              }}
+            />
+            <div className="agent-confirm-actions">
+              <button className="agent-confirm-deny" onClick={cancelAskUser}>Cancel</button>
+              <button className="agent-confirm-allow" onClick={submitAskUser} disabled={!askUserAnswer.trim()}>
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Tool confirmation modal */}

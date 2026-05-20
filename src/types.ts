@@ -123,6 +123,48 @@ export interface ScreenshotResult {
   bytes: number;
 }
 
+export interface HttpReqInput {
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
+  url: string;
+  headers?: Record<string, string>;
+  body?: string;
+  timeout_secs?: number;
+}
+
+export interface HttpResp {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface FormatResult {
+  formatter: string;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  duration_ms: number;
+}
+
+export type TaskStatus = "pending" | "running" | "done" | "cancelled" | "failed";
+
+export interface TaskInfo {
+  id: string;
+  command: string;
+  status: TaskStatus;
+  created_at: number;
+  finished_at?: number | null;
+  result?: ShellResult | null;
+  error?: string | null;
+}
+
+export interface AskUserRequest {
+  id: string;
+  question: string;
+  hint?: string | null;
+}
+
 export interface WindowGeometry {
   width: number;
   height: number;

@@ -7,7 +7,10 @@ import type {
   EditOp,
   EditResult,
   ExistsResult,
+  FormatResult,
   GitResult,
+  HttpReqInput,
+  HttpResp,
   Memory,
   Message,
   MultiEditResult,
@@ -18,6 +21,7 @@ import type {
   ServerStatus,
   ShellOpts,
   ShellResult,
+  TaskInfo,
   WebFetchResult,
   WebSearchResult,
 } from "../types";
@@ -150,6 +154,33 @@ export const api = {
     invoke<void>("agent_open_app", { name }),
   agentShowNotification: (title: string, body: string) =>
     invoke<void>("agent_show_notification", { title, body }),
+  agentApplescriptRun: (script: string) =>
+    invoke<ShellResult>("agent_applescript_run", { script }),
+  agentHttpRequest: (input: HttpReqInput) =>
+    invoke<HttpResp>("agent_http_request", { input }),
+  agentFindDefinition: (symbol: string, path?: string) =>
+    invoke<SearchResult>("agent_find_definition", { symbol, path: path ?? null }),
+  agentFindReferences: (symbol: string, path?: string) =>
+    invoke<SearchResult>("agent_find_references", { symbol, path: path ?? null }),
+  agentFormatCode: (path: string) =>
+    invoke<FormatResult>("agent_format_code", { path }),
+
+  // Task queue
+  taskCreate: (command: string, cwd?: string) =>
+    invoke<TaskInfo>("task_create", { command, cwd: cwd ?? null }),
+  taskStatus: (id: string) => invoke<TaskInfo>("task_status", { id }),
+  taskList: () => invoke<TaskInfo[]>("task_list"),
+  taskCancel: (id: string) => invoke<void>("task_cancel", { id }),
+  taskPrune: (olderThanSecs?: number) =>
+    invoke<number>("task_prune", { olderThanSecs: olderThanSecs ?? null }),
+
+  // ask_user
+  agentAskUser: (question: string, hint?: string) =>
+    invoke<string>("agent_ask_user", { question, hint: hint ?? null }),
+  agentAskUserReply: (id: string, answer: string) =>
+    invoke<void>("agent_ask_user_reply", { id, answer }),
+  agentAskUserCancel: (id: string) =>
+    invoke<void>("agent_ask_user_cancel", { id }),
   agentClassifyShell: (command: string) =>
     invoke<string>("agent_classify_shell", { command }),
   agentSetWorkspace: (path: string | null) =>
