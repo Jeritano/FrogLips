@@ -279,10 +279,9 @@ body {
   /* Elegant outer frame — small inset, rounded corners, subtle border.
      Inspired by Claude Code's panel-in-panel look. */
   padding: 6px;
-  /* 6 px of gap from window-top to picker-box-top — same gap the OS
-     leaves above the traffic-light circles. Picker box TOP edge sits
-     at window y=6 = light TOP edge. */
-  padding-top: 6px;
+  /* 22 px of gap from window-top to inner-panel-top. The inner panel
+     starts here — picker box top, traffic light tops both at y=22. */
+  padding-top: 22px;
   gap: 6px;
   background:
     radial-gradient(circle at top left, rgba(99, 102, 241, 0.08), transparent 40%),
