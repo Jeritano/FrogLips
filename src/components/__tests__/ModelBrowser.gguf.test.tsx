@@ -124,26 +124,34 @@ describe("ModelBrowser — HF GGUF tab", () => {
     });
     await flush();
 
-    // The source <select> should include the new option AND the legacy ones.
+    // v0.11.x: the three separate HuggingFace source-dropdown entries
+    // (MLX / GGUF / All) were collapsed into a single "hf" option. GGUF
+    // mode now auto-engages when the user toggles the GGUF library chip
+    // in the left sidebar.
     const select = container.querySelector(".mb-source-select") as HTMLSelectElement;
     expect(select).not.toBeNull();
     const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toContain("hf-gguf");
-    expect(values).toContain("hf"); // legacy MLX tab still present — no regression
+    expect(values).toContain("hf");
+    expect(values).not.toContain("hf-gguf");
 
-    // Switch to the GGUF tab.
+    // Switch to the unified HF tab.
     await act(async () => {
-      select.value = "hf-gguf";
+      select.value = "hf";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    // Let the lazy Suspense chunk resolve + HFL view's debounce settle.
     await act(async () => { vi.advanceTimersByTime(400); });
     await flush();
     await flush();
     await flush();
 
-    // Tab wrapper rendered.
-    expect(container.querySelector('[data-testid="hf-gguf-tab"]')).not.toBeNull();
+    // Click the GGUF chip in the sidebar Libraries section to enter
+    // ggufMode (auto-derives from filter state).
+    const ggufPill = container.querySelector('[data-testid="hfl-pill-gguf"]') as HTMLButtonElement;
+    expect(ggufPill).not.toBeNull();
+    await act(async () => { ggufPill.click(); });
+    await act(async () => { vi.advanceTimersByTime(400); });
+    await flush();
+    await flush();
 
     // HF called with the library view's `filter=gguf` shape and NOT pinned
     // to mlx-community. The loader emits `filter=…` (HF accepts both
@@ -174,11 +182,17 @@ describe("ModelBrowser — HF GGUF tab", () => {
 
     const select = container.querySelector(".mb-source-select") as HTMLSelectElement;
     await act(async () => {
-      select.value = "hf-gguf";
+      select.value = "hf";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await act(async () => { vi.advanceTimersByTime(400); });
     await flush();
+    await flush();
+    await flush();
+    // Toggle GGUF library chip to enter ggufMode.
+    const ggufPill = container.querySelector('[data-testid="hfl-pill-gguf"]') as HTMLButtonElement;
+    await act(async () => { ggufPill.click(); });
+    await act(async () => { vi.advanceTimersByTime(400); });
     await flush();
     await flush();
 
@@ -237,11 +251,17 @@ describe("ModelBrowser — HF GGUF tab", () => {
 
     const select = container.querySelector(".mb-source-select") as HTMLSelectElement;
     await act(async () => {
-      select.value = "hf-gguf";
+      select.value = "hf";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await act(async () => { vi.advanceTimersByTime(400); });
     await flush();
+    await flush();
+    await flush();
+    // Toggle GGUF library chip to enter ggufMode.
+    const ggufPill = container.querySelector('[data-testid="hfl-pill-gguf"]') as HTMLButtonElement;
+    await act(async () => { ggufPill.click(); });
+    await act(async () => { vi.advanceTimersByTime(400); });
     await flush();
     await flush();
 

@@ -165,15 +165,19 @@ function ggufRepoSummary(tree: HfTreeEntry[] | "loading" | { error: string } | u
 }
 
 export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
-  // In ggufMode, force the GGUF library chip on (and merge with any
-  // user-supplied initialLibraries so the prop still composes if the parent
-  // passes something custom).
+  // Either explicit ggufMode prop OR initial libraries containing "gguf"
+  // seeds the GGUF library chip. Derived ggufMode (`derivedGgufMode`
+  // below) tracks the live filter state so users can flip in/out of
+  // per-file expander mode by toggling the sidebar chip.
   const initialLibs = useMemo(() => {
     const seed = props.initialLibraries ?? [];
     if (!props.ggufMode) return seed;
     return seed.includes("gguf") ? seed : ["gguf", ...seed];
   }, [props.initialLibraries, props.ggufMode]);
   const [filters, setFilters] = useState<FilterState>(() => DEFAULT_FILTERS(initialLibs));
+  // ggufMode follows the live "gguf" library chip. Falls back to the prop
+  // for back-compat (older call sites that pass it explicitly).
+  const ggufMode = filters.libraries.includes("gguf") || !!props.ggufMode;
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [sort, setSort] = useState<string>("trending");
@@ -349,7 +353,7 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
           )}
           {visibleModels.map((m) => {
             // Non-GGUF mode: plain card.
-            if (!props.ggufMode || !props.ggufContext) {
+            if (!ggufMode || !props.ggufContext) {
               return (
                 <ModelCard
                   key={m.id}

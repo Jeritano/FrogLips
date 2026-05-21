@@ -22,7 +22,7 @@ function fmtBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-type Backend = "ollama" | "hf" | "hf-gguf" | "hf-all" | "rp" | "civitai" | "installed";
+type Backend = "ollama" | "hf" | "rp" | "civitai" | "installed";
 
 /* GGUF tree shape lives inside HuggingFaceLibraryView now (the GGUF tab
  * routes through that component in `ggufMode`). ModelBrowser keeps
@@ -606,7 +606,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   }
   // Load installed GGUF once on mount + whenever the GGUF tab is opened.
   useEffect(() => { void refreshGgufInstalled(); }, []);
-  useEffect(() => { if (tab === "hf-gguf" || tab === "installed") void refreshGgufInstalled(); }, [tab]);
+  useEffect(() => { if (tab === "hf" || tab === "installed") void refreshGgufInstalled(); }, [tab]);
 
   const [civitaiModels, setCivitaiModels] = useState<CivitaiModel[]>([]);
   const [civitaiLoading, setCivitaiLoading] = useState(false);
@@ -620,13 +620,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   // HuggingFaceLibraryView (in ggufMode) drives its own debounced fetch
   // through `loadHuggingFace`, so we don't fire a duplicate request here.
   useEffect(() => {
-    if (tab === "hf") {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-      debounceRef.current = window.setTimeout(() => loadHf(query), 250);
-    } else if (tab === "hf-all") {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-      debounceRef.current = window.setTimeout(() => loadHfAll(query), 250);
-    } else if (tab === "civitai") {
+    // HF tab drives its own debounced fetch inside HuggingFaceLibraryView
+    // (`loadHuggingFace`). We only handle the Civitai tab here.
+    if (tab === "civitai") {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       debounceRef.current = window.setTimeout(() => loadCivitai(query), 250);
     }
@@ -636,6 +632,8 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
     };
   }, [tab, query]);
 
+  // @ts-expect-error legacy MLX-only loader; kept for now in case the
+  // unified HF tab's loader needs reference shapes during further iteration.
   async function loadHf(q: string) {
     fetchAbortRef.current?.abort();
     const ctrl = new AbortController();
@@ -715,6 +713,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   /** Fetch the full HuggingFace catalogue (no author / library pin). Used by
    * the "All HuggingFace" tab so the user can browse anything on HF — MLX,
    * GGUF, vanilla safetensors, etc. Compatibility hints render per row. */
+  // @ts-expect-error legacy hf-all loader; kept for now during iteration.
   async function loadHfAll(q: string) {
     fetchAbortRef.current?.abort();
     const ctrl = new AbortController();
@@ -872,7 +871,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
           <div className="mb-title">Model Library</div>
           {/* The new HuggingFaceLibraryView ships its own filter-by-name input,
               so we hide the global one in those two tabs to avoid double UI. */}
-          {tab !== "hf" && tab !== "hf-all" && tab !== "hf-gguf" && (
+          {tab !== "hf" && (
             <input
               data-testid="model-search"
               className="mb-search"
@@ -887,7 +886,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               autoFocus
             />
           )}
-          {(tab === "hf" || tab === "hf-all" || tab === "hf-gguf") && <div style={{ flex: 1 }} />}
+          {tab === "hf" && <div style={{ flex: 1 }} />}
           <button className="mb-close" onClick={onClose}>✕</button>
         </div>
 
@@ -911,13 +910,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               Ollama ({OLLAMA.length})
             </option>
             <option value="hf">
-              HuggingFace MLX ({hfModels.length || "live"})
-            </option>
-            <option value="hf-gguf">
-              HuggingFace GGUF (live)
-            </option>
-            <option value="hf-all">
-              HuggingFace All ({hfAllModels.length || "live"})
+              HuggingFace (live)
             </option>
             <option value="rp">
               RP / Kobold ({RP_CATALOG.length})
@@ -929,7 +922,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
         </div>
 
         {/* List */}
-        <div className={`mb-list ${tab === "hf" || tab === "hf-all" || tab === "hf-gguf" ? "mb-list-hfl" : ""}`}>
+        <div className={`mb-list ${tab === "hf" ? "mb-list-hfl" : ""}`}>
           {tab === "installed" && (
             <>
               {installedErr && <div className="mb-empty mb-empty-err">{installedErr}</div>}
@@ -1089,15 +1082,27 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
             <Suspense fallback={<div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading library view…</div>}>
               <HuggingFaceLibraryView
                 installedMlxIds={installedMlxIds}
-                initialLibraries={["mlx"]}
                 onPull={(id) => void pull(id, "hf")}
                 onRequestRemove={(id) => requestRemove(id, "mlx")}
-                onViewGguf={(id) => { setTab("hf-gguf"); setQuery(id); }}
+                onViewGguf={() => {}}
                 onOpenHf={(id) => { api.openExternal(`https://huggingface.co/${id}`).catch(() => { window.open(`https://huggingface.co/${id}`, "_blank", "noreferrer"); }); }}
                 pulling={pulling}
                 done={done}
                 errors={errors}
                 confirmDelete={confirmDelete}
+                ggufContext={{
+                  installed: ggufInstalled,
+                  trees: ggufTrees,
+                  downloads: ggufDownloading,
+                  progress: ggufProgress,
+                  errors,
+                  confirmDelete,
+                  deleting,
+                  onExpandRepo: (repoId) => void loadGgufTree(repoId),
+                  onCollapseRepo: (repoId) => setGgufTrees((mp) => { const n = new Map(mp); n.delete(repoId); return n; }),
+                  onDownloadFile: (repo, filename) => void downloadGguf(repo, filename),
+                  onDeleteFile: (repo, filename) => requestRemoveGguf(repo, filename),
+                }}
               />
             </Suspense>
           )}
@@ -1190,65 +1195,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
             </>
           )}
 
-          {/* HuggingFace GGUF tab — now routes through HuggingFaceLibraryView
-              with `ggufMode` on. The library chip is locked to "gguf" so the
-              card grid mirrors the HF MLX / HF All tabs, but each card's
-              action button is replaced by an inline "View files ▾" expander
-              that surfaces the existing single-file picker UI for the native
-              llama.cpp backend (Phase 3, see docs/research/llamacpp-backend.md). */}
-          {tab === "hf-gguf" && (
-            <div data-testid="hf-gguf-tab" style={{ display: "contents" }}>
-              <Suspense fallback={<div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading library view…</div>}>
-                <HuggingFaceLibraryView
-                  installedMlxIds={installedMlxIds}
-                  initialLibraries={["gguf"]}
-                  onPull={(id) => void pull(id, "hf")}
-                  onRequestRemove={(id) => requestRemove(id, "mlx")}
-                  onViewGguf={(id) => { setTab("hf-gguf"); setQuery(id); }}
-                  onOpenHf={(id) => { api.openExternal(`https://huggingface.co/${id}`).catch(() => { window.open(`https://huggingface.co/${id}`, "_blank", "noreferrer"); }); }}
-                  pulling={pulling}
-                  done={done}
-                  errors={errors}
-                  confirmDelete={confirmDelete}
-                  ggufMode
-                  ggufContext={{
-                    installed: ggufInstalled,
-                    trees: ggufTrees,
-                    downloads: ggufDownloading,
-                    progress: ggufProgress,
-                    errors,
-                    confirmDelete,
-                    deleting,
-                    onExpandRepo: (repoId) => void loadGgufTree(repoId),
-                    onCollapseRepo: (repoId) => setGgufTrees((mp) => { const n = new Map(mp); n.delete(repoId); return n; }),
-                    onDownloadFile: (repo, filename) => void downloadGguf(repo, filename),
-                    onDeleteFile: (repo, filename) => requestRemoveGguf(repo, filename),
-                  }}
-                />
-              </Suspense>
-            </div>
-          )}
-
-          {/* "All HuggingFace" tab — broad text-generation search across HF
-              with no author / library pin. Each card detects format from
-              tags so we can route the action button correctly: MLX → Pull,
-              GGUF → switch to GGUF tab for file picker, safetensors-only →
-              open the repo page on HF (no in-app download). */}
-          {tab === "hf-all" && (
-            <Suspense fallback={<div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading library view…</div>}>
-              <HuggingFaceLibraryView
-                installedMlxIds={installedMlxIds}
-                onPull={(id) => void pull(id, "hf")}
-                onRequestRemove={(id) => requestRemove(id, "mlx")}
-                onViewGguf={(id) => { setTab("hf-gguf"); setQuery(id); }}
-                onOpenHf={(id) => { api.openExternal(`https://huggingface.co/${id}`).catch(() => { window.open(`https://huggingface.co/${id}`, "_blank", "noreferrer"); }); }}
-                pulling={pulling}
-                done={done}
-                errors={errors}
-                confirmDelete={confirmDelete}
-              />
-            </Suspense>
-          )}
+          {/* Legacy hf-gguf + hf-all source-dropdown entries removed. The
+              unified `hf` tab above auto-enables ggufMode when the user
+              toggles the GGUF library chip in the sidebar. */}
 
           {/* Legacy hf-all renderer (kept off so unused variables stay typed). */}
           {false && (
@@ -1332,8 +1281,8 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                       ) : hasGguf ? (
                         <button
                           className="mb-pull-btn"
-                          onClick={() => { setTab("hf-gguf"); setQuery(m.id); }}
-                          title="Switch to the GGUF tab pre-filtered to this repo"
+                          onClick={() => { setTab("hf"); setQuery(m.id); }}
+                          title="Switch to HF tab pre-filtered to this repo"
                         >
                           View GGUF files
                         </button>
