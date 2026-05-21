@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
+import { useModalA11y } from "../lib/use-modal-a11y";
+import { EmptyState } from "./EmptyState";
 import type { GgufDownloadProgress, GgufFile, ModelEntry } from "../types";
 import { OllamaLibraryView } from "./OllamaLibraryView";
 /** Type-only re-import for the GGUF tree shape — HuggingFaceLibraryView owns
@@ -863,7 +865,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   }
 
   return (
-    <div className="mb-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <ModelBrowserOverlay onClose={onClose}>
       <div className="mb-panel">
 
         {/* Header */}
@@ -927,7 +929,11 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
             <>
               {installedErr && <div className="mb-empty mb-empty-err">{installedErr}</div>}
               {installedOllama.length === 0 && installedMlx.length === 0 && ggufInstalled.length === 0 && (
-                <div className="mb-empty">No models installed. Use other tabs to pull.</div>
+                <EmptyState
+                  icon="📦"
+                  heading="No models installed"
+                  sub="Switch to Ollama or HuggingFace tabs above to pull a model."
+                />
               )}
               {(installedOllama.length + installedMlx.length + ggufInstalled.length) > 0 && (
                 <div className="mb-disk-summary">
@@ -1516,6 +1522,34 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
         </div>
 
       </div>
+    </ModelBrowserOverlay>
+  );
+}
+
+/**
+ * Modal a11y wrapper for the model browser. Owns the container ref + the
+ * Escape / focus-trap behaviour so they don't muddy the (already huge) main
+ * component body.
+ */
+function ModelBrowserOverlay({
+  onClose,
+  children,
+}: {
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y({ open: true, onClose, containerRef: ref });
+  return (
+    <div
+      className="mb-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Model library"
+      ref={ref}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      {children}
     </div>
   );
 }

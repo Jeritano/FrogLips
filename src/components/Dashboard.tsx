@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
+import { useModalA11y } from "../lib/use-modal-a11y";
 import type {
   AgentSessionMetricsRow,
   ApprovalCount,
@@ -18,7 +19,9 @@ const WINDOW_OPTIONS: { key: WindowKey; label: string; ms: number | null }[] = [
 
 const REFRESH_INTERVAL_MS = 30_000;
 
-/* Color for each approval slice — matches the audit-log palette. */
+/* Color for each approval slice — matches the audit-log palette.
+ * Note: kept as hex (not CSS vars) so the SVG <path fill={…}> attribute
+ * resolves at render time. Live with the small theme-parity hit here. */
 const APPROVAL_COLORS: Record<string, string> = {
   auto: "#71717a",
   session_allowed: "#22c55e",
@@ -166,16 +169,7 @@ export function Dashboard({ open, onClose }: Props) {
   const approvalTotal = approvals.reduce((s, a) => s + a.count, 0);
 
   return (
-    <div
-      className="dashboard-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Usage dashboard"
-      data-testid="dashboard"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
+    <DashboardOverlay open={open} onClose={onClose}>
       <div className="dashboard-modal">
         <header className="dashboard-header">
           <h2>Usage dashboard</h2>
@@ -328,6 +322,38 @@ export function Dashboard({ open, onClose }: Props) {
           </section>
         </div>
       </div>
+    </DashboardOverlay>
+  );
+}
+
+/**
+ * Wraps the dashboard in the modal overlay div + a11y hook. Split out so the
+ * hook can own the container ref without polluting the main component body.
+ */
+function DashboardOverlay({
+  open,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y({ open, onClose, containerRef: ref });
+  return (
+    <div
+      className="dashboard-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Usage dashboard"
+      data-testid="dashboard"
+      ref={ref}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      {children}
     </div>
   );
 }

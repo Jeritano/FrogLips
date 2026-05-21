@@ -1563,6 +1563,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(global_shortcut_plugin)
         .manage(server_state.clone())
         .manage(native_state.clone())

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { useRef } from "react";
 import { api } from "../lib/tauri-api";
+import { useModalA11y } from "../lib/use-modal-a11y";
 import { logDiag } from "../lib/diagnostics";
 
 /**
@@ -280,7 +282,7 @@ export function SetupWizard({ onDone }: Props) {
   // ── Rendering ────────────────────────────────────────────────────────────
 
   return (
-    <div className="setup-wizard-overlay" data-testid="setup-wizard">
+    <WizardOverlay>
       <div className="setup-wizard-modal">
         <div className="setup-wizard-stepper" data-testid="setup-wizard-stepper">
           {[1, 2, 3].map((n) => (
@@ -514,6 +516,30 @@ export function SetupWizard({ onDone }: Props) {
           </div>
         )}
       </div>
+    </WizardOverlay>
+  );
+}
+
+/**
+ * Wizard overlay wrapper — adds focus trap + ESC + autofocus while leaving
+ * dismiss to the wizard's explicit Skip / Done buttons (no backdrop close,
+ * because the wizard is meant to be completed not dismissed casually).
+ */
+function WizardOverlay({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // No-op onClose — the wizard owns its own dismissal via finish(). ESC is
+  // disabled intentionally; we don't want a stray key to dump first-run.
+  useModalA11y({ open: true, onClose: () => {}, containerRef: ref });
+  return (
+    <div
+      className="setup-wizard-overlay"
+      data-testid="setup-wizard"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Setup wizard"
+      ref={ref}
+    >
+      {children}
     </div>
   );
 }

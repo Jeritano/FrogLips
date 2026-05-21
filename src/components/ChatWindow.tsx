@@ -276,13 +276,33 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
   async function chooseWorkspace() {
     setWorkspaceErr(null);
-    const path = window.prompt(
-      "Workspace root (agent confined to this dir; blank = full FS):",
-      workspaceRoot ?? "",
-    );
-    if (path === null) return;
+    // Use Tauri's native directory picker — window.prompt is blocked in the
+    // Tauri 2 webview anyway, and even when it worked it gave the user zero
+    // help validating a real on-disk path. The dialog plugin is loaded lazily
+    // so the initial bundle stays slim.
+    let picked: string | null = null;
     try {
-      const set = await api.agentSetWorkspace(path.trim() || null);
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const res = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: workspaceRoot ?? undefined,
+        title: "Choose workspace root",
+      });
+      picked = Array.isArray(res) ? (res[0] ?? null) : res;
+    } catch (e) {
+      // Plugin missing in dev / a permission was denied → fall back to a
+      // typed entry so the user isn't blocked. Empty input clears scope.
+      const typed = window.prompt(
+        "Workspace root (agent confined to this dir; blank = full FS):",
+        workspaceRoot ?? "",
+      );
+      if (typed === null) return;
+      picked = typed.trim() ? typed.trim() : null;
+      void e;
+    }
+    try {
+      const set = await api.agentSetWorkspace(picked);
       setWorkspaceRoot(set);
     } catch (e) {
       setWorkspaceErr(String(e));
@@ -762,18 +782,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   return (
     <div className="chat-window" onClick={onCitationClick}>
       {agentMode && dryRun && (
-        <div
-          className="dry-run-banner"
-          data-testid="agent-dry-run-banner"
-          style={{
-            background: "#3a2e0a",
-            color: "#f5d76e",
-            border: "1px solid #d9a86c",
-            padding: "6px 10px",
-            fontSize: "0.85rem",
-            textAlign: "center",
-          }}
-        >
+        <div className="dry-run-banner" data-testid="agent-dry-run-banner">
           🛡️ Dry-run: tool side-effects suppressed
         </div>
       )}

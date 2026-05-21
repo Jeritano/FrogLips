@@ -179,7 +179,11 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
         ) : (
           <button onClick={start} disabled={busy || !selected} className="start-btn">Start</button>
         )}
-        <span className={`status-dot ${status?.running ? "on" : "off"}`} />
+        <span
+          className={`status-dot ${status?.running ? "on" : "off"}`}
+          role="img"
+          aria-label={status?.running ? "Server running" : "Server stopped"}
+        />
         <span className="status-text">
           {status?.running
             ? status.ready

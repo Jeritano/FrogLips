@@ -6,6 +6,7 @@ import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
 import pkg from "../package.json";
 import { useTwoClickConfirm } from "./lib/use-two-click-confirm";
+import { useModalA11y } from "./lib/use-modal-a11y";
 import type { Conversation, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
@@ -53,15 +54,34 @@ function App() {
   // complete. Once we know, `true` mounts the wizard.
   const [wizardOpen, setWizardOpen] = useState<boolean | undefined>(undefined);
   const editInputRef = useRef<HTMLInputElement>(null);
+  const memoriesModalRef = useRef<HTMLDivElement>(null);
   // Tauri 2 webview disables window.confirm — use an inline two-click pattern
   // for conversation deletion so accidental clicks don't nuke a thread.
   const deleteConfirm = useTwoClickConfirm();
+  useModalA11y({
+    open: memoriesOpen,
+    onClose: () => setMemoriesOpen(false),
+    containerRef: memoriesModalRef,
+  });
 
   useEffect(() => {
     // Window uses macOS Overlay title-bar style + hiddenTitle, so the
     // OS chrome only renders the traffic lights — no title text. We keep
     // pkg imported so the version is available for the in-app footer.
     void pkg;
+    // Mark the platform on <html> so the CSS can swap the top padding —
+    // macOS needs ~22 px of clearance for the traffic lights; win/linux
+    // need none. navigator.userAgent is enough here (Tauri webview ships
+    // a deterministic UA per host platform).
+    const ua = navigator.userAgent || "";
+    const platform = /Mac/i.test(ua)
+      ? "mac"
+      : /Win/i.test(ua)
+        ? "win"
+        : /Linux/i.test(ua)
+          ? "linux"
+          : "other";
+    document.documentElement.dataset.platform = platform;
     refreshStatus();
     refreshConversations();
     // First-run gate: ask Rust whether the wizard has been completed before.
@@ -535,7 +555,7 @@ function App() {
               onClick={() => editingId !== c.id && setCurrent(c)}
               onDoubleClick={(e) => startEdit(c, e)}
               title={depth > 0 ? "Branch — forked from another conversation" : "Double-click to rename"}
-              style={depth > 0 ? { paddingLeft: 8 + depth * 14 } : undefined}
+              style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 14 } : undefined}
             >
               {editingId === c.id ? (
                 <input
@@ -576,7 +596,7 @@ function App() {
                 ⧉
               </button>
               <button
-                className="del"
+                className={`del${deleteConfirm.armed === String(c.id) ? " armed" : ""}`}
                 title={
                   deleteConfirm.armed === String(c.id)
                     ? "Click again to confirm deletion"
@@ -642,8 +662,9 @@ function App() {
           onClick={(e) => { if (e.target === e.currentTarget) setMemoriesOpen(false); }}
           role="dialog"
           aria-modal="true"
+          aria-label="Memories"
         >
-          <div className="memories-modal">
+          <div className="memories-modal" ref={memoriesModalRef}>
             <div className="memories-modal-header">
               <span>Memories</span>
               <button onClick={() => setMemoriesOpen(false)} aria-label="Close" className="memories-close">×</button>

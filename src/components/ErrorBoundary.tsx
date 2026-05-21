@@ -48,26 +48,12 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!this.state.err) return this.props.children;
     if (this.props.fallback) return this.props.fallback(this.state.err, this.reset);
     return (
-      <div
-        role="alert"
-        style={{
-          padding: 16,
-          margin: 16,
-          border: "1px solid #c33",
-          borderRadius: 6,
-          background: "#2a1010",
-          color: "#fcc",
-          fontSize: 13,
-          lineHeight: 1.4,
-        }}
-      >
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>
+      <div role="alert" className="error-boundary-card">
+        <div className="error-boundary-title">
           {this.props.label ?? "Component"} crashed
         </div>
-        <code style={{ display: "block", fontSize: 11, opacity: 0.85, marginBottom: 10 }}>
-          {this.state.err.message}
-        </code>
-        <div style={{ display: "flex", gap: 8 }}>
+        <code className="error-boundary-msg">{this.state.err.message}</code>
+        <div className="error-boundary-actions">
           <button onClick={this.reset}>Retry</button>
           <button onClick={() => window.location.reload()}>Reload window</button>
         </div>

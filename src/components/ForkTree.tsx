@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
+import { useModalA11y } from "../lib/use-modal-a11y";
 import type { ForkTree } from "../types";
 
 interface Props {
@@ -57,39 +58,40 @@ export function ForkTreeModal({ open, onClose, rootId, onSelect }: Props) {
 
   if (!open) return null;
 
+  return <ForkTreeOverlay onClose={onClose} tree={tree} err={err} loading={loading} rootId={rootId} onSelect={onSelect} />;
+}
+
+function ForkTreeOverlay({
+  onClose,
+  tree,
+  err,
+  loading,
+  rootId,
+  onSelect,
+}: {
+  onClose: () => void;
+  tree: ForkTree | null;
+  err: string | null;
+  loading: boolean;
+  rootId: number | null;
+  onSelect: (id: number) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y({ open: true, onClose, containerRef: ref });
   return (
     <div
       className="fork-tree-overlay"
       data-testid="fork-tree-modal"
-      onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-      }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Branches"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      ref={ref}
     >
-      <div
-        className="fork-tree-panel"
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--panel, #1a1a1a)",
-          color: "var(--fg, #e6e6e6)",
-          padding: "16px 20px",
-          borderRadius: 8,
-          maxWidth: 520,
-          width: "calc(100% - 48px)",
-          maxHeight: "70vh",
-          overflowY: "auto",
-          boxShadow: "0 10px 40px rgba(0,0,0,0.5)",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+      <div className="fork-tree-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="fork-tree-header">
           <strong>🌳 Branches</strong>
-          <button type="button" onClick={onClose} aria-label="Close" style={{ background: "transparent", border: "none", color: "inherit", cursor: "pointer", fontSize: 18 }}>×</button>
+          <button type="button" onClick={onClose} aria-label="Close" className="fork-tree-close">×</button>
         </div>
         {loading && <div>Loading…</div>}
         {err && <div className="error-bar" data-testid="fork-tree-error">{err}</div>}
@@ -105,22 +107,16 @@ export function ForkTreeModal({ open, onClose, rootId, onSelect }: Props) {
 }
 
 function ForkNodeView({ node, depth, onSelect }: { node: ForkTree; depth: number; onSelect: (id: number) => void }) {
+  // Cap depth-driven indentation so a long-branched conversation can't push
+  // the row text off the right edge of the modal.
+  const capped = Math.min(depth, 6);
   return (
     <div data-testid="fork-tree-node" data-depth={depth}>
       <button
         type="button"
+        className="fork-tree-node-btn"
         onClick={() => onSelect(node.id)}
-        style={{
-          background: "transparent",
-          border: "none",
-          color: "inherit",
-          cursor: "pointer",
-          textAlign: "left",
-          padding: "4px 6px",
-          marginLeft: depth * 16,
-          fontFamily: "inherit",
-          fontSize: 13,
-        }}
+        style={{ marginLeft: capped * 16 }}
         title={`Open conversation #${node.id}`}
       >
         {depth > 0 && <span aria-hidden="true">↳ </span>}

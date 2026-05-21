@@ -6,6 +6,7 @@ import {
   type DiagEntry,
   type DiagLevel,
 } from "../lib/diagnostics";
+import { useModalA11y } from "../lib/use-modal-a11y";
 
 /* ── Diagnostics modal ────────────────────────────────────────────────────
  *
@@ -157,16 +158,7 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
   if (!open) return null;
 
   return (
-    <div
-      className="dashboard-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Diagnostics"
-      data-testid="diagnostics-panel"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
+    <DiagnosticsOverlay open={open} onClose={onClose}>
       <div className="dashboard-modal" style={{ maxWidth: 960 }}>
         <header className="dashboard-header">
           <h2>Diagnostics</h2>
@@ -314,6 +306,38 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
           Persisted across reloads via localStorage (last 100).
         </footer>
       </div>
+    </DiagnosticsOverlay>
+  );
+}
+
+/**
+ * Diagnostics overlay wrapper — splits the modal container out so the
+ * a11y hook can own the ref + key handling without entangling the panel.
+ */
+function DiagnosticsOverlay({
+  open,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y({ open, onClose, containerRef: ref });
+  return (
+    <div
+      className="dashboard-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Diagnostics"
+      data-testid="diagnostics-panel"
+      ref={ref}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      {children}
     </div>
   );
 }

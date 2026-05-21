@@ -29,6 +29,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Sidebar } from "./hf-library/Sidebar";
 import { ModelCard } from "./hf-library/ModelCard";
+import { EmptyState } from "./EmptyState";
 import { SORT_OPTIONS, PARAM_TICKS } from "./hf-library/constants";
 import {
   loadHuggingFace,
@@ -349,7 +350,13 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
               <div key={`sk-${i}`} className="hfl-card hfl-skeleton" data-testid="hfl-skeleton" aria-hidden />
             ))}
           {!loading && visibleModels.length === 0 && !err && (
-            <div className="hfl-empty">No models match your filters.</div>
+            <div className="hfl-empty">
+              <EmptyState
+                icon="🔎"
+                heading="No models match your filters"
+                sub="Try widening the parameter slider, clearing pipeline / library chips, or relaxing the inference-only toggle."
+              />
+            </div>
           )}
           {visibleModels.map((m) => {
             // Non-GGUF mode: plain card.
