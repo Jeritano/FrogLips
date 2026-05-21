@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { logDiag } from "../lib/diagnostics";
 
 /**
  * Menu-bar quick prompt. Strict ephemeral — no persistence, no history.
@@ -40,7 +41,14 @@ export function QuickPrompt() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        invoke("quick_prompt_hide").catch(() => {});
+        invoke("quick_prompt_hide").catch((err) =>
+          logDiag({
+            level: "info",
+            source: "quick-prompt",
+            message: "Esc → quick_prompt_hide failed",
+            detail: err,
+          }),
+        );
       }
     };
     window.addEventListener("keydown", onKey);
@@ -124,8 +132,22 @@ export function QuickPrompt() {
     // Surface result in the main chat. ChatWindow already toasts via
     // `quick-prompt-completed`; this just brings the main window forward
     // and hides ours. Strict v1.3: no auto-message-creation.
-    try { await navigator.clipboard.writeText(reply); } catch {/* ignore */}
-    try { await invoke("quick_prompt_hide"); } catch {/* ignore */}
+    try { await navigator.clipboard.writeText(reply); } catch (err) {
+      logDiag({
+        level: "info",
+        source: "quick-prompt",
+        message: "openInMain: clipboard write failed",
+        detail: err,
+      });
+    }
+    try { await invoke("quick_prompt_hide"); } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "quick-prompt",
+        message: "openInMain: quick_prompt_hide invoke failed",
+        detail: err,
+      });
+    }
   }
 
   return (

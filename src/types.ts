@@ -11,6 +11,34 @@ export interface AllModels {
   ollama_error?: string | null;
 }
 
+/* ── GGUF file picker (Phase 3 of cross-platform Native rollout) ────── */
+
+/**
+ * One locally-cached `.gguf` quant. Returned by `native_list_gguf_files` and
+ * surfaced in the "Installed (GGUF)" section of ModelBrowser. `path` is an
+ * absolute filesystem path the user can feed to `nativeLoadModel`.
+ */
+export interface GgufFile {
+  repo: string;
+  filename: string;
+  path: string;
+  size_bytes: number;
+  /** Unix mtime in seconds (newest-first sort in the UI). */
+  mtime: number;
+}
+
+/**
+ * Payload of the `gguf-download-progress` Tauri event. Emitted at ~10 Hz by
+ * `native_download_gguf`. `total_bytes` is `0` until the first chunk lands
+ * (HF sometimes doesn't surface Content-Length immediately on resume).
+ */
+export interface GgufDownloadProgress {
+  repo: string;
+  filename: string;
+  bytes_downloaded: number;
+  total_bytes: number;
+}
+
 export interface ServerStatus {
   running: boolean;
   ready: boolean;

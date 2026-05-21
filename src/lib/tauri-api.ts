@@ -18,6 +18,7 @@ import type {
   Conversation,
   ForkTree,
   DirListing,
+  GgufFile,
   EditOp,
   EditResult,
   ExistsResult,
@@ -405,4 +406,14 @@ export const api = {
     top_p?: number;
     max_tokens?: number;
   }) => invoke<string>("native_chat_stream", { args }),
+
+  // GGUF file picker (Phase 3 — see docs/research/llamacpp-backend.md).
+  // `native_download_gguf` streams one quant from HF and emits
+  // `gguf-download-progress` events while it runs; the caller wires up
+  // those events via the Tauri `listen` API at call sites.
+  agentNativeDownloadGguf: (repoId: string, filename: string) =>
+    invoke<string>("native_download_gguf", { repo: repoId, filename }),
+  nativeListGgufFiles: () => invoke<GgufFile[]>("native_list_gguf_files"),
+  nativeDeleteGguf: (repoId: string, filename: string) =>
+    invoke<void>("native_delete_gguf", { repo: repoId, filename }),
 };

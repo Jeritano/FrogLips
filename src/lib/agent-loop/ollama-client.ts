@@ -1,4 +1,5 @@
 import type { Message, ToolCall } from "../../types";
+import { logDiag } from "../diagnostics";
 
 export const OLLAMA_BASE = "http://127.0.0.1:11434";
 export const RETRY_MAX = 2;
@@ -254,10 +255,22 @@ export async function callOllamaWithRetry(
       const msg = e instanceof Error ? e.message : String(e);
       const isRetriable = /Ollama 5\d\d:/.test(msg) || !/Ollama \d{3}:/.test(msg);
       if (isRetriable && attempt < RETRY_MAX) {
+        logDiag({
+          level: "warn",
+          source: "ollama-client",
+          message: `Ollama call failed (attempt ${attempt + 1}/${RETRY_MAX + 1}), retrying`,
+          detail: { error: msg, url },
+        });
         onRetry();
         await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
         continue;
       }
+      logDiag({
+        level: "error",
+        source: "ollama-client",
+        message: `Ollama call failed terminally after ${attempt + 1} attempt(s)`,
+        detail: { error: msg, url },
+      });
       throw e;
     }
   }

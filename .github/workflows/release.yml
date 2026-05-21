@@ -1,5 +1,21 @@
 name: Release builds
 
+# Phase 4 of the cross-platform Native rollout (see docs/research/llamacpp-backend.md).
+# Builds + publishes binaries for four targets on tag push:
+#
+#   * macOS arm64        — `native-mistralrs` (mistralrs + candle + Metal)
+#   * macOS x86_64       — `native-llamacpp` (llama.cpp via llama-cpp-2)
+#   * Linux x86_64       — `native-llamacpp`
+#   * Windows x86_64     — `native-llamacpp`
+#
+# Each matrix job builds, signs (via TAURI_SIGNING_PRIVATE_KEY), uploads
+# bundle artifacts, then the `publish` job collects everything, assembles the
+# updater `latest.json` manifest, and attaches all assets to the GH release.
+#
+# Local mac-arm64 dev path (`scripts/release.sh`) is untouched — it produces
+# the same shape of artifact (DMG + .app.tar.gz + .sig) as the macos-14
+# matrix entry here, so either path can ship a release.
+
 on:
   push:
     tags:
@@ -13,34 +29,102 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS arm64 builds are produced + signed locally by scripts/release.sh.
-          # CI only covers Linux + Windows where the user can't easily build natively.
-          - platform: ubuntu-22.04
-            args: ''
-            target: ''
-          - platform: windows-latest
-            args: ''
-            target: ''
+          - os: macos-14
+            target: aarch64-apple-darwin
+            features: native-mistralrs
+            bundle: dmg
+            updater-ext: app.tar.gz
+            rust-target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+            features: native-llamacpp
+            bundle: dmg
+            updater-ext: app.tar.gz
+            rust-target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            features: native-llamacpp
+            bundle: appimage,deb
+            updater-ext: AppImage
+            rust-target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            features: native-llamacpp
+            bundle: nsis
+            updater-ext: nsis.zip
+            rust-target: x86_64-pc-windows-msvc
 
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust-target }}
 
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.target }}-${{ matrix.features }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Tauri 2 canonical Linux dep list (per tauri.app/start/prerequisites).
+      # webkit2gtk-4.1 + libsoup-3.0 (not -4.0 / -2.4 — Tauri 2 dropped those).
+      # libayatana-appindicator3 (the old libappindicator3 is deprecated).
+      # cmake required by llama-cpp-2's bundled llama.cpp build.
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf
+
+      # Both Intel + Apple Silicon mac runners ship cmake via Xcode CLT, but
+      # `brew install cmake` is a no-op if present so harmless either way.
+      - name: Ensure cmake on macOS
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install cmake
+          fi
+          cmake --version
+
+      # llama-cpp-2 -> llama-cpp-sys-2 invokes cmake which on Windows needs a
+      # C++ toolchain (MSVC, present on windows-2022) AND clang for bindgen.
+      # `LIBCLANG_PATH` is critical — bindgen silently fails to find libclang
+      # otherwise. Chocolatey's `llvm` package installs to a predictable path.
+      - name: Install LLVM + clang (Windows)
+        if: matrix.os == 'windows-2022'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: '18.1'
+          directory: ${{ runner.temp }}/llvm
+
+      - name: Export LIBCLANG_PATH (Windows)
+        if: matrix.os == 'windows-2022'
+        shell: bash
+        run: |
+          echo "LIBCLANG_PATH=${{ runner.temp }}/llvm/bin" >> "$GITHUB_ENV"
+          # cmake is preinstalled on windows-2022 image; verify.
+          cmake --version
 
       - name: npm ci
         run: npm ci
@@ -50,8 +134,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          npx tauri build ${{ matrix.args }}
+          npm run tauri build -- --features ${{ matrix.features }} --target ${{ matrix.target }}
 
+      # Bundle layout differs per target. Collect everything we know how to
+      # ship into a flat dist-artifacts/ for upload-artifact.
       - name: Collect bundle artifacts
         id: collect
         shell: bash
@@ -59,42 +145,133 @@ jobs:
           set -e
           DEST="dist-artifacts"
           mkdir -p "$DEST"
-          for base in \
-            "src-tauri/target/${{ matrix.target }}/release/bundle" \
-            "src-tauri/target/release/bundle"; do
-            [ -d "$base" ] || continue
-            # macOS: .dmg, .app.tar.gz (+ .sig)
-            find "$base" -maxdepth 3 -type f \( \
-              -name '*.dmg' -o \
-              -name 'Froglips.app.tar.gz' -o \
-              -name 'Froglips.app.tar.gz.sig' -o \
-              -name '*.deb' -o \
-              -name '*.AppImage' -o \
-              -name '*.rpm' -o \
-              -name '*.msi' -o \
-              -name '*.exe' \
-            \) -print -exec cp {} "$DEST/" \;
-          done
+          BASE="src-tauri/target/${{ matrix.target }}/release/bundle"
+          if [ ! -d "$BASE" ]; then
+            # fallback in case --target was ignored on host==target
+            BASE="src-tauri/target/release/bundle"
+          fi
+          echo "Scanning $BASE"
+          find "$BASE" -maxdepth 4 -type f \( \
+            -name '*.dmg' -o \
+            -name '*.app.tar.gz' -o \
+            -name '*.app.tar.gz.sig' -o \
+            -name '*.deb' -o \
+            -name '*.rpm' -o \
+            -name '*.AppImage' -o \
+            -name '*.AppImage.sig' -o \
+            -name '*.AppImage.tar.gz' -o \
+            -name '*.AppImage.tar.gz.sig' -o \
+            -name '*.msi' -o \
+            -name '*.msi.zip' -o \
+            -name '*.msi.zip.sig' -o \
+            -name '*-setup.exe' -o \
+            -name '*-setup.exe.sig' -o \
+            -name '*.nsis.zip' -o \
+            -name '*.nsis.zip.sig' \
+          \) -print -exec cp {} "$DEST/" \;
           ls -la "$DEST" || true
 
-      - name: Upload build artifacts (workflow)
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: froglips-${{ matrix.platform }}-${{ matrix.target }}
+          name: froglips-${{ matrix.target }}
           path: dist-artifacts/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Flatten artifacts
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find all-artifacts -type f -exec cp {} release-assets/ \;
+          ls -la release-assets
+
+      # Build the updater manifest. Per-platform shape:
+      #   darwin-aarch64 / darwin-x86_64 -> *.app.tar.gz + .sig
+      #   linux-x86_64                    -> *.AppImage + .sig
+      #   windows-x86_64                  -> *-setup.nsis.zip + .sig
+      # If a given asset is missing (e.g. one matrix job failed) we still
+      # emit a manifest with the platforms that succeeded — the missing
+      # platform just won't auto-update for this release.
+      - name: Build latest.json
+        id: manifest
+        shell: bash
+        run: |
+          set -e
+          VERSION="${GITHUB_REF##*/v}"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          REPO="${{ github.repository }}"
+          BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
+
+          find_one() {
+            find release-assets -maxdepth 1 -type f -name "$1" | head -n1
+          }
+
+          # Stage env vars for the python builder. Sigs are read from files
+          # so multiline minisign content survives intact (no shell escaping).
+          MAC_ARM=$(find_one '*aarch64*.app.tar.gz')
+          MAC_ARM_SIG=$(find_one '*aarch64*.app.tar.gz.sig')
+          MAC_X64=$(find_one '*x64*.app.tar.gz')
+          [ -z "$MAC_X64" ] && MAC_X64=$(find_one '*x86_64*.app.tar.gz')
+          MAC_X64_SIG=$(find_one '*x64*.app.tar.gz.sig')
+          [ -z "$MAC_X64_SIG" ] && MAC_X64_SIG=$(find_one '*x86_64*.app.tar.gz.sig')
+          LIN=$(find_one '*.AppImage')
+          LIN_SIG=$(find_one '*.AppImage.sig')
+          WIN=$(find_one '*-setup.nsis.zip')
+          WIN_SIG=$(find_one '*-setup.nsis.zip.sig')
+
+          export VERSION PUB_DATE BASE_URL MAC_ARM MAC_ARM_SIG MAC_X64 MAC_X64_SIG LIN LIN_SIG WIN WIN_SIG
+
+          python3 <<'PY' > release-assets/latest.json
+          import json, os
+          base = os.environ["BASE_URL"]
+          def entry(path_var, sig_var):
+              p = os.environ.get(path_var, "")
+              s = os.environ.get(sig_var, "")
+              if not p or not s or not os.path.isfile(s):
+                  return None
+              return {
+                  "signature": open(s).read().strip(),
+                  "url": f"{base}/{os.path.basename(p)}",
+              }
+          plats = {}
+          for key, pv, sv in [
+              ("darwin-aarch64", "MAC_ARM", "MAC_ARM_SIG"),
+              ("darwin-x86_64",  "MAC_X64", "MAC_X64_SIG"),
+              ("linux-x86_64",   "LIN",     "LIN_SIG"),
+              ("windows-x86_64", "WIN",     "WIN_SIG"),
+          ]:
+              e = entry(pv, sv)
+              if e is not None:
+                  plats[key] = e
+          print(json.dumps({
+              "version": os.environ["VERSION"],
+              "notes": "See release notes on GitHub.",
+              "pub_date": os.environ["PUB_DATE"],
+              "platforms": plats,
+          }, indent=2))
+          PY
+          echo "--- latest.json ---"
+          cat release-assets/latest.json
+
       - name: Attach artifacts to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           TAG="${GITHUB_REF##*/}"
-          if [ -d dist-artifacts ] && [ -n "$(ls -A dist-artifacts 2>/dev/null)" ]; then
-            # --clobber so re-runs overwrite without erroring
-            gh release upload "$TAG" dist-artifacts/* --clobber --repo "${{ github.repository }}"
-          else
-            echo "No artifacts to attach for ${{ matrix.platform }} (${{ matrix.target }})"
-          fi
+          gh release upload "$TAG" release-assets/* --clobber --repo "${{ github.repository }}"

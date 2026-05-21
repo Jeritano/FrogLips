@@ -29,6 +29,7 @@ import {
   extractFacts,
   saveMemory,
 } from "../lib/memory-client";
+import { logDiag } from "../lib/diagnostics";
 
 interface Props {
   status: ServerStatus | null;
@@ -78,7 +79,14 @@ function loadDryRun(): boolean {
   } catch { return false; }
 }
 function saveDryRun(v: boolean) {
-  try { localStorage.setItem("agent.dryRun", v ? "true" : "false"); } catch {/* ignore */}
+  try { localStorage.setItem("agent.dryRun", v ? "true" : "false"); } catch (err) {
+    logDiag({
+      level: "warn",
+      source: "chat-window",
+      message: "saveDryRun: localStorage write failed",
+      detail: err,
+    });
+  }
 }
 
 function tmpKey(): string {
@@ -120,7 +128,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const confirmResolveRef = useRef<((v: ConfirmDecision) => void) | null>(null);
 
   useEffect(() => {
-    api.agentGetWorkspace().then(setWorkspaceRoot).catch(() => {});
+    api.agentGetWorkspace().then(setWorkspaceRoot).catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "chat-window",
+        message: "agentGetWorkspace failed on mount",
+        detail: err,
+      }),
+    );
   }, []);
 
   // Refresh the active project policy whenever the workspace changes.
@@ -144,7 +159,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     listen<AskUserRequest>("ask-user", (e) => {
       setAskUserReq(e.payload);
       setAskUserAnswer("");
-    }).then((fn) => { off = fn; }).catch(() => {});
+    }).then((fn) => { off = fn; }).catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "chat-window",
+        message: "ask-user listener registration failed — modal will not appear",
+        detail: err,
+      }),
+    );
     return () => { if (off) off(); };
   }, []);
 
@@ -160,7 +182,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       setQuickToast({ reply: payload.reply ?? "", error: payload.error ?? null });
       if (timeout) clearTimeout(timeout);
       timeout = setTimeout(() => setQuickToast(null), 8000);
-    }).then((fn) => { off = fn; }).catch(() => {});
+    }).then((fn) => { off = fn; }).catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "chat-window",
+        message: "quick-prompt-completed listener registration failed",
+        detail: err,
+      }),
+    );
     return () => {
       if (off) off();
       if (timeout) clearTimeout(timeout);
@@ -182,7 +211,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     const id = askUserReq.id;
     setAskUserReq(null);
     setAskUserAnswer("");
-    try { await api.agentAskUserCancel(id); } catch {/* ignore */}
+    try { await api.agentAskUserCancel(id); } catch (err) {
+      logDiag({
+        level: "info",
+        source: "chat-window",
+        message: `cancelAskUser: backend cancel failed for ${id} (may have already resolved)`,
+        detail: err,
+      });
+    }
   }
 
   useEffect(() => {
@@ -360,9 +396,23 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         recallBlock = formatRecallBlock(recallHits);
         if (isStreamConvActive()) setRecalled(recallHits);
         if (recallHits.length > 0) {
-          api.touchMemories(recallHits.map((m) => m.id)).catch(() => {});
+          api.touchMemories(recallHits.map((m) => m.id)).catch((err) =>
+            logDiag({
+              level: "warn",
+              source: "memory-recall",
+              message: "touchMemories failed — recency scores may be stale",
+              detail: err,
+            }),
+          );
         }
-      } catch {/* recall is best-effort */}
+      } catch (err) {
+        logDiag({
+          level: "warn",
+          source: "memory-recall",
+          message: "recall() threw — proceeding without recalled memories",
+          detail: err,
+        });
+      }
     } else {
       if (isStreamConvActive()) setRecalled([]);
     }
@@ -481,10 +531,24 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
                     status: mode === "queue" ? "pending" : "active",
                   });
                   if (!r.deduped) added++;
-                } catch {/* ignore */}
+                } catch (err) {
+                  logDiag({
+                    level: "warn",
+                    source: "memory-extract",
+                    message: "agent-mode saveMemory failed for an extracted fact",
+                    detail: err,
+                  });
+                }
               }
               if (added > 0) onMemoriesChanged?.();
-            }).catch(() => {});
+            }).catch((err) =>
+              logDiag({
+                level: "warn",
+                source: "memory-extract",
+                message: "agent-mode extractFacts pipeline rejected",
+                detail: err,
+              }),
+            );
           }
         }
       } catch (e) {
@@ -570,10 +634,24 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
                 status: mode === "queue" ? "pending" : "active",
               });
               if (!r.deduped) added++;
-            } catch {/* ignore individual failures */}
+            } catch (err) {
+              logDiag({
+                level: "warn",
+                source: "memory-extract",
+                message: "chat saveMemory failed for an extracted fact",
+                detail: err,
+              });
+            }
           }
           if (added > 0) onMemoriesChanged?.();
-        }).catch(() => {});
+        }).catch((err) =>
+          logDiag({
+            level: "warn",
+            source: "memory-extract",
+            message: "chat extractFacts pipeline rejected",
+            detail: err,
+          }),
+        );
       }
     } else if (aborted) {
       const tombstone: Message = {
@@ -586,7 +664,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       try {
         const id = await api.addMessage(conv.id, "assistant", tombstone.content, status.model);
         tombstone.id = id;
-      } catch {/* best effort */}
+      } catch (err) {
+        logDiag({
+          level: "warn",
+          source: "chat-window",
+          message: "failed to persist abort tombstone — message stays unsaved",
+          detail: err,
+        });
+      }
       if (sameConv()) setMessages((m) => [...m, tombstone]);
     }
   }
@@ -621,7 +706,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     for (let i = lastUserIdx; i <= lastAsstIdx; i++) {
       const id = messages[i]?.id;
       if (id != null) {
-        try { await api.deleteMessage(id); } catch {/* best effort */}
+        try { await api.deleteMessage(id); } catch (err) {
+          logDiag({
+            level: "warn",
+            source: "chat-window",
+            message: `regenerate: deleteMessage(${id}) failed — proceeding anyway`,
+            detail: err,
+          });
+        }
       }
     }
     const truncated = messages.slice(0, lastUserIdx).concat(messages.slice(lastAsstIdx + 1));
@@ -1045,8 +1137,22 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             // Click → dump the reply into the input area as a starting point.
             // Strict v1.3: no auto-resubmit, no conversation creation.
             try {
-              navigator.clipboard.writeText(quickToast.reply).catch(() => {});
-            } catch {/* ignore */}
+              navigator.clipboard.writeText(quickToast.reply).catch((err) =>
+                logDiag({
+                  level: "info",
+                  source: "chat-window",
+                  message: "quick-toast clipboard.writeText rejected",
+                  detail: err,
+                }),
+              );
+            } catch (err) {
+              logDiag({
+                level: "info",
+                source: "chat-window",
+                message: "quick-toast clipboard write threw synchronously",
+                detail: err,
+              });
+            }
             setQuickToast(null);
           }}
         >

@@ -3,6 +3,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { api } from "./lib/tauri-api";
 import { configureMemory } from "./lib/memory-client";
+import { logDiag } from "./lib/diagnostics";
+import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import type { Conversation, ServerStatus } from "./types";
 import { ForkTreeModal } from "./components/ForkTree";
 import { ModelPicker } from "./components/ModelPicker";
@@ -23,6 +25,7 @@ function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [convSearch, setConvSearch] = useState("");
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [forkTreeOpen, setForkTreeOpen] = useState(false);
   const editInputRef = useRef<HTMLInputElement>(null);
 
@@ -48,9 +51,23 @@ function App() {
           if (s.window.x != null && s.window.y != null) {
             await win.setPosition(new PhysicalPosition(Math.round(s.window.x), Math.round(s.window.y)));
           }
-        } catch {/* ignore */}
+        } catch (err) {
+          logDiag({
+            level: "warn",
+            source: "app",
+            message: "restoring window geometry failed",
+            detail: err,
+          });
+        }
       }
-    }).catch(() => {/* ignore */});
+    }).catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "app",
+        message: "settingsGet() rejected on startup — memory client may use defaults",
+        detail: err,
+      }),
+    );
 
     // Persist window geometry on resize/move with debounce
     let saveTimer: number | undefined;
@@ -64,7 +81,14 @@ function App() {
           await api.settingsSet({
             window: { width: sz.width, height: sz.height, x: pos.x, y: pos.y },
           });
-        } catch {/* ignore */}
+        } catch (err) {
+          logDiag({
+            level: "warn",
+            source: "app",
+            message: "persistGeometry: settingsSet failed",
+            detail: err,
+          });
+        }
       }, 500);
     };
     const offResize = win.onResized(persistGeometry);
@@ -72,16 +96,68 @@ function App() {
 
     let cancelled = false;
     let unlisten: UnlistenFn | undefined;
+    let unlistenDiag: UnlistenFn | undefined;
     listen<ServerStatus>("server-status", (e) => setStatus(e.payload))
       .then((fn) => {
         if (cancelled) { fn(); } else { unlisten = fn; }
       })
-      .catch(() => {/* event bus unavailable; rely on manual refresh */});
+      .catch((err) =>
+        logDiag({
+          level: "warn",
+          source: "app",
+          message: "server-status event listener failed to register — relying on manual refresh",
+          detail: err,
+        }),
+      );
+
+    // Rust-side warnings: forward into the in-app diagnostics ring buffer
+    // so MCP/RAG/agent failures surface in the panel alongside frontend
+    // diagnostics. Payload shape mirrors `Omit<DiagEntry, "ts">`.
+    listen<{ level: "info" | "warn" | "error"; source: string; message: string; detail?: unknown }>(
+      "app-diagnostics",
+      (e) => {
+        const p = e.payload;
+        if (!p) return;
+        logDiag({
+          level: p.level === "error" || p.level === "warn" ? p.level : "info",
+          source: typeof p.source === "string" ? p.source : "rust",
+          message: typeof p.message === "string" ? p.message : "",
+          detail: p.detail,
+        });
+      },
+    )
+      .then((fn) => {
+        if (cancelled) { fn(); } else { unlistenDiag = fn; }
+      })
+      .catch((err) =>
+        logDiag({
+          level: "warn",
+          source: "app",
+          message: "app-diagnostics event listener failed to register — Rust warnings not visible",
+          detail: err,
+        }),
+      );
+
     return () => {
       cancelled = true;
       if (unlisten) unlisten();
-      offResize.then((f) => f()).catch(() => {});
-      offMove.then((f) => f()).catch(() => {});
+      if (unlistenDiag) unlistenDiag();
+      offResize.then((f) => f()).catch((err) =>
+        logDiag({
+          level: "info",
+          source: "app",
+          message: "offResize cleanup rejected",
+          detail: err,
+        }),
+      );
+      offMove.then((f) => f()).catch((err) =>
+        logDiag({
+          level: "info",
+          source: "app",
+          message: "offMove cleanup rejected",
+          detail: err,
+        }),
+      );
       if (saveTimer) window.clearTimeout(saveTimer);
     };
   }, []);
@@ -94,7 +170,14 @@ function App() {
     let cancelled = false;
     api.agentGetWorkspace().then((p) => {
       if (!cancelled) setPanelWorkspace(p ?? null);
-    }).catch(() => {/* ignore */});
+    }).catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "app",
+        message: "agentGetWorkspace failed — MemoryPanel will fall back to global scope",
+        detail: err,
+      }),
+    );
     return () => { cancelled = true; };
   }, [memoryTick, current?.id]);
 
@@ -129,16 +212,26 @@ function App() {
   async function refreshStatus() {
     try {
       setStatus(await api.serverStatus());
-    } catch {
-      /* ignore */
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "app",
+        message: "refreshStatus: serverStatus() failed",
+        detail: err,
+      });
     }
   }
 
   async function refreshConversations() {
     try {
       setConversations(await api.listConversations());
-    } catch {
-      /* ignore */
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "app",
+        message: "refreshConversations: listConversations() failed",
+        detail: err,
+      });
     }
   }
 
@@ -150,7 +243,14 @@ function App() {
     const next: "dark" | "light" = theme === "dark" ? "light" : "dark";
     setTheme(next);
     document.documentElement.dataset.theme = next;
-    api.settingsSet({ theme: next }).catch(() => {});
+    api.settingsSet({ theme: next }).catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "app",
+        message: "settingsSet(theme) failed — UI updated but not persisted",
+        detail: err,
+      }),
+    );
   }
 
   const filteredConversations = conversations.filter((c) =>
@@ -340,6 +440,16 @@ function App() {
           <span aria-hidden="true">📊</span>
           Dashboard
         </button>
+        <button
+          type="button"
+          className="dashboard-btn"
+          data-testid="open-diagnostics"
+          onClick={() => setDiagnosticsOpen(true)}
+          title="Open diagnostics panel (silent errors, MCP/RAG/agent warnings)"
+        >
+          <span aria-hidden="true">🩺</span>
+          Diagnostics
+        </button>
         {current && (
           <button
             type="button"
@@ -362,7 +472,14 @@ function App() {
           conversation={current}
           onConversationCreated={(c) => {
             setCurrent(c);
-            refreshConversations().catch(() => {});
+            refreshConversations().catch((err) =>
+              logDiag({
+                level: "warn",
+                source: "app",
+                message: "post-create refreshConversations failed",
+                detail: err,
+              }),
+            );
           }}
           onMemoriesChanged={() => setMemoryTick((t) => t + 1)}
           onForked={async (newConvId) => {
@@ -374,11 +491,19 @@ function App() {
               const all = await api.listConversations();
               const created = all.find((c) => c.id === newConvId);
               if (created) setCurrent(created);
-            } catch {/* ignore — sidebar still reflects the new conv */}
+            } catch (err) {
+              logDiag({
+                level: "info",
+                source: "app",
+                message: "onForked: listConversations after fork failed — sidebar still reflects the new conv",
+                detail: err,
+              });
+            }
           }}
         />
       </main>
       <Dashboard open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
+      <DiagnosticsPanel open={diagnosticsOpen} onClose={() => setDiagnosticsOpen(false)} />
       <ForkTreeModal
         open={forkTreeOpen}
         onClose={() => setForkTreeOpen(false)}

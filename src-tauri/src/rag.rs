@@ -282,7 +282,13 @@ fn walk_files(root: &Path, glob_matcher: Option<&globset::GlobMatcher>, out: &mu
     while let Some(dir) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(e) => {
+                crate::diagnostics::info(
+                    "rag-ingest",
+                    &format!("read_dir failed on {}: {}", dir.display(), e),
+                );
+                continue;
+            }
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -383,14 +389,31 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         }
         let meta = match std::fs::metadata(file) {
             Ok(m) => m,
-            Err(_) => continue,
+            Err(e) => {
+                crate::diagnostics::warn_with(
+                    "rag-ingest",
+                    &format!("stat failed, skipping {}", file.display()),
+                    serde_json::json!({ "path": file.display().to_string(), "error": e.to_string() }),
+                );
+                continue;
+            }
         };
         if meta.len() > MAX_FILE_BYTES {
             continue;
         }
         let text = match std::fs::read_to_string(file) {
             Ok(t) => t,
-            Err(_) => continue, // binary / non-utf8
+            Err(e) => {
+                crate::diagnostics::info(
+                    "rag-ingest",
+                    &format!(
+                        "skipping non-utf8/unreadable {} ({})",
+                        file.display(),
+                        e
+                    ),
+                );
+                continue;
+            }
         };
         total_bytes += text.len() as u64;
         let chunks = chunk_text(&text);

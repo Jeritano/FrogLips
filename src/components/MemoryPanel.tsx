@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/tauri-api";
+import { logDiag } from "../lib/diagnostics";
 import type { Memory, MemoryMode, MemoryScope } from "../types";
 import {
   demoteMemory,
@@ -68,7 +69,14 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
       ]);
       setActive(a);
       setPending(p);
-    } catch {/* ignore */}
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "memory-panel",
+        message: "refresh: listMemories failed — panel will show stale data",
+        detail: err,
+      });
+    }
   }, []);
 
   useEffect(() => { if (open) refresh(); }, [open, refreshToken, refresh]);

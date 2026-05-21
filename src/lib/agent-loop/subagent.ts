@@ -1,5 +1,6 @@
 import type { AgentRunOptions } from "./types";
 import { runAgentLoop } from "./runner";
+import { logDiag } from "../diagnostics";
 
 export const MAX_SUBAGENT_DEPTH = 3;
 
@@ -259,7 +260,18 @@ export async function awaitSubagents(
   });
 
   const allDone = Promise.all(
-    handles.map(({ handle }) => (handle ? handle.promise.catch(() => {}) : Promise.resolve())),
+    handles.map(({ handle, id }) =>
+      handle
+        ? handle.promise.catch((err) => {
+            logDiag({
+              level: "warn",
+              source: "agent-subagent",
+              message: `awaitSubagents: subagent ${id} promise rejected (status surfaced in result entry)`,
+              detail: err,
+            });
+          })
+        : Promise.resolve(),
+    ),
   ).then(() => {});
 
   await Promise.race([allDone, timeoutPromise]);
@@ -316,7 +328,14 @@ export function __resetSubagentRegistryForTests(): void {
   for (const h of registry.values()) {
     try {
       h.abortController.abort();
-    } catch {/* ignore */}
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "agent-subagent",
+        message: `__resetSubagentRegistryForTests: abort on ${h.id} threw`,
+        detail: err,
+      });
+    }
   }
   registry.clear();
 }

@@ -1,4 +1,5 @@
 import { api } from "./tauri-api";
+import { logDiag } from "./diagnostics";
 import type { Memory, MemoryMode, MemoryScope } from "../types";
 
 /** Caller context used to filter recall hits by scope on the backend. */
@@ -94,7 +95,13 @@ export async function embeddingsReady(): Promise<boolean> {
     embeddingAvailable = models.some((n) => n.startsWith("nomic-embed-text"));
     embeddingCheckedAt = now;
     return embeddingAvailable;
-  } catch {
+  } catch (err) {
+    logDiag({
+      level: "warn",
+      source: "memory-client",
+      message: "embeddingsReady: Ollama /api/tags probe failed",
+      detail: err,
+    });
     embeddingAvailable = false;
     embeddingCheckedAt = now;
     return false;
@@ -122,7 +129,13 @@ export async function embed(text: string): Promise<number[] | null> {
     if (!emb.every((x: number) => Number.isFinite(x))) return null;
     lruSet(cacheKey, emb);
     return emb;
-  } catch {
+  } catch (err) {
+    logDiag({
+      level: "warn",
+      source: "memory-client",
+      message: "embed: Ollama /api/embeddings call failed",
+      detail: err,
+    });
     return null;
   }
 }
@@ -143,12 +156,25 @@ export async function recall(
     try {
       const hits = await api.searchMemoriesVector(emb, k, _recallThreshold, ctx);
       if (hits.length) return hits;
-    } catch {/* fall through to keyword */}
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "memory-recall",
+        message: "recall: vector search failed, falling back to keyword",
+        detail: err,
+      });
+    }
   }
   // Phase 1 fallback: keyword search
   try {
     return await api.searchMemoriesKeyword(query, k, ctx);
-  } catch {
+  } catch (err) {
+    logDiag({
+      level: "warn",
+      source: "memory-recall",
+      message: "recall: keyword fallback failed — returning empty hits",
+      detail: err,
+    });
     return [];
   }
 }
@@ -238,7 +264,14 @@ async function pickExtractorModel(): Promise<string | null> {
     // None of the candidates installed — invalidate stale pick
     extractorModel = null;
     extractorPickedAt = now;
-  } catch {/* ignore */}
+  } catch (err) {
+    logDiag({
+      level: "warn",
+      source: "memory-client",
+      message: "pickExtractorModel: failed to query Ollama tag list",
+      detail: err,
+    });
+  }
   return extractorModel;
 }
 
@@ -331,7 +364,13 @@ export async function extractFacts(
       }))
       .filter((f) => f.confidence >= 0.6 && !looksLikeSecret(f.fact))
       .slice(0, MAX_FACTS_PER_TURN);
-  } catch {
+  } catch (err) {
+    logDiag({
+      level: "warn",
+      source: "memory-client",
+      message: "extractFacts: extractor model call failed",
+      detail: err,
+    });
     return [];
   }
 }

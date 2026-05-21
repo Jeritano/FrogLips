@@ -1,6 +1,8 @@
 mod agent;
 mod agent_audit;
 mod ask_user;
+mod diagnostics;
+mod gguf;
 mod history;
 mod mcp;
 mod memory;
@@ -1128,6 +1130,58 @@ async fn native_chat_stream(
     Ok(final_text)
 }
 
+/* ── GGUF file picker (Phase 3 of cross-platform Native rollout) ───────── */
+
+/// Resolve the app's data dir via the Tauri 2 `path()` API. Centralized so
+/// the three gguf commands all agree on the parent dir.
+fn app_data_dir_for(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir lookup failed: {e}"))
+}
+
+#[tauri::command]
+async fn native_download_gguf(
+    repo: String,
+    filename: String,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    // Surface validation errors before kicking off the download so the UI
+    // can show a snappy inline error instead of waiting on a network round
+    // trip just to fail.
+    gguf::validate_repo(&repo).map_err(map_err)?;
+    gguf::validate_filename(&filename).map_err(map_err)?;
+    let app_data = app_data_dir_for(&app)?;
+    let path = gguf::download(app.clone(), app_data, repo, filename)
+        .await
+        .map_err(map_err)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn native_list_gguf_files(app: tauri::AppHandle) -> Result<Vec<gguf::GgufFile>, String> {
+    let app_data = app_data_dir_for(&app)?;
+    tauri::async_runtime::spawn_blocking(move || gguf::list_files(&app_data).map_err(map_err))
+        .await
+        .map_err(map_err)?
+}
+
+#[tauri::command]
+async fn native_delete_gguf(
+    repo: String,
+    filename: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    gguf::validate_repo(&repo).map_err(map_err)?;
+    gguf::validate_filename(&filename).map_err(map_err)?;
+    let app_data = app_data_dir_for(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        gguf::delete_file(&app_data, &repo, &filename).map_err(map_err)
+    })
+    .await
+    .map_err(map_err)?
+}
+
 /* ── MCP (Model Context Protocol) ─────────────────────────────────────── */
 
 #[tauri::command]
@@ -1405,7 +1459,11 @@ pub fn run() {
                     Some(cfg.env)
                 };
                 if let Err(e) = mcp::start_server(cfg.name, cfg.command, cfg.args, env_opt).await {
-                    eprintln!("[mcp] auto-start '{}' failed: {}", name, e);
+                    diagnostics::warn_with(
+                        "mcp",
+                        &format!("auto-start '{}' failed: {}", name, e),
+                        serde_json::json!({ "server": name, "error": e.to_string() }),
+                    );
                 }
             }
         });
@@ -1440,6 +1498,11 @@ pub fn run() {
             let state = server_state.clone();
             move |app| {
                 state.set_app(app.handle().clone());
+                // Make the AppHandle available to the diagnostics bridge so
+                // background tasks (MCP, RAG, agent workers) can emit
+                // `app-diagnostics` events without threading a handle
+                // through every call site.
+                diagnostics::set_app_handle(app.handle().clone());
                 let s = state.clone();
                 tauri::async_runtime::spawn(async move {
                     loop {
@@ -1580,6 +1643,9 @@ pub fn run() {
             native_unload_model,
             native_current_model,
             native_chat_stream,
+            native_download_gguf,
+            native_list_gguf_files,
+            native_delete_gguf,
             mcp_start_server,
             mcp_stop_server,
             mcp_list_servers,

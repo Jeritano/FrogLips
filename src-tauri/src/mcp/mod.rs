@@ -308,16 +308,31 @@ pub async fn start_server(
                                 }
                             }
                             Err(e) => {
-                                eprintln!(
-                                    "[mcp:{}] bad JSON from server: {} (line={:?})",
-                                    server_name, e, line
+                                crate::diagnostics::warn_with(
+                                    "mcp",
+                                    &format!(
+                                        "{}: bad JSON from server ({})",
+                                        server_name, e
+                                    ),
+                                    serde_json::json!({
+                                        "server": server_name,
+                                        "error": e.to_string(),
+                                        "line_preview": line.chars().take(256).collect::<String>(),
+                                    }),
                                 );
                             }
                         }
                     }
                     Ok(None) => break,
                     Err(e) => {
-                        eprintln!("[mcp:{}] stdout read error: {}", server_name, e);
+                        crate::diagnostics::warn_with(
+                            "mcp",
+                            &format!("{}: stdout read error: {}", server_name, e),
+                            serde_json::json!({
+                                "server": server_name,
+                                "error": e.to_string(),
+                            }),
+                        );
                         break;
                     }
                 }

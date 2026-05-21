@@ -49,11 +49,17 @@ async fn chat_stream(messages, sampling, on_chunk) -> Result<String>;
 - Both backends on macos-arm64 = BAD. Make mutually exclusive.
 
 ## Rollout order
-1. Refactor `native_inference.rs` into trait + module layout. Mistralrs-only. Verify no behavior change.
-2. Add `llama-cpp-2` behind `native-llamacpp`. GGUF-from-local-path only. Hidden Rust cmd for testing.
-3. Extend `ModelBrowser.tsx` with GGUF file-picker tab.
-4. Flip CI matrix so non-mac-arm64 builds `native-llamacpp` by default.
+1. Refactor `native_inference.rs` into trait + module layout. Mistralrs-only. Verify no behavior change. **[done]**
+2. Add `llama-cpp-2` behind `native-llamacpp`. GGUF-from-local-path only. Hidden Rust cmd for testing. **[done]**
+3. Extend `ModelBrowser.tsx` with GGUF file-picker tab. **[done]**
+4. Flip CI matrix so non-mac-arm64 builds `native-llamacpp` by default. **[designed — see `.github/workflows/release.yml`; not yet validated in CI since no tag has been pushed against the new workflow]**
 5. Optional: `dynamic-link` to use user-installed `libllama`, skip bundling.
+
+### Phase 4 design notes
+`release.yml` is a 4-entry matrix (`macos-14` / `macos-13` / `ubuntu-22.04` / `windows-2022`) with a downstream `publish` job that flattens artifacts and emits `latest.json` covering all four `platforms` keys (`darwin-aarch64`, `darwin-x86_64`, `linux-x86_64`, `windows-x86_64`). The mac-arm64 entry uses `native-mistralrs`; the other three use `native-llamacpp`. CI deps:
+- **Linux**: `cmake build-essential libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf curl wget file`
+- **Windows**: cmake (preinstalled) + LLVM/clang via `KyleMayes/install-llvm-action@v2` with `LIBCLANG_PATH` exported for `bindgen` (used by `llama-cpp-sys-2`).
+- **macOS**: cmake via Xcode CLT (fallback `brew install cmake` if missing).
 
 ## Risks
 - llama-cpp-2 API breaks frequently w/ upstream. Pin minor, expect churn.

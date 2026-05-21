@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/tauri-api";
+import { logDiag } from "../lib/diagnostics";
 import type { McpServerConfig, McpServerInfo } from "../types";
 
 /* ── MCP servers settings pane ────────────────────────────────────────── */
@@ -32,7 +33,13 @@ function loadConfigs(): McpServerConfig[] {
         typeof s.name === "string" &&
         typeof s.command === "string",
     );
-  } catch {
+  } catch (err) {
+    logDiag({
+      level: "warn",
+      source: "mcp",
+      message: "loadConfigs: malformed localStorage 'mcp.servers' — defaulting to []",
+      detail: err,
+    });
     return [];
   }
 }
@@ -67,7 +74,14 @@ export function McpSettings({ onConfigsChanged }: Props) {
         try {
           const ts = await api.mcpListTools(s.name);
           toolMap[s.name] = Array.isArray(ts) ? ts.map((t) => t.name) : [];
-        } catch {/* ignore — server may be mid-restart */}
+        } catch (err) {
+          logDiag({
+            level: "info",
+            source: "mcp",
+            message: `mcpListTools '${s.name}' failed (server may be mid-restart)`,
+            detail: err,
+          });
+        }
       }
       setTools(toolMap);
     } catch (e) {
@@ -110,13 +124,27 @@ export function McpSettings({ onConfigsChanged }: Props) {
   }
 
   async function restartConfig(cfg: McpServerConfig) {
-    await stopServer(cfg.name).catch(() => {});
+    await stopServer(cfg.name).catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "mcp",
+        message: `restartConfig: stop '${cfg.name}' threw before restart`,
+        detail: err,
+      }),
+    );
     await startConfig(cfg);
   }
 
   async function removeConfig(name: string) {
     if (!confirm(`Remove MCP server '${name}'?`)) return;
-    await stopServer(name).catch(() => {});
+    await stopServer(name).catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "mcp",
+        message: `removeConfig: stop '${name}' threw before removal`,
+        detail: err,
+      }),
+    );
     persist(configs.filter((c) => c.name !== name));
   }
 

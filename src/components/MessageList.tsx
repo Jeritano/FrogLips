@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Message, MemoryScope, ToolCall } from "../types";
 import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
+import { logDiag } from "../lib/diagnostics";
 import { renderMarkdown } from "../lib/markdown";
 import "highlight.js/styles/github-dark.css";
 
@@ -381,7 +382,14 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
         projectRoot: scope === "project" ? (workspaceRoot ?? null) : null,
       });
       setPinned((s) => new Set([...s, key]));
-    } catch {/* ignore */}
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "message-list",
+        message: "pin-message: saveMemory failed",
+        detail: err,
+      });
+    }
     finally { setPinning(null); }
   }, [conversationId, workspaceRoot]);
 

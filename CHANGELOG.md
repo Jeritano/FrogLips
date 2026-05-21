@@ -4,6 +4,27 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-05-20
+
+### Added (v2.0 batch A)
+- **GGUF picker (llama.cpp Phase 3)**: new `hf-gguf` source in ModelBrowser. Browse HuggingFace GGUF repos via `library=gguf` (no `mlx-community` author filter). Click repo to expand → fetches `https://huggingface.co/api/models/{repo}/tree/main` → lists `.gguf` files w/ size + quant suffix. Per-file download button → new Rust cmd `native_download_gguf(repo, filename)` streams to `~/Library/Application Support/.../models/gguf/{repo}/{filename}` with Range-resumable + progress events + in-flight dedupe. New `native_list_gguf_files` + `native_delete_gguf` cmds. "Installed (GGUF)" subsection w/ two-click Remove. Path-safety: filename validators (no `..`/`\0`/non-`.gguf`), repo validators (org/name shape, alnum+`._-`), canonical-path containment check before any write/delete.
+- **CI matrix + cross-platform binaries (llama.cpp Phase 4)**: rewrote `.github/workflows/release.yml` w/ 4-target matrix:
+  - `macos-14 / aarch64-apple-darwin / native-mistralrs` → DMG + signed updater (matches `release.sh` output shape)
+  - `macos-13 / x86_64-apple-darwin / native-llamacpp` → DMG
+  - `ubuntu-22.04 / x86_64-unknown-linux-gnu / native-llamacpp` → AppImage + deb
+  - `windows-2022 / x86_64-pc-windows-msvc / native-llamacpp` → NSIS installer
+  Publish job aggregates artifacts + writes a 4-platform `latest.json` updater manifest. Tauri 2 Linux deps + Windows LLVM/clang setup researched + documented inline. Workflow ready for next `v*` tag push.
+- **Diagnostics panel**: new in-app surface for previously-silent errors. New `src/lib/diagnostics.ts` (ring buffer cap 500, localStorage persists last 100, pub/sub). New `DiagnosticsPanel.tsx` modal (filter by level/source, sort, copy-for-bug-report, two-click clear). Wired 52 `logDiag()` calls into formerly silent `catch{}` / `.catch(() => {})` blocks across `App.tsx`, `memory-client.ts`, `agent-loop/dispatch.ts` + `subagent.ts` + `ollama-client.ts`, `McpSettings.tsx`, `ChatWindow.tsx`, `QuickPrompt.tsx`, `MemoryPanel.tsx`, `MessageList.tsx`. New `src-tauri/src/diagnostics.rs` bridges Rust warnings → frontend via `app-diagnostics` Tauri event. Recovery behavior unchanged — purely observational.
+
+### Fixed
+- `ModelBrowser.refreshGgufInstalled` crashed when `nativeListGgufFiles` returned null (default mock fallback). Added `Array.isArray()` guard.
+
+### Tests
+- Rust: **81 passing** (was 72). +6 GGUF validators, +3 diagnostics.
+- Vitest: **143 passing** (was 129). +3 GGUF tab, +7 diagnostics store, +4 diagnostics panel.
+- Playwright: **11 passing** (unchanged).
+- **Grand total: 235 tests across 3 runners.**
+
 ## [0.9.18] — 2026-05-20
 
 ### Fixed

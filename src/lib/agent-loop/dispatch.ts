@@ -1,4 +1,5 @@
 import { api } from "../tauri-api";
+import { logDiag } from "../diagnostics";
 import type { AuditApproval, AuditOutcome, ToolCall } from "../../types";
 import { dispatchMcpTool, isMcpToolName } from "./mcp-tools";
 
@@ -92,7 +93,14 @@ export function cancelActiveShell(): boolean {
   if (currentShellOpId) {
     const id = currentShellOpId;
     currentShellOpId = null;
-    api.agentCancelShell(id).catch(() => {});
+    api.agentCancelShell(id).catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "agent-loop",
+        message: `cancelActiveShell: agent_cancel_shell failed for opId ${id}`,
+        detail: err,
+      }),
+    );
     return true;
   }
   return false;
@@ -187,11 +195,25 @@ export async function classifyToolRisk(
   if (fnName === SHELL_TOOL) {
     try {
       return await api.agentClassifyShell(String(args.command ?? ""));
-    } catch {/* keep normal */}
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "agent-loop",
+        message: "classifyToolRisk: shell classifier failed — defaulting to normal",
+        detail: err,
+      });
+    }
   } else if (fnName === "applescript_run") {
     try {
       return await api.agentClassifyApplescript(String(args.script ?? ""));
-    } catch {/* keep normal */}
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "agent-loop",
+        message: "classifyToolRisk: applescript classifier failed — defaulting to normal",
+        detail: err,
+      });
+    }
   } else if (fnName === "http_request") {
     try {
       const headers = (args.headers && typeof args.headers === "object")
@@ -199,7 +221,14 @@ export async function classifyToolRisk(
         : {};
       const hasAuth = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
       return await api.agentClassifyHttp(String(args.method ?? "GET"), hasAuth);
-    } catch {/* keep normal */}
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "agent-loop",
+        message: "classifyToolRisk: http classifier failed — defaulting to normal",
+        detail: err,
+      });
+    }
   }
   return "normal";
 }
