@@ -601,7 +601,7 @@ function App() {
         </ul>
       </aside>
       <main className="main">
-        <header data-tauri-drag-region>
+        <header>
           <ModelPicker
             status={status}
             onStatusChange={setStatus}
