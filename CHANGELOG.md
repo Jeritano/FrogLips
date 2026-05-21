@@ -4,6 +4,14 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.5] — 2026-05-21
+
+### Fixed
+- **CRITICAL — markdown render crash on every link** (`"undefined is not an object (evaluating 'this.parser.parseInline')"`). Our custom `renderer.link` override mounted via `marked.use({ renderer })` called the default marked Renderer.link via `.bind(renderer)`. Marked v18's default link renderer does `this.parser.parseInline(tokens)`, but our standalone Renderer instance never had `parser` attached — so any markdown containing a link crashed the entire React tree, leaving a black window (the "reload fixes it" wedge that v0.10.4's ErrorBoundary first exposed). Removed the override entirely — the same `target="_blank"` + `rel="noopener noreferrer"` behaviour is already applied by DOMPurify's `afterSanitizeAttributes` hook below.
+
+### Tests
+- New `src/lib/__tests__/markdown-links.test.ts` — 4 regression cases pinning the v0.10.5 fix (link renders, target+rel applied, javascript: stripped, multi-link mixed content doesn't throw). Vitest: 155 passing (was 151).
+
 ## [0.10.4] — 2026-05-21
 
 ### Added

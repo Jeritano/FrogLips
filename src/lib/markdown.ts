@@ -83,15 +83,17 @@ function escapeHtml(s: string): string {
 }
 
 // Custom renderer: route raw HTML to text (no embedded HTML allowed).
+// NOTE: we used to override `renderer.link` here too, but that path calls
+// `this.parser.parseInline(tokens)` internally — and the renderer instance
+// created via `new marked.Renderer()` never gets a `parser` attached
+// because we mount it via `marked.use({ renderer })`. That blew up on every
+// markdown render containing a link with `undefined is not an object
+// (evaluating 'this.parser.parseInline')`. The target="_blank" + rel="…"
+// behaviour is already handled by DOMPurify's afterSanitizeAttributes hook
+// below, so the override was redundant.
 const renderer = new marked.Renderer();
 renderer.html = function ({ raw }: Tokens.HTML | Tokens.Tag) {
   return escapeHtml(raw);
-};
-// Open links in new tab (Tauri side opens via the allowlist).
-const baseLink = renderer.link.bind(renderer);
-renderer.link = function (token: Tokens.Link) {
-  const html = baseLink(token);
-  return html.replace("<a ", '<a target="_blank" rel="noopener noreferrer" ');
 };
 marked.use({ renderer });
 
