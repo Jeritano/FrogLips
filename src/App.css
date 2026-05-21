@@ -561,7 +561,7 @@ header {
      of the sidebar where lights don't reach — but we keep symmetric
      vertical padding so content reads centered. */
   padding: 2px 20px;
-  padding-top: 7px;
+  padding-top: 16px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface);
   flex-shrink: 0;
