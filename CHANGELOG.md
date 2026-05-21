@@ -4,6 +4,11 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-05-20
+
+### Fixed
+- **Huge-model cold-load aborted prematurely**: `STREAM_CONNECT_TIMEOUT_MS` was 30s. Models ≥30 GB take longer than that to load in MLX before producing the first byte, so the timeout fired → fetch aborted → chat showed `[stopped before response]` even though user didn't click Stop. Bumped to 5 min and now explicitly `clearTimeout` the moment fetch headers arrive (was only cleared on abort). Streaming itself remains unbounded — token gaps don't trip it.
+
 ## [0.10.1] — 2026-05-20
 
 ### Added (v2.0 batch B — v2.0 sprint complete)

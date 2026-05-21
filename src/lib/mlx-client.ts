@@ -8,10 +8,14 @@ export interface ChatChunk {
 // Time-to-first-byte cap. Aborts the request if the server hasn't replied
 // with response headers within this window — prevents the UI from wedging
 // on a dead Ollama / MLX daemon. Streaming itself isn't bounded; tokens
-// arriving keeps the connection alive.
-const STREAM_CONNECT_TIMEOUT_MS = 30_000;
+// arriving keeps the connection alive. Bumped from 30s → 5min because
+// huge models (60+ GB) take minutes to cold-load before MLX sends headers.
+const STREAM_CONNECT_TIMEOUT_MS = 300_000;
 
-function withTimeout(parent: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+function withTimeout(
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; clear: () => void } {
   const ctrl = new AbortController();
   if (parent) {
     if (parent.aborted) ctrl.abort(parent.reason);
@@ -22,7 +26,7 @@ function withTimeout(parent: AbortSignal | undefined, timeoutMs: number): AbortS
     timeoutMs,
   );
   ctrl.signal.addEventListener("abort", () => clearTimeout(t), { once: true });
-  return ctrl.signal;
+  return { signal: ctrl.signal, clear: () => clearTimeout(t) };
 }
 
 export async function* streamChat(
@@ -59,12 +63,16 @@ export async function* streamChat(
     }),
   };
 
+  const to = withTimeout(opts.signal, STREAM_CONNECT_TIMEOUT_MS);
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    signal: withTimeout(opts.signal, STREAM_CONNECT_TIMEOUT_MS),
+    signal: to.signal,
   });
+  // Clear the connect-timeout the moment headers arrive. Streaming itself
+  // is unbounded; tokens may take seconds between chunks on heavy models.
+  to.clear();
 
   if (!res.ok || !res.body) {
     const txt = await res.text().catch(() => "");
