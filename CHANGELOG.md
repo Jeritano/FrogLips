@@ -4,6 +4,15 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.3] — 2026-05-21
+
+### Added
+- **"All HuggingFace" tab in ModelBrowser**: broad text-generation search across HF with no author/library pin. Pipeline-filtered to `text-generation` so vision/audio repos don't pollute the picker. Each card auto-detects format from tags + routes the action button:
+  - MLX repos → `Pull` (existing flow, same as MLX tab)
+  - GGUF repos → `View GGUF files` (jumps to GGUF tab pre-filtered to that repo)
+  - safetensors-only → `Open on HF ↗` (external link, no in-app download)
+  Sits alongside the existing `HuggingFace MLX` and `HuggingFace GGUF` tabs.
+
 ## [0.10.2] — 2026-05-20
 
 ### Fixed

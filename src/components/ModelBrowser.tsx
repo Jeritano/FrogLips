@@ -11,7 +11,7 @@ function fmtBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-type Backend = "ollama" | "hf" | "hf-gguf" | "rp" | "civitai" | "installed";
+type Backend = "ollama" | "hf" | "hf-gguf" | "hf-all" | "rp" | "civitai" | "installed";
 
 /* GGUF file tree entry returned by `https://huggingface.co/api/models/{repo}/tree/main`.
    We only consume the leaf-file shape here — directories are surfaced via the
@@ -539,6 +539,13 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   const [hfLoading, setHfLoading] = useState(false);
   const [hfErr, setHfErr] = useState<string | null>(null);
 
+  /* Full-HF tab state (hf-all). Unfiltered search across all HuggingFace
+   * models. Detects format from tags so we can show the right action button
+   * (Download for MLX, View files for GGUF, Open on HF for safetensors-only). */
+  const [hfAllModels, setHfAllModels] = useState<HfModel[]>([]);
+  const [hfAllLoading, setHfAllLoading] = useState(false);
+  const [hfAllErr, setHfAllErr] = useState<string | null>(null);
+
   /* GGUF tab state. Kept parallel to the MLX HF tab so existing flows stay
      untouched — we never mutate `hfModels` / `hfLoading` from the GGUF code path. */
   const [ggufRepos, setGgufRepos] = useState<HfModel[]>([]);
@@ -611,6 +618,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
     } else if (tab === "hf-gguf") {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       debounceRef.current = window.setTimeout(() => loadHfGguf(query), 250);
+    } else if (tab === "hf-all") {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+      debounceRef.current = window.setTimeout(() => loadHfAll(query), 250);
     } else if (tab === "civitai") {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       debounceRef.current = window.setTimeout(() => loadCivitai(query), 250);
@@ -739,6 +749,49 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
     }
   }
 
+  /** Fetch the full HuggingFace catalogue (no author / library pin). Used by
+   * the "All HuggingFace" tab so the user can browse anything on HF — MLX,
+   * GGUF, vanilla safetensors, etc. Compatibility hints render per row. */
+  async function loadHfAll(q: string) {
+    fetchAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    fetchAbortRef.current = ctrl;
+    setHfAllLoading(true);
+    setHfAllErr(null);
+    try {
+      const params = new URLSearchParams({
+        sort: "downloads",
+        direction: "-1",
+        limit: "100",
+        // Pin pipeline to text-generation so we don't surface audio / vision /
+        // diffusion repos in a chat-LLM picker. User can drop the filter later
+        // via free-text search if they want.
+        pipeline_tag: "text-generation",
+      });
+      if (q.trim()) params.set("search", q.trim());
+      const url = `https://huggingface.co/api/models?${params.toString()}`;
+      const timeoutId = window.setTimeout(
+        () => ctrl.abort(new DOMException("HF request timed out", "TimeoutError")),
+        15_000,
+      );
+      let res: Response;
+      try {
+        res = await fetch(url, { signal: ctrl.signal });
+      } finally { window.clearTimeout(timeoutId); }
+      if (!res.ok) throw new Error(`HF API ${res.status}`);
+      const data: HfModel[] = await res.json();
+      if (ctrl.signal.aborted) return;
+      const capped = Array.isArray(data) ? data.slice(0, 200) : [];
+      setHfAllModels(capped);
+    } catch (e: any) {
+      if (e?.name === "AbortError") return;
+      setHfAllErr(String(e?.message || e));
+    } finally {
+      if (fetchAbortRef.current === ctrl) fetchAbortRef.current = null;
+      setHfAllLoading(false);
+    }
+  }
+
   /** Lazy-load the file tree for a GGUF repo when the user clicks its row. */
   async function loadGgufTree(repoId: string) {
     setGgufTrees((m) => new Map([...m, [repoId, "loading"]]));
@@ -859,6 +912,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               tab === "ollama"   ? "Filter Ollama models…" :
               tab === "hf"       ? "Search HuggingFace MLX…" :
               tab === "hf-gguf"  ? "Search HuggingFace GGUF…" :
+              tab === "hf-all"   ? "Search all of HuggingFace…" :
               tab === "rp"       ? "Filter RP / Kobold models…" :
                                    "Search Civitai…"
             }
@@ -893,6 +947,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
             </option>
             <option value="hf-gguf">
               HuggingFace GGUF ({ggufRepos.length || "live"})
+            </option>
+            <option value="hf-all">
+              HuggingFace All ({hfAllModels.length || "live"})
             </option>
             <option value="rp">
               RP / Kobold ({RP_CATALOG.length})
@@ -1313,6 +1370,113 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
                 );
               })}
             </div>
+          )}
+
+          {/* "All HuggingFace" tab — broad text-generation search across HF
+              with no author / library pin. Each card detects format from
+              tags so we can route the action button correctly: MLX → Pull,
+              GGUF → switch to GGUF tab for file picker, safetensors-only →
+              open the repo page on HF (no in-app download). */}
+          {tab === "hf-all" && (
+            <>
+              {hfAllLoading && hfAllModels.length === 0 && (
+                <div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading from HuggingFace…</div>
+              )}
+              {hfAllErr && <div className="mb-empty mb-empty-err">Failed to load: {hfAllErr}</div>}
+              {!hfAllLoading && !hfAllErr && hfAllModels.length === 0 && (
+                <div className="mb-empty">No models match "{query}"</div>
+              )}
+              {hfAllModels.length > 0 && (
+                <div className="mb-empty" style={{ padding: "8px 0 12px", textAlign: "left", fontSize: 11 }}>
+                  All text-generation repos on HF. Pull works only on MLX repos; for GGUF use the GGUF tab; safetensors-only repos open on huggingface.co.
+                </div>
+              )}
+              {hfAllModels.map((m) => {
+                const tags = inferTags(m);
+                const info = parseHfTags(m.tags, m.pipeline_tag);
+                const updated = relativeTime(m.lastModified);
+                const author = m.id.includes("/") ? m.id.split("/")[0] : "?";
+                const isMlx = tags.includes("mlx") || m.id.startsWith("mlx-community/");
+                const hasGguf = tags.includes("gguf") || (m.tags ?? []).some((t) => t.toLowerCase() === "gguf");
+                const isPulling = pulling === m.id;
+                const isDone = done.has(m.id);
+                const isInstalled = installedMlxIds.has(m.id);
+                const err = errors.get(m.id);
+                return (
+                  <div key={m.id} className="mb-card" data-testid="hf-all-model-card">
+                    <div className="mb-card-info">
+                      <div className="mb-card-top">
+                        <span className="mb-card-label">{m.id}</span>
+                        <div className="mb-tags">
+                          {info.pipeline && (
+                            <span className="mb-tag" style={{ background: "#f59e0b22", color: "#f59e0b" }}>
+                              {pipelineShort(info.pipeline)}
+                            </span>
+                          )}
+                          {tags.map((t) => (
+                            <span key={t} className="mb-tag" style={{ background: (TAG_COLORS[t] ?? "#6b7280") + "22", color: TAG_COLORS[t] ?? "#9ca3af" }}>
+                              {t}
+                            </span>
+                          ))}
+                          {info.license && (
+                            <span className="mb-tag civitai-soft" title="License">{info.license}</span>
+                          )}
+                          {m.gated && (
+                            <span className="mb-tag" style={{ background: "#ef444422", color: "#ef4444" }} title="Requires HF auth">gated</span>
+                          )}
+                          {isInstalled && (
+                            <span className="mb-tag mb-installed-tag" title="Already pulled">✓ installed</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mb-card-desc">
+                        ↓ {abbrev(m.downloads)} · ♥ {abbrev(m.likes)}
+                        {updated && <> · {updated}</>}
+                      </div>
+                      {err && <div className="mb-card-err">{err}</div>}
+                    </div>
+                    <div className="mb-card-actions">
+                      <span className="mb-card-size">{author}</span>
+                      {isMlx ? (
+                        isInstalled ? (
+                          <button
+                            className="mb-delete-btn"
+                            onClick={() => requestRemove(m.id, "mlx")}
+                            disabled={!!deleting}
+                          >
+                            {confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove"}
+                          </button>
+                        ) : (
+                          <button
+                            className={`mb-pull-btn ${isDone ? "done" : ""}`}
+                            onClick={() => pull(m.id, "hf")}
+                            disabled={isPulling || !!pulling}
+                          >
+                            {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
+                          </button>
+                        )
+                      ) : hasGguf ? (
+                        <button
+                          className="mb-pull-btn"
+                          onClick={() => { setTab("hf-gguf"); setQuery(m.id); }}
+                          title="Switch to the GGUF tab pre-filtered to this repo"
+                        >
+                          View GGUF files
+                        </button>
+                      ) : (
+                        <button
+                          className="mb-pull-btn"
+                          onClick={() => { window.open(`https://huggingface.co/${m.id}`, "_blank", "noreferrer"); }}
+                          title="Repo isn't MLX/GGUF — opens on huggingface.co"
+                        >
+                          Open on HF ↗
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
           )}
 
           {/* RP / Kobold tab */}
