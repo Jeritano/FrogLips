@@ -279,9 +279,10 @@ body {
   /* Elegant outer frame — small inset, rounded corners, subtle border.
      Inspired by Claude Code's panel-in-panel look. */
   padding: 6px;
-  /* Extra top padding so the rounded panel corners breathe past the
-     macOS traffic lights — matches the visible inset on the bottom edge. */
-  padding-top: 14px;
+  /* Top inset = macOS traffic-light top (~y=12). The model picker then
+     starts at exactly the same Y so its top edge lines up with the
+     traffic-light tops. */
+  padding-top: 12px;
   gap: 6px;
   background:
     radial-gradient(circle at top left, rgba(99, 102, 241, 0.08), transparent 40%),
@@ -560,15 +561,17 @@ header {
      Tighter than the sidebar's row since the header sits to the right
      of the sidebar where lights don't reach — but we keep symmetric
      vertical padding so content reads centered. */
-  padding: 2px 20px;
-  padding-top: 16px;
+  padding: 8px 20px 8px 20px;
+  padding-top: 0;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface);
   flex-shrink: 0;
   display: flex;
-  align-items: center;
+  /* Pin to the top so the model picker's TOP edge sits at the header's
+     top edge, which (with .app padding-top: 12) lines up with the
+     macOS traffic-light tops. */
+  align-items: flex-start;
   gap: 12px;
-  min-height: 24px;
 }
 
 /* ── Model picker ── */
