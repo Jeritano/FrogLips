@@ -679,7 +679,8 @@ header {
 .message-list {
   flex: 1;
   overflow-y: auto;
-  padding: 28px 0 8px;
+  /* Tight top gap to match the header's thin top padding. */
+  padding: 6px 0 8px;
   display: flex;
   flex-direction: column;
   gap: 2px;
