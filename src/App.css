@@ -103,7 +103,11 @@
   display: flex;
   align-items: stretch;
   gap: 6px;
-  padding: 0 12px;
+  /* Reserve space at the top of the sidebar for the macOS traffic lights
+     (titleBarStyle: Overlay puts them on top of the content). 80 px of
+     left padding clears the close/min/max trio; 36 px of top padding
+     drops the row below the chrome. */
+  padding: 36px 12px 0 80px;
 }
 .new-chat { flex: 1; }
 .topbar-hamburger {

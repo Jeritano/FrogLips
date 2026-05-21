@@ -58,14 +58,10 @@ function App() {
   const deleteConfirm = useTwoClickConfirm();
 
   useEffect(() => {
-    // Stamp the window title bar with the running build version so users
-    // can see at a glance which version they're on (matches the version
-    // shown in the README badge + GitHub releases).
-    getCurrentWindow()
-      .setTitle(`Froglips v${pkg.version}`)
-      .catch((err) =>
-        logDiag({ level: "info", source: "app", message: "setTitle failed", detail: err }),
-      );
+    // Window uses macOS Overlay title-bar style + hiddenTitle, so the
+    // OS chrome only renders the traffic lights — no title text. We keep
+    // pkg imported so the version is available for the in-app footer.
+    void pkg;
     refreshStatus();
     refreshConversations();
     // First-run gate: ask Rust whether the wizard has been completed before.
