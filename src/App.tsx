@@ -4,6 +4,7 @@ import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/ap
 import { api } from "./lib/tauri-api";
 import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
+import pkg from "../package.json";
 import { useTwoClickConfirm } from "./lib/use-two-click-confirm";
 import type { Conversation, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
@@ -57,6 +58,14 @@ function App() {
   const deleteConfirm = useTwoClickConfirm();
 
   useEffect(() => {
+    // Stamp the window title bar with the running build version so users
+    // can see at a glance which version they're on (matches the version
+    // shown in the README badge + GitHub releases).
+    getCurrentWindow()
+      .setTitle(`Froglips v${pkg.version}`)
+      .catch((err) =>
+        logDiag({ level: "info", source: "app", message: "setTitle failed", detail: err }),
+      );
     refreshStatus();
     refreshConversations();
     // First-run gate: ask Rust whether the wizard has been completed before.
