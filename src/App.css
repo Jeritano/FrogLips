@@ -320,8 +320,12 @@ body {
 .topbar-menu {
   position: absolute;
   top: calc(100% + 4px);
-  right: 0;
-  min-width: 200px;
+  /* Anchor to the LEFT edge of the trigger so the menu flies out into the
+     sidebar (the hamburger now lives in the top-left of the sidebar; the
+     old right: 0 pushed the menu off-screen to the left of the window). */
+  left: 0;
+  min-width: 220px;
+  white-space: nowrap;
   background: var(--surface);
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
