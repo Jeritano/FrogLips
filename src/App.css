@@ -560,13 +560,19 @@ body {
 }
 
 header {
-  padding: 10px 20px;
+  /* Reserve room at the top for the macOS traffic lights (same 36 px
+     safe-area pattern the sidebar uses) so the header bar feels visually
+     balanced — content centers vertically in the remaining strip below
+     the chrome. */
+  padding: 12px 20px;
+  padding-top: 42px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface);
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 12px;
+  min-height: 56px;
 }
 
 /* ── Model picker ── */
