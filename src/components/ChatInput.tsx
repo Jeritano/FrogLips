@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatImage } from "../types";
 import {
   MAX_IMAGES_PER_MESSAGE,
@@ -11,7 +11,13 @@ import {
   loadAllTemplates,
   type PromptTemplate,
 } from "../lib/prompt-templates";
-import { PromptLibrary } from "./PromptLibrary";
+
+// PromptLibrary is the full-screen template manager; only opens when the
+// user clicks the library button. Lazy-load so the chat input itself stays
+// in the first-paint chunk while the manager ships separately.
+const PromptLibrary = lazy(() =>
+  import("./PromptLibrary").then((m) => ({ default: m.PromptLibrary })),
+);
 
 /**
  * Detect a slash-command "trigger context" in the textarea.
@@ -163,6 +169,30 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
     const t = setTimeout(() => setDropMsg(null), 4000);
     return () => clearTimeout(t);
   }, [dropMsg]);
+
+  // Allow other components to prefill the composer (e.g. the first-run setup
+  // wizard dropping a sample prompt into the input after closing). Dispatch a
+  // `chat-input:prefill` CustomEvent with `{ detail: { text: "..." } }` from
+  // anywhere in the tree. We intentionally never auto-send — the user must
+  // press Enter to confirm so the wizard's "try a prompt" cards remain
+  // editable starter points rather than surprise submissions.
+  useEffect(() => {
+    function handler(e: Event) {
+      const ce = e as CustomEvent<{ text?: string }>;
+      const value = ce.detail?.text;
+      if (typeof value !== "string" || !value) return;
+      setText(value);
+      // Focus + caret-at-end so the user can immediately edit/submit.
+      setTimeout(() => {
+        const ta = taRef.current;
+        if (!ta) return;
+        ta.focus();
+        ta.setSelectionRange(value.length, value.length);
+      }, 0);
+    }
+    window.addEventListener("chat-input:prefill", handler);
+    return () => window.removeEventListener("chat-input:prefill", handler);
+  }, []);
 
   function send() {
     const t = text.trim();
@@ -535,11 +565,21 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
           <button data-testid="send-btn" onClick={send} disabled={disabled || (!text.trim() && images.length === 0)} className="send-btn" title="Send">↑</button>
         )}
       </div>
-      <PromptLibrary
-        open={showLibrary}
-        onClose={() => { setShowLibrary(false); refreshTemplates(); }}
-        onChange={refreshTemplates}
-      />
+      {/*
+       * Only mount the library while open. Keeps the chunk fetch deferred
+       * until the user actually opens the manager. Suspense fallback is
+       * null because PromptLibrary is a modal overlay — a spinner over the
+       * chat surface would be more noise than signal.
+       */}
+      {showLibrary && (
+        <Suspense fallback={null}>
+          <PromptLibrary
+            open={showLibrary}
+            onClose={() => { setShowLibrary(false); refreshTemplates(); }}
+            onChange={refreshTemplates}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

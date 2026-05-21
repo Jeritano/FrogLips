@@ -1274,6 +1274,70 @@ fn settings_set(patch: serde_json::Value) -> Result<settings::Settings, String> 
     Ok(updated)
 }
 
+/* ── First-run setup wizard ─────────────────────────────────────────────── */
+
+/// Returns whether the user has dismissed the first-run setup wizard.
+/// Absent flag → `false` (i.e. legacy installs without the field rerun the
+/// wizard once, then it self-marks complete).
+#[tauri::command]
+fn setup_complete_get() -> bool {
+    settings::load().setup_complete.unwrap_or(false)
+}
+
+/// Persists the wizard's completion flag. Two callers:
+///   * the wizard's "Done" button → `true`
+///   * the Settings panel "Re-run setup wizard" button → `false`
+#[tauri::command]
+fn setup_complete_set(value: bool) -> Result<(), String> {
+    let mut s = settings::load();
+    s.setup_complete = Some(value);
+    settings::save(&s).map_err(|e| e.to_string())
+}
+
+/// Probe for an installed MLX server by attempting `mlx_lm.server --help`.
+/// Returns Ok(true) if the binary exists on PATH and exits cleanly within
+/// the timeout; Ok(false) on missing-binary / non-zero exit / timeout. We
+/// never surface an Err here — the wizard treats "probe errored" the same
+/// as "backend unavailable" and the user can still pick a different option.
+#[tauri::command]
+async fn mlx_probe() -> bool {
+    const MLX_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    let fut = tokio::process::Command::new("mlx_lm.server")
+        .arg("--help")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .status();
+    match tokio::time::timeout(MLX_PROBE_TIMEOUT, fut).await {
+        Ok(Ok(status)) => status.success(),
+        _ => false,
+    }
+}
+
+/// Probe for a running Ollama daemon via the official tags endpoint with a
+/// 1s hard ceiling. Hardcoded to localhost:11434 so there's no SSRF surface
+/// (the URL isn't user-controlled). Any error → false.
+#[tauri::command]
+async fn ollama_probe() -> bool {
+    const OLLAMA_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+    let client = match reqwest::Client::builder()
+        .timeout(OLLAMA_PROBE_TIMEOUT)
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    match client
+        .get("http://127.0.0.1:11434/api/tags")
+        .send()
+        .await
+    {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
+}
+
 /* ── Agent audit log ────────────────────────────────────────────────────── */
 
 /* ── RAG (project knowledge) ────────────────────────────────────────── */
@@ -1638,6 +1702,10 @@ pub fn run() {
             agent_ask_user_cancel,
             settings_get,
             settings_set,
+            setup_complete_get,
+            setup_complete_set,
+            mlx_probe,
+            ollama_probe,
             native_supported,
             native_load_model,
             native_unload_model,

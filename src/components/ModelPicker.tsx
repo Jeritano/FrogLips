@@ -1,7 +1,13 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api } from "../lib/tauri-api";
 import type { AllModels, ModelEntry, ServerStatus } from "../types";
-import { ModelBrowser } from "./ModelBrowser";
+
+// ModelBrowser bundles three large tabs (HF, Civitai, GGUF) plus their data
+// fetchers. Lazy-load so the picker shell stays in the first-paint chunk and
+// the browser only downloads when the user opens "Browse & download models".
+const ModelBrowser = lazy(() =>
+  import("./ModelBrowser").then((m) => ({ default: m.ModelBrowser })),
+);
 
 interface Props {
   status: ServerStatus | null;
@@ -160,10 +166,12 @@ export function ModelPicker({ status, onStatusChange }: Props) {
       </div>
 
       {browserOpen && (
-        <ModelBrowser
-          onClose={() => setBrowserOpen(false)}
-          onPulled={() => { loadModels(); setBrowserOpen(false); }}
-        />
+        <Suspense fallback={<div className="lazy-loading">Loading model browser…</div>}>
+          <ModelBrowser
+            onClose={() => setBrowserOpen(false)}
+            onPulled={() => { loadModels(); setBrowserOpen(false); }}
+          />
+        </Suspense>
       )}
     </>
   );

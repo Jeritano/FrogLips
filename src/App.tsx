@@ -1,17 +1,34 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { api } from "./lib/tauri-api";
 import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
-import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
+import { useTwoClickConfirm } from "./lib/use-two-click-confirm";
 import type { Conversation, ServerStatus } from "./types";
-import { ForkTreeModal } from "./components/ForkTree";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
-import { Dashboard } from "./components/Dashboard";
 import "./App.css";
+
+// Heavy panels that aren't needed for first paint: lazy-load so they ship in
+// their own chunks. Each is gated behind a user action (sidebar button / fork
+// gesture), so the small extra latency on first open is invisible against the
+// network/disk fetch they trigger anyway.
+const Dashboard = lazy(() =>
+  import("./components/Dashboard").then((m) => ({ default: m.Dashboard })),
+);
+const DiagnosticsPanel = lazy(() =>
+  import("./components/DiagnosticsPanel").then((m) => ({ default: m.DiagnosticsPanel })),
+);
+const ForkTreeModal = lazy(() =>
+  import("./components/ForkTree").then((m) => ({ default: m.ForkTreeModal })),
+);
+// First-run-only flow: never seen by returning users, so it has no business
+// living in the initial chunk. Mounts behind `wizardOpen === true`.
+const SetupWizard = lazy(() =>
+  import("./components/SetupWizard").then((m) => ({ default: m.SetupWizard })),
+);
 
 function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -27,11 +44,44 @@ function App() {
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [forkTreeOpen, setForkTreeOpen] = useState(false);
+  // First-run setup wizard. `undefined` = haven't checked the flag yet, so we
+  // render nothing for the wizard region until the IPC call returns. This
+  // avoids a flash of the wizard on returning users whose setup is already
+  // complete. Once we know, `true` mounts the wizard.
+  const [wizardOpen, setWizardOpen] = useState<boolean | undefined>(undefined);
   const editInputRef = useRef<HTMLInputElement>(null);
+  // Tauri 2 webview disables window.confirm — use an inline two-click pattern
+  // for conversation deletion so accidental clicks don't nuke a thread.
+  const deleteConfirm = useTwoClickConfirm();
 
   useEffect(() => {
     refreshStatus();
     refreshConversations();
+    // First-run gate: ask Rust whether the wizard has been completed before.
+    // Defaults to opening the wizard if the IPC call rejects — better to over-
+    // show the wizard than to leave a new user staring at a blank app.
+    // Heuristic: if setup_complete is unset BUT the user has a last_model
+    // already picked, this is an existing install that pre-dates the wizard.
+    // Auto-mark them complete so the wizard never opens.
+    Promise.all([api.setupCompleteGet(), api.settingsGet()])
+      .then(async ([done, s]) => {
+        if (done) { setWizardOpen(false); return; }
+        if (s.last_model) {
+          await api.setupCompleteSet(true).catch(() => {});
+          setWizardOpen(false);
+          return;
+        }
+        setWizardOpen(true);
+      })
+      .catch((err) => {
+        logDiag({
+          level: "info",
+          source: "app",
+          message: "setupCompleteGet/settingsGet rejected — defaulting to showing the wizard",
+          detail: err,
+        });
+        setWizardOpen(true);
+      });
     // Load settings + restore window geometry + configure memory client
     api.settingsGet().then(async (s) => {
       configureMemory({
@@ -414,13 +464,24 @@ function App() {
               </button>
               <button
                 className="del"
-                title="Delete"
+                title={
+                  deleteConfirm.armed === String(c.id)
+                    ? "Click again to confirm deletion"
+                    : "Delete"
+                }
+                aria-label={
+                  deleteConfirm.armed === String(c.id)
+                    ? "Click again to confirm deletion"
+                    : "Delete conversation"
+                }
                 onClick={(e) => {
                   e.stopPropagation();
-                  deleteConv(c.id);
+                  deleteConfirm.request(String(c.id), () => {
+                    void deleteConv(c.id);
+                  });
                 }}
               >
-                ×
+                {deleteConfirm.labelFor(String(c.id), "×")}
               </button>
             </li>
           ))}
@@ -449,6 +510,31 @@ function App() {
         >
           <span aria-hidden="true">🩺</span>
           Diagnostics
+        </button>
+        <button
+          type="button"
+          className="dashboard-btn"
+          data-testid="rerun-setup-wizard"
+          onClick={async () => {
+            // Flip the persistent flag back to "incomplete" and re-mount the
+            // wizard. We persist first so a crash mid-wizard still re-opens
+            // it on next launch (same behavior as a brand-new install).
+            try {
+              await api.setupCompleteSet(false);
+            } catch (err) {
+              logDiag({
+                level: "warn",
+                source: "app",
+                message: "setupCompleteSet(false) failed — wizard still opening locally",
+                detail: err,
+              });
+            }
+            setWizardOpen(true);
+          }}
+          title="Re-open the first-run setup wizard"
+        >
+          <span aria-hidden="true">🧭</span>
+          Re-run setup wizard
         </button>
         {current && (
           <button
@@ -502,18 +588,71 @@ function App() {
           }}
         />
       </main>
-      <Dashboard open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
-      <DiagnosticsPanel open={diagnosticsOpen} onClose={() => setDiagnosticsOpen(false)} />
-      <ForkTreeModal
-        open={forkTreeOpen}
-        onClose={() => setForkTreeOpen(false)}
-        rootId={current?.id ?? null}
-        onSelect={(id) => {
-          const c = conversations.find((x) => x.id === id);
-          if (c) setCurrent(c);
-          setForkTreeOpen(false);
-        }}
-      />
+      {/*
+       * Mount lazy panels only while open so their chunks don't fetch on
+       * startup. Suspense fallback is intentionally null — these panels are
+       * modal overlays, so any transient spinner would flash above the chat
+       * for a few ms before the chunk resolves. The buttons are already in
+       * their pressed state, which is enough feedback.
+       */}
+      {dashboardOpen && (
+        <Suspense fallback={null}>
+          <Dashboard open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
+        </Suspense>
+      )}
+      {diagnosticsOpen && (
+        <Suspense fallback={null}>
+          <DiagnosticsPanel open={diagnosticsOpen} onClose={() => setDiagnosticsOpen(false)} />
+        </Suspense>
+      )}
+      {forkTreeOpen && (
+        <Suspense fallback={null}>
+          <ForkTreeModal
+            open={forkTreeOpen}
+            onClose={() => setForkTreeOpen(false)}
+            rootId={current?.id ?? null}
+            onSelect={(id) => {
+              const c = conversations.find((x) => x.id === id);
+              if (c) setCurrent(c);
+              setForkTreeOpen(false);
+            }}
+          />
+        </Suspense>
+      )}
+      {wizardOpen === true && (
+        <Suspense fallback={null}>
+          <SetupWizard
+            onDone={async (samplePrompt) => {
+            // Persist the wizard-complete flag so the next launch lands the
+            // user straight in the chat. We do this even on the "Skip setup"
+            // path — the user has explicitly opted out, so don't nag again.
+            try {
+              await api.setupCompleteSet(true);
+            } catch (err) {
+              logDiag({
+                level: "warn",
+                source: "app",
+                message: "setupCompleteSet(true) failed — wizard will reopen on next launch",
+                detail: err,
+              });
+            }
+            setWizardOpen(false);
+            if (samplePrompt) {
+              // Defer until the wizard has fully unmounted so ChatInput is
+              // mounted and listening. The composer focuses + selects on
+              // prefill internally.
+              setTimeout(() => {
+                window.dispatchEvent(
+                  new CustomEvent("chat-input:prefill", {
+                    detail: { text: samplePrompt },
+                  }),
+                );
+              }, 0);
+            }
+          }}
+        />
+        </Suspense>
+      )}
     </div>
   );
 }

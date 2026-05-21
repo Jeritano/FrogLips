@@ -98,6 +98,15 @@ export async function installTauriMock(page: Page, opts: MockOptions = {}) {
           case "delete_message":
             return null;
 
+          /* — First-run setup wizard — */
+          case "setup_complete_get":
+            // E2E suites assume a "returning user" — wizard already done —
+            // unless a per-test handler overrides this to exercise the
+            // first-run flow explicitly.
+            return true;
+          case "setup_complete_set":
+            return null;
+
           /* — Memory — */
           case "list_memories":
             return [];

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
@@ -18,9 +18,17 @@ import type { ChatImage, Conversation, Memory, Message, ProjectPolicy, ServerSta
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { McpSettings } from "./McpSettings";
-import { RagPanel } from "./RagPanel";
-import { AuditLog } from "./AuditLog";
 import { ToolHistory } from "./ToolHistory";
+
+// RagPanel and AuditLog only render inside the agent-settings disclosure
+// (gear icon while agent mode is on). Lazy-load so first paint of the chat
+// surface doesn't pay for them — both pull in their own datastore helpers.
+const RagPanel = lazy(() =>
+  import("./RagPanel").then((m) => ({ default: m.RagPanel })),
+);
+const AuditLog = lazy(() =>
+  import("./AuditLog").then((m) => ({ default: m.AuditLog })),
+);
 import { conversationToMarkdown, downloadText, safeFilename, type ExportMode } from "../lib/export";
 import {
   getMemoryMode,
@@ -1007,8 +1015,16 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               {updateMsg && <span className="agent-settings-hint">{updateMsg}</span>}
             </div>
             <McpSettings />
-            <RagPanel />
-            <AuditLog />
+            {/*
+             * Render lazy panels inside a single Suspense boundary — both
+             * resolve from the same chunk pipeline, and a shared fallback
+             * keeps the panel layout stable while they hydrate (no flash of
+             * empty space between the rows).
+             */}
+            <Suspense fallback={<div className="lazy-loading">Loading…</div>}>
+              <RagPanel />
+              <AuditLog />
+            </Suspense>
           </div>
         )}
 

@@ -280,6 +280,8 @@ export interface AppSettings {
   theme?: "dark" | "light" | null;
   custom_backends?: CustomBackend[] | null;
   mcp_servers?: McpServerConfig[] | null;
+  /** First-run setup wizard completion flag. Absent on legacy installs. */
+  setup_complete?: boolean | null;
 }
 
 export interface McpServerConfig {

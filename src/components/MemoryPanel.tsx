@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
+import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import type { Memory, MemoryMode, MemoryScope } from "../types";
 import {
   demoteMemory,
@@ -60,6 +61,9 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
   const [newMemoryText, setNewMemoryText] = useState("");
   const [newMemoryScope, setNewMemoryScope] = useState<MemoryScope>("global");
   const [savingNew, setSavingNew] = useState(false);
+  // Tauri 2 webview disables window.confirm — use an inline two-click pattern
+  // for memory deletion so the destructive flow can't short-circuit silently.
+  const deleteConfirm = useTwoClickConfirm();
 
   const refresh = useCallback(async () => {
     try {
@@ -318,7 +322,25 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
                           title={down ? `Demote → ${SCOPE_LABELS[down]}` : "Already conversation"}
                           aria-label="Demote memory"
                         >↓</button>
-                        <button className="memory-btn delete" disabled={busy === m.id} onClick={() => del(m.id)} title="Delete">✕</button>
+                        <button
+                          className="memory-btn delete"
+                          disabled={busy === m.id}
+                          onClick={() =>
+                            deleteConfirm.request(String(m.id), () => { void del(m.id); })
+                          }
+                          title={
+                            deleteConfirm.armed === String(m.id)
+                              ? "Click again to confirm deletion"
+                              : "Delete"
+                          }
+                          aria-label={
+                            deleteConfirm.armed === String(m.id)
+                              ? "Click again to confirm deletion"
+                              : "Delete memory"
+                          }
+                        >
+                          {deleteConfirm.labelFor(String(m.id), "✕")}
+                        </button>
                       </>
                     )}
                   </div>

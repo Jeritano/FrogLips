@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
+import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import type { McpServerConfig, McpServerInfo } from "../types";
 
 /* ── MCP servers settings pane ────────────────────────────────────────── */
@@ -63,6 +64,9 @@ export function McpSettings({ onConfigsChanged }: Props) {
   const [draftCommand, setDraftCommand] = useState("");
   const [draftArgs, setDraftArgs] = useState("");
   const [draftEnv, setDraftEnv] = useState("");
+  // Tauri 2 webview disables window.confirm — use an inline two-click pattern
+  // so the destructive flow can't short-circuit silently.
+  const removeConfirm = useTwoClickConfirm();
 
   const refresh = useCallback(async () => {
     try {
@@ -136,7 +140,6 @@ export function McpSettings({ onConfigsChanged }: Props) {
   }
 
   async function removeConfig(name: string) {
-    if (!confirm(`Remove MCP server '${name}'?`)) return;
     await stopServer(name).catch((err) =>
       logDiag({
         level: "warn",
@@ -246,7 +249,12 @@ export function McpSettings({ onConfigsChanged }: Props) {
                 )}
                 <button className="agent-settings-btn" onClick={() => restartConfig(cfg)}>Restart</button>
                 <button className="agent-settings-btn" onClick={() => showStderr(cfg.name)}>Stderr</button>
-                <button className="agent-settings-btn" onClick={() => removeConfig(cfg.name)}>Remove</button>
+                <button
+                  className="agent-settings-btn"
+                  onClick={() => removeConfirm.request(cfg.name, (n) => { void removeConfig(n); })}
+                >
+                  {removeConfirm.labelFor(cfg.name, "Remove")}
+                </button>
               </div>
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "4px 0" }}>

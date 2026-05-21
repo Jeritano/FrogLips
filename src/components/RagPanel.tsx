@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
+import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import type { RagCorpusInfo, RagHit, RagIngestReport } from "../types";
 
 /* ── RAG (project knowledge) settings pane ──────────────────────────────
@@ -52,6 +53,9 @@ export function RagPanel({ onCorporaChanged }: Props) {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<RagHit[]>([]);
   const [searching, setSearching] = useState(false);
+  // Tauri 2 webview disables window.confirm — use an inline two-click pattern
+  // for corpus deletion so the destructive flow can't short-circuit silently.
+  const deleteConfirm = useTwoClickConfirm();
 
   const refresh = useCallback(async () => {
     try {
@@ -102,7 +106,6 @@ export function RagPanel({ onCorporaChanged }: Props) {
 
   const handleDelete = useCallback(
     async (name: string) => {
-      if (!confirm(`Delete corpus '${name}' and all its chunks?`)) return;
       try {
         await api.ragDeleteCorpus(name);
         await refresh();
@@ -245,11 +248,21 @@ export function RagPanel({ onCorporaChanged }: Props) {
                   <td style={{ textAlign: "right" }}>{fmtAge(c.updated_at)}</td>
                   <td style={{ textAlign: "right" }}>
                     <button
-                      onClick={() => handleDelete(c.name)}
-                      title="Delete corpus"
-                      aria-label={`Delete ${c.name}`}
+                      onClick={() =>
+                        deleteConfirm.request(c.name, (n) => { void handleDelete(n); })
+                      }
+                      title={
+                        deleteConfirm.armed === c.name
+                          ? "Click again to confirm deletion"
+                          : "Delete corpus"
+                      }
+                      aria-label={
+                        deleteConfirm.armed === c.name
+                          ? `Click again to confirm deleting ${c.name}`
+                          : `Delete ${c.name}`
+                      }
                     >
-                      ×
+                      {deleteConfirm.labelFor(c.name, "×")}
                     </button>
                   </td>
                 </tr>

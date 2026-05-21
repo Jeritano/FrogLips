@@ -2278,3 +2278,262 @@ button.cancel {
   from { transform: translateY(8px); opacity: 0; }
   to   { transform: translateY(0);   opacity: 1; }
 }
+
+/* Suspense fallback for lazy-loaded panels. Intentionally subtle: the
+ * panels resolve in tens of ms on first open, so the placeholder is only
+ * visible during a cold disk read. Matches the muted hint typography used
+ * elsewhere in the settings rows. */
+.lazy-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* ── First-run setup wizard ─────────────────────────────────────────────── */
+/* Full-screen modal that mounts above the chat UI on first launch. Z-index
+ * is higher than the lazy-panel overlays (Dashboard/Diagnostics) so the
+ * wizard never gets covered when re-triggered from the sidebar button. */
+.setup-wizard-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.78);
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.setup-wizard-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 90vh;
+  overflow: auto;
+  padding: 24px 28px 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  color: var(--text);
+}
+.setup-wizard-stepper {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.setup-wizard-step-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+.setup-wizard-step-dot.active {
+  background: var(--accent, #4f8cff);
+  color: white;
+  border-color: var(--accent, #4f8cff);
+}
+.setup-wizard-step-dot.done {
+  background: rgba(79, 140, 255, 0.2);
+  color: var(--text);
+}
+.setup-wizard-step h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+.setup-wizard-pitch {
+  margin: 0 0 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.setup-wizard-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 18px;
+  font-size: 13px;
+}
+.setup-wizard-table th,
+.setup-wizard-table td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.setup-wizard-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.setup-wizard-backend-name {
+  font-weight: 600;
+}
+.setup-wizard-backend-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.setup-wizard-status {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 4px;
+  display: inline-block;
+}
+.setup-wizard-status.checking {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+}
+.setup-wizard-status.available {
+  background: rgba(60, 200, 120, 0.15);
+  color: rgb(120, 230, 160);
+}
+.setup-wizard-status.unavailable {
+  background: rgba(255, 90, 90, 0.12);
+  color: rgb(240, 140, 140);
+}
+.setup-wizard-action-none {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+.setup-wizard-install-btn {
+  background: var(--accent, #4f8cff);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.setup-wizard-install-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.setup-wizard-install-inline {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 4px 6px;
+  border-radius: 4px;
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.setup-wizard-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 12px 0 18px;
+}
+.setup-wizard-card {
+  text-align: left;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background 100ms;
+}
+.setup-wizard-card:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--accent, #4f8cff);
+}
+.setup-wizard-card:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.setup-wizard-card.done {
+  border-color: rgb(120, 230, 160);
+}
+.setup-wizard-card-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+.setup-wizard-card-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.setup-wizard-card-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.setup-wizard-card-state {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.setup-wizard-card-state.done {
+  color: rgb(120, 230, 160);
+}
+.setup-wizard-empty {
+  background: rgba(255, 90, 90, 0.08);
+  border: 1px solid rgba(255, 90, 90, 0.25);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text);
+  margin: 8px 0 14px;
+}
+.setup-wizard-error {
+  background: rgba(255, 90, 90, 0.08);
+  border: 1px solid rgba(255, 90, 90, 0.25);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: rgb(240, 140, 140);
+  margin: 8px 0;
+}
+.setup-wizard-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+.setup-wizard-primary {
+  background: var(--accent, #4f8cff);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-left: auto;
+}
+.setup-wizard-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.setup-wizard-skip {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.setup-wizard-skip:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}

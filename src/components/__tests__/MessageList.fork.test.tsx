@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { Message } from "../../types";
@@ -57,12 +57,7 @@ async function teardown(h: Harness) {
 }
 
 describe("MessageList fork-from-here button", () => {
-  let originalConfirm: typeof window.confirm;
-  beforeEach(() => {
-    originalConfirm = window.confirm;
-  });
   afterEach(() => {
-    window.confirm = originalConfirm;
     vi.restoreAllMocks();
   });
 
@@ -74,9 +69,9 @@ describe("MessageList fork-from-here button", () => {
     await teardown(h);
   });
 
-  it("dispatches onFork with the message when the user confirms", async () => {
-    // Auto-confirm so the click goes through.
-    window.confirm = vi.fn(() => true) as unknown as typeof window.confirm;
+  it("arms on first click without dispatching onFork", async () => {
+    // First click should only flip the button into its armed state — fork
+    // must not fire until the second click confirms.
     const onFork = vi.fn();
     const h = await mount({ onFork });
     const btn = h.container.querySelector<HTMLButtonElement>('[data-testid="fork-btn"]');
@@ -85,21 +80,31 @@ describe("MessageList fork-from-here button", () => {
       btn!.click();
       await Promise.resolve();
     });
-    expect(onFork).toHaveBeenCalledTimes(1);
-    expect(onFork.mock.calls[0][0]).toMatchObject({ id: 42, role: "user" });
+    expect(onFork).not.toHaveBeenCalled();
+    const armedBtn = h.container.querySelector<HTMLButtonElement>('[data-testid="fork-btn"]');
+    expect(armedBtn?.textContent ?? "").toContain("Click again to confirm");
     await teardown(h);
   });
 
-  it("does not dispatch onFork when the user cancels the confirm modal", async () => {
-    window.confirm = vi.fn(() => false) as unknown as typeof window.confirm;
+  it("dispatches onFork with the message on the second click", async () => {
     const onFork = vi.fn();
     const h = await mount({ onFork });
     const btn = h.container.querySelector<HTMLButtonElement>('[data-testid="fork-btn"]');
+    expect(btn).not.toBeNull();
+    // First click arms.
     await act(async () => {
       btn!.click();
       await Promise.resolve();
     });
     expect(onFork).not.toHaveBeenCalled();
+    // Second click within the window fires.
+    await act(async () => {
+      const armed = h.container.querySelector<HTMLButtonElement>('[data-testid="fork-btn"]');
+      armed!.click();
+      await Promise.resolve();
+    });
+    expect(onFork).toHaveBeenCalledTimes(1);
+    expect(onFork.mock.calls[0][0]).toMatchObject({ id: 42, role: "user" });
     await teardown(h);
   });
 

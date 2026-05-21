@@ -335,6 +335,13 @@ export const api = {
   settingsSet: (patch: Partial<AppSettings>) =>
     invoke<AppSettings>("settings_set", { patch }),
 
+  // First-run setup wizard
+  setupCompleteGet: () => invoke<boolean>("setup_complete_get"),
+  setupCompleteSet: (value: boolean) =>
+    invoke<void>("setup_complete_set", { value }),
+  mlxProbe: () => invoke<boolean>("mlx_probe"),
+  ollamaProbe: () => invoke<boolean>("ollama_probe"),
+
   // MCP (Model Context Protocol)
   mcpStartServer: (
     name: string,

@@ -4,6 +4,7 @@ import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
 import { renderMarkdown } from "../lib/markdown";
+import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import "highlight.js/styles/github-dark.css";
 
 interface Props {
@@ -223,28 +224,31 @@ function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowK
 
 /**
  * Per-message "Fork from here" button. Renders only on user-role messages
- * (per spec). Wraps the click in a `confirm()` modal so accidental clicks
- * don't spawn stray forks.
+ * (per spec). Uses the shared two-click inline confirm so accidental clicks
+ * don't spawn stray forks — Tauri 2's webview disables `window.confirm()`,
+ * which would otherwise silently no-op.
  */
 function ForkButton({ msg, onFork }: { msg: Message; onFork: (m: Message) => void }) {
+  const confirmer = useTwoClickConfirm();
+  const id = String(msg.id);
+  const armed = confirmer.armed === id;
   const handle = useCallback(() => {
-    // Native confirm — keeps the component dependency-free. The host wires up
-    // the actual fork call + conversation selection.
-    const ok = typeof window !== "undefined" && typeof window.confirm === "function"
-      ? window.confirm("Create a new conversation starting from this point?")
-      : true;
-    if (ok) onFork(msg);
-  }, [msg, onFork]);
+    confirmer.request(id, () => onFork(msg));
+  }, [confirmer, id, msg, onFork]);
   return (
     <button
       type="button"
       data-testid="fork-btn"
       className="fork-btn"
       onClick={handle}
-      title="Fork from here — start a new conversation seeded with messages up to this point"
-      aria-label="Fork from here"
+      title={
+        armed
+          ? "Click again to confirm forking from this message"
+          : "Fork from here — start a new conversation seeded with messages up to this point"
+      }
+      aria-label={armed ? "Click again to confirm fork" : "Fork from here"}
     >
-      🌿 Fork from here
+      {armed ? "Click again to confirm" : "🌿 Fork from here"}
     </button>
   );
 }

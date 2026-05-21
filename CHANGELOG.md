@@ -4,6 +4,29 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-05-20
+
+### Added (v2.0 batch B — v2.0 sprint complete)
+- **First-run setup wizard**: detects available backends (Native/MLX/Ollama probe), guides install of missing OR pick existing, recommends starter model per backend, lands user in sample chat w/ pre-filled prompt. Gated on `setup_complete` settings field; "Re-run setup wizard" button in sidebar for manual trigger. Heuristic: existing users w/ `last_model` set skip the wizard (auto-marks complete). Four new Tauri cmds (`setup_complete_get`/`set`, `mlx_probe`, `ollama_probe`). New `SetupWizard.tsx` (519 LOC, lazy-loaded). Recommendations live in TS so tweakable w/o recompile.
+- **Standardized destructive confirms**: new `src/lib/use-two-click-confirm.ts` hook (first click arms 4s timer + flips label to "Click again to confirm", second click invokes). Wired into App.tsx conversation delete, MemoryPanel memory delete, McpSettings server remove, RagPanel corpus delete, MessageList fork-from-here. 5 broken `confirm()` call sites eliminated. Zero `window.confirm(`/`confirm(` calls remain in `src/`.
+- **Bundle code-split**: React.lazy + Suspense around Dashboard, AuditLog, RagPanel, PromptLibrary, ForkTree, ModelBrowser, DiagnosticsPanel, SetupWizard. Main chunk **588 → 514 kB** (−12.6%, −19 kB gzip). 8 lazy chunks emitted. Markdown pipeline (highlight.js + 18 langs) remains main-chunk-bound since MessageList needs it for first paint.
+
+### Tests
+- Rust: **82 passing** (+1 setup_complete round-trip).
+- Vitest: **151 passing** (+3 wizard, +5 two-click hook).
+- Playwright: **11 passing** (mock updated for setup_complete_get).
+- **Grand total: 244 tests.**
+
+### v2.0 sprint complete (6/6)
+| # | Item | Shipped |
+|---|---|---|
+| 28 | GGUF picker (llama.cpp Phase 3) | v0.10.0 |
+| 29 | CI matrix (llama.cpp Phase 4) | v0.10.0 |
+| 32 | Diagnostics panel | v0.10.0 |
+| 30 | First-run setup wizard | v0.10.1 |
+| 31 | Standardize destructive confirms | v0.10.1 |
+| 33 | Bundle code-split | v0.10.1 |
+
 ## [0.10.0] — 2026-05-20
 
 ### Added (v2.0 batch A)
