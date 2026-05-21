@@ -23,9 +23,16 @@ test("pinning a message saves it via add_memory with the expected args", async (
   await page.goto("/");
   await expect(page.getByTestId("app-ready")).toBeVisible();
 
-  // Verify the panel mounts and toggles.
+  // v0.10.7+: MemoryPanel was moved out of the sidebar into a modal
+  // accessed via the top-bar Menu dropdown. Open menu → Memories →
+  // verify panel toggles → close modal so it doesn't intercept later
+  // clicks on the chat composer.
+  await page.locator(".sidebar-actions .topbar-menu-wrap .topbar-btn").click();
+  await page.getByTestId("menu-memories").click();
   await page.getByTestId("memories-toggle").click();
   await expect(page.getByTestId("memory-body")).toBeVisible();
+  await page.locator(".memories-close").click();
+  await expect(page.locator(".memories-overlay")).toHaveCount(0);
 
   // Produce a pinnable assistant message.
   await page.getByTestId("chat-input").fill("remember: I prefer dark mode");

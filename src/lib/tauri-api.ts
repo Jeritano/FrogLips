@@ -8,6 +8,7 @@ import type {
   AgentSessionMetricsRow,
   AllModels,
   DashboardSummary,
+  OllamaLibraryEntry,
   AppSettings,
   BranchInfo,
   BrowserNavigateResult,
@@ -59,6 +60,10 @@ export const api = {
   serverStatus: () => invoke<ServerStatus>("server_status"),
   pullOllamaModel: (name: string) => invoke<string>("pull_ollama_model", { name }),
   pullHfModel: (repoId: string) => invoke<string>("pull_hf_model", { repoId }),
+  // Scrape + parse <https://ollama.com/library>. Cached server-side for 10
+  // minutes. Throws on network/parse failure so the caller can fall back to
+  // the curated `OLLAMA` array.
+  ollamaLibraryFetch: () => invoke<OllamaLibraryEntry[]>("ollama_library_fetch"),
   deleteOllamaModel: (name: string) => invoke<void>("delete_ollama_model", { name }),
   deleteMlxModel: (repoId: string) => invoke<void>("delete_mlx_model", { repoId }),
   openExternal: (url: string) => invoke<void>("open_external", { url }),

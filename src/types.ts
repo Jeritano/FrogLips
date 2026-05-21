@@ -533,3 +533,18 @@ export interface RagHit {
   start_byte: number;
   end_byte: number;
 }
+
+/**
+ * Single entry scraped from <https://ollama.com/library>. Returned by the
+ * `ollama_library_fetch` Tauri command. Mirrors the Rust `OllamaLibraryEntry`
+ * struct in `src-tauri/src/ollama_library.rs` — keep these in sync.
+ */
+export interface OllamaLibraryEntry {
+  name: string;
+  description: string;
+  capabilities: string[];
+  sizes: string[];
+  pulls: number;
+  tag_count: number;
+  updated_relative: string;
+}

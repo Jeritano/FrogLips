@@ -9,6 +9,7 @@ mod memory;
 mod mlx_server;
 mod models;
 mod native_inference;
+mod ollama_library;
 mod policy;
 mod quick_prompt;
 mod rag;
@@ -173,6 +174,13 @@ async fn pull_ollama_model(name: String) -> Result<String, String> {
     } else {
         Err(String::from_utf8_lossy(&output.stderr).into_owned())
     }
+}
+
+#[tauri::command]
+async fn ollama_library_fetch() -> Result<Vec<ollama_library::OllamaLibraryEntry>, String> {
+    // Returns the cached/scraped contents of ollama.com/library. On failure
+    // the frontend falls back to its curated `OLLAMA` array — never panics.
+    ollama_library::fetch().await
 }
 
 #[tauri::command]
@@ -1621,6 +1629,7 @@ pub fn run() {
             list_all_models,
             pull_ollama_model,
             pull_hf_model,
+            ollama_library_fetch,
             delete_ollama_model,
             delete_mlx_model,
             open_external,

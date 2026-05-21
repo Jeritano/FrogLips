@@ -4,6 +4,22 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-05-21
+
+### Added
+- **ModelBrowser Ollama tab → full library view** (clones `ollama.com/library`). New Rust `ollama_library_fetch` cmd scrapes the page (resilient `scraper`-crate selectors, 10-min in-memory cache, SSRF-pinned + custom UA). Per card: bold name, 2-4 line description, colored capability chips (`vision` orange, `tools` blue, `thinking` purple, `audio` teal, `cloud` green, `embedding` yellow, sizes slate), ↓ pulls + 🏷 tags + relative-updated metadata. Top filter chips (Cloud / Embedding / Vision / Tools / Thinking) multi-select intersection. Sort dropdown (Popular / Newest / Updated). Falls back to curated `OLLAMA` array w/ yellow banner if scrape fails. New `scraper = "0.20"` dep.
+- **ModelBrowser HuggingFace tab → full library view** (clones `huggingface.co/models`). Lazy-loaded chunk. Left sidebar w/ collapsible filters: Tasks, Parameters (2-thumb range slider), Libraries, Apps, Inference Providers. Main pane: live total-count from `x-total-count` header, debounced filter-by-name, "Inference Available" toggle, 5-option sort, responsive 1/2-col card grid. Action button auto-routes: `mlx` → Pull, `gguf` → "View files" (jumps to GGUF tab pre-filtered), other → "Open on HF ↗". Apps + Inference Providers + param slider are client-side filters (HF API has no direct params); banner notes this when active. "Load more" pagination.
+
+### Fixed (regressions from UI redesign)
+- `e2e/memory-save.spec.ts`: opens Menu → Memories modal then closes it before pressing Send (v0.10.7 modal overlay otherwise intercepted clicks).
+- `e2e/model-download-flow.spec.ts`: new HF library view aliases the search input + card testid (`model-search` + `hf-model-card`) for back-compat.
+
+### Tests
+- Rust: **87 passing** (was 82). +5 Ollama HTML parser (3+ cards, capability/size extraction, K/M/B pulls conversion, malformed HTML returns empty).
+- Vitest: **172 passing** (was 155). +5 OllamaLibraryView, +5 HuggingFaceLibraryView component, +7 HF loader.
+- Playwright: **11 passing** (regressions fixed).
+- **Grand total: 270 tests.**
+
 ## [0.10.9] — 2026-05-21
 
 ### Changed

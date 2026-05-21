@@ -1,7 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import type { GgufDownloadProgress, GgufFile, ModelEntry } from "../types";
+import { OllamaLibraryView } from "./OllamaLibraryView";
+
+// Lazy-loaded HF library view. Pulls in ~600 LOC + its constants/sidebar/card
+// chunks; we keep it out of the initial bundle so first-paint of the rest
+// of ModelBrowser stays small.
+const HuggingFaceLibraryView = lazy(() =>
+  import("./HuggingFaceLibraryView").then((m) => ({ default: m.HuggingFaceLibraryView })),
+);
 
 function fmtBytes(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
@@ -494,6 +502,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
     () => new Set(installedOllama.map((m) => m.id)),
     [installedOllama],
   );
+  // Touched here so TS doesn't warn while the legacy hf-all block sits
+  // dormant; the value is still wired into ModelPicker's installed badges.
+  void installedOllamaIds;
   const installedMlxIds = useMemo(
     () => new Set(installedMlx.map((m) => m.id)),
     [installedMlx],
@@ -864,7 +875,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
     }
   }
 
-  const filteredOllama = useMemo(() => filterCatalog(OLLAMA, query), [query]);
+  // Ollama tab now uses <OllamaLibraryView>, which does its own query
+  // filtering. The OLLAMA constant is still consumed as the fallback dataset
+  // passed into that view.
   const filteredRp = useMemo(() => filterCatalog(RP_CATALOG, query), [query]);
 
   // Reset pagination when results change (new search)
@@ -905,21 +918,25 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
         {/* Header */}
         <div className="mb-header">
           <div className="mb-title">Model Library</div>
-          <input
-            data-testid="model-search"
-            className="mb-search"
-            placeholder={
-              tab === "ollama"   ? "Filter Ollama models…" :
-              tab === "hf"       ? "Search HuggingFace MLX…" :
-              tab === "hf-gguf"  ? "Search HuggingFace GGUF…" :
-              tab === "hf-all"   ? "Search all of HuggingFace…" :
-              tab === "rp"       ? "Filter RP / Kobold models…" :
-                                   "Search Civitai…"
-            }
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            autoFocus
-          />
+          {/* The new HuggingFaceLibraryView ships its own filter-by-name input,
+              so we hide the global one in those two tabs to avoid double UI. */}
+          {tab !== "hf" && tab !== "hf-all" && (
+            <input
+              data-testid="model-search"
+              className="mb-search"
+              placeholder={
+                tab === "ollama"   ? "Filter Ollama models…" :
+                tab === "hf-gguf"  ? "Search HuggingFace GGUF…" :
+                tab === "rp"       ? "Filter RP / Kobold models…" :
+                tab === "civitai"  ? "Search Civitai…" :
+                                     "Filter installed models…"
+              }
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              autoFocus
+            />
+          )}
+          {(tab === "hf" || tab === "hf-all") && <div style={{ flex: 1 }} />}
           <button className="mb-close" onClick={onClose}>✕</button>
         </div>
 
@@ -961,7 +978,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
         </div>
 
         {/* List */}
-        <div className="mb-list">
+        <div className={`mb-list ${tab === "hf" || tab === "hf-all" ? "mb-list-hfl" : ""}`}>
           {tab === "installed" && (
             <>
               {installedErr && <div className="mb-empty mb-empty-err">{installedErr}</div>}
@@ -1097,62 +1114,46 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
           )}
 
           {tab === "ollama" && (
-            <>
-              {filteredOllama.length === 0 && (
-                <div className="mb-empty">No models match "{query}"</div>
-              )}
-              {filteredOllama.map((entry) => {
-                const isPulling = pulling === entry.id;
-                const isDeleting = deleting === entry.id;
-                const isDone = done.has(entry.id);
-                const isInstalled = installedOllamaIds.has(entry.id);
-                const err = errors.get(entry.id);
-                return (
-                  <div key={entry.id} className={`mb-card ${isInstalled ? "installed" : ""}`}>
-                    <div className="mb-card-info">
-                      <div className="mb-card-top">
-                        <span className="mb-card-label">{entry.label}</span>
-                        <div className="mb-tags">
-                          {entry.tags.map((t) => (
-                            <span key={t} className="mb-tag" style={{ background: (TAG_COLORS[t] ?? "#6b7280") + "22", color: TAG_COLORS[t] ?? "#9ca3af" }}>
-                              {t}
-                            </span>
-                          ))}
-                          {isInstalled && (
-                            <span className="mb-tag mb-installed-tag" title="Already pulled">✓ installed</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="mb-card-desc">{entry.desc}</div>
-                      {err && <div className="mb-card-err">{err}</div>}
-                    </div>
-                    <div className="mb-card-actions">
-                      <span className="mb-card-size">{entry.size}</span>
-                      {isInstalled ? (
-                        <button
-                          className="mb-delete-btn"
-                          onClick={() => requestRemove(entry.id, "ollama")}
-                          disabled={isDeleting || !!deleting}
-                        >
-                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === entry.id ? "Click again to confirm" : "🗑 Remove")}
-                        </button>
-                      ) : (
-                        <button
-                          className={`mb-pull-btn ${isDone ? "done" : ""}`}
-                          onClick={() => pull(entry.id, "ollama")}
-                          disabled={isPulling || !!pulling}
-                        >
-                          {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
+            <OllamaLibraryView
+              installedOllama={installedOllama}
+              pull={(name) => void pull(name, "ollama")}
+              requestRemove={(name) => requestRemove(name, "ollama")}
+              pulling={pulling}
+              deleting={deleting}
+              done={done}
+              errors={errors}
+              confirmDelete={confirmDelete}
+              fallback={OLLAMA.map((c) => ({
+                id: c.id,
+                label: c.label,
+                desc: c.desc,
+                tags: c.tags,
+                size: c.size,
+              }))}
+              query={query}
+            />
           )}
 
           {tab === "hf" && (
+            <Suspense fallback={<div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading library view…</div>}>
+              <HuggingFaceLibraryView
+                installedMlxIds={installedMlxIds}
+                initialLibraries={["mlx"]}
+                onPull={(id) => void pull(id, "hf")}
+                onRequestRemove={(id) => requestRemove(id, "mlx")}
+                onViewGguf={(id) => { setTab("hf-gguf"); setQuery(id); }}
+                onOpenHf={(id) => { api.openExternal(`https://huggingface.co/${id}`).catch(() => { window.open(`https://huggingface.co/${id}`, "_blank", "noreferrer"); }); }}
+                pulling={pulling}
+                done={done}
+                errors={errors}
+                confirmDelete={confirmDelete}
+              />
+            </Suspense>
+          )}
+
+          {/* Legacy MLX-only renderer kept commented for reference — replaced by
+              <HuggingFaceLibraryView /> above. */}
+          {false && (
             <>
               {hfLoading && hfModels.length === 0 && (
                 <div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading from HuggingFace…</div>
@@ -1378,6 +1379,23 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               GGUF → switch to GGUF tab for file picker, safetensors-only →
               open the repo page on HF (no in-app download). */}
           {tab === "hf-all" && (
+            <Suspense fallback={<div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading library view…</div>}>
+              <HuggingFaceLibraryView
+                installedMlxIds={installedMlxIds}
+                onPull={(id) => void pull(id, "hf")}
+                onRequestRemove={(id) => requestRemove(id, "mlx")}
+                onViewGguf={(id) => { setTab("hf-gguf"); setQuery(id); }}
+                onOpenHf={(id) => { api.openExternal(`https://huggingface.co/${id}`).catch(() => { window.open(`https://huggingface.co/${id}`, "_blank", "noreferrer"); }); }}
+                pulling={pulling}
+                done={done}
+                errors={errors}
+                confirmDelete={confirmDelete}
+              />
+            </Suspense>
+          )}
+
+          {/* Legacy hf-all renderer (kept off so unused variables stay typed). */}
+          {false && (
             <>
               {hfAllLoading && hfAllModels.length === 0 && (
                 <div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading from HuggingFace…</div>
