@@ -425,32 +425,30 @@ function App() {
     <div className="app" data-testid="app-ready">
       <aside className="sidebar">
         <div className="sidebar-top">
-          <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
-        </div>
-        <div className="sidebar-actions">
-          <button
-            type="button"
-            className="topbar-btn"
-            data-testid="open-dashboard"
-            onClick={() => setDashboardOpen(true)}
-            title="Open usage dashboard"
-          >
-            <span aria-hidden="true">📊</span> Dashboard
-          </button>
           <div className="topbar-menu-wrap">
             <button
               type="button"
-              className="topbar-btn"
+              className="topbar-btn topbar-hamburger"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
+              aria-label="Menu"
               onClick={() => setMenuOpen((v) => !v)}
               onBlur={() => setTimeout(() => setMenuOpen(false), 150)}
-              title="More"
+              title="Menu"
             >
-              ☰ Menu ▾
+              ☰
             </button>
             {menuOpen && (
               <div className="topbar-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="open-dashboard"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setDashboardOpen(true); setMenuOpen(false); }}
+                >
+                  <span aria-hidden="true">📊</span> Dashboard
+                </button>
                 <button
                   type="button"
                   role="menuitem"
@@ -503,6 +501,7 @@ function App() {
               </div>
             )}
           </div>
+          <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
         </div>
         <input
           className="conv-search"

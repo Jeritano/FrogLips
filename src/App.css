@@ -103,8 +103,16 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 0 12px;
 }
 .new-chat { flex: 1; }
+.topbar-hamburger {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
 .theme-toggle {
   width: 32px;
   height: 32px;
