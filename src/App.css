@@ -104,10 +104,11 @@
   align-items: stretch;
   gap: 6px;
   /* Reserve space at the top of the sidebar for the macOS traffic lights
-     (titleBarStyle: Overlay puts them on top of the content). 80 px of
-     left padding clears the close/min/max trio; 36 px of top padding
-     drops the row below the chrome. */
-  padding: 36px 12px 0 80px;
+     (titleBarStyle: Overlay puts them on top of the content). 72 px of
+     left padding tucks the hamburger directly to the right of the
+     traffic-light trio; 36 px of top padding drops the row below the
+     chrome. */
+  padding: 36px 12px 0 72px;
   /* This row is the window-drag surface (Overlay style strips the OS
      drag bar). Children opt out via -webkit-app-region: no-drag. */
   -webkit-app-region: drag;
@@ -446,6 +447,7 @@ body {
 .new-chat {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   width: 100%;
   background: transparent;
@@ -457,6 +459,11 @@ body {
   font-size: 13px;
   margin-bottom: 10px;
   transition: color 0.15s, border-color 0.15s;
+  /* Keep "+ New chat" on a single line — when the sidebar gets narrow
+     ellipsis is preferable to wrapping the button label. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .new-chat:hover {
