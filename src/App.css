@@ -108,6 +108,29 @@
      left padding clears the close/min/max trio; 36 px of top padding
      drops the row below the chrome. */
   padding: 36px 12px 0 80px;
+  /* This row is the window-drag surface (Overlay style strips the OS
+     drag bar). Children opt out via -webkit-app-region: no-drag. */
+  -webkit-app-region: drag;
+  position: relative;
+}
+.sidebar-top button,
+.sidebar-top a,
+.sidebar-top input,
+.sidebar-top select,
+.sidebar-top .topbar-menu-wrap,
+.sidebar-top .topbar-menu {
+  -webkit-app-region: no-drag;
+}
+/* Main pane header is also drag-capable (handy when sidebar is narrow). */
+header { -webkit-app-region: drag; }
+header button,
+header a,
+header input,
+header select,
+header .topbar-menu-wrap,
+header .topbar-menu,
+header .model-picker {
+  -webkit-app-region: no-drag;
 }
 .new-chat { flex: 1; }
 .topbar-hamburger {
