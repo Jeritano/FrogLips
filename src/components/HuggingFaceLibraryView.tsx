@@ -16,6 +16,15 @@
  * HF /api/models endpoint doesn't expose first-class params for every app or
  * provider slug. This means the count in the header is slightly optimistic
  * when those filters are active; we document this in the UI strip.
+ *
+ * ── GGUF mode ─────────────────────────────────────────────────────────────
+ * When `ggufMode` is true (used by the HF GGUF tab), the libraries filter
+ * is locked to "gguf" so the API returns only GGUF-bearing repos, and each
+ * card's action button becomes an inline "View files ▾" expander revealing
+ * the per-quant `.gguf` file list below the card body. The download / install
+ * state for those files comes from the parent ModelBrowser through
+ * `ggufContext` (so a download started here keeps progressing if the user
+ * wanders to a different tab).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Sidebar } from "./hf-library/Sidebar";
@@ -28,6 +37,46 @@ import {
   matchesParams,
   type HfModel,
 } from "./hf-library/loader";
+import type { GgufDownloadProgress, GgufFile } from "../types";
+
+/** GGUF file tree entry returned by HF's `/api/models/{repo}/tree/main`.
+ *  Mirrors the shape used by ModelBrowser for the legacy GGUF tab. */
+export interface HfTreeEntry {
+  type: "file" | "directory";
+  path: string;
+  size?: number;
+  oid?: string;
+  lfs?: { size?: number; sha256?: string };
+}
+
+/** Bundle of GGUF download/install state owned by the parent (ModelBrowser),
+ *  passed into the view so the per-file expander rows can render with the
+ *  same source of truth as the "Installed" tab. */
+export interface GgufContext {
+  /** Locally-cached `.gguf` files. */
+  installed: GgufFile[];
+  /** repo id → file tree (or "loading" sentinel / { error } shape). */
+  trees: Map<string, HfTreeEntry[] | "loading" | { error: string }>;
+  /** Set of `${repo}/${filename}` keys currently downloading. */
+  downloads: Set<string>;
+  /** Live per-file progress, keyed by `${repo}/${filename}`. */
+  progress: Map<string, GgufDownloadProgress>;
+  /** Shared errors map (keyed `${repo}/${filename}` for download errors,
+   *  `gguf:${repo}/${filename}` for delete errors). */
+  errors: Map<string, string>;
+  /** Two-click confirm key (matches the parent's deleting flow). */
+  confirmDelete: string | null;
+  /** Repo id currently being deleted (any GGUF deletion). */
+  deleting: string | null;
+  /** Begin loading the tree for this repo; parent caches in `trees`. */
+  onExpandRepo: (repoId: string) => void;
+  /** Forget the tree for this repo (collapse). */
+  onCollapseRepo: (repoId: string) => void;
+  /** Kick off a single-file download. */
+  onDownloadFile: (repo: string, filename: string) => void;
+  /** Two-click delete (parent handles the confirm pattern). */
+  onDeleteFile: (repo: string, filename: string) => void;
+}
 
 export interface HuggingFaceLibraryViewProps {
   /** Repo ids the user has already pulled (MLX side). Card switches to
@@ -51,6 +100,13 @@ export interface HuggingFaceLibraryViewProps {
   done: Set<string>;
   errors: Map<string, string>;
   confirmDelete: string | null;
+  /** When true: lock libraries filter to `gguf`, swap card action buttons
+   *  for an inline file-list expander, and render the per-quant download
+   *  rows from `ggufContext`. */
+  ggufMode?: boolean;
+  /** Required when `ggufMode` is true — owned by the parent ModelBrowser
+   *  so download progress survives tab switches. */
+  ggufContext?: GgufContext;
 }
 
 interface FilterState {
@@ -75,8 +131,49 @@ const PAGE_SIZE = 100;
 const SKELETON_COUNT = 6;
 const BUCKET_MAXES = PARAM_TICKS.map((t) => t.max);
 
+/** Format a byte count to "1.2 GB" / "850 MB" style. Local to this view so
+ *  we don't depend on the parent's fmtBytes — same rules though. */
+function fmtBytes(bytes: number): string {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
+  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+  if (bytes === 0) return "—";
+  return `${bytes} B`;
+}
+
+/** Parse llama.cpp quant tags ("Q4_K_M", "IQ3_XXS", "F16"…) from a `.gguf`
+ *  filename. Returns null when no recognizable tag is present. */
+function parseGgufQuant(filename: string): string | null {
+  const m =
+    filename.match(/\b(IQ\d+_[A-Z]+|Q\d+_[A-Z0-9_]+|F16|F32|BF16)\b/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
+/** Build the collapsed "8 quants · 1.2-7.5 GB" summary for a repo card.
+ *  Returns null when the tree hasn't been fetched yet (so the card falls
+ *  back to the plain "View files ▾" label). */
+function ggufRepoSummary(tree: HfTreeEntry[] | "loading" | { error: string } | undefined): string | null {
+  if (!Array.isArray(tree) || tree.length === 0) return null;
+  const sizes = tree
+    .map((f) => f.lfs?.size ?? f.size ?? 0)
+    .filter((s) => s > 0);
+  if (sizes.length === 0) return `${tree.length} quant${tree.length === 1 ? "" : "s"}`;
+  const min = Math.min(...sizes);
+  const max = Math.max(...sizes);
+  const range = min === max ? fmtBytes(min) : `${fmtBytes(min)}-${fmtBytes(max)}`;
+  return `${tree.length} quant${tree.length === 1 ? "" : "s"} · ${range}`;
+}
+
 export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
-  const [filters, setFilters] = useState<FilterState>(() => DEFAULT_FILTERS(props.initialLibraries ?? []));
+  // In ggufMode, force the GGUF library chip on (and merge with any
+  // user-supplied initialLibraries so the prop still composes if the parent
+  // passes something custom).
+  const initialLibs = useMemo(() => {
+    const seed = props.initialLibraries ?? [];
+    if (!props.ggufMode) return seed;
+    return seed.includes("gguf") ? seed : ["gguf", ...seed];
+  }, [props.initialLibraries, props.ggufMode]);
+  const [filters, setFilters] = useState<FilterState>(() => DEFAULT_FILTERS(initialLibs));
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [sort, setSort] = useState<string>("trending");
@@ -250,21 +347,134 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
           {!loading && visibleModels.length === 0 && !err && (
             <div className="hfl-empty">No models match your filters.</div>
           )}
-          {visibleModels.map((m) => (
-            <ModelCard
-              key={m.id}
-              model={m}
-              installed={props.installedMlxIds.has(m.id)}
-              pulling={props.pulling === m.id}
-              done={props.done.has(m.id)}
-              err={props.errors.get(m.id)}
-              onPull={props.onPull}
-              onOpenHf={props.onOpenHf}
-              onViewGguf={props.onViewGguf}
-              onRemove={props.onRequestRemove}
-              confirmDelete={props.confirmDelete}
-            />
-          ))}
+          {visibleModels.map((m) => {
+            // Non-GGUF mode: plain card.
+            if (!props.ggufMode || !props.ggufContext) {
+              return (
+                <ModelCard
+                  key={m.id}
+                  model={m}
+                  installed={props.installedMlxIds.has(m.id)}
+                  pulling={props.pulling === m.id}
+                  done={props.done.has(m.id)}
+                  err={props.errors.get(m.id)}
+                  onPull={props.onPull}
+                  onOpenHf={props.onOpenHf}
+                  onViewGguf={props.onViewGguf}
+                  onRemove={props.onRequestRemove}
+                  confirmDelete={props.confirmDelete}
+                />
+              );
+            }
+            // GGUF mode: pull tree state out of the context and render the
+            // inline file expander when this card is open.
+            const ctx = props.ggufContext;
+            const tree = ctx.trees.get(m.id);
+            const isExpanded = tree !== undefined;
+            const summary = ggufRepoSummary(tree);
+            const installedKeys = new Set(
+              ctx.installed.filter((f) => f.repo === m.id).map((f) => f.filename),
+            );
+            return (
+              <ModelCard
+                key={m.id}
+                model={m}
+                installed={false} /* repo-level install is meaningless for GGUF */
+                pulling={false}
+                done={false}
+                err={undefined}
+                onPull={props.onPull}
+                onOpenHf={props.onOpenHf}
+                onViewGguf={props.onViewGguf}
+                onRemove={props.onRequestRemove}
+                confirmDelete={props.confirmDelete}
+                ggufMode
+                expanded={isExpanded}
+                ggufSummary={summary}
+                onToggleExpand={() => {
+                  if (isExpanded) ctx.onCollapseRepo(m.id);
+                  else ctx.onExpandRepo(m.id);
+                }}
+              >
+                {tree === "loading" && (
+                  <div className="hfl-gguf-empty">
+                    <span className="mb-spinner" /> Loading file tree…
+                  </div>
+                )}
+                {tree && typeof tree === "object" && !Array.isArray(tree) && "error" in tree && (
+                  <div className="hfl-gguf-err">{tree.error}</div>
+                )}
+                {Array.isArray(tree) && tree.length === 0 && (
+                  <div className="hfl-gguf-empty">No .gguf files at repo root.</div>
+                )}
+                {Array.isArray(tree) && tree.map((f) => {
+                  const key = `${m.id}/${f.path}`;
+                  const isDownloading = ctx.downloads.has(key);
+                  const isInstalled = installedKeys.has(f.path);
+                  const prog = ctx.progress.get(key);
+                  const fileDelKey = `gguf:${m.id}/${f.path}`;
+                  const isDeleting = ctx.deleting === fileDelKey;
+                  const err = ctx.errors.get(key);
+                  const quant = parseGgufQuant(f.path);
+                  const sizeBytes = f.lfs?.size ?? f.size ?? 0;
+                  const pct = prog && prog.total_bytes > 0
+                    ? Math.min(100, Math.round((prog.bytes_downloaded / prog.total_bytes) * 100))
+                    : 0;
+                  return (
+                    <div
+                      key={key}
+                      className="hfl-gguf-file"
+                      data-testid={`gguf-file-${m.id}-${f.path}`}
+                    >
+                      <div className="hfl-gguf-file-info">
+                        <div className="hfl-gguf-file-name">{f.path}</div>
+                        <div className="hfl-gguf-file-meta">
+                          {quant && <span className="hfl-gguf-quant">{quant}</span>}
+                          <span className="hfl-gguf-size">
+                            {sizeBytes > 0 ? fmtBytes(sizeBytes) : "—"}
+                          </span>
+                          {isInstalled && (
+                            <span className="mb-tag mb-installed-tag" title="Already downloaded">✓ installed</span>
+                          )}
+                        </div>
+                        {isDownloading && prog && (
+                          <div className="hfl-gguf-progress">
+                            {fmtBytes(prog.bytes_downloaded)}
+                            {prog.total_bytes > 0 && <> / {fmtBytes(prog.total_bytes)} · {pct}%</>}
+                          </div>
+                        )}
+                        {err && <div className="hfl-card-err">{err}</div>}
+                      </div>
+                      <div className="hfl-gguf-file-actions">
+                        {isInstalled ? (
+                          <button
+                            type="button"
+                            className="hfl-btn hfl-btn-delete"
+                            onClick={() => ctx.onDeleteFile(m.id, f.path)}
+                            disabled={isDeleting || !!ctx.deleting}
+                          >
+                            {ctx.confirmDelete === fileDelKey ? "Click again to confirm" : "Remove"}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="hfl-btn"
+                            onClick={() => ctx.onDownloadFile(m.id, f.path)}
+                            disabled={isDownloading}
+                            data-testid={`gguf-download-${m.id}-${f.path}`}
+                          >
+                            {isDownloading
+                              ? (prog && prog.total_bytes > 0 ? `Downloading… ${pct}%` : "Downloading…")
+                              : "Download"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </ModelCard>
+            );
+          })}
         </div>
 
         {visibleModels.length > 0 && !exhausted && (

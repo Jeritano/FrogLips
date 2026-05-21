@@ -79,7 +79,7 @@ describe("HuggingFaceLibraryView", () => {
     await act(async () => { root.render(<HuggingFaceLibraryView {...props} />); });
     // Toolbar + sidebar are present immediately.
     expect(container.querySelector('[data-testid="hfl-sidebar"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="hfl-name-filter"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="model-search"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="hfl-sort"]')).not.toBeNull();
     await act(async () => { vi.advanceTimersByTime(300); });
     await flush();
@@ -173,6 +173,55 @@ describe("HuggingFaceLibraryView", () => {
     await act(async () => { ggufBtn.click(); });
     expect(onPull).toHaveBeenCalledWith("mlx-community/Llama-3.2-3B-Instruct");
     expect(onViewGguf).toHaveBeenCalledWith("bartowski/Mistral-7B-Instruct-GGUF");
+    await act(async () => { root.unmount(); });
+    container.remove();
+  });
+
+  it("ggufMode renders the View files expander instead of Pull and locks the GGUF library chip on", async () => {
+    const { calls } = mockFetch();
+    const onExpandRepo = vi.fn();
+    const ggufContext: React.ComponentProps<typeof HuggingFaceLibraryView>["ggufContext"] = {
+      installed: [],
+      trees: new Map(),
+      downloads: new Set<string>(),
+      progress: new Map(),
+      errors: new Map<string, string>(),
+      confirmDelete: null,
+      deleting: null,
+      onExpandRepo,
+      onCollapseRepo: vi.fn(),
+      onDownloadFile: vi.fn(),
+      onDeleteFile: vi.fn(),
+    };
+    const { container, root, props } = mountView({ ggufMode: true, ggufContext });
+    await act(async () => { root.render(<HuggingFaceLibraryView {...props} />); });
+    await act(async () => { vi.advanceTimersByTime(300); });
+    await flush();
+    await flush();
+
+    // The initial fetch should have filter=gguf locked on by the ggufMode
+    // path (initialLibraries defaults to ["gguf"]).
+    expect(calls.some((u) => u.includes("filter=gguf"))).toBe(true);
+
+    // The GGUF pill in the Libraries section should be marked selected.
+    const ggufPill = container.querySelector('[data-testid="hfl-pill-gguf"]') as HTMLButtonElement;
+    expect(ggufPill).not.toBeNull();
+    expect(ggufPill.getAttribute("aria-pressed")).toBe("true");
+
+    // For a repo carrying the gguf tag (bartowski/...-GGUF), the action
+    // button label is "View files ▾" instead of "Pull".
+    const ggufBtn = container.querySelector(
+      '[data-testid="hfl-action-bartowski/Mistral-7B-Instruct-GGUF"]',
+    ) as HTMLButtonElement;
+    expect(ggufBtn).not.toBeNull();
+    expect(ggufBtn.textContent).toContain("View files");
+    expect(ggufBtn.textContent).not.toContain("Pull");
+
+    // Clicking the View files button asks the parent to expand the repo;
+    // the parent owns the tree map so the call routes through ggufContext.
+    await act(async () => { ggufBtn.click(); });
+    expect(onExpandRepo).toHaveBeenCalledWith("bartowski/Mistral-7B-Instruct-GGUF");
+
     await act(async () => { root.unmount(); });
     container.remove();
   });

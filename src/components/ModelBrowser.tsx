@@ -3,6 +3,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import type { GgufDownloadProgress, GgufFile, ModelEntry } from "../types";
 import { OllamaLibraryView } from "./OllamaLibraryView";
+/** Type-only re-import for the GGUF tree shape — HuggingFaceLibraryView owns
+ *  it now; this stays a type-level import so the lazy() chunk boundary holds. */
+import type { HfTreeEntry } from "./HuggingFaceLibraryView";
 
 // Lazy-loaded HF library view. Pulls in ~600 LOC + its constants/sidebar/card
 // chunks; we keep it out of the initial bundle so first-paint of the rest
@@ -21,25 +24,18 @@ function fmtBytes(bytes: number): string {
 
 type Backend = "ollama" | "hf" | "hf-gguf" | "hf-all" | "rp" | "civitai" | "installed";
 
-/* GGUF file tree entry returned by `https://huggingface.co/api/models/{repo}/tree/main`.
-   We only consume the leaf-file shape here — directories are surfaced via the
-   `type: "directory"` discriminator and skipped for now (every popular GGUF
-   repo stores its quants at the repo root). */
-interface HfTreeEntry {
-  type: "file" | "directory";
-  path: string;
-  size?: number;
-  oid?: string;
-  lfs?: { size?: number; sha256?: string };
-}
+/* GGUF tree shape lives inside HuggingFaceLibraryView now (the GGUF tab
+ * routes through that component in `ggufMode`). ModelBrowser keeps
+ * ownership of the per-file download/install/progress state so a download
+ * started here keeps progressing if the user wanders to another tab —
+ * it's passed in through `ggufContext`. */
 
 /** Parse `Q4_K_M`, `Q5_K_S`, `Q8_0`, `IQ3_XXS`, etc. from a GGUF filename.
  *  Returns null if no recognizable quant tag is found — we fall back to
- *  showing the full filename in that case. */
+ *  showing the full filename in that case. Used in the "Installed" tab's
+ *  GGUF card list; the HF GGUF tab has its own copy inside the library
+ *  view. */
 function parseGgufQuant(filename: string): string | null {
-  // Match common llama.cpp quant patterns: Q<digit>_<letters/digits>,
-  // IQ<digit>_<letters>, plus the older Q8_0 / Q4_0 shapes. We anchor on
-  // a word boundary so "Q4" inside another token doesn't match.
   const m =
     filename.match(/\b(IQ\d+_[A-Z]+|Q\d+_[A-Z0-9_]+|F16|F32|BF16)\b/i);
   return m ? m[1].toUpperCase() : null;
@@ -557,11 +553,10 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   const [hfAllLoading, setHfAllLoading] = useState(false);
   const [hfAllErr, setHfAllErr] = useState<string | null>(null);
 
-  /* GGUF tab state. Kept parallel to the MLX HF tab so existing flows stay
-     untouched — we never mutate `hfModels` / `hfLoading` from the GGUF code path. */
-  const [ggufRepos, setGgufRepos] = useState<HfModel[]>([]);
-  const [ggufLoading, setGgufLoading] = useState(false);
-  const [ggufErr, setGgufErr] = useState<string | null>(null);
+  /* GGUF tab state. HuggingFaceLibraryView (with `ggufMode`) does the
+     server-side repo search itself; ModelBrowser only owns the long-lived
+     per-file state (file trees, install list, downloads, progress) so a
+     download started here keeps progressing if the user switches tabs. */
   /** Expanded repo id → file tree (or `null` while loading, `string` error). */
   const [ggufTrees, setGgufTrees] = useState<
     Map<string, HfTreeEntry[] | "loading" | { error: string }>
@@ -621,14 +616,13 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   const debounceRef = useRef<number | null>(null);
   const fetchAbortRef = useRef<AbortController | null>(null);
 
-  // Debounced fetch when query or tab changes
+  // Debounced fetch when query or tab changes. The GGUF tab is omitted —
+  // HuggingFaceLibraryView (in ggufMode) drives its own debounced fetch
+  // through `loadHuggingFace`, so we don't fire a duplicate request here.
   useEffect(() => {
     if (tab === "hf") {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       debounceRef.current = window.setTimeout(() => loadHf(query), 250);
-    } else if (tab === "hf-gguf") {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-      debounceRef.current = window.setTimeout(() => loadHfGguf(query), 250);
     } else if (tab === "hf-all") {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       debounceRef.current = window.setTimeout(() => loadHfAll(query), 250);
@@ -714,51 +708,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
     }
   }
 
-  /* ── HF GGUF tab loaders ────────────────────────────────────────────── */
-
-  /** Fetch the list of GGUF-bearing repos. Unlike the MLX HF tab we do NOT
-   *  pin an author — the whole point of this tab is to let users find any
-   *  GGUF on HF (TheBloke, bartowski, mlabonne, lmstudio-community, …). */
-  async function loadHfGguf(q: string) {
-    fetchAbortRef.current?.abort();
-    const ctrl = new AbortController();
-    fetchAbortRef.current = ctrl;
-    setGgufLoading(true);
-    setGgufErr(null);
-    try {
-      const params = new URLSearchParams({
-        // `library=gguf` is HF's tag for repos that carry GGUF files; using
-        // `filter=gguf` returns the same set. Sort by downloads so the most
-        // popular GGUF authors (bartowski, TheBloke, lmstudio-community)
-        // surface at the top by default.
-        library: "gguf",
-        sort: "downloads",
-        direction: "-1",
-        limit: "100",
-      });
-      if (q.trim()) params.set("search", q.trim());
-      const url = `https://huggingface.co/api/models?${params.toString()}`;
-      const timeoutId = window.setTimeout(
-        () => ctrl.abort(new DOMException("HF request timed out", "TimeoutError")),
-        15_000,
-      );
-      let res: Response;
-      try {
-        res = await fetch(url, { signal: ctrl.signal });
-      } finally { window.clearTimeout(timeoutId); }
-      if (!res.ok) throw new Error(`HF API ${res.status}`);
-      const data: HfModel[] = await res.json();
-      if (ctrl.signal.aborted) return;
-      const capped = Array.isArray(data) ? data.slice(0, 200) : [];
-      setGgufRepos(capped);
-    } catch (e: any) {
-      if (e?.name === "AbortError") return;
-      setGgufErr(String(e?.message || e));
-    } finally {
-      if (fetchAbortRef.current === ctrl) fetchAbortRef.current = null;
-      setGgufLoading(false);
-    }
-  }
+  /* HF GGUF tab no longer needs a dedicated loader — HuggingFaceLibraryView
+     (in ggufMode) drives the repo search through `loadHuggingFace` and
+     surfaces the count in its own toolbar header. */
 
   /** Fetch the full HuggingFace catalogue (no author / library pin). Used by
    * the "All HuggingFace" tab so the user can browse anything on HF — MLX,
@@ -920,13 +872,12 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
           <div className="mb-title">Model Library</div>
           {/* The new HuggingFaceLibraryView ships its own filter-by-name input,
               so we hide the global one in those two tabs to avoid double UI. */}
-          {tab !== "hf" && tab !== "hf-all" && (
+          {tab !== "hf" && tab !== "hf-all" && tab !== "hf-gguf" && (
             <input
               data-testid="model-search"
               className="mb-search"
               placeholder={
                 tab === "ollama"   ? "Filter Ollama models…" :
-                tab === "hf-gguf"  ? "Search HuggingFace GGUF…" :
                 tab === "rp"       ? "Filter RP / Kobold models…" :
                 tab === "civitai"  ? "Search Civitai…" :
                                      "Filter installed models…"
@@ -936,7 +887,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               autoFocus
             />
           )}
-          {(tab === "hf" || tab === "hf-all") && <div style={{ flex: 1 }} />}
+          {(tab === "hf" || tab === "hf-all" || tab === "hf-gguf") && <div style={{ flex: 1 }} />}
           <button className="mb-close" onClick={onClose}>✕</button>
         </div>
 
@@ -963,7 +914,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               HuggingFace MLX ({hfModels.length || "live"})
             </option>
             <option value="hf-gguf">
-              HuggingFace GGUF ({ggufRepos.length || "live"})
+              HuggingFace GGUF (live)
             </option>
             <option value="hf-all">
               HuggingFace All ({hfAllModels.length || "live"})
@@ -978,7 +929,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
         </div>
 
         {/* List */}
-        <div className={`mb-list ${tab === "hf" || tab === "hf-all" ? "mb-list-hfl" : ""}`}>
+        <div className={`mb-list ${tab === "hf" || tab === "hf-all" || tab === "hf-gguf" ? "mb-list-hfl" : ""}`}>
           {tab === "installed" && (
             <>
               {installedErr && <div className="mb-empty mb-empty-err">{installedErr}</div>}
@@ -1239,137 +1190,42 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
             </>
           )}
 
-          {/* HuggingFace GGUF tab — single-file picker for the native llama.cpp
-              backend (Phase 3, see docs/research/llamacpp-backend.md). */}
+          {/* HuggingFace GGUF tab — now routes through HuggingFaceLibraryView
+              with `ggufMode` on. The library chip is locked to "gguf" so the
+              card grid mirrors the HF MLX / HF All tabs, but each card's
+              action button is replaced by an inline "View files ▾" expander
+              that surfaces the existing single-file picker UI for the native
+              llama.cpp backend (Phase 3, see docs/research/llamacpp-backend.md). */}
           {tab === "hf-gguf" && (
-            <div data-testid="hf-gguf-tab">
-              {ggufLoading && ggufRepos.length === 0 && (
-                <div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading GGUF repos from HuggingFace…</div>
-              )}
-              {ggufErr && <div className="mb-empty mb-empty-err">Failed to load: {ggufErr}</div>}
-              {!ggufLoading && !ggufErr && ggufRepos.length === 0 && (
-                <div className="mb-empty">No GGUF repos match "{query}"</div>
-              )}
-              {ggufRepos.length > 0 && (
-                <div className="mb-empty" style={{ padding: "8px 0 12px", textAlign: "left", fontSize: 11 }}>
-                  Click a repo to list its `.gguf` quants. Native llama.cpp loads single-file quants only.
-                </div>
-              )}
-              {ggufRepos.map((m) => {
-                const tree = ggufTrees.get(m.id);
-                const isExpanded = tree !== undefined;
-                const updated = relativeTime(m.lastModified);
-                const installedKeys = new Set(
-                  ggufInstalled.filter((f) => f.repo === m.id).map((f) => f.filename),
-                );
-                return (
-                  <div key={m.id} className="mb-card" data-testid={`gguf-repo-${m.id}`} style={{ flexDirection: "column", alignItems: "stretch" }}>
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => { if (!isExpanded) void loadGgufTree(m.id); else setGgufTrees((mp) => { const n = new Map(mp); n.delete(m.id); return n; }); }}
-                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!isExpanded) void loadGgufTree(m.id); else setGgufTrees((mp) => { const n = new Map(mp); n.delete(m.id); return n; }); } }}
-                      style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                      data-testid={`gguf-repo-toggle-${m.id}`}
-                    >
-                      <div className="mb-card-info">
-                        <div className="mb-card-top">
-                          <span className="mb-card-label">
-                            <span style={{ display: "inline-block", width: 14, opacity: 0.6 }}>{isExpanded ? "▾" : "▸"}</span>
-                            {m.id}
-                          </span>
-                          <div className="mb-tags">
-                            <span className="mb-tag" style={{ background: "#22c55e22", color: "#22c55e" }}>gguf</span>
-                            {m.gated && (
-                              <span className="mb-tag" style={{ background: "#ef444422", color: "#ef4444" }} title="Requires HF auth">gated</span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="mb-card-desc">
-                          ↓ {abbrev(m.downloads)} · ♥ {abbrev(m.likes)}
-                          {updated && <> · {updated}</>}
-                        </div>
-                      </div>
-                    </div>
-
-                    {tree === "loading" && (
-                      <div className="mb-empty" style={{ padding: "8px 0", fontSize: 11 }}>
-                        <span className="mb-spinner" /> Loading file tree…
-                      </div>
-                    )}
-                    {tree && typeof tree === "object" && "error" in tree && (
-                      <div className="mb-empty mb-empty-err" style={{ padding: "8px 0", fontSize: 11 }}>
-                        {tree.error}
-                      </div>
-                    )}
-                    {Array.isArray(tree) && tree.length === 0 && (
-                      <div className="mb-empty" style={{ padding: "8px 0", fontSize: 11 }}>No .gguf files at repo root.</div>
-                    )}
-                    {Array.isArray(tree) && tree.map((f) => {
-                      const key = `${m.id}/${f.path}`;
-                      const isDownloading = ggufDownloading.has(key);
-                      const isInstalled = installedKeys.has(f.path);
-                      const prog = ggufProgress.get(key);
-                      const err = errors.get(key);
-                      const quant = parseGgufQuant(f.path);
-                      const sizeBytes = f.lfs?.size ?? f.size ?? 0;
-                      const pct = prog && prog.total_bytes > 0
-                        ? Math.min(100, Math.round((prog.bytes_downloaded / prog.total_bytes) * 100))
-                        : 0;
-                      return (
-                        <div
-                          key={key}
-                          className="mb-card"
-                          data-testid={`gguf-file-${m.id}-${f.path}`}
-                          style={{ marginLeft: 18, marginTop: 6, marginBottom: 0, background: "var(--surface-hover, rgba(0,0,0,0.04))" }}
-                        >
-                          <div className="mb-card-info">
-                            <div className="mb-card-top">
-                              <span className="mb-card-label" style={{ fontFamily: "SF Mono, Menlo, monospace", fontSize: 12 }}>
-                                {f.path}
-                              </span>
-                              <div className="mb-tags">
-                                {quant && <span className="mb-tag" style={{ background: "#3b82f622", color: "#3b82f6" }}>{quant}</span>}
-                                {isInstalled && (
-                                  <span className="mb-tag mb-installed-tag" title="Already downloaded">✓ installed</span>
-                                )}
-                              </div>
-                            </div>
-                            {isDownloading && prog && (
-                              <div className="mb-card-desc" style={{ fontSize: 11 }}>
-                                {fmtBytes(prog.bytes_downloaded)}
-                                {prog.total_bytes > 0 && <> / {fmtBytes(prog.total_bytes)} · {pct}%</>}
-                              </div>
-                            )}
-                            {err && <div className="mb-card-err">{err}</div>}
-                          </div>
-                          <div className="mb-card-actions">
-                            <span className="mb-card-size">{sizeBytes > 0 ? fmtBytes(sizeBytes) : "—"}</span>
-                            {isInstalled ? (
-                              <button
-                                className="mb-delete-btn"
-                                onClick={() => requestRemoveGguf(m.id, f.path)}
-                                disabled={!!deleting}
-                              >
-                                {confirmDelete === `gguf:${m.id}/${f.path}` ? "Click again to confirm" : "🗑 Remove"}
-                              </button>
-                            ) : (
-                              <button
-                                className="mb-pull-btn"
-                                onClick={() => downloadGguf(m.id, f.path)}
-                                disabled={isDownloading}
-                                data-testid={`gguf-download-${m.id}-${f.path}`}
-                              >
-                                {isDownloading ? <span className="mb-spinner" /> : "Download"}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
+            <div data-testid="hf-gguf-tab" style={{ display: "contents" }}>
+              <Suspense fallback={<div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading library view…</div>}>
+                <HuggingFaceLibraryView
+                  installedMlxIds={installedMlxIds}
+                  initialLibraries={["gguf"]}
+                  onPull={(id) => void pull(id, "hf")}
+                  onRequestRemove={(id) => requestRemove(id, "mlx")}
+                  onViewGguf={(id) => { setTab("hf-gguf"); setQuery(id); }}
+                  onOpenHf={(id) => { api.openExternal(`https://huggingface.co/${id}`).catch(() => { window.open(`https://huggingface.co/${id}`, "_blank", "noreferrer"); }); }}
+                  pulling={pulling}
+                  done={done}
+                  errors={errors}
+                  confirmDelete={confirmDelete}
+                  ggufMode
+                  ggufContext={{
+                    installed: ggufInstalled,
+                    trees: ggufTrees,
+                    downloads: ggufDownloading,
+                    progress: ggufProgress,
+                    errors,
+                    confirmDelete,
+                    deleting,
+                    onExpandRepo: (repoId) => void loadGgufTree(repoId),
+                    onCollapseRepo: (repoId) => setGgufTrees((mp) => { const n = new Map(mp); n.delete(repoId); return n; }),
+                    onDownloadFile: (repo, filename) => void downloadGguf(repo, filename),
+                    onDeleteFile: (repo, filename) => requestRemoveGguf(repo, filename),
+                  }}
+                />
+              </Suspense>
             </div>
           )}
 

@@ -4,7 +4,12 @@
  * Per HF.co's layout: repo id, pipeline chip, param size pill, "Updated …",
  * downloads/likes counts, lightning bolt for warm-inference repos, and one
  * action button keyed off the most-relevant format tag.
+ *
+ * In `ggufMode`, the action button is replaced by a "View files ▾" /
+ * "Hide files ▴" expander toggle and the parent renders the actual file
+ * list inside `children` underneath the card body when expanded.
  */
+import type { ReactNode } from "react";
 import { PIPELINE_COLOR } from "./constants";
 import type { HfModel } from "./loader";
 import { extractParams } from "./loader";
@@ -20,6 +25,17 @@ interface Props {
   onViewGguf: (id: string) => void;
   onRemove: (id: string) => void;
   confirmDelete: string | null;
+  /** GGUF-tab mode: action button becomes a "View files" expander toggle. */
+  ggufMode?: boolean;
+  /** Whether this card is currently expanded. Only used when `ggufMode`. */
+  expanded?: boolean;
+  /** Toggle the expansion. Called with no args; parent owns the open-set. */
+  onToggleExpand?: () => void;
+  /** Optional summary string for the collapsed expander label (e.g.
+   *  "8 quants · 1.2-7.5 GB"). Rendered in small text under the action. */
+  ggufSummary?: string | null;
+  /** When `ggufMode && expanded`, the parent renders the file list here. */
+  children?: ReactNode;
 }
 
 function abbrev(n: number): string {
@@ -65,7 +81,16 @@ export function ModelCard(props: Props) {
   const initial = m.id.charAt(0).toUpperCase();
 
   let action: { label: string; cls?: string; on: () => void; disabled?: boolean };
-  if (props.installed) {
+  if (props.ggufMode) {
+    // GGUF tab: action button is the file-list expander toggle.
+    const baseLabel = props.ggufSummary
+      ? props.ggufSummary
+      : props.expanded ? "Hide files" : "View files";
+    action = {
+      label: `${baseLabel} ${props.expanded ? "▴" : "▾"}`,
+      on: () => props.onToggleExpand?.(),
+    };
+  } else if (props.installed) {
     action = {
       label: props.confirmDelete === m.id ? "Click again to confirm" : "Remove",
       cls: "hfl-btn-delete",
@@ -84,7 +109,10 @@ export function ModelCard(props: Props) {
   }
 
   return (
-    <div className="hfl-card" data-testid="hf-model-card">
+    <div
+      className={`hfl-card ${props.ggufMode && props.expanded ? "hfl-card-expanded" : ""}`}
+      data-testid="hf-model-card"
+    >
       <div className="hfl-card-head">
         <div className="hfl-avatar" aria-hidden>{initial}</div>
         <div className="hfl-card-id" title={m.id}>{m.id}</div>
@@ -125,6 +153,11 @@ export function ModelCard(props: Props) {
           {action.label}
         </button>
       </div>
+      {props.ggufMode && props.expanded && props.children && (
+        <div className="hfl-card-gguf-files" data-testid={`hfl-gguf-files-${m.id}`}>
+          {props.children}
+        </div>
+      )}
     </div>
   );
 }

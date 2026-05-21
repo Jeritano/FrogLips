@@ -3030,3 +3030,43 @@ button.cancel {
  * grid and toolbar. We also widen the modal so the sidebar has room. */
 .mb-list.mb-list-hfl { padding: 0; gap: 0; }
 .mb-panel:has(.mb-list-hfl) { width: 1100px; height: 720px; }
+
+/* GGUF-mode card: when expanded, the card spans the full grid row so the
+ * file-list expander has room for all quants without breaking the masonry. */
+.hfl-card-expanded {
+  grid-column: 1 / -1;
+}
+.hfl-card-gguf-files {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.hfl-gguf-file {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 8px 10px; border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+}
+.hfl-gguf-file-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.hfl-gguf-file-name {
+  font-family: SF Mono, Menlo, monospace; font-size: 12px; font-weight: 600;
+  color: var(--text); word-break: break-all;
+}
+.hfl-gguf-file-meta {
+  display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-3);
+}
+.hfl-gguf-quant {
+  font-size: 10px; padding: 2px 7px; border-radius: 4px;
+  background: rgba(59, 130, 246, 0.14); color: #3b82f6; font-weight: 600;
+}
+.hfl-gguf-size { font-variant-numeric: tabular-nums; }
+.hfl-gguf-progress { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.hfl-gguf-file-actions { flex-shrink: 0; }
+.hfl-gguf-empty {
+  font-size: 11px; color: var(--text-3); padding: 8px 4px;
+  display: flex; align-items: center; gap: 8px;
+}
+.hfl-gguf-err {
+  font-size: 11px; color: #f87171; padding: 8px 10px;
+  background: rgba(239, 68, 68, 0.06); border-radius: 4px;
+}

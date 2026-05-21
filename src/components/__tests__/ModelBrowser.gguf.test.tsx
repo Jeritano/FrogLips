@@ -1,14 +1,20 @@
 /**
  * Phase 3 acceptance test for the HF GGUF tab in ModelBrowser.
  *
+ * The GGUF tab now routes through HuggingFaceLibraryView with `ggufMode`,
+ * so the URL filter is the HF library view's `filter=gguf` shape rather
+ * than the legacy `library=gguf` query.  The card grid + sidebar mirror
+ * the HF MLX / HF All tabs, and each card's "View files ▾" action button
+ * (replacing the per-repo Pull) opens an inline `.gguf` file list.
+ *
  * Verifies:
- *  1. The new `hf-gguf` source option renders and the GGUF tab body shows
+ *  1. The `hf-gguf` source option renders and the wrapper body shows
  *     when selected.
  *  2. Selecting the tab triggers a HuggingFace API call against
- *     `/api/models?library=gguf&…` (NOT the legacy `author=mlx-community`
- *     filter the existing HF tab uses).
- *  3. Clicking a returned repo row fetches its file tree via
- *     `/api/models/{repo}/tree/main` and lists the `.gguf` leaves.
+ *     `/api/models?filter=gguf&…` (NOT the legacy `author=mlx-community`
+ *     pin the MLX tab used).
+ *  3. Clicking a returned card's "View files" expander fetches its file
+ *     tree via `/api/models/{repo}/tree/main` and lists the `.gguf` leaves.
  *
  * The Tauri IPC bridge is fully mocked — we never call into the real
  * backend here. The point is the React surface and the HF fetch shape.
@@ -16,6 +22,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+
+// Eager-import the lazy chunk so React.lazy resolves synchronously in
+// these tests (avoids Suspense + fake-timer races on the initial mount).
+import "../HuggingFaceLibraryView";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
@@ -66,6 +76,7 @@ function mockFetch() {
       return {
         ok: true,
         status: 200,
+        headers: new Headers({ "x-total-count": "1" }),
         json: async () => [SAMPLE_REPO],
       } as unknown as Response;
     }
@@ -102,7 +113,7 @@ describe("ModelBrowser — HF GGUF tab", () => {
     if (originalFetch) globalThis.fetch = originalFetch;
   });
 
-  it("renders the hf-gguf option and queries HF with library=gguf when selected", async () => {
+  it("renders the hf-gguf option and queries HF with filter=gguf when selected", async () => {
     const { fn: fetchSpy, calls } = mockFetch();
 
     const container = document.createElement("div");
@@ -125,27 +136,32 @@ describe("ModelBrowser — HF GGUF tab", () => {
       select.value = "hf-gguf";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    // Advance the 250ms debounce + flush microtasks.
-    await act(async () => { vi.advanceTimersByTime(300); });
+    // Let the lazy Suspense chunk resolve + HFL view's debounce settle.
+    await act(async () => { vi.advanceTimersByTime(400); });
+    await flush();
     await flush();
     await flush();
 
-    // Tab body rendered.
+    // Tab wrapper rendered.
     expect(container.querySelector('[data-testid="hf-gguf-tab"]')).not.toBeNull();
 
-    // HF called with `library=gguf` and NOT pinned to mlx-community.
+    // HF called with the library view's `filter=gguf` shape and NOT pinned
+    // to mlx-community. The loader emits `filter=…` (HF accepts both
+    // `library=` and `filter=` for the library slug; we standardize on
+    // `filter=` so apps + libraries can chain through one param).
     const hfCalls = calls.filter((u) => u.includes("/api/models?"));
     expect(hfCalls.length).toBeGreaterThan(0);
-    const last = hfCalls[hfCalls.length - 1];
-    expect(last).toContain("library=gguf");
-    expect(last).not.toContain("author=mlx-community");
+    expect(hfCalls.some((u) => u.includes("filter=gguf"))).toBe(true);
+    for (const u of hfCalls) {
+      expect(u).not.toContain("author=mlx-community");
+    }
     expect(fetchSpy).toHaveBeenCalled();
 
     await act(async () => { root.unmount(); });
     container.remove();
   });
 
-  it("loads the repo file tree on click and only surfaces .gguf leaves", async () => {
+  it("loads the repo file tree on View files click and only surfaces .gguf leaves", async () => {
     const { calls } = mockFetch();
 
     const container = document.createElement("div");
@@ -161,18 +177,21 @@ describe("ModelBrowser — HF GGUF tab", () => {
       select.value = "hf-gguf";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    await act(async () => { vi.advanceTimersByTime(300); });
+    await act(async () => { vi.advanceTimersByTime(400); });
+    await flush();
     await flush();
     await flush();
 
-    // Repo row appeared.
-    const repoToggle = container.querySelector(
-      `[data-testid="gguf-repo-toggle-${SAMPLE_REPO.id}"]`,
-    ) as HTMLElement;
-    expect(repoToggle).not.toBeNull();
+    // The HF library card grid renders one card per repo; the action
+    // button is the View files expander (label includes "▾" when collapsed).
+    const viewFilesBtn = container.querySelector(
+      `[data-testid="hfl-action-${SAMPLE_REPO.id}"]`,
+    ) as HTMLButtonElement;
+    expect(viewFilesBtn).not.toBeNull();
+    expect(viewFilesBtn.textContent).toMatch(/View files|quant/);
 
     // Click to expand → fires the tree fetch.
-    await act(async () => { repoToggle.click(); });
+    await act(async () => { viewFilesBtn.click(); });
     await flush();
     await flush();
 
@@ -221,14 +240,15 @@ describe("ModelBrowser — HF GGUF tab", () => {
       select.value = "hf-gguf";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    await act(async () => { vi.advanceTimersByTime(300); });
+    await act(async () => { vi.advanceTimersByTime(400); });
+    await flush();
     await flush();
     await flush();
 
-    const repoToggle = container.querySelector(
-      `[data-testid="gguf-repo-toggle-${SAMPLE_REPO.id}"]`,
-    ) as HTMLElement;
-    await act(async () => { repoToggle.click(); });
+    const viewFilesBtn = container.querySelector(
+      `[data-testid="hfl-action-${SAMPLE_REPO.id}"]`,
+    ) as HTMLButtonElement;
+    await act(async () => { viewFilesBtn.click(); });
     await flush();
     await flush();
 
