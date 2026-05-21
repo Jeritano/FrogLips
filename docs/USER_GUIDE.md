@@ -1,12 +1,12 @@
 # Froglips — User Guide
 
-Version 0.9.18 · macOS (Apple Silicon)
+Version 0.10.5 · macOS (Apple Silicon)
 
 ## 1. Install
 
 ### From a release
 
-1. Download `Froglips_0.9.18_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
+1. Download `Froglips_0.10.5_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
 2. Open the DMG and drag `Froglips.app` to `/Applications`.
 3. First launch: macOS may show "unidentified developer". Right-click the app → Open. Confirm.
 4. Optional one-line fix to strip Gatekeeper quarantine entirely:
