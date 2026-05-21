@@ -107,7 +107,7 @@
      (which sit ~y=12-32). With the row below the chrome, horizontal
      padding can drop to 0 (let the parent .sidebar's 8px do the work)
      so the hamburger is flush with the conv-search left edge below. */
-  padding: 36px 0 0 0;
+  padding: 28px 0 0 0;
   /* This row is the window-drag surface (Overlay style strips the OS
      drag bar). Children opt out via -webkit-app-region: no-drag. */
   -webkit-app-region: drag;
@@ -286,6 +286,9 @@ body {
   /* Elegant outer frame — small inset, rounded corners, subtle border.
      Inspired by Claude Code's panel-in-panel look. */
   padding: 6px;
+  /* Extra top padding so the rounded panel corners breathe past the
+     macOS traffic lights — matches the visible inset on the bottom edge. */
+  padding-top: 14px;
   gap: 6px;
   background:
     radial-gradient(circle at top left, rgba(99, 102, 241, 0.08), transparent 40%),
@@ -565,7 +568,7 @@ header {
      of the sidebar where lights don't reach — but we keep symmetric
      vertical padding so content reads centered. */
   padding: 2px 20px;
-  padding-top: 10px;
+  padding-top: 4px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface);
   flex-shrink: 0;
