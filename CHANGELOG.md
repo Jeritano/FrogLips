@@ -4,6 +4,11 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.6] — 2026-05-21
+
+### Added
+- **Per-conversation model memory**: clicking an old conversation in the sidebar now restores the model that was used in it (already persisted to `conversations.model` since v0.1.x — frontend wiring landed here). `ModelPicker` accepts a new `desiredModel` prop, preselects the matching local model on conversation switch, and silently falls back if that model is no longer installed (stale config doesn't pollute the picker). Skips the swap when a model is already running so an active stream isn't yanked.
+
 ## [0.10.5] — 2026-05-21
 
 ### Fixed

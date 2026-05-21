@@ -2,7 +2,7 @@
 
 Cross-platform chat app for local LLMs. **v2.0 is the first cross-platform release** — alongside the original macOS arm64 build, signed binaries now ship for **Intel macOS, Linux x86_64, and Windows x86_64**. Three backends — **Native** (in-process `mistralrs` + Metal on Apple Silicon, `llama.cpp` via `llama-cpp-2` everywhere else, zero install), MLX, and Ollama. Agent mode w/ 32 filesystem/shell/web/code/task tools, vector-recall memory, signed auto-updates.
 
-![version](https://img.shields.io/badge/version-0.10.5-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
+![version](https://img.shields.io/badge/version-0.10.6-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
 
 ## What it does
 

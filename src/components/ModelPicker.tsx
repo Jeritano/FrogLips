@@ -12,6 +12,13 @@ const ModelBrowser = lazy(() =>
 interface Props {
   status: ServerStatus | null;
   onStatusChange: (s: ServerStatus) => void;
+  /**
+   * The model that was used in the currently-selected conversation. When the
+   * user picks an old conversation we restore that model in the dropdown so
+   * the next message goes to the same backend they had last time. If the
+   * model is no longer installed we silently fall back (no-op).
+   */
+  desiredModel?: string | null;
 }
 
 function formatSize(bytes: number) {
@@ -23,7 +30,7 @@ function formatSize(bytes: number) {
   return ` (${v.toFixed(1)} ${units[i]})`;
 }
 
-export function ModelPicker({ status, onStatusChange }: Props) {
+export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   const [models, setModels] = useState<AllModels>({ mlx: [], ollama: [] });
   const [selected, setSelected] = useState<ModelEntry | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -53,6 +60,24 @@ export function ModelPicker({ status, onStatusChange }: Props) {
       if (match) setSelected(match);
     }
   }, [status, models]);
+
+  // Restore the model used in the currently-selected conversation. Fires
+  // whenever the parent passes a new `desiredModel` (i.e. user clicked
+  // another conversation in the sidebar). Skips the swap if:
+  //   - desiredModel is null/empty (new chat — leave picker alone)
+  //   - the model isn't installed anymore (stale config — silent fallback)
+  //   - the model is already what's running/selected (no-op)
+  //   - a model is currently running (don't yank under the user's feet)
+  useEffect(() => {
+    if (!desiredModel) return;
+    if (status?.running) return;
+    if (selected?.id === desiredModel) return;
+    const all = [...models.mlx, ...models.ollama];
+    const match = all.find((m) => m.id === desiredModel);
+    if (match) setSelected(match);
+    // Not found = stale conv config. Silent — picker keeps whatever was
+    // there. User stays in control.
+  }, [desiredModel, models, status?.running]);
 
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const v = e.target.value;

@@ -584,7 +584,11 @@ function App() {
       </aside>
       <main className="main">
         <header>
-          <ModelPicker status={status} onStatusChange={setStatus} />
+          <ModelPicker
+            status={status}
+            onStatusChange={setStatus}
+            desiredModel={current?.model ?? null}
+          />
         </header>
         <ChatWindow
           status={status}
