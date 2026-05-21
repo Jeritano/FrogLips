@@ -4,6 +4,15 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+### Fixed
+- **Panel gap** — the sidebar and main panels rendered flush to the window's top edge instead of floating with an even inset. Root cause: `.main { height: 100vh }` forced the CSS grid row to full window height, overflowing `.app`'s padded content box and pinning both panels to the top. Switched to grid-stretch sizing (`.main` → `min-height: 0`, `.app` → `height: 100%` + uniform `padding: 12px`); all four panel gaps are now an even 12px.
+
+### Changed
+- Hamburger button pinned beside the macOS traffic lights; slides left into the freed corner when the window enters fullscreen (driven by a `data-fullscreen` attribute on `<html>`).
+- `+ New chat` moved directly above the conversation search field.
+- Header padding compacted to 10px above/below the model-picker row.
+- Removed a dead `.sidebar-top > .new-chat` CSS rule and corrected several stale layout comments.
+
 ## [0.11.0] — 2026-05-21
 
 ### Added
