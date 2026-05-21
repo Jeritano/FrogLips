@@ -44,6 +44,8 @@ function App() {
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [forkTreeOpen, setForkTreeOpen] = useState(false);
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   // First-run setup wizard. `undefined` = haven't checked the flag yet, so we
   // render nothing for the wizard region until the IPC call returns. This
   // avoids a flash of the wizard on returning users whose setup is already
@@ -519,68 +521,6 @@ function App() {
             </li>
           ))}
         </ul>
-        <MemoryPanel
-          refreshToken={memoryTick}
-          workspaceRoot={panelWorkspace}
-          conversationId={current?.id ?? null}
-        />
-        <button
-          type="button"
-          className="dashboard-btn"
-          data-testid="open-dashboard"
-          onClick={() => setDashboardOpen(true)}
-          title="Open usage dashboard"
-        >
-          <span aria-hidden="true">📊</span>
-          Dashboard
-        </button>
-        <button
-          type="button"
-          className="dashboard-btn"
-          data-testid="open-diagnostics"
-          onClick={() => setDiagnosticsOpen(true)}
-          title="Open diagnostics panel (silent errors, MCP/RAG/agent warnings)"
-        >
-          <span aria-hidden="true">🩺</span>
-          Diagnostics
-        </button>
-        <button
-          type="button"
-          className="dashboard-btn"
-          data-testid="rerun-setup-wizard"
-          onClick={async () => {
-            // Flip the persistent flag back to "incomplete" and re-mount the
-            // wizard. We persist first so a crash mid-wizard still re-opens
-            // it on next launch (same behavior as a brand-new install).
-            try {
-              await api.setupCompleteSet(false);
-            } catch (err) {
-              logDiag({
-                level: "warn",
-                source: "app",
-                message: "setupCompleteSet(false) failed — wizard still opening locally",
-                detail: err,
-              });
-            }
-            setWizardOpen(true);
-          }}
-          title="Re-open the first-run setup wizard"
-        >
-          <span aria-hidden="true">🧭</span>
-          Re-run setup wizard
-        </button>
-        {current && (
-          <button
-            type="button"
-            className="dashboard-btn"
-            data-testid="open-fork-tree"
-            onClick={() => setForkTreeOpen(true)}
-            title="Visualize the fork tree rooted at the current conversation"
-          >
-            <span aria-hidden="true">🌳</span>
-            Branches
-          </button>
-        )}
       </aside>
       <main className="main">
         <header>
@@ -589,6 +529,83 @@ function App() {
             onStatusChange={setStatus}
             desiredModel={current?.model ?? null}
           />
+          <div className="topbar-actions">
+            <button
+              type="button"
+              className="topbar-btn"
+              data-testid="open-dashboard"
+              onClick={() => setDashboardOpen(true)}
+              title="Open usage dashboard"
+            >
+              <span aria-hidden="true">📊</span> Dashboard
+            </button>
+            <div className="topbar-menu-wrap">
+              <button
+                type="button"
+                className="topbar-btn"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen((v) => !v)}
+                onBlur={() => setTimeout(() => setMenuOpen(false), 150)}
+                title="More"
+              >
+                ☰ Menu ▾
+              </button>
+              {menuOpen && (
+                <div className="topbar-menu" role="menu">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="menu-memories"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { setMemoriesOpen(true); setMenuOpen(false); }}
+                  >
+                    <span aria-hidden="true">⭐</span> Memories
+                  </button>
+                  {current && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid="menu-fork-tree"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => { setForkTreeOpen(true); setMenuOpen(false); }}
+                    >
+                      <span aria-hidden="true">🌳</span> Branches
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="menu-diagnostics"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { setDiagnosticsOpen(true); setMenuOpen(false); }}
+                  >
+                    <span aria-hidden="true">🩺</span> Diagnostics
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="menu-rerun-wizard"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={async () => {
+                      setMenuOpen(false);
+                      try { await api.setupCompleteSet(false); } catch (err) {
+                        logDiag({
+                          level: "warn",
+                          source: "app",
+                          message: "setupCompleteSet(false) failed — wizard still opening locally",
+                          detail: err,
+                        });
+                      }
+                      setWizardOpen(true);
+                    }}
+                  >
+                    <span aria-hidden="true">🧭</span> Re-run setup wizard
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </header>
         <ChatWindow
           status={status}
@@ -609,6 +626,26 @@ function App() {
         <Suspense fallback={null}>
           <Dashboard open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
         </Suspense>
+      )}
+      {memoriesOpen && (
+        <div
+          className="memories-overlay"
+          onClick={(e) => { if (e.target === e.currentTarget) setMemoriesOpen(false); }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="memories-modal">
+            <div className="memories-modal-header">
+              <span>Memories</span>
+              <button onClick={() => setMemoriesOpen(false)} aria-label="Close" className="memories-close">×</button>
+            </div>
+            <MemoryPanel
+              refreshToken={memoryTick}
+              workspaceRoot={panelWorkspace}
+              conversationId={current?.id ?? null}
+            />
+          </div>
+        </div>
       )}
       {diagnosticsOpen && (
         <Suspense fallback={null}>

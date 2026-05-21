@@ -243,7 +243,118 @@ body {
   grid-template-columns: 220px 1fr;
   height: 100vh;
   overflow: hidden;
+  /* Elegant outer frame — small inset, rounded corners, subtle border.
+     Inspired by Claude Code's panel-in-panel look. */
+  padding: 6px;
+  gap: 6px;
+  background:
+    radial-gradient(circle at top left, rgba(99, 102, 241, 0.08), transparent 40%),
+    radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.06), transparent 40%),
+    var(--bg);
+  box-sizing: border-box;
 }
+
+.app > .sidebar,
+.app > .main {
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface);
+  overflow: hidden;
+}
+.app > .sidebar { border-right: 1px solid var(--border-subtle); }
+.app > .main {
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Top-bar menu ── */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.topbar-btn {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.topbar-btn:hover { background: var(--surface-2, rgba(255,255,255,0.04)); }
+.topbar-menu-wrap { position: relative; }
+.topbar-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+}
+.topbar-menu button {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.topbar-menu button:hover { background: var(--surface-2, rgba(255,255,255,0.06)); }
+
+/* ── Memories modal ── */
+.memories-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+.memories-modal {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  width: min(640px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 12px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+.memories-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 12px;
+  font-weight: 600;
+}
+.memories-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #888);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0 6px;
+}
+.memories-close:hover { color: var(--text); }
 
 /* ── Sidebar ── */
 

@@ -4,6 +4,14 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.7] — 2026-05-21
+
+### Changed (UI redesign — Claude-Code-inspired shell)
+- **App shell w/ inner gap**: sidebar + main are now rounded panels inside a soft-gradient outer frame (6 px inset, 12 px corner radius, subtle border). Matches the "panel-in-panel" elegance seen in Claude Code's interface.
+- **Top-bar action menu**: `Dashboard` button + `☰ Menu ▾` dropdown moved into the chat header (next to the model picker). Dropdown items: **Memories**, **Branches** (when a conversation is selected), **Diagnostics**, **Re-run setup wizard**. Closes on blur / item-click.
+- **Memories now opens as a centered modal overlay** instead of an always-mounted sidebar panel. Click outside or the `×` to dismiss.
+- Sidebar collapses to its core role: New chat + theme toggle + search + conversation list.
+
 ## [0.10.6] — 2026-05-21
 
 ### Added
