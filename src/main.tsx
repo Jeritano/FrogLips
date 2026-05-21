@@ -4,6 +4,7 @@ import App from "./App";
 import { QuickPrompt } from "./components/QuickPrompt";
 import { DetachedChatView } from "./components/DetachedChatView";
 import { parseDetachedParams } from "./lib/detached-params";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 // Single bundle, three entrypoints. The Rust side opens auxiliary webviews
 // with query-string flags; we branch here so each window only loads the
@@ -20,10 +21,12 @@ const detached = parseDetachedParams(window.location.search);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {isQuick
-      ? <QuickPrompt />
-      : detached
-        ? <DetachedChatView conversationId={detached.conversationId} />
-        : <App />}
+    <ErrorBoundary label="App">
+      {isQuick
+        ? <QuickPrompt />
+        : detached
+          ? <DetachedChatView conversationId={detached.conversationId} />
+          : <App />}
+    </ErrorBoundary>
   </React.StrictMode>,
 );

@@ -4,6 +4,14 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.4] — 2026-05-21
+
+### Added
+- **`<ErrorBoundary>`** wrapping App / QuickPrompt / DetachedChatView in `main.tsx`. Catches render-phase + lazy-chunk module errors that previously unmounted the whole React tree → black window (the "right-click → reload" workaround). Now shows an inline retry card and funnels the error to the Diagnostics panel.
+
+### Fixed (audit follow-up)
+- **F-H3 streaming perf regression**: `App.tsx` inline `onFork={async ...}` busted `MessageRow` (`React.memo`) on every parent render — during streaming, one re-render per rAF frame. Wrapped `onForked`, `onConversationCreated`, `onMemoriesChanged` in `useCallback` so identity is stable.
+
 ## [0.10.3] — 2026-05-21
 
 ### Added

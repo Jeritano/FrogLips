@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { api } from "./lib/tauri-api";
@@ -386,6 +386,39 @@ function App() {
     setEditingTitle("");
   }
 
+  // Stable ChatWindow callbacks — inline arrow handlers caused MessageRow
+  // (React.memo) to bust on every parent render, which during streaming
+  // produced one re-render per rAF frame.
+  const onConvCreated = useCallback((c: Conversation) => {
+    setCurrent(c);
+    refreshConversations().catch((err) =>
+      logDiag({
+        level: "warn",
+        source: "app",
+        message: "post-create refreshConversations failed",
+        detail: err,
+      }),
+    );
+  }, []);
+
+  const onMemoriesChanged = useCallback(() => setMemoryTick((t) => t + 1), []);
+
+  const onForked = useCallback(async (newConvId: number) => {
+    await refreshConversations();
+    try {
+      const all = await api.listConversations();
+      const created = all.find((c) => c.id === newConvId);
+      if (created) setCurrent(created);
+    } catch (err) {
+      logDiag({
+        level: "info",
+        source: "app",
+        message: "onForked: listConversations after fork failed — sidebar still reflects the new conv",
+        detail: err,
+      });
+    }
+  }, []);
+
   return (
     <div className="app" data-testid="app-ready">
       <aside className="sidebar">
@@ -556,36 +589,9 @@ function App() {
         <ChatWindow
           status={status}
           conversation={current}
-          onConversationCreated={(c) => {
-            setCurrent(c);
-            refreshConversations().catch((err) =>
-              logDiag({
-                level: "warn",
-                source: "app",
-                message: "post-create refreshConversations failed",
-                detail: err,
-              }),
-            );
-          }}
-          onMemoriesChanged={() => setMemoryTick((t) => t + 1)}
-          onForked={async (newConvId) => {
-            // Pull the refreshed list, then switch the active selection to
-            // the freshly-created fork so the user lands inside the new
-            // branch with all copied messages already populated.
-            await refreshConversations();
-            try {
-              const all = await api.listConversations();
-              const created = all.find((c) => c.id === newConvId);
-              if (created) setCurrent(created);
-            } catch (err) {
-              logDiag({
-                level: "info",
-                source: "app",
-                message: "onForked: listConversations after fork failed — sidebar still reflects the new conv",
-                detail: err,
-              });
-            }
-          }}
+          onConversationCreated={onConvCreated}
+          onMemoriesChanged={onMemoriesChanged}
+          onForked={onForked}
         />
       </main>
       {/*
