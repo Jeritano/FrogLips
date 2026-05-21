@@ -4,6 +4,11 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.9] — 2026-05-21
+
+### Changed
+- Stack sidebar actions vertically: `☰ Menu ▾` now sits directly under `📊 Dashboard` instead of side-by-side.
+
 ## [0.10.8] — 2026-05-21
 
 ### Changed

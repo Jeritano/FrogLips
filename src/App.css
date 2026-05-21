@@ -268,15 +268,16 @@ body {
   flex-direction: column;
 }
 
-/* ── Sidebar actions row (Dashboard + Menu, above search) ── */
+/* ── Sidebar actions stack (Dashboard then Menu, above search) ── */
 .sidebar-actions {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
   padding: 0 12px 8px;
 }
-.sidebar-actions .topbar-btn { flex: 1; justify-content: center; }
-.sidebar-actions .topbar-menu-wrap { flex: 1; display: flex; }
+.sidebar-actions .topbar-btn { justify-content: center; width: 100%; }
+.sidebar-actions .topbar-menu-wrap { display: block; }
 .sidebar-actions .topbar-menu-wrap > .topbar-btn { width: 100%; }
 
 /* Theme toggle pinned to far right of the model picker bar. */
