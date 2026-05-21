@@ -426,14 +426,83 @@ function App() {
       <aside className="sidebar">
         <div className="sidebar-top">
           <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
+        </div>
+        <div className="sidebar-actions">
           <button
-            className="theme-toggle"
-            onClick={toggleTheme}
-            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-            aria-label="Toggle theme"
+            type="button"
+            className="topbar-btn"
+            data-testid="open-dashboard"
+            onClick={() => setDashboardOpen(true)}
+            title="Open usage dashboard"
           >
-            {theme === "dark" ? "☀" : "☾"}
+            <span aria-hidden="true">📊</span> Dashboard
           </button>
+          <div className="topbar-menu-wrap">
+            <button
+              type="button"
+              className="topbar-btn"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((v) => !v)}
+              onBlur={() => setTimeout(() => setMenuOpen(false), 150)}
+              title="More"
+            >
+              ☰ Menu ▾
+            </button>
+            {menuOpen && (
+              <div className="topbar-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="menu-memories"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setMemoriesOpen(true); setMenuOpen(false); }}
+                >
+                  <span aria-hidden="true">⭐</span> Memories
+                </button>
+                {current && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="menu-fork-tree"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { setForkTreeOpen(true); setMenuOpen(false); }}
+                  >
+                    <span aria-hidden="true">🌳</span> Branches
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="menu-diagnostics"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setDiagnosticsOpen(true); setMenuOpen(false); }}
+                >
+                  <span aria-hidden="true">🩺</span> Diagnostics
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="menu-rerun-wizard"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={async () => {
+                    setMenuOpen(false);
+                    try { await api.setupCompleteSet(false); } catch (err) {
+                      logDiag({
+                        level: "warn",
+                        source: "app",
+                        message: "setupCompleteSet(false) failed — wizard still opening locally",
+                        detail: err,
+                      });
+                    }
+                    setWizardOpen(true);
+                  }}
+                >
+                  <span aria-hidden="true">🧭</span> Re-run setup wizard
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         <input
           className="conv-search"
@@ -529,83 +598,14 @@ function App() {
             onStatusChange={setStatus}
             desiredModel={current?.model ?? null}
           />
-          <div className="topbar-actions">
-            <button
-              type="button"
-              className="topbar-btn"
-              data-testid="open-dashboard"
-              onClick={() => setDashboardOpen(true)}
-              title="Open usage dashboard"
-            >
-              <span aria-hidden="true">📊</span> Dashboard
-            </button>
-            <div className="topbar-menu-wrap">
-              <button
-                type="button"
-                className="topbar-btn"
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                onClick={() => setMenuOpen((v) => !v)}
-                onBlur={() => setTimeout(() => setMenuOpen(false), 150)}
-                title="More"
-              >
-                ☰ Menu ▾
-              </button>
-              {menuOpen && (
-                <div className="topbar-menu" role="menu">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    data-testid="menu-memories"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => { setMemoriesOpen(true); setMenuOpen(false); }}
-                  >
-                    <span aria-hidden="true">⭐</span> Memories
-                  </button>
-                  {current && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      data-testid="menu-fork-tree"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => { setForkTreeOpen(true); setMenuOpen(false); }}
-                    >
-                      <span aria-hidden="true">🌳</span> Branches
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    role="menuitem"
-                    data-testid="menu-diagnostics"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => { setDiagnosticsOpen(true); setMenuOpen(false); }}
-                  >
-                    <span aria-hidden="true">🩺</span> Diagnostics
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    data-testid="menu-rerun-wizard"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={async () => {
-                      setMenuOpen(false);
-                      try { await api.setupCompleteSet(false); } catch (err) {
-                        logDiag({
-                          level: "warn",
-                          source: "app",
-                          message: "setupCompleteSet(false) failed — wizard still opening locally",
-                          detail: err,
-                        });
-                      }
-                      setWizardOpen(true);
-                    }}
-                  >
-                    <span aria-hidden="true">🧭</span> Re-run setup wizard
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
+          <button
+            className="theme-toggle topbar-theme"
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-label="Toggle theme"
+          >
+            {theme === "dark" ? "☀" : "☾"}
+          </button>
         </header>
         <ChatWindow
           status={status}

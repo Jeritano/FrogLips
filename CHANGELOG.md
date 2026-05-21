@@ -4,6 +4,12 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.10.8] — 2026-05-21
+
+### Changed
+- **Sidebar layout**: `Dashboard` button + `☰ Menu ▾` dropdown moved from the chat-header back into the sidebar — now sits as its own row above the conversation search box.
+- **Theme toggle relocated**: light/dark `☀` / `☾` button moved out of the sidebar `+ New chat` row to the far right of the model-picker bar (`margin-left: auto`). Header is now `display: flex` so right-alignment works cleanly.
+
 ## [0.10.7] — 2026-05-21
 
 ### Changed (UI redesign — Claude-Code-inspired shell)

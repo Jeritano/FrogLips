@@ -268,7 +268,21 @@ body {
   flex-direction: column;
 }
 
-/* ── Top-bar menu ── */
+/* ── Sidebar actions row (Dashboard + Menu, above search) ── */
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+.sidebar-actions .topbar-btn { flex: 1; justify-content: center; }
+.sidebar-actions .topbar-menu-wrap { flex: 1; display: flex; }
+.sidebar-actions .topbar-menu-wrap > .topbar-btn { width: 100%; }
+
+/* Theme toggle pinned to far right of the model picker bar. */
+.topbar-theme { margin-left: auto; }
+
+/* ── Top-bar menu (now used inside .sidebar-actions) ── */
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -482,6 +496,9 @@ header {
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface);
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 /* ── Model picker ── */
