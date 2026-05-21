@@ -82,6 +82,18 @@ function App() {
           ? "linux"
           : "other";
     document.documentElement.dataset.platform = platform;
+    // Track macOS native fullscreen — traffic lights are hidden in fullscreen,
+    // so the hamburger button slides left into the freed space via a CSS
+    // override on :root[data-fullscreen="true"].
+    const updateFullscreen = async () => {
+      try {
+        const fs = await getCurrentWindow().isFullscreen();
+        document.documentElement.dataset.fullscreen = fs ? "true" : "false";
+      } catch {
+        document.documentElement.dataset.fullscreen = "false";
+      }
+    };
+    updateFullscreen();
     refreshStatus();
     refreshConversations();
     // First-run gate: ask Rust whether the wizard has been completed before.
@@ -150,6 +162,10 @@ function App() {
     let saveTimer: number | undefined;
     const win = getCurrentWindow();
     const persistGeometry = () => {
+      // Fullscreen state changes are reported via the same onResized event
+      // stream — re-query immediately (not debounced) so the hamburger
+      // slide-over follows the lights disappearing in real time.
+      updateFullscreen();
       if (saveTimer) window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(async () => {
         try {
@@ -531,8 +547,9 @@ function App() {
               </div>
             )}
           </div>
-          <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
         </div>
+        <div className="sidebar-spacer-top" aria-hidden="true" />
+        <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
         <input
           className="conv-search"
           type="search"
@@ -619,6 +636,7 @@ function App() {
             </li>
           ))}
         </ul>
+        <div className="sidebar-spacer-bottom" aria-hidden="true" />
       </aside>
       <main className="main">
         <header>

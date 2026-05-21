@@ -185,11 +185,10 @@
   display: flex;
   align-items: stretch;
   gap: 6px;
-  /* 36px of top padding drops the row BELOW the macOS traffic lights
-     (which sit ~y=12-32). With the row below the chrome, horizontal
-     padding can drop to 0 (let the parent .sidebar's 8px do the work)
-     so the hamburger is flush with the conv-search left edge below. */
-  padding: 28px 0 0 0;
+  /* Drag strip at the sidebar's top edge. The hamburger it contains is
+     position:fixed (see .topbar-hamburger), so this row's main job is to
+     provide a -webkit-app-region drag surface. */
+  padding: 12px 0 0 64px;
   /* This row is the window-drag surface (Overlay style strips the OS
      drag bar). Children opt out via -webkit-app-region: no-drag. */
   -webkit-app-region: drag;
@@ -207,18 +206,44 @@
    on the parent was eating mousedown events on the model-picker <select>.
    Window dragging from the top of the main pane is handled by the
    fixed .window-drag-strip (top 28 px of the window). */
-.new-chat { flex: 1; }
-.topbar-hamburger {
+.topbar-btn.topbar-hamburger {
   /* Stretch to the row height (== .new-chat height) and keep a square
-     footprint by matching aspect-ratio. */
+     footprint by matching aspect-ratio. Borderless ghost icon button
+     so it doesn't compete visually with the bordered + New chat chip
+     next to it. Double-class selector bumps specificity over the
+     bare `.topbar-btn` border rule defined later in this file. */
   align-self: stretch;
   aspect-ratio: 1 / 1;
   padding: 0;
-  font-size: 20px;
+  font-size: 18px;
   line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  border-radius: var(--radius-sm);
+}
+.topbar-btn.topbar-hamburger:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.topbar-btn.topbar-hamburger {
+  position: fixed;
+  top: 19px;
+  left: 82px;
+  width: 28px;
+  height: 28px;
+  align-self: auto;
+  z-index: 10000;
+  -webkit-app-region: no-drag;
+}
+/* In macOS native fullscreen the traffic lights are hidden, so the
+   hamburger slides left into the freed corner. JS toggles
+   data-fullscreen on <html> via the Tauri window onResized event. */
+:root[data-fullscreen="true"] .topbar-btn.topbar-hamburger {
+  left: 12px;
 }
 .theme-toggle {
   width: 32px;
@@ -232,6 +257,15 @@
   flex-shrink: 0;
 }
 .theme-toggle:hover { background: var(--surface-hover); color: var(--text); }
+
+/* Flex spacers above + below the conv search/list block sandwich it at
+   the vertical midpoint of the sidebar column. Both grow equally so the
+   block sits in the middle regardless of how tall the conv list is. */
+.sidebar-spacer-top,
+.sidebar-spacer-bottom {
+  flex: 1 1 0;
+  min-height: 0;
+}
 
 .conv-search {
   margin: 6px 0;
@@ -342,6 +376,9 @@
 
 html, body, #root {
   height: 100%;
+  /* Lock out document-level scroll — a fresh load was scrolling the
+     body down a few px, hiding .app's top padding (the top-gap bug). */
+  overflow: hidden;
 }
 
 body {
@@ -356,15 +393,15 @@ body {
 .app {
   display: grid;
   grid-template-columns: 220px 1fr;
-  height: 100vh;
+  /* height:100% (not 100vh) — in the macOS Overlay webview 100vh is
+     ~44px taller than the real window, which made .app overflow and
+     the body scroll, pushing the panel top off-screen. 100% chains
+     html→body→#root→.app to the exact window height. */
+  height: 100%;
   overflow: hidden;
-  /* Elegant outer frame — small inset, rounded corners, subtle border.
-     Inspired by Claude Code's panel-in-panel look.
-     Top padding clears the macOS traffic lights when Overlay titlebar is
-     used. Win/Linux skip the extra padding via [data-platform] below. */
-  padding: 6px;
-  padding-top: 22px;
-  gap: 6px;
+  /* Uniform 12px gap on all 4 sides. */
+  padding: 12px;
+  gap: 12px;
   background: var(--bg);
   box-sizing: border-box;
 }
@@ -475,6 +512,17 @@ body {
   display: flex;
   flex-direction: column;
 }
+/* The hamburger is position:fixed, so .topbar-menu-wrap collapses to 0×0
+   and can't anchor this menu. Pin the menu to the hamburger's fixed
+   coords: top 19 + height 28 + 4px gap = 51; left matches the button. */
+.sidebar-top .topbar-menu {
+  position: fixed;
+  top: 51px;
+  left: 82px;
+}
+:root[data-fullscreen="true"] .sidebar-top .topbar-menu {
+  left: 12px;
+}
 .topbar-menu button {
   background: transparent;
   border: none;
@@ -540,7 +588,9 @@ body {
   border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
-  padding: 12px 8px;
+  /* Bottom 12 keeps room for the memory panel; top 0 lets .sidebar-top
+     control the exact gap below the macOS traffic lights. */
+  padding: 0 8px 12px 8px;
   overflow-y: auto;
 }
 
@@ -549,16 +599,20 @@ body {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  /* Span the full sidebar width as a primary action row below the
+     hamburger / traffic-light row. */
   width: 100%;
   background: transparent;
   color: var(--text-2);
-  border: 1px dashed var(--border);
-  border-radius: 8px;
+  /* Solid 1 px border (not dashed) — dashed reads as a drop-zone /
+     placeholder convention; this is a real primary action. */
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
   padding: 8px 12px;
   cursor: pointer;
-  font-size: 13px;
-  margin-bottom: 10px;
-  transition: color 0.15s, border-color 0.15s;
+  font-size: var(--fs-md);
+  margin: 6px 0 10px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
   /* Keep "+ New chat" on a single line — when the sidebar gets narrow
      ellipsis is preferable to wrapping the button label. */
   white-space: nowrap;
@@ -568,7 +622,8 @@ body {
 
 .new-chat:hover {
   color: var(--text);
-  border-color: var(--text-3);
+  border-color: var(--border);
+  background: var(--surface-hover);
 }
 
 .conv-list {
@@ -672,25 +727,21 @@ body {
 .main {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* No height:100vh — that forced the grid row to full-window height,
+     overflowing .app's padded content box and dragging the sidebar
+     past the top gap. Grid align-self:stretch sizes it correctly. */
+  min-height: 0;
   overflow: hidden;
 }
 
 header {
-  /* Just enough top padding to clear the macOS traffic lights (~y=12-32).
-     Tighter than the sidebar's row since the header sits to the right
-     of the sidebar where lights don't reach — but we keep symmetric
-     vertical padding so content reads centered. */
-  padding: 8px 20px 8px 20px;
-  padding-top: 0;
+  /* 10px above + below the model-picker row — compact header bar. */
+  padding: 10px 20px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface);
   flex-shrink: 0;
   display: flex;
-  /* Pin to the top so the model picker's TOP edge sits at the header's
-     top edge, which (with .app padding-top: 12) lines up with the
-     macOS traffic-light tops. */
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
 }
 
