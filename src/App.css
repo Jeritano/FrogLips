@@ -103,12 +103,11 @@
   display: flex;
   align-items: stretch;
   gap: 6px;
-  /* Reserve space at the top of the sidebar for the macOS traffic lights
-     (titleBarStyle: Overlay puts them on top of the content). 72 px of
-     left padding tucks the hamburger directly to the right of the
-     traffic-light trio; 36 px of top padding drops the row below the
-     chrome. */
-  padding: 36px 12px 0 72px;
+  /* 36px of top padding drops the row BELOW the macOS traffic lights
+     (which sit ~y=12-32). With the row below the chrome, horizontal
+     padding can drop to 0 (let the parent .sidebar's 8px do the work)
+     so the hamburger is flush with the conv-search left edge below. */
+  padding: 36px 0 0 0;
   /* This row is the window-drag surface (Overlay style strips the OS
      drag bar). Children opt out via -webkit-app-region: no-drag. */
   -webkit-app-region: drag;
