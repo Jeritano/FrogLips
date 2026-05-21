@@ -279,11 +279,10 @@ body {
   /* Elegant outer frame — small inset, rounded corners, subtle border.
      Inspired by Claude Code's panel-in-panel look. */
   padding: 6px;
-  /* Traffic lights are pinned to y=12 via trafficLightPosition in
-     tauri.conf.json. Match that exactly so the model picker BOX top
-     edge sits at y=12 — same as the traffic-light TOP edge. Never
-     above. */
-  padding-top: 12px;
+  /* 6 px of gap from window-top to picker-box-top — same gap the OS
+     leaves above the traffic-light circles. Picker box TOP edge sits
+     at window y=6 = light TOP edge. */
+  padding-top: 6px;
   gap: 6px;
   background:
     radial-gradient(circle at top left, rgba(99, 102, 241, 0.08), transparent 40%),
