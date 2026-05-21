@@ -276,6 +276,28 @@ pub(super) fn validate_for_write(p: &str) -> Result<PathBuf, ToolError> {
             message: "path is outside workspace root".into(),
         });
     }
+    // resolve_path canonicalizes only the parent for write targets, so an
+    // existing symlink leaf would let a write escape via the link target.
+    // Reject symlinked leaves and re-check the canonical target.
+    if let Ok(md) = std::fs::symlink_metadata(&resolved) {
+        if md.file_type().is_symlink() {
+            return Err(ToolError::Protected {
+                message: "refusing to write through a symlink".into(),
+            });
+        }
+        if let Ok(canon) = std::fs::canonicalize(&resolved) {
+            if is_protected_for_write(&canon) {
+                return Err(ToolError::Protected {
+                    message: "path is restricted for writes".into(),
+                });
+            }
+            if !within_workspace(&canon) {
+                return Err(ToolError::OutsideWorkspace {
+                    message: "path is outside workspace root".into(),
+                });
+            }
+        }
+    }
     Ok(resolved)
 }
 

@@ -1,6 +1,5 @@
 use serde::Serialize;
 use std::path::PathBuf;
-use std::process::Stdio;
 
 use super::fs::{
     err_string, validate_for_read, validate_for_write, workspace_root_clone, ToolError,
@@ -17,13 +16,15 @@ pub struct GitResult {
 
 async fn git_invoke(cwd: PathBuf, args: &[&str]) -> Result<GitResult, String> {
     let mut cmd = tokio::process::Command::new("git");
-    cmd.current_dir(&cwd)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    cmd.current_dir(&cwd).args(args).kill_on_drop(true);
     let timeout = std::time::Duration::from_secs(10);
-    let output = match tokio::time::timeout(timeout, cmd.output()).await {
+    // capped_output bounds stdout/stderr buffering — git output can be huge.
+    let (out, err, code) = match tokio::time::timeout(
+        timeout,
+        super::shell::capped_output(cmd, MAX_SHELL_OUTPUT),
+    )
+    .await
+    {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
         Err(_) => {
@@ -32,20 +33,10 @@ async fn git_invoke(cwd: PathBuf, args: &[&str]) -> Result<GitResult, String> {
             }))
         }
     };
-    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if stdout.len() > MAX_SHELL_OUTPUT {
-        stdout.truncate(MAX_SHELL_OUTPUT);
-        stdout.push_str("\n[truncated]");
-    }
-    if stderr.len() > MAX_SHELL_OUTPUT {
-        stderr.truncate(MAX_SHELL_OUTPUT);
-        stderr.push_str("\n[truncated]");
-    }
     Ok(GitResult {
-        stdout,
-        stderr,
-        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out).into_owned(),
+        stderr: String::from_utf8_lossy(&err).into_owned(),
+        exit_code: code,
         cwd: cwd.to_string_lossy().into_owned(),
     })
 }

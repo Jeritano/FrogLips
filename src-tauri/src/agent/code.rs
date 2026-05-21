@@ -1,6 +1,5 @@
 use serde::Serialize;
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Instant;
 
 use super::fs::{
@@ -102,13 +101,11 @@ pub async fn format_code(path: String) -> Result<FormatResult, String> {
         process_cmd.arg(a);
     }
     process_cmd.arg(&path_str);
-    process_cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let output = match tokio::time::timeout(
+    process_cmd.kill_on_drop(true);
+    // capped_output bounds stdout/stderr buffering instead of `.output()`.
+    let (out, err, code) = match tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        process_cmd.output(),
+        super::shell::capped_output(process_cmd, MAX_READ_BYTES),
     )
     .await
     {
@@ -122,9 +119,9 @@ pub async fn format_code(path: String) -> Result<FormatResult, String> {
     };
     Ok(FormatResult {
         formatter: cmd.to_string(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out).into_owned(),
+        stderr: String::from_utf8_lossy(&err).into_owned(),
+        exit_code: code,
         duration_ms: started.elapsed().as_millis() as u64,
     })
 }

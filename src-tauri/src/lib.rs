@@ -1757,9 +1757,14 @@ pub fn run() {
         if matches!(event, tauri::RunEvent::Exit) {
             let s = cleanup.clone();
             tauri::async_runtime::block_on(async move {
-                s.stop().await;
-                mcp::shutdown_all().await;
-                agent::browser::shutdown().await;
+                // Bound the whole teardown so a wedged child/MCP server can't
+                // hang app exit indefinitely.
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(8), async move {
+                    s.stop().await;
+                    mcp::shutdown_all().await;
+                    agent::browser::shutdown().await;
+                })
+                .await;
             });
             agent::fs_watcher::shutdown_all();
         }

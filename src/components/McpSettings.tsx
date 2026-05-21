@@ -64,6 +64,7 @@ export function McpSettings({ onConfigsChanged }: Props) {
   const [draftCommand, setDraftCommand] = useState("");
   const [draftArgs, setDraftArgs] = useState("");
   const [draftEnv, setDraftEnv] = useState("");
+  const [stderrPanel, setStderrPanel] = useState<{ name: string; text: string } | null>(null);
   // Tauri 2 webview disables window.confirm — use an inline two-click pattern
   // so the destructive flow can't short-circuit silently.
   const removeConfirm = useTwoClickConfirm();
@@ -192,11 +193,12 @@ export function McpSettings({ onConfigsChanged }: Props) {
   }
 
   async function showStderr(name: string) {
+    if (stderrPanel?.name === name) { setStderrPanel(null); return; }
     try {
       const text = await api.mcpServerStderr(name);
-      alert(text && text.trim() ? text : "(no stderr captured)");
+      setStderrPanel({ name, text: text && text.trim() ? text : "(no stderr captured)" });
     } catch (e) {
-      alert(String(e));
+      setStderrPanel({ name, text: String(e) });
     }
   }
 
@@ -269,6 +271,24 @@ export function McpSettings({ onConfigsChanged }: Props) {
               <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 tools: {toolNames.map((n) => `mcp__${cfg.name}__${n}`).join(", ")}
               </div>
+            )}
+            {stderrPanel?.name === cfg.name && (
+              <pre
+                style={{
+                  marginTop: 6,
+                  padding: 6,
+                  fontSize: 11,
+                  maxHeight: 180,
+                  overflow: "auto",
+                  whiteSpace: "pre-wrap",
+                  background: "var(--bg)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 4,
+                  color: "var(--text-muted)",
+                }}
+              >
+                {stderrPanel.text}
+              </pre>
             )}
           </div>
         );

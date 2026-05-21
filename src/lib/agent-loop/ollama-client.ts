@@ -251,9 +251,16 @@ export async function callOllamaWithRetry(
     } catch (e) {
       lastErr = e;
       if (signal.aborted) throw e;
-      // Retry on 5xx (parsed from message) and generic network errors.
+      // Whitelist of retriable failures: explicit Ollama 5xx and genuine
+      // transient connection errors. Timeouts and aborts are NOT retried —
+      // retrying a 120s hang would just multiply the wall-clock cost.
       const msg = e instanceof Error ? e.message : String(e);
-      const isRetriable = /Ollama 5\d\d:/.test(msg) || !/Ollama \d{3}:/.test(msg);
+      const name = e instanceof Error ? e.name : "";
+      const is5xx = /Ollama 5\d\d:/.test(msg);
+      // fetch() throws a bare TypeError on connection failures (DNS, refused,
+      // reset). TimeoutError/AbortError are DOMExceptions — excluded here.
+      const isConnFailure = name === "TypeError";
+      const isRetriable = is5xx || isConnFailure;
       if (isRetriable && attempt < RETRY_MAX) {
         logDiag({
           level: "warn",

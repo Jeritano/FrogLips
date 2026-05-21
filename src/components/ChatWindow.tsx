@@ -415,12 +415,20 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     const isStreamConvActive = () => convRef.current?.id === streamConvId;
     if (isStreamConvActive()) setMessages(baseHistory);
 
+    // Abort any still-streaming send before starting a new one — otherwise the
+    // older controller is orphaned and its stream keeps appending tokens.
+    // Created here (before recall) so Stop can also cancel memory recall.
+    abortRef.current?.abort();
+    cancelActiveShell();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     // Recall memories
     let recallBlock: string | null = null;
     let recallHits: Memory[] = [];
     if (mode !== "off") {
       try {
-        recallHits = await recall(text, 5, { cwd: workspaceRoot, convId: conv.id });
+        recallHits = await recall(text, 5, { cwd: workspaceRoot, convId: conv.id }, ctrl.signal);
         recallBlock = formatRecallBlock(recallHits);
         if (isStreamConvActive()) setRecalled(recallHits);
         if (recallHits.length > 0) {
@@ -456,15 +464,12 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       `If you genuinely don't know, say "I'm running as ${status.model}; I don't have additional details about my training."`;
 
     const systemPreamble: Message[] = [
-      { conversation_id: conv.id, role: "system", content: identityPrompt },
+      { _tmpKey: tmpKey(), conversation_id: conv.id, role: "system", content: identityPrompt },
     ];
     if (recallBlock) {
-      systemPreamble.push({ conversation_id: conv.id, role: "system", content: recallBlock });
+      systemPreamble.push({ _tmpKey: tmpKey(), conversation_id: conv.id, role: "system", content: recallBlock });
     }
     const historyForApi: Message[] = [...systemPreamble, ...baseHistory];
-
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
 
     /* ── Agent mode ── */
     if (agentMode && status.backend === "ollama") {
@@ -716,7 +721,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   // sees the latest state via a ref-style indirection: we refresh the inner
   // fn on every render and expose a thin wrapper that delegates to it.
   const handleRegenerateRef = useRef<(() => void | Promise<void>) | null>(null);
-  handleRegenerateRef.current = async () => {
+  useEffect(() => {
+    handleRegenerateRef.current = async () => {
     if (isWorking || !conversation) return;
     let lastUserIdx = -1;
     let lastAsstIdx = -1;
@@ -747,7 +753,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     const truncated = messages.slice(0, lastUserIdx).concat(messages.slice(lastAsstIdx + 1));
     setMessages(truncated);
     await send(userText, truncated);
-  };
+    };
+  });
   const onRegenerate = useCallback(() => handleRegenerateRef.current?.(), []);
 
   // Citation chip click handler — event-delegated at the chat-window root.

@@ -122,8 +122,10 @@ pub async fn resolve_to_safe_addrs(
 }
 
 /// Custom redirect policy: re-validate each hop against is_safe_public_host
-/// + scheme. Default `Policy::limited(5)` would happily follow a 302 to
-///   http://127.0.0.1/secrets.
+/// and scheme, then re-resolve DNS so a redirect to a host that resolves to a
+/// loopback address (e.g. localtest.me) is rejected the same way the initial
+/// request is. Default `Policy::limited(5)` would happily follow a 302 to a
+/// loopback URL.
 fn ssrf_safe_redirect() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
         if attempt.previous().len() >= 5 {
@@ -136,6 +138,25 @@ fn ssrf_safe_redirect() -> reqwest::redirect::Policy {
         let host = url.host_str().unwrap_or("");
         if !is_safe_public_host(host) {
             return attempt.error("redirect to private/loopback host");
+        }
+        // The redirect-policy closure is sync, so resolve DNS synchronously
+        // here. lookup blocks briefly but only on a redirect hop.
+        let port = url.port_or_known_default().unwrap_or(443);
+        match std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) {
+            Ok(addrs) => {
+                let mut any = false;
+                for a in addrs {
+                    any = true;
+                    if !is_safe_ip(&a.ip()) {
+                        return attempt
+                            .error("redirect host resolves to a private/loopback address");
+                    }
+                }
+                if !any {
+                    return attempt.error("redirect host did not resolve");
+                }
+            }
+            Err(_) => return attempt.error("redirect host did not resolve"),
         }
         attempt.follow()
     })

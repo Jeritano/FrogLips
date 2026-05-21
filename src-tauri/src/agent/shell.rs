@@ -52,6 +52,8 @@ pub async fn run_shell(
         env: None,
     });
 
+    // NOTE: only the cwd is path-validated here — the command itself is NOT
+    // contained to the workspace and can touch any path the user could.
     let cwd_path: Option<PathBuf> = match opts.cwd.as_ref() {
         Some(c) => Some(validate_for_read(c).map_err(err_string)?),
         None => workspace_root_clone(),
@@ -140,6 +142,67 @@ pub async fn run_shell(
         }),
         Err(e) => Err(err_string(ToolError::io(e.to_string()))),
     }
+}
+
+/// Read an async reader into a buffer with a hard byte cap so a process
+/// emitting an unbounded stream can't buffer all of it in memory before
+/// truncation. Returns `(bytes, truncated)`.
+async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
+    mut r: R,
+    cap: usize,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut truncated = false;
+    let mut chunk = vec![0u8; 8192];
+    loop {
+        let n = r.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        if buf.len() >= cap {
+            truncated = true;
+            break;
+        }
+        let take = n.min(cap - buf.len());
+        buf.extend_from_slice(&chunk[..take]);
+        if take < n {
+            truncated = true;
+            break;
+        }
+    }
+    Ok((buf, truncated))
+}
+
+/// Run a child to completion, reading stdout and stderr each with a hard
+/// byte cap. Returns `(stdout, stderr, exit_code)` where the byte vecs are
+/// capped at `cap` (with a "\n[truncated]" marker appended when truncated).
+pub(super) async fn capped_output(
+    mut cmd: tokio::process::Command,
+    cap: usize,
+) -> std::io::Result<(Vec<u8>, Vec<u8>, i32)> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    if let Some(s) = stdout {
+        let (b, t) = read_capped(s, cap).await?;
+        out = b;
+        if t {
+            out.extend_from_slice(b"\n[truncated]");
+        }
+    }
+    if let Some(s) = stderr {
+        let (b, t) = read_capped(s, cap).await?;
+        err = b;
+        if t {
+            err.extend_from_slice(b"\n[truncated]");
+        }
+    }
+    let status = child.wait().await?;
+    Ok((out, err, status.code().unwrap_or(-1)))
 }
 
 /// Heuristic classifier for visibly destructive shell commands. Lets the

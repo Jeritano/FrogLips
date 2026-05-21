@@ -36,9 +36,8 @@ function pruneOldHandles(): void {
 }
 
 function makeId(): string {
-  // Short, URL-safe id distinct from task_create's UUIDs.
-  const rand = Math.random().toString(36).slice(2, 10);
-  return `sa_${rand}`;
+  // Short, URL-safe id; first segment of a UUID for collision-resistance.
+  return `sa_${crypto.randomUUID().slice(0, 8)}`;
 }
 
 /** Build the AgentRunOptions used by the actual subagent run. */

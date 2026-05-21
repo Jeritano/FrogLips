@@ -48,6 +48,7 @@ function App() {
   const [forkTreeOpen, setForkTreeOpen] = useState(false);
   const [memoriesOpen, setMemoriesOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // First-run setup wizard. `undefined` = haven't checked the flag yet, so we
   // render nothing for the wizard region until the IPC call returns. This
   // avoids a flash of the wizard on returning users whose setup is already
@@ -463,7 +464,11 @@ function App() {
   }, []);
 
   return (
-    <div className="app" data-testid="app-ready">
+    <div
+      className="app"
+      data-testid="app-ready"
+      data-sidebar-collapsed={sidebarCollapsed ? "true" : undefined}
+    >
       {/* Window drag strip — sits at the very top of the window, behind
           everything else (low z-index, pointer-events transparent except
           on this element). titleBarStyle: Overlay strips the OS drag bar
@@ -547,6 +552,29 @@ function App() {
               </div>
             )}
           </div>
+          <button
+            type="button"
+            className="topbar-btn topbar-collapse"
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-pressed={sidebarCollapsed}
+            onClick={() => setSidebarCollapsed((v) => !v)}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <line x1="9" y1="4" x2="9" y2="20" />
+            </svg>
+          </button>
         </div>
         <div className="sidebar-spacer-top" aria-hidden="true" />
         <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>

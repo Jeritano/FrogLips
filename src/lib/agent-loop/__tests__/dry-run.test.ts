@@ -248,8 +248,8 @@ describe("dryRunValidateUrl: SSRF preflight", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("accepts data: URLs", () => {
-    const r = dryRunValidateUrl("data:text/html,<h1>hi</h1>");
-    expect(r.ok).toBe(true);
+  it("accepts data:image/* URLs but rejects non-image data: URLs", () => {
+    expect(dryRunValidateUrl("data:image/png;base64,iVBORw0KGgo=").ok).toBe(true);
+    expect(dryRunValidateUrl("data:text/html,<h1>hi</h1>").ok).toBe(false);
   });
 });

@@ -60,10 +60,11 @@ pub fn classify_applescript_risk(script: &str) -> &'static str {
     let lc = script.to_lowercase();
     // Shell escape inside AppleScript ⇒ apply the same shell heuristic.
     if lc.contains("do shell script") {
-        // Extract the quoted argument and feed it to classify_shell_risk —
-        // best-effort, just grab between the first pair of double quotes
-        // after the keyword.
-        if let Some(start) = lc.find("do shell script") {
+        // Scan every `do shell script` occurrence — a script can chain
+        // several, and a later one could be the destructive one.
+        let mut search_from = 0;
+        while let Some(rel) = lc[search_from..].find("do shell script") {
+            let start = search_from + rel;
             let tail = &script[start..];
             if let Some(q1) = tail.find('"') {
                 let after = &tail[q1 + 1..];
@@ -75,8 +76,9 @@ pub fn classify_applescript_risk(script: &str) -> &'static str {
                     }
                 }
             }
-            return "privileged";
+            search_from = start + "do shell script".len();
         }
+        return "privileged";
     }
     let destructive: &[&str] = &[
         "tell application \"finder\" to delete",
@@ -101,20 +103,16 @@ pub fn classify_applescript_risk(script: &str) -> &'static str {
 /* ── Clipboard ───────────────────────────────────────────────────────────── */
 
 pub async fn clipboard_get() -> Result<String, String> {
-    let output = tokio::process::Command::new("pbpaste")
-        .kill_on_drop(true)
-        .output()
+    let mut cmd = tokio::process::Command::new("pbpaste");
+    cmd.kill_on_drop(true);
+    // capped_output bounds stdout buffering — clipboard contents are unbounded.
+    let (out, _err, code) = super::shell::capped_output(cmd, MAX_READ_BYTES)
         .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
-    if !output.status.success() {
+    if code != 0 {
         return Err(err_string(ToolError::io("pbpaste failed")));
     }
-    let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
-    if s.len() > MAX_READ_BYTES {
-        s.truncate(MAX_READ_BYTES);
-        s.push_str("\n[clipboard truncated]");
-    }
-    Ok(s)
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 pub async fn clipboard_set(text: String) -> Result<(), String> {

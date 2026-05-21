@@ -245,6 +245,34 @@
 :root[data-fullscreen="true"] .topbar-btn.topbar-hamburger {
   left: 12px;
 }
+/* Sidebar collapse/expand toggle — fixed in the title-bar strip, just
+   right of the hamburger. position:fixed so it survives the sidebar
+   grid track shrinking to 0 when collapsed. */
+.topbar-btn.topbar-collapse {
+  position: fixed;
+  top: 19px;
+  left: 116px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  border-radius: var(--radius-sm);
+  /* Below modal overlays (--z-modal) so it can't float over an open modal. */
+  z-index: var(--z-popover);
+  -webkit-app-region: no-drag;
+}
+.topbar-btn.topbar-collapse:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+:root[data-fullscreen="true"] .topbar-btn.topbar-collapse {
+  left: 46px;
+}
 .theme-toggle {
   width: 32px;
   height: 32px;
@@ -404,6 +432,28 @@ body {
   gap: 12px;
   background: var(--bg);
   box-sizing: border-box;
+}
+/* Collapsed sidebar — the grid track shrinks to 0 and the panel border
+   is dropped. The hamburger + collapse buttons are position:fixed, so
+   they stay visible to expand the sidebar again. */
+.app[data-sidebar-collapsed="true"] {
+  grid-template-columns: 0 1fr;
+  gap: 0;
+}
+.app[data-sidebar-collapsed="true"] > .sidebar {
+  border: 0;
+  overflow: hidden;
+}
+/* Collapsed: the main pane goes full-width, so its header would slide
+   under the traffic lights + hamburger + collapse button (cluster ends
+   ~x=144). Shift the header content right to clear them. */
+.app[data-sidebar-collapsed="true"] header {
+  padding-left: 143px;
+}
+/* Fullscreen hides the traffic lights and slides the two buttons left
+   (hamburger 12, collapse 46 → cluster ends ~x=74), so less offset. */
+:root[data-fullscreen="true"] .app[data-sidebar-collapsed="true"] header {
+  padding-left: 73px;
 }
 /* Platform-specific top inset for the Overlay titlebar treatment. */
 :root[data-platform="win"] .app,
@@ -737,6 +787,9 @@ body {
 header {
   /* 10px above + below the model-picker row — compact header bar. */
   padding: 10px 20px;
+  /* Smooth slide when the sidebar collapses (header padding-left jumps
+     to clear the title-bar buttons). */
+  transition: padding-left 0.18s ease;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface);
   flex-shrink: 0;
@@ -814,6 +867,19 @@ header {
 
 .model-picker button.start-btn:hover:not(:disabled) {
   background: var(--accent-strong);
+}
+
+/* Off-screen keyboard-shortcut proxy — not a visible control. */
+.model-picker button.sr-only-shortcut {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  pointer-events: none;
 }
 
 .status-dot {

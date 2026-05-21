@@ -36,6 +36,7 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   const [browserOpen, setBrowserOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [nativeRepo, setNativeRepo] = useState<string | null>(null);
 
   useEffect(() => { loadModels(); }, []);
 
@@ -83,12 +84,8 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
     const v = e.target.value;
     if (v === "__browse__") { setBrowserOpen(true); return; }
     if (v === "__native__") {
-      const id = window.prompt(
-        "HuggingFace repo id for native inference (e.g. NousResearch/Llama-3.2-1B):",
-        "NousResearch/Llama-3.2-1B",
-      );
-      if (!id) return;
-      setSelected({ id, size_bytes: 0, backend: "native" });
+      // window.prompt is blocked in the Tauri webview — use an inline input.
+      setNativeRepo((r) => r ?? "NousResearch/Llama-3.2-1B");
       return;
     }
     const [backend, ...rest] = v.split(":");
@@ -148,7 +145,16 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   return (
     <>
       <div className="model-picker">
-        <select value={selValue} onChange={onChange} disabled={busy || !!status?.running}>
+        {/* Off-screen target for the global Cmd+L shortcut (App.tsx). */}
+        <button
+          type="button"
+          data-shortcut="open-library"
+          className="sr-only-shortcut"
+          tabIndex={-1}
+          aria-hidden="true"
+          onClick={() => setBrowserOpen(true)}
+        />
+        <select data-shortcut="focus-model" value={selValue} onChange={onChange} disabled={busy || !!status?.running}>
           <option value="">— pick a model —</option>
           {models.ollama.length > 0 && (
             <optgroup label="Ollama (local)">
@@ -173,6 +179,39 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
             <option value="__browse__">⬇ Browse &amp; download models…</option>
           </optgroup>
         </select>
+
+        {nativeRepo !== null && (
+          <>
+            <input
+              type="text"
+              value={nativeRepo}
+              placeholder="HuggingFace repo id"
+              aria-label="HuggingFace repo id for native inference"
+              autoFocus
+              onChange={(e) => setNativeRepo(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && nativeRepo.trim()) {
+                  setSelected({ id: nativeRepo.trim(), size_bytes: 0, backend: "native" });
+                  setNativeRepo(null);
+                } else if (e.key === "Escape") {
+                  setNativeRepo(null);
+                }
+              }}
+            />
+            <button
+              onClick={() => {
+                if (nativeRepo.trim()) {
+                  setSelected({ id: nativeRepo.trim(), size_bytes: 0, backend: "native" });
+                  setNativeRepo(null);
+                }
+              }}
+              disabled={!nativeRepo.trim()}
+            >
+              Use
+            </button>
+            <button onClick={() => setNativeRepo(null)}>Cancel</button>
+          </>
+        )}
 
         {status?.running ? (
           <button onClick={stop} disabled={busy}>Stop</button>

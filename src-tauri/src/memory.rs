@@ -297,10 +297,13 @@ pub fn list_memories(status_filter: Option<&str>) -> Result<Vec<Memory>> {
 }
 
 pub fn delete_memory(id: i64) -> Result<()> {
+    // Hold the cache write lock across the DB delete so a concurrent
+    // warm_cache can't read the row mid-delete and resurrect it.
+    let mut cache = EMB_CACHE.write();
     let conn = get_db()?;
     conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
     drop(conn);
-    if let Some(map) = EMB_CACHE.write().as_mut() {
+    if let Some(map) = cache.as_mut() {
         map.remove(&id);
     }
     Ok(())

@@ -77,7 +77,19 @@ fn rand_seed() -> u32 {
 }
 
 pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> {
-    if TASKS.lock().len() >= MAX_CONCURRENT_TASKS {
+    // Count only non-terminal tasks — terminal entries linger in the map
+    // until pruned and must not count against the concurrency cap.
+    let active = TASKS
+        .lock()
+        .values()
+        .filter(|e| {
+            !matches!(
+                e.lock().info.status,
+                TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled
+            )
+        })
+        .count();
+    if active >= MAX_CONCURRENT_TASKS {
         return Err(format!(
             "task queue full ({MAX_CONCURRENT_TASKS} active) — cancel finished ones first"
         ));

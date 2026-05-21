@@ -628,8 +628,12 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
           const ids = Array.isArray(args.subagent_ids)
             ? (args.subagent_ids as unknown[]).map((v) => String(v))
             : [];
-          const timeoutSecs = typeof args.timeout_seconds === "number" ? args.timeout_seconds : 600;
-          result = await awaitSubagents(ids, Math.max(0, timeoutSecs) * 1000);
+          // Clamp the model-supplied timeout: floor 0, ceiling 10 min, so a
+          // bogus huge value can't wedge the loop indefinitely.
+          const AWAIT_TIMEOUT_CAP_MS = 600_000;
+          const rawTimeoutSecs = typeof args.timeout_seconds === "number" ? args.timeout_seconds : 600;
+          const timeoutMs = Math.min(AWAIT_TIMEOUT_CAP_MS, Math.max(0, rawTimeoutSecs) * 1000);
+          result = await awaitSubagents(ids, timeoutMs);
         } else if (fnName === "list_subagents") {
           result = listSubagents();
         } else {

@@ -9,6 +9,7 @@
  */
 
 import { api } from "../tauri-api";
+import { logDiag } from "../diagnostics";
 
 export interface OpenAIToolDef {
   type: "function";
@@ -57,6 +58,16 @@ export async function fetchMcpTools(): Promise<OpenAIToolDef[]> {
   }
   const out: OpenAIToolDef[] = [];
   for (const s of servers) {
+    // A server name containing the `__` separator would corrupt
+    // parseMcpToolName's split, mis-routing calls and audit provenance.
+    if (s.name.includes(SEP)) {
+      logDiag({
+        level: "warn",
+        source: "mcp-tools",
+        message: `Skipping MCP server '${s.name}': name contains reserved separator '__'`,
+      });
+      continue;
+    }
     let tools;
     try {
       tools = await api.mcpListTools(s.name);

@@ -105,6 +105,7 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
   const baseTextRef = useRef("");
   const lastVoiceTextRef = useRef("");
   const listeningRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const visionOK = modelSupportsVision(currentModel);
 
@@ -159,7 +160,10 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
 
   // stop recognition when component unmounts
   useEffect(() => {
-    return () => { recogRef.current?.stop?.(); };
+    return () => {
+      mountedRef.current = false;
+      recogRef.current?.stop?.();
+    };
   }, []);
 
   // Auto-clear transient drop messages after a few seconds so the UI doesn't
@@ -366,6 +370,8 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
         setText(next);
       };
       r.onerror = (e: any) => {
+        listeningRef.current = false;
+        if (!mountedRef.current) return;
         const code = e?.error || "unknown";
         if (code === "not-allowed" || code === "service-not-allowed") {
           setVoiceErr("Microphone permission denied. Grant access in System Settings → Privacy → Microphone.");
@@ -374,11 +380,11 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
         } else {
           setVoiceErr(`Voice error: ${code}`);
         }
-        listeningRef.current = false;
         setListening(false);
       };
       r.onend = () => {
         listeningRef.current = false;
+        if (!mountedRef.current) return;
         setListening(false);
       };
 
@@ -408,7 +414,7 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
       {images.length > 0 && (
         <div className="image-chips" data-testid="image-chips">
           {images.map((img, i) => (
-            <div className="image-chip" key={i} data-testid="image-chip">
+            <div className="image-chip" key={img.base64.slice(0, 64)} data-testid="image-chip">
               <img
                 src={`data:${img.mime};base64,${img.base64}`}
                 alt={img.filename ?? `image ${i + 1}`}

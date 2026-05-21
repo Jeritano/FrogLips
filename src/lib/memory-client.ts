@@ -16,6 +16,8 @@ export interface RecallContext {
    ─────────────────────────────────────────────────────────────────────── */
 
 const OLLAMA_BASE = "http://127.0.0.1:11434";
+// Cap on every Ollama call so a hung daemon can't wedge the send path.
+const MEMORY_FETCH_TIMEOUT_MS = 15_000;
 const DEFAULT_EMBED_MODEL = "nomic-embed-text";
 const DEFAULT_RECALL_THRESHOLD = 0.55;
 const EXTRACTOR_MODEL = "qwen3:4b";          // fallback list checked at runtime
@@ -37,6 +39,28 @@ export function configureMemory(opts: { embeddingModel?: string | null; recallTh
 
 function EMBED_MODEL(): string { return _embedModel; }
 export function getRecallThreshold(): number { return _recallThreshold; }
+
+/**
+ * Wrap a fetch with a timeout, chained to an optional caller AbortSignal so
+ * Stop cancels in-flight memory calls. Returns a signal plus a `clear` to
+ * cancel the timer once the response arrives.
+ */
+function withTimeout(
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; clear: () => void } {
+  const ctrl = new AbortController();
+  if (parent) {
+    if (parent.aborted) ctrl.abort(parent.reason);
+    else parent.addEventListener("abort", () => ctrl.abort(parent.reason), { once: true });
+  }
+  const t = setTimeout(
+    () => ctrl.abort(new DOMException("memory request timed out", "TimeoutError")),
+    timeoutMs,
+  );
+  ctrl.signal.addEventListener("abort", () => clearTimeout(t), { once: true });
+  return { signal: ctrl.signal, clear: () => clearTimeout(t) };
+}
 
 export function getMemoryMode(): MemoryMode {
   const v = localStorage.getItem(MODE_KEY);
@@ -77,14 +101,16 @@ function lruSet(k: string, v: number[]) {
   }
 }
 
-export async function embeddingsReady(): Promise<boolean> {
+export async function embeddingsReady(signal?: AbortSignal): Promise<boolean> {
   const now = Date.now();
   const ttl = embeddingAvailable === false ? EMBED_NEGATIVE_TTL_MS : EMBED_READY_TTL_MS;
   if (embeddingAvailable !== null && now - embeddingCheckedAt < ttl) {
     return embeddingAvailable;
   }
+  const to = withTimeout(signal, MEMORY_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(`${OLLAMA_BASE}/api/tags`);
+    const res = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: to.signal });
+    to.clear();
     if (!res.ok) {
       embeddingAvailable = false;
       embeddingCheckedAt = now;
@@ -96,6 +122,7 @@ export async function embeddingsReady(): Promise<boolean> {
     embeddingCheckedAt = now;
     return embeddingAvailable;
   } catch (err) {
+    to.clear();
     logDiag({
       level: "warn",
       source: "memory-client",
@@ -108,18 +135,21 @@ export async function embeddingsReady(): Promise<boolean> {
   }
 }
 
-export async function embed(text: string): Promise<number[] | null> {
+export async function embed(text: string, signal?: AbortSignal): Promise<number[] | null> {
   const trimmed = text.length > MAX_EMBED_INPUT ? text.slice(0, MAX_EMBED_INPUT) : text;
   const cacheKey = `${EMBED_MODEL()}:${trimmed}`;
   const cached = lruGet(cacheKey);
   if (cached) return cached;
-  if (!(await embeddingsReady())) return null;
+  if (!(await embeddingsReady(signal))) return null;
+  const to = withTimeout(signal, MEMORY_FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(`${OLLAMA_BASE}/api/embeddings`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: EMBED_MODEL(), prompt: trimmed }),
+      signal: to.signal,
     });
+    to.clear();
     if (!res.ok) return null;
     const data = await res.json();
     const emb = Array.isArray(data?.embedding) ? data.embedding : null;
@@ -130,6 +160,7 @@ export async function embed(text: string): Promise<number[] | null> {
     lruSet(cacheKey, emb);
     return emb;
   } catch (err) {
+    to.clear();
     logDiag({
       level: "warn",
       source: "memory-client",
@@ -146,12 +177,13 @@ export async function recall(
   query: string,
   k = 5,
   ctx: RecallContext = {},
+  signal?: AbortSignal,
 ): Promise<Memory[]> {
   if (!query.trim()) return [];
   // Backend degrades to global-only when ctx is missing; we still forward
   // whatever the caller has (workspace root + conv id) so project/
   // conversation-scoped memories surface in the right place.
-  const emb = await embed(query);
+  const emb = await embed(query, signal);
   if (emb && emb.length) {
     try {
       const hits = await api.searchMemoriesVector(emb, k, _recallThreshold, ctx);
@@ -244,13 +276,15 @@ let extractorModel: string | null = null;
 let extractorPickedAt = 0;
 const EXTRACTOR_TTL_MS = 60_000;
 
-async function pickExtractorModel(): Promise<string | null> {
+async function pickExtractorModel(signal?: AbortSignal): Promise<string | null> {
   const now = Date.now();
   if (extractorModel && now - extractorPickedAt < EXTRACTOR_TTL_MS) {
     return extractorModel;
   }
+  const to = withTimeout(signal, MEMORY_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(`${OLLAMA_BASE}/api/tags`);
+    const res = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: to.signal });
+    to.clear();
     if (!res.ok) return extractorModel; // network blip — keep prior pick
     const data = await res.json();
     const installed: string[] = (data?.models ?? []).map((m: any) => m.name);
@@ -265,6 +299,7 @@ async function pickExtractorModel(): Promise<string | null> {
     extractorModel = null;
     extractorPickedAt = now;
   } catch (err) {
+    to.clear();
     logDiag({
       level: "warn",
       source: "memory-client",
@@ -308,11 +343,13 @@ const SECRET_PATTERNS: RegExp[] = [
   /bearer\s+[A-Za-z0-9._-]{20,}/i,
 ];
 
-function looksLikeSecret(s: string): boolean {
+/** Exported for unit tests. */
+export function looksLikeSecret(s: string): boolean {
   return SECRET_PATTERNS.some((re) => re.test(s));
 }
 
 const MAX_FACTS_PER_TURN = 5;
+const MAX_FACT_LEN = 280;
 const EXTRACT_COOLDOWN_MS = 5000;
 const lastExtractAtPerConv: Map<number | "global", number> = new Map();
 
@@ -320,6 +357,7 @@ export async function extractFacts(
   userMsg: string,
   assistantMsg: string,
   conversationId: number | null = null,
+  signal?: AbortSignal,
 ): Promise<ExtractedFact[]> {
   const now = Date.now();
   const key = conversationId ?? "global";
@@ -332,9 +370,10 @@ export async function extractFacts(
       if (now - t > EXTRACT_COOLDOWN_MS * 100) lastExtractAtPerConv.delete(k);
     }
   }
-  const model = await pickExtractorModel();
+  const model = await pickExtractorModel(signal);
   if (!model) return [];
   const exchange = `USER: ${userMsg}\n\nASSISTANT: ${assistantMsg}`;
+  const to = withTimeout(signal, MEMORY_FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(`${OLLAMA_BASE}/api/chat`, {
       method: "POST",
@@ -348,23 +387,27 @@ export async function extractFacts(
           { role: "user", content: EXTRACT_PROMPT + exchange },
         ],
       }),
+      signal: to.signal,
     });
+    to.clear();
     if (!res.ok) return [];
     const data = await res.json();
     const text: string = data?.message?.content ?? "";
-    const match = text.match(/\[[\s\S]*\]/);
+    // Non-greedy so a trailing `]` in model prose can't swallow extra text.
+    const match = text.match(/\[[\s\S]*?\]/);
     if (!match) return [];
     const parsed = JSON.parse(match[0]);
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter((x) => x && typeof x.fact === "string" && x.fact.trim())
       .map((x) => ({
-        fact: String(x.fact).trim(),
+        fact: String(x.fact).trim().slice(0, MAX_FACT_LEN),
         confidence: typeof x.confidence === "number" ? x.confidence : 0.7,
       }))
       .filter((f) => f.confidence >= 0.6 && !looksLikeSecret(f.fact))
       .slice(0, MAX_FACTS_PER_TURN);
   } catch (err) {
+    to.clear();
     logDiag({
       level: "warn",
       source: "memory-client",
@@ -395,7 +438,8 @@ const CONTROL_CHARS = new RegExp(
   "g",
 );
 
-function sanitizeMemoryContent(s: string): string {
+/** Exported for unit tests. */
+export function sanitizeMemoryContent(s: string): string {
   return s
     .replace(BIDI_AND_ZERO_WIDTH, "")
     .replace(CONTROL_CHARS, "")

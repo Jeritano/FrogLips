@@ -150,9 +150,15 @@ impl ServerState {
         // Pump stderr into a bounded ring
         if let Some(stderr) = child.stderr.take() {
             let ring = self.stderr_ring.clone();
+            let generation = self.generation.clone();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = reader.next_line().await {
+                    // Drop lines once the server has been stopped/replaced so a
+                    // stale process can't pollute the new server's stderr_ring.
+                    if generation.load(Ordering::Acquire) != my_generation {
+                        return;
+                    }
                     let mut r = ring.lock();
                     if r.len() >= STDERR_RING_LINES {
                         r.pop_front();
@@ -292,7 +298,9 @@ impl ServerState {
 
 async fn kill_child(child: &mut Child) {
     let _ = child.kill().await;
-    let _ = child.wait().await;
+    // Bound the reap so a wedged child can't block status/start/stop forever —
+    // kill() was already sent, so proceeding without the reap is safe.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
 }
 
 fn mlx_server_binary() -> Result<PathBuf> {

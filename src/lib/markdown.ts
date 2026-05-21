@@ -123,6 +123,17 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
     a.setAttribute("target", "_blank");
     a.setAttribute("rel", "noopener noreferrer");
   }
+  // Restrict <img src>: a model-authored remote/data URL is a tracking-pixel
+  // / exfil vector. Allow only https and inline data:image/* sources.
+  if (node.tagName === "IMG") {
+    const img = node as HTMLImageElement;
+    const src = (img.getAttribute("src") ?? "").trim();
+    const isHttps = /^https:\/\//i.test(src);
+    const isDataImage = /^data:image\//i.test(src);
+    if (!isHttps && !isDataImage) {
+      img.removeAttribute("src");
+    }
+  }
 });
 
 /* ── Citation chip post-processor ───────────────────────────────────────── */
