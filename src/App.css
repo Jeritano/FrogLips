@@ -294,6 +294,23 @@ body {
   box-sizing: border-box;
 }
 
+/* Always-on drag handle across the top of the window. Sits ABOVE the
+   sidebar / main content visually (high z-index) but only at the very
+   top so it doesn't block interaction with the real UI below. macOS
+   only — on win/linux this is a no-op zone. */
+.window-drag-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  z-index: 9999;
+  -webkit-app-region: drag;
+  /* Don't intercept clicks on traffic lights — macOS layers them above
+     this. We DO want pointer events for the drag itself, so leave
+     pointer-events default. */
+}
+
 .app > .sidebar,
 .app > .main {
   border-radius: 12px;

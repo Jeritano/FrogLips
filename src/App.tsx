@@ -428,8 +428,13 @@ function App() {
 
   return (
     <div className="app" data-testid="app-ready">
+      {/* Window drag strip — sits at the very top of the window, behind
+          everything else (low z-index, pointer-events transparent except
+          on this element). titleBarStyle: Overlay strips the OS drag bar
+          so we provide one explicitly. */}
+      <div className="window-drag-strip" data-tauri-drag-region />
       <aside className="sidebar">
-        <div className="sidebar-top">
+        <div className="sidebar-top" data-tauri-drag-region>
           <div className="topbar-menu-wrap">
             <button
               type="button"
@@ -596,7 +601,7 @@ function App() {
         </ul>
       </aside>
       <main className="main">
-        <header>
+        <header data-tauri-drag-region>
           <ModelPicker
             status={status}
             onStatusChange={setStatus}
