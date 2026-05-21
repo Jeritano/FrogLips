@@ -279,10 +279,11 @@ body {
   /* Elegant outer frame — small inset, rounded corners, subtle border.
      Inspired by Claude Code's panel-in-panel look. */
   padding: 6px;
-  /* macOS Sequoia traffic-light top edge sits at window y≈6. We push
-     the panel content down by exactly that much so the model picker
-     box TOP edge lines up with the light TOP edge. */
-  padding-top: 6px;
+  /* Traffic lights are pinned to y=12 via trafficLightPosition in
+     tauri.conf.json. Match that exactly so the model picker BOX top
+     edge sits at y=12 — same as the traffic-light TOP edge. Never
+     above. */
+  padding-top: 12px;
   gap: 6px;
   background:
     radial-gradient(circle at top left, rgba(99, 102, 241, 0.08), transparent 40%),
