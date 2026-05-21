@@ -279,10 +279,10 @@ body {
   /* Elegant outer frame — small inset, rounded corners, subtle border.
      Inspired by Claude Code's panel-in-panel look. */
   padding: 6px;
-  /* Top inset = macOS traffic-light top (~y=12). The model picker then
-     starts at exactly the same Y so its top edge lines up with the
-     traffic-light tops. */
-  padding-top: 12px;
+  /* macOS Sequoia traffic-light top edge sits at window y≈6. We push
+     the panel content down by exactly that much so the model picker
+     box TOP edge lines up with the light TOP edge. */
+  padding-top: 6px;
   gap: 6px;
   background:
     radial-gradient(circle at top left, rgba(99, 102, 241, 0.08), transparent 40%),
@@ -320,6 +320,9 @@ body {
   background: var(--bg);
   display: flex;
   flex-direction: column;
+  /* No top border on the main pane — the 1 px was pushing the model
+     picker BOX top below the macOS traffic-light tops. */
+  border-top: 0;
 }
 
 /* ── Sidebar actions stack (Dashboard then Menu, above search) ── */
