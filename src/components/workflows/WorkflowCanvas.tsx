@@ -152,12 +152,28 @@ export function WorkflowCanvas({
   // deck and are kept in `cards` for persistence and the run list.
   const placedCards = useMemo(() => cards.filter((c) => c.placed), [cards]);
 
+  // `nodes` is re-derived from `cards` every render (cards is the source of
+  // truth, persisted by the parent). React Flow measures each node and writes
+  // its dimensions back through `dimensions` changes — but those would be lost
+  // on the next derive, leaving every node `nodeHasDimensions()===false` and
+  // therefore `visibility:hidden` forever. Cache measured sizes in a ref and
+  // re-attach them so created cards actually paint on the canvas.
+  const measuredRef = useRef<Map<string, { width: number; height: number }>>(new Map());
+
   const nodes = useMemo<Node<AgentCardNodeData>[]>(
     () =>
       placedCards.map((c) => ({
         id: c.id,
         type: "agentCard",
         position: { x: c.x, y: c.y },
+        // `.wf-node` is a fixed 200px-wide card; the estimate height seeds
+        // `nodeHasDimensions` so the node is visible on first paint, before
+        // the ResizeObserver reports the real measurement.
+        initialWidth: 200,
+        initialHeight: 132,
+        ...(measuredRef.current.has(c.id)
+          ? { measured: measuredRef.current.get(c.id) }
+          : {}),
         data: {
           name: c.name,
           preset: c.preset,
@@ -186,6 +202,15 @@ export function WorkflowCanvas({
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      // Persist React Flow's measurements across the cards→nodes re-derive so
+      // nodes keep their dimensions (and stay visible) on every render.
+      for (const ch of changes) {
+        if (ch.type === "dimensions" && ch.dimensions) {
+          measuredRef.current.set(ch.id, ch.dimensions);
+        } else if (ch.type === "remove") {
+          measuredRef.current.delete(ch.id);
+        }
+      }
       onCardsChange(reconcileNodeChanges(changes, nodes, cards));
     },
     [nodes, cards, onCardsChange],
