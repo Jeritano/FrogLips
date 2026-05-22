@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../../types";
-import {
-  agentBackendUnsupportedReason,
-  streamAgentChat,
-} from "../agent-chat";
+import { streamAgentChat } from "../agent-chat";
 import { RETRY_MAX } from "../ollama-client";
 import type { AgentRunOptions } from "../types";
 
@@ -31,14 +28,6 @@ function baseOpts(): AgentRunOptions {
 }
 
 const MSGS: Message[] = [{ conversation_id: 1, role: "user", content: "hi" }];
-
-describe("agentBackendUnsupportedReason", () => {
-  it("returns null for every backend — all support agent mode", () => {
-    expect(agentBackendUnsupportedReason("ollama")).toBeNull();
-    expect(agentBackendUnsupportedReason("mlx")).toBeNull();
-    expect(agentBackendUnsupportedReason("native")).toBeNull();
-  });
-});
 
 describe("streamAgentChat — retry / backoff predicate", () => {
   beforeEach(() => vi.useFakeTimers());

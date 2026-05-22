@@ -14,7 +14,7 @@ import {
 } from "./dispatch";
 import { buildSystemPrompt } from "./system-prompt";
 import { applyContextBudget } from "./context-manager";
-import { agentBackendUnsupportedReason, streamAgentChat } from "./agent-chat";
+import { streamAgentChat } from "./agent-chat";
 import { awaitSubagents, listSubagents, runSubagent, spawnSubagentAsync } from "./subagent";
 import { fetchMcpTools, isMcpToolName } from "./mcp-tools";
 import { api } from "../tauri-api";
@@ -51,10 +51,32 @@ function matchesPolicyPattern(path: string, pattern: string): boolean {
   return base === pattern;
 }
 
+/**
+ * Shell metacharacters that turn a single command into a compound expression
+ * the model can use to slip past prefix-based policy auto-approval. If any of
+ * these appear in `command`, we refuse to evaluate a prefix at all and force
+ * confirmation. Matches the policy intent enforced by `agentRunShell`.
+ */
+const SHELL_METACHAR_RE = /[;&|<>`]|\$\(/;
+
+function safeShellPrefix(command: string): string | null {
+  const trimmed = command.trim();
+  if (!trimmed) return null;
+  if (SHELL_METACHAR_RE.test(trimmed)) return null;
+  // Use a stricter whitespace split: any IFS-class whitespace splits tokens,
+  // but the first token is the only thing that can be a prefix. Reject quotes
+  // around the first token too — a quoted prefix is a sign the model is
+  // trying to obfuscate.
+  const first = trimmed.split(/\s+/)[0] ?? "";
+  if (!first) return null;
+  if (/["'\\]/.test(first)) return null;
+  return first;
+}
+
 function policyShellVerdict(policy: ProjectPolicy, command: string): PolicyVerdict {
   const prefixes = policy.allowed_shell_prefixes;
   if (!prefixes || prefixes.length === 0) return "needs-confirm";
-  const first = command.trim().split(/\s+/)[0] ?? "";
+  const first = safeShellPrefix(command);
   if (!first) return "needs-confirm";
   return prefixes.includes(first) ? "auto" : "needs-confirm";
 }
@@ -146,8 +168,6 @@ export function policyDecisionFor(
 }
 
 const MAX_ITERATIONS = 40;
-// Number of recent tool-call signatures retained for duplicate detection.
-const DEDUPE_WINDOW = 6;
 // Stall detection: if agent reads the same path > this many times in
 // monotonically-advancing tiny chunks, abort the loop with an explanatory msg.
 const STALL_SAME_PATH_LIMIT = 6;
@@ -248,9 +268,33 @@ function pushToolResult(
   onUpdate([...msgs]);
 }
 
-/** True when every tool call this turn was already seen in the recent window. */
-function isDuplicateTurn(sigs: string[], recentSigs: string[]): boolean {
-  return recentSigs.length > 0 && sigs.every((s) => recentSigs.includes(s));
+/** Multiset (sig → count) for a single turn. */
+function sigMultiset(sigs: string[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const s of sigs) m.set(s, (m.get(s) ?? 0) + 1);
+  return m;
+}
+
+/**
+ * True when THIS turn's tool calls are an exact multiset match against the
+ * IMMEDIATELY-PRIOR turn's tool calls. Previously this was an
+ * order-insensitive subset check over the whole dedupe window, which would
+ * fire on perfectly normal interleavings (e.g. read_file(A) on turn N,
+ * read_file(B) on turn N+1, read_file(A) on turn N+2 — last turn flagged as a
+ * dup even though A had legitimate intervening progress). Comparing per-turn
+ * multisets restricts the rejection to "the model just made the same set of
+ * calls again, in any order, with the same arity".
+ */
+function isDuplicateTurn(currentSigs: string[], prevSigs: string[] | null): boolean {
+  if (!prevSigs || prevSigs.length === 0) return false;
+  if (currentSigs.length !== prevSigs.length) return false;
+  const cur = sigMultiset(currentSigs);
+  const prev = sigMultiset(prevSigs);
+  if (cur.size !== prev.size) return false;
+  for (const [k, v] of cur) {
+    if (prev.get(k) !== v) return false;
+  }
+  return true;
 }
 
 /**
@@ -278,15 +322,6 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     dryRun = false,
   } = opts;
   const msgs: Message[] = [...opts.messages];
-
-  // Fail loudly before the loop starts if the active backend can't do
-  // tool-calling. Native (mistralrs) has no tool support — surface a clear
-  // error rather than silently degrading to plain streaming.
-  const backendReason = agentBackendUnsupportedReason(opts.backend ?? "ollama");
-  if (backendReason) {
-    onStatusChange("error");
-    throw new Error(backendReason);
-  }
 
   // Project policy: either explicitly supplied (tests / subagents) or loaded
   // lazily from the workspace cwd. Failures are swallowed so a missing
@@ -331,7 +366,11 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     promptTokens: 0,
     completionTokens: 0,
   };
-  const recentSigs: string[] = [];
+  // Signatures of the immediately-prior turn's tool calls. Per-turn multiset
+  // comparison (see `isDuplicateTurn`) restricts dedupe to "the model just
+  // repeated last turn", which is the case worth aborting on — a
+  // window-wide subset check produced false positives.
+  let prevTurnSigs: string[] | null = null;
   // Per-path read counter — guards against agents chunking the same file
   // into dozens of tiny reads and blowing the iteration budget.
   const readCounts = new Map<string, number>();
@@ -484,7 +523,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     // protocol) or the backend will reject the next request — so push one
     // duplicate_call response per call, not just the first.
     const sigs = toolCalls.map(toolCallSig);
-    if (isDuplicateTurn(sigs, recentSigs)) {
+    if (isDuplicateTurn(sigs, prevTurnSigs)) {
       msgs.push({
         _tmpKey: makeTmpKey(),
         conversation_id: opts.conversationId,
@@ -505,12 +544,12 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
           args: dupParsed.ok ? dupParsed.args : {},
         });
       }
+      // Update prev-turn sigs even on a dup so two-back→one-back→now also fires.
+      prevTurnSigs = sigs;
       continue;
     }
-    for (const s of sigs) {
-      recentSigs.push(s);
-      while (recentSigs.length > DEDUPE_WINDOW) recentSigs.shift();
-    }
+    // Snapshot this turn's tool-call signatures for next iteration's compare.
+    prevTurnSigs = sigs;
 
     // Assistant turn with tool calls
     const asstMsg: Message = {
@@ -591,7 +630,11 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         }
 
         const cmd = String(args.command ?? "");
-        const firstWord = cmd.trim().split(/\s+/)[0] ?? "";
+        // safeShellPrefix returns null if the command contains shell
+        // metacharacters (`;`, `&`, `|`, `>`, `<`, backtick, `$(`) — that
+        // makes prefix-based session approval ineligible, forcing the
+        // confirmation prompt.
+        const firstWord = safeShellPrefix(cmd) ?? "";
         const prefixApproved =
           fnName === SHELL_TOOL &&
           risk === "normal" &&

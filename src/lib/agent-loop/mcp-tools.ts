@@ -23,6 +23,92 @@ export interface OpenAIToolDef {
 const PREFIX = "mcp__";
 const SEP = "__";
 
+/**
+ * Bound on a per-tool `inputSchema` payload after JSON serialization. An
+ * MCP server is out-of-process and attacker-influenceable — a malicious or
+ * careless server can ship a multi-megabyte schema (or a recursive one
+ * abusing `$ref`) that bloats the system-prompt token budget or trips
+ * stack/recursion limits inside marked/DOMPurify-like consumers downstream.
+ */
+const MCP_SCHEMA_MAX_BYTES = 2048;
+/** Max nesting depth allowed inside an MCP `inputSchema` object/array tree. */
+const MCP_SCHEMA_MAX_DEPTH = 8;
+
+/** Depth of the deepest object/array in `v`. Primitives → 0. */
+function objectDepth(v: unknown, seen: WeakSet<object> = new WeakSet()): number {
+  if (!v || typeof v !== "object") return 0;
+  if (seen.has(v as object)) return MCP_SCHEMA_MAX_DEPTH + 1; // cycle → over cap
+  seen.add(v as object);
+  let max = 0;
+  if (Array.isArray(v)) {
+    for (const item of v) {
+      const d = objectDepth(item, seen);
+      if (d > max) max = d;
+    }
+  } else {
+    for (const k of Object.keys(v as Record<string, unknown>)) {
+      const d = objectDepth((v as Record<string, unknown>)[k], seen);
+      if (d > max) max = d;
+    }
+  }
+  return 1 + max;
+}
+
+/** A fallback schema used when the server-supplied one is rejected. */
+function fallbackSchema(): Record<string, unknown> {
+  return { type: "object", properties: {} };
+}
+
+/**
+ * Validate an MCP-supplied JSON-Schema-ish object before it crosses into the
+ * agent loop. Returns either the original schema or a safe fallback. A
+ * truncated/replaced schema still permits the call to be made (with an empty
+ * parameter shape); the alternative — forwarding a bloated/cyclic schema —
+ * is strictly worse.
+ */
+function sanitizeMcpSchema(
+  serverName: string,
+  toolName: string,
+  schema: unknown,
+): Record<string, unknown> {
+  if (!schema || typeof schema !== "object") return fallbackSchema();
+  const depth = objectDepth(schema);
+  if (depth > MCP_SCHEMA_MAX_DEPTH) {
+    logDiag({
+      level: "warn",
+      source: "mcp-tools",
+      message:
+        `MCP tool '${serverName}.${toolName}' inputSchema depth ${depth} > ${MCP_SCHEMA_MAX_DEPTH} — ` +
+        `using fallback schema.`,
+    });
+    return fallbackSchema();
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(schema);
+  } catch {
+    // Cycle / non-serializable values.
+    logDiag({
+      level: "warn",
+      source: "mcp-tools",
+      message:
+        `MCP tool '${serverName}.${toolName}' inputSchema not JSON-serializable — using fallback schema.`,
+    });
+    return fallbackSchema();
+  }
+  if (serialized.length > MCP_SCHEMA_MAX_BYTES) {
+    logDiag({
+      level: "warn",
+      source: "mcp-tools",
+      message:
+        `MCP tool '${serverName}.${toolName}' inputSchema ${serialized.length}B > ${MCP_SCHEMA_MAX_BYTES}B cap — ` +
+        `using fallback schema.`,
+    });
+    return fallbackSchema();
+  }
+  return schema as Record<string, unknown>;
+}
+
 /** True iff the given function name refers to an MCP-provided tool. */
 export function isMcpToolName(name: string): boolean {
   return name.startsWith(PREFIX) && name.slice(PREFIX.length).includes(SEP);
@@ -75,10 +161,7 @@ export async function fetchMcpTools(): Promise<OpenAIToolDef[]> {
       continue;
     }
     for (const t of tools) {
-      const params =
-        t.inputSchema && typeof t.inputSchema === "object"
-          ? (t.inputSchema as Record<string, unknown>)
-          : { type: "object", properties: {} };
+      const params = sanitizeMcpSchema(s.name, t.name, t.inputSchema);
       out.push({
         type: "function",
         function: {

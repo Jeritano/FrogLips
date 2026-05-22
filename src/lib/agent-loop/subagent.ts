@@ -92,17 +92,28 @@ function buildSubOpts(
 
 /**
  * Wires a child AbortController to the parent's signal so that cancellation
- * propagates from parent → all live subagents.
+ * propagates from parent → all live subagents. The returned `release` MUST be
+ * called once the subagent has resolved/rejected: otherwise the parent's
+ * AbortSignal accumulates a stale listener for every spawn, leaking memory
+ * across a long-lived session.
  */
-function makeChildAbort(parent: AgentRunOptions): AbortController {
+function makeChildAbort(parent: AgentRunOptions): { controller: AbortController; release: () => void } {
   const child = new AbortController();
   if (parent.signal.aborted) {
     child.abort();
-  } else {
-    const onAbort = () => child.abort();
-    parent.signal.addEventListener("abort", onAbort, { once: true });
+    return { controller: child, release: () => {} };
   }
-  return child;
+  const onAbort = () => child.abort();
+  parent.signal.addEventListener("abort", onAbort, { once: true });
+  return {
+    controller: child,
+    release: () => {
+      // Listener was registered with `once: true`, so it auto-removes if the
+      // parent ever aborts. If the subagent finishes first, we must remove
+      // it explicitly — once:true does not GC unfired listeners.
+      parent.signal.removeEventListener("abort", onAbort);
+    },
+  };
 }
 
 /**
@@ -132,7 +143,7 @@ export async function runSubagent(
   const presets = loadAllPresets();
   const chosen = presetId ? presets.find((p) => p.id === presetId) : undefined;
 
-  const childAbort = makeChildAbort(parent);
+  const { controller: childAbort, release } = makeChildAbort(parent);
   const subOpts = buildSubOpts(
     parent,
     prompt,
@@ -142,13 +153,17 @@ export async function runSubagent(
     depth,
     childAbort.signal,
   );
-  const final = await runAgentLoop(subOpts);
-  return JSON.stringify({
-    ok: true,
-    depth,
-    preset: presetId,
-    answer: final ?? "(subagent returned nothing)",
-  });
+  try {
+    const final = await runAgentLoop(subOpts);
+    return JSON.stringify({
+      ok: true,
+      depth,
+      preset: presetId,
+      answer: final ?? "(subagent returned nothing)",
+    });
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -179,7 +194,7 @@ export async function spawnSubagentAsync(
   const chosen = presetId ? presets.find((p) => p.id === presetId) : undefined;
 
   const id = makeId();
-  const childAbort = makeChildAbort(parent);
+  const { controller: childAbort, release } = makeChildAbort(parent);
   const subOpts = buildSubOpts(
     parent,
     prompt,
@@ -193,34 +208,39 @@ export async function spawnSubagentAsync(
   const startedAt = Date.now();
   const promise = (async (): Promise<string> => {
     try {
-      const final = await runAgentLoop(subOpts);
-      const payload = JSON.stringify({
-        ok: true,
-        depth,
-        preset: presetId,
-        answer: final ?? "(subagent returned nothing)",
-      });
-      const h = registry.get(id);
-      if (h) {
-        h.status = childAbort.signal.aborted ? "cancelled" : "done";
-        h.result = payload;
-        h.finished_at = Date.now();
+      try {
+        const final = await runAgentLoop(subOpts);
+        const payload = JSON.stringify({
+          ok: true,
+          depth,
+          preset: presetId,
+          answer: final ?? "(subagent returned nothing)",
+        });
+        const h = registry.get(id);
+        if (h) {
+          h.status = childAbort.signal.aborted ? "cancelled" : "done";
+          h.result = payload;
+          h.finished_at = Date.now();
+        }
+        return payload;
+      } catch (e) {
+        const msg = String((e as { message?: string })?.message ?? e);
+        const payload = JSON.stringify({
+          ok: false,
+          kind: childAbort.signal.aborted ? "cancelled" : "subagent_error",
+          message: msg,
+        });
+        const h = registry.get(id);
+        if (h) {
+          h.status = childAbort.signal.aborted ? "cancelled" : "error";
+          h.result = payload;
+          h.finished_at = Date.now();
+        }
+        return payload;
       }
-      return payload;
-    } catch (e) {
-      const msg = String((e as { message?: string })?.message ?? e);
-      const payload = JSON.stringify({
-        ok: false,
-        kind: childAbort.signal.aborted ? "cancelled" : "subagent_error",
-        message: msg,
-      });
-      const h = registry.get(id);
-      if (h) {
-        h.status = childAbort.signal.aborted ? "cancelled" : "error";
-        h.result = payload;
-        h.finished_at = Date.now();
-      }
-      return payload;
+    } finally {
+      // Remove the parent-abort listener now that this subagent is settled.
+      release();
     }
   })();
 

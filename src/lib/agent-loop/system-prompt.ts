@@ -10,7 +10,13 @@ const MCP_DESC_MAX = 300;
 // injected instructions inside the most-trusted context (the system prompt).
 const MCP_DESC_STRIP = new RegExp(
   "[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F" +
-    "\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF]",
+    "\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069" +
+    // JS line terminators that survive a `[\r\n]+` collapse — without these,
+    // an MCP-supplied description can embed a real newline-equivalent the
+    // host parser treats as a line break, smuggling fake "system rules"
+    // into the prompt.
+    "\\u2028\\u2029" +
+    "\\uFEFF]",
   "g",
 );
 

@@ -90,6 +90,13 @@ const EMBED_LRU_SIZE = 16;
 
 let embeddingAvailable: boolean | null = null;
 let embeddingCheckedAt = 0;
+// One-time warn flags: we must not warn-per-message when no embedder is
+// configured (no Ollama daemon AND no installed nomic-embed-text). The
+// surrounding code call `embed` on every user turn for recall, which would
+// flood the diagnostics ring with the same "Ollama unreachable" / "no
+// embedder installed" message.
+let embeddingUnavailableWarned = false;
+let embeddingProbeWarned = false;
 
 const embedLru = new Map<string, number[]>();
 function lruGet(k: string): number[] | undefined {
@@ -123,21 +130,52 @@ export async function embeddingsReady(signal?: AbortSignal): Promise<boolean> {
     if (!res.ok) {
       embeddingAvailable = false;
       embeddingCheckedAt = now;
+      if (!embeddingUnavailableWarned) {
+        embeddingUnavailableWarned = true;
+        logDiag({
+          level: "warn",
+          source: "memory-client",
+          message:
+            `embeddingsReady: Ollama /api/tags returned ${res.status} — disabling recall ` +
+            `(this message is shown once per process).`,
+        });
+      }
       return false;
     }
     const data = await res.json();
     const models: string[] = (data?.models ?? []).map((m: any) => m.name);
-    embeddingAvailable = models.some((n) => n.startsWith("nomic-embed-text"));
+    const hasEmbedder = models.some((n) => n.startsWith("nomic-embed-text"));
+    embeddingAvailable = hasEmbedder;
     embeddingCheckedAt = now;
+    if (!hasEmbedder && !embeddingUnavailableWarned) {
+      embeddingUnavailableWarned = true;
+      logDiag({
+        level: "warn",
+        source: "memory-client",
+        message:
+          `embeddingsReady: no embedding model installed (looked for '${DEFAULT_EMBED_MODEL}'). ` +
+          `Recall will fall back to keyword search. ` +
+          `(this message is shown once per process)`,
+      });
+    } else if (hasEmbedder) {
+      // Probe recovered — allow a fresh warn next time it goes away.
+      embeddingUnavailableWarned = false;
+      embeddingProbeWarned = false;
+    }
     return embeddingAvailable;
   } catch (err) {
     to.clear();
-    logDiag({
-      level: "warn",
-      source: "memory-client",
-      message: "embeddingsReady: Ollama /api/tags probe failed",
-      detail: err,
-    });
+    if (!embeddingProbeWarned) {
+      embeddingProbeWarned = true;
+      logDiag({
+        level: "warn",
+        source: "memory-client",
+        message:
+          "embeddingsReady: Ollama /api/tags probe failed — disabling recall " +
+          "(this message is shown once per process).",
+        detail: err,
+      });
+    }
     embeddingAvailable = false;
     embeddingCheckedAt = now;
     return false;
@@ -170,15 +208,21 @@ export async function embed(text: string, signal?: AbortSignal): Promise<number[
     return emb;
   } catch (err) {
     to.clear();
-    logDiag({
-      level: "warn",
-      source: "memory-client",
-      message: "embed: Ollama /api/embeddings call failed",
-      detail: err,
-    });
+    if (!embedCallWarned) {
+      embedCallWarned = true;
+      logDiag({
+        level: "warn",
+        source: "memory-client",
+        message:
+          "embed: Ollama /api/embeddings call failed — falling back to keyword search " +
+          "(this message is shown once per process).",
+        detail: err,
+      });
+    }
     return null;
   }
 }
+let embedCallWarned = false;
 
 /* ── Recall (search active memories matching a user query) ── */
 

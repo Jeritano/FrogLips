@@ -26,13 +26,6 @@ import type { StreamChatResult } from "./stream-types";
 import { streamMlxAgentChat } from "../mlx-client";
 import { streamNativeAgentChat } from "../native-client";
 
-/** Human-readable reason agent mode can't run on a given backend, or null. */
-export function agentBackendUnsupportedReason(
-  _backend: AgentBackend,
-): string | null {
-  return null;
-}
-
 /**
  * One streaming, tool-calling chat turn against the active backend, with
  * 5xx/transient retry. `metricsOnRetry` is bumped each time a retry fires so

@@ -139,6 +139,14 @@ export async function streamNativeAgentChat(
   onContentChunk: (delta: string) => void,
   params?: ChatParams | null,
 ): Promise<StreamChatResult> {
+  // Fast path: if the caller already aborted before we even started, bail
+  // out without spinning up event listeners or hitting Rust IPC.
+  if (signal.aborted) {
+    const reason = (signal as AbortSignal & { reason?: unknown }).reason;
+    if (reason instanceof Error) throw reason;
+    throw new DOMException("aborted", "AbortError");
+  }
+
   const opId = `native-${crypto.randomUUID()}`;
   let content = "";
   let toolCalls: ToolCall[] = [];
@@ -153,6 +161,23 @@ export async function streamNativeAgentChat(
     (e) => { toolCalls = e.payload.map(toToolCall); },
   );
 
+  // Wire the caller's abort signal to a best-effort native cancel. The native
+  // runtime may not expose a cancel command on every build (the API shape is
+  // backend-dependent), so we look it up dynamically and silently drop the
+  // call if it isn't there — the abort still stops further chunk forwarding
+  // via the `signal.aborted` guard in the listener above.
+  const onAbort = () => {
+    const cancelFn = (api as unknown as Record<string, unknown>)["nativeCancelChat"];
+    if (typeof cancelFn === "function") {
+      try {
+        void (cancelFn as (id: string) => Promise<unknown>)(opId);
+      } catch {
+        /* best-effort */
+      }
+    }
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+
   try {
     // Shared AgentChatConfig base; per-conversation params override fields.
     // Without this the agent path passed no token cap to the native runtime.
@@ -166,6 +191,7 @@ export async function streamNativeAgentChat(
       max_tokens: cfg.max_tokens,
     });
   } finally {
+    signal.removeEventListener("abort", onAbort);
     offChunk();
     offTools();
   }

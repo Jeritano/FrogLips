@@ -110,19 +110,73 @@ const PURIFY_CONFIG = {
   ALLOW_DATA_ATTR: false,
   FORBID_TAGS: ["style", "script", "iframe", "object", "embed", "form", "input", "button"],
   FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
-  // Whitelist only safe URI schemes via DOMPurify's own policy. This is
-  // whitespace/control-char hardened (the engine strips them before matching),
-  // so it can't be evaded by `java\tscript:` the way a prefix test can. Also
-  // permits scheme-relative + relative refs. Remote <img> beacons are blocked
-  // separately in the hook below regardless of this regexp.
-  ALLOWED_URI_REGEXP: /^(?:https|mailto|data):|^[^a-z]|^[a-z][a-z0-9+.-]*$|^[./?#]/i,
+  // Whitelist URI schemes via DOMPurify's own policy. Element-specific
+  // restrictions are layered on top in the `afterSanitizeAttributes` hook
+  // below — in particular `<a href>` is restricted there to https/http/
+  // mailto/# only, even though `data:` clears this regex (it must, because
+  // `<img src=data:image/...>` is allowed).
+  ALLOWED_URI_REGEXP:
+    /^(?:https?|mailto|data):|^[^a-z]|^[a-z][a-z0-9+.-]*$|^[./?#]/i,
 };
+
+// Element-specific href policy. The `ALLOWED_URI_REGEXP` above must permit
+// `data:` so legitimate inline-image src attributes survive — but a `data:`
+// URL on an <a href> is an HTML-smuggling vector (click-to-render attacker
+// HTML inside the app's origin). This hook scrubs any <a href> whose scheme
+// isn't one of: https, http, mailto, or a fragment identifier (`#…`).
+//   - relative paths (no scheme) are allowed; URL parsing detects them.
+//   - protocol-relative (`//example.com`) is treated as https.
+//   - everything else (data:, javascript:, file:, vbscript:, custom:…) is
+//     stripped and the link is downgraded to a non-clickable span-like
+//     `href="#"`.
+const A_HREF_ALLOWED_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+// C0 + DEL + C1 + bidi/zero-width/BOM. Built via RegExp constructor +
+// explicit \u code points so the source remains reviewable in diffs.
+const HREF_CONTROL_BIDI_RE = new RegExp(
+  "[\\u0000-\\u001F\\u007F-\\u009F" +
+    "\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069" +
+    "\\u2028\\u2029\\uFEFF]",
+);
+
+function isSafeAnchorHref(href: string): boolean {
+  const h = href.trim();
+  if (!h) return false;
+  // Fragment-only is always safe (in-page anchor).
+  if (h.startsWith("#")) return true;
+  // Scheme-relative — treat as https.
+  if (h.startsWith("//")) return true;
+  // Bare path / query — relative, no scheme.
+  if (h.startsWith("/") || h.startsWith("./") || h.startsWith("../") || h.startsWith("?")) {
+    return true;
+  }
+  // Reject anything carrying an embedded NUL / control / bidi / zero-width
+  // char that the URL parser might fold differently than the renderer.
+  if (HREF_CONTROL_BIDI_RE.test(h)) {
+    return false;
+  }
+  try {
+    // Base URL is arbitrary — we only care about the resolved protocol.
+    const u = new URL(h, "https://example.invalid/");
+    return A_HREF_ALLOWED_SCHEMES.has(u.protocol);
+  } catch {
+    // Unparseable → treat as a relative ref (safe).
+    return true;
+  }
+}
 
 // Belt-and-suspenders on top of ALLOWED_URI_REGEXP: enforce target/rel and
 // kill any remote/data-non-image <img> sources.
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
     const a = node as HTMLAnchorElement;
+    // <a>-specific scheme allowlist. Strips any href whose resolved
+    // protocol is not http(s)/mailto/fragment, even if ALLOWED_URI_REGEXP
+    // let it through (notably `data:` — needed by <img src> but never
+    // safe on a clickable anchor).
+    const href = a.getAttribute("href") ?? "";
+    if (!isSafeAnchorHref(href)) {
+      a.setAttribute("href", "#");
+    }
     a.setAttribute("target", "_blank");
     a.setAttribute("rel", "noopener noreferrer");
   }

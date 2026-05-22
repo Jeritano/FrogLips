@@ -32,20 +32,42 @@ export const WRITE_TOOLS = new Set([
 
 /* ── Tool execution helpers ── */
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 export function parseArgs(
   raw: unknown,
 ): { ok: true; args: Record<string, unknown> } | { ok: false; err: string } {
   if (typeof raw === "string") {
+    let parsed: unknown;
     try {
-      return { ok: true, args: JSON.parse(raw) };
+      parsed = JSON.parse(raw);
     } catch (e) {
       return { ok: false, err: `Could not parse tool arguments as JSON: ${e}` };
     }
+    // Reject arrays/null/numbers/strings/booleans — only a JSON object is a
+    // valid tool-call argument record. An array slipping through as
+    // `Record<string, unknown>` would let `args.path` be e.g. element "0",
+    // which is meaningless and unsafe.
+    if (!isPlainObject(parsed)) {
+      return {
+        ok: false,
+        err: "Tool arguments must be a JSON object, not array/null/scalar.",
+      };
+    }
+    return { ok: true, args: parsed };
   }
-  if (raw != null && typeof raw === "object") {
-    return { ok: true, args: raw as Record<string, unknown> };
+  if (isPlainObject(raw)) {
+    return { ok: true, args: raw };
   }
-  return { ok: true, args: {} };
+  if (raw == null) {
+    return { ok: true, args: {} };
+  }
+  return {
+    ok: false,
+    err: "Tool arguments must be a JSON object, not array/null/scalar.",
+  };
 }
 
 export function formatToolError(raw: unknown): string {
@@ -90,7 +112,7 @@ export function cancelActiveShell(): boolean {
         level: "warn",
         source: "agent-loop",
         message: `cancelActiveShell: agent_cancel_shell failed for opId ${id}`,
-        detail: err,
+        detail: redactDiagDetail(err),
       }),
     );
     return true;
@@ -147,6 +169,16 @@ function redactValue(v: unknown): unknown {
     return out;
   }
   return v;
+}
+
+/**
+ * Live-path redactor: return a deep copy of `args` with secret-looking string
+ * values swapped for `[REDACTED]`. Used (a) before forwarding the args
+ * payload to Rust IPC for execution, so an `info`-level command-trace can't
+ * carry a raw token, and (b) inside `logDiag` warn/error calls in this file.
+ */
+export function redactArgsForLive(args: Record<string, unknown>): Record<string, unknown> {
+  return redactValue({ ...args }) as Record<string, unknown>;
 }
 
 export function redactArgsForAudit(name: string, args: Record<string, unknown>): string {
@@ -226,6 +258,10 @@ export async function classifyToolRisk(
   if (isMcpToolName(fnName)) {
     return "destructive";
   }
+  // CRITICAL: Fail CLOSED. If any classifier RPC throws, we MUST NOT return
+  // `"normal"` — a broken classifier combined with `approveAllShell` /
+  // `approveAllWrite` would otherwise let a dangerous call slide past
+  // confirmation. Returning `"destructive"` forces a fresh user prompt.
   if (fnName === SHELL_TOOL) {
     try {
       return (await api.agentClassifyShell(String(args.command ?? ""))) as Risk;
@@ -233,9 +269,10 @@ export async function classifyToolRisk(
       logDiag({
         level: "warn",
         source: "agent-loop",
-        message: "classifyToolRisk: shell classifier failed — defaulting to normal",
-        detail: err,
+        message: "classifyToolRisk: shell classifier failed — failing closed to destructive",
+        detail: redactDiagDetail(err),
       });
+      return "destructive";
     }
   } else if (fnName === "applescript_run") {
     try {
@@ -244,9 +281,10 @@ export async function classifyToolRisk(
       logDiag({
         level: "warn",
         source: "agent-loop",
-        message: "classifyToolRisk: applescript classifier failed — defaulting to normal",
-        detail: err,
+        message: "classifyToolRisk: applescript classifier failed — failing closed to destructive",
+        detail: redactDiagDetail(err),
       });
+      return "destructive";
     }
   } else if (fnName === "http_request") {
     // A request carrying a body can exfiltrate data regardless of method —
@@ -264,12 +302,31 @@ export async function classifyToolRisk(
       logDiag({
         level: "warn",
         source: "agent-loop",
-        message: "classifyToolRisk: http classifier failed — defaulting to normal",
-        detail: err,
+        message: "classifyToolRisk: http classifier failed — failing closed to destructive",
+        detail: redactDiagDetail(err),
       });
+      return "destructive";
     }
   }
   return "normal";
+}
+
+/**
+ * Strip secret-looking substrings from a `logDiag` detail value before it
+ * lands in the (potentially user-visible) diagnostics ring. Strings are
+ * passed through `redactSecrets`; Error instances have their `message`
+ * scrubbed; objects are recursively redacted. Non-redactable values are
+ * passed through unchanged.
+ */
+function redactDiagDetail(detail: unknown): unknown {
+  if (typeof detail === "string") return redactSecrets(detail);
+  if (detail instanceof Error) {
+    return { name: detail.name, message: redactSecrets(detail.message) };
+  }
+  if (detail && typeof detail === "object") {
+    return redactValue(detail);
+  }
+  return detail;
 }
 
 export interface ExecuteToolOptions {
@@ -287,6 +344,13 @@ export async function executeTool(
   if (options.dryRun && DRY_RUN_TOOLS.has(name)) {
     return dryRunExecute(name, args);
   }
+  // Defense-in-depth: scrub secret-looking values from the args payload that
+  // crosses into Rust IPC. Any `info`-level command trace on the Rust side
+  // (or in a Tauri log file) sees `[REDACTED]` rather than raw credentials
+  // for the tools where leakage is plausible (run_shell command/env,
+  // http_request headers/body). Read-only tools whose args don't carry
+  // secrets are unaffected — the redactor is a no-op on non-matching strings.
+  args = redactArgsForLive(args);
   // MCP-routed tools: names prefixed `mcp__server__tool`.
   if (isMcpToolName(name)) {
     return dispatchMcpTool(name, args);

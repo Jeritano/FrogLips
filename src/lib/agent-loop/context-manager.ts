@@ -27,13 +27,27 @@ export const DEFAULT_CONTEXT_TOKENS = 8192;
  * model id. First match wins. Keep this list small — a miss just falls back
  * to {@link DEFAULT_CONTEXT_TOKENS}, which is safe (over-truncation is cheap).
  */
+// Patterns are anchored with word-boundary-ish guards so a generic substring
+// like "128k" doesn't blindly match e.g. `gemma3-128k-finetuned-2b` if that
+// model id really only has an 8k effective window — the user can still hit
+// over-truncation, but never under-truncation that crashes the request. Each
+// pattern requires either a leading boundary (start/non-word) AND a trailing
+// boundary, or a known prefix anchor.
 const CONTEXT_OVERRIDES: Array<{ pattern: RegExp; tokens: number }> = [
-  { pattern: /128k|llama-?3\.[12]|llama3[._-]?[12]/i, tokens: 128_000 },
-  { pattern: /qwen2\.5|qwen3/i, tokens: 32_768 },
-  { pattern: /mistral|mixtral/i, tokens: 32_768 },
-  { pattern: /gemma-?[23]/i, tokens: 8_192 },
-  { pattern: /phi-?3/i, tokens: 4_096 },
-  { pattern: /tinyllama|qwen2[._-]?0\.5b/i, tokens: 2_048 },
+  // "128k" must be a stand-alone token: preceded by start/non-alnum and
+  // followed by end/non-alnum. Same idea for the llama-3.1/3.2 family.
+  {
+    pattern: /(?:^|[^a-z0-9])(?:128k|llama-?3\.[12]|llama3[._-]?[12])(?![a-z0-9])/i,
+    tokens: 128_000,
+  },
+  { pattern: /(?:^|[^a-z0-9])(?:qwen2\.5|qwen3)(?![a-z0-9])/i, tokens: 32_768 },
+  { pattern: /(?:^|[^a-z0-9])(?:mistral|mixtral)(?![a-z0-9])/i, tokens: 32_768 },
+  { pattern: /(?:^|[^a-z0-9])gemma-?[23](?![a-z0-9])/i, tokens: 8_192 },
+  { pattern: /(?:^|[^a-z0-9])phi-?3(?![a-z0-9])/i, tokens: 4_096 },
+  {
+    pattern: /(?:^|[^a-z0-9])(?:tinyllama|qwen2[._-]?0\.5b)(?![a-z0-9])/i,
+    tokens: 2_048,
+  },
 ];
 
 /** Resolve a model id to its context-window size in tokens. */
