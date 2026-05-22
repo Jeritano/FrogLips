@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { WorkflowCard } from "../../types";
+import type { ModelEntry, WorkflowCard } from "../../types";
 import { loadAllPresets } from "../../lib/agent-presets";
 import { useModalA11y } from "../../lib/use-modal-a11y";
 import { generateAgentName } from "../../lib/agent-name";
+import { api } from "../../lib/tauri-api";
 
 /** Origin rect the card flies in from / back to (the deck or a placed node). */
 export interface FormOrigin {
@@ -62,9 +63,18 @@ export function CardForm({ card, origin, onSave, onClose }: Props) {
   // origin transform to the resting (centered) state.
   const [entered, setEntered] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  // Installed local models for the Model dropdown — blank = system default.
+  const [models, setModels] = useState<ModelEntry[]>([]);
 
   useModalA11y({ open: true, onClose, containerRef: ref });
   useEffect(() => setDraft(card), [card]);
+
+  useEffect(() => {
+    api
+      .listAllModels()
+      .then((m) => setModels([...m.mlx, ...m.ollama]))
+      .catch(() => setModels([]));
+  }, []);
 
   useEffect(() => {
     const id = requestAnimationFrame(() => setEntered(true));
@@ -184,12 +194,23 @@ export function CardForm({ card, origin, onSave, onClose }: Props) {
               </select>
             </label>
             <label className="wf-field">
-              <span>Model (blank = backend default)</span>
-              <input
+              <span>Model</span>
+              <select
                 value={draft.model ?? ""}
                 onChange={(e) => set("model", e.target.value || null)}
-                placeholder="e.g. llama3.1:8b"
-              />
+              >
+                <option value="">System default</option>
+                {models.map((m) => (
+                  <option key={`${m.backend}:${m.id}`} value={m.id}>
+                    {m.id}
+                  </option>
+                ))}
+                {/* Keep a pinned model selectable even if it's no longer
+                    in the installed list. */}
+                {draft.model && !models.some((m) => m.id === draft.model) && (
+                  <option value={draft.model}>{draft.model}</option>
+                )}
+              </select>
             </label>
             <label className="wf-field">
               <span>Instructions</span>
