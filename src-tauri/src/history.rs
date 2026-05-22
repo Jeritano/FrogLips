@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use r2d2::{ManageConnection, Pool, PooledConnection};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -324,6 +324,47 @@ pub fn rename_conversation(id: i64, title: &str) -> Result<()> {
     Ok(())
 }
 
+/// Placeholder title assigned to freshly created conversations. The frontend
+/// "+ New chat" path inserts a conversation with exactly this title; auto-
+/// titling only fires while the title is still empty or this placeholder.
+pub const DEFAULT_CONVERSATION_TITLE: &str = "New chat";
+
+/// Soft target length for an auto-derived conversation title.
+const AUTOTITLE_MAX_CHARS: usize = 48;
+
+/// Derive a short, single-line conversation title from a message body.
+///
+/// Whitespace (including newlines) is collapsed to single spaces and the
+/// result trimmed. If the trimmed text fits within `AUTOTITLE_MAX_CHARS` it is
+/// returned verbatim; otherwise it is truncated on a word boundary where one
+/// exists in the kept window and an ellipsis ('…') is appended. Empty or
+/// whitespace-only input yields `None` — callers keep the existing title.
+pub fn derive_title(content: &str) -> Option<String> {
+    let collapsed: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    // Operate on chars to stay UTF-8 safe under multibyte input.
+    let chars: Vec<char> = collapsed.chars().collect();
+    if chars.len() <= AUTOTITLE_MAX_CHARS {
+        return Some(collapsed);
+    }
+    let window: String = chars[..AUTOTITLE_MAX_CHARS].iter().collect();
+    // Prefer cutting at the last space so we don't end on a partial word.
+    let trimmed = match window.rfind(' ') {
+        Some(idx) if idx > 0 => &window[..idx],
+        _ => window.trim_end(),
+    };
+    Some(format!("{}…", trimmed.trim_end()))
+}
+
+/// Whether `title` is still the create-time placeholder (or empty), meaning the
+/// conversation has never been explicitly named and is eligible for auto-titling.
+fn title_is_placeholder(title: &str) -> bool {
+    let t = title.trim();
+    t.is_empty() || t == DEFAULT_CONVERSATION_TITLE
+}
+
 pub fn add_message(
     conv_id: i64,
     role: &str,
@@ -331,13 +372,46 @@ pub fn add_message(
     model: Option<&str>,
     images_json: Option<&str>,
 ) -> Result<i64> {
-    let conn = get_db()?;
-    conn.execute(
+    let mut conn = get_db()?;
+    let tx = conn.transaction()?;
+    tx.execute(
         "INSERT INTO messages (conversation_id, role, content, created_at, model, images)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![conv_id, role, content, now_unix(), model, images_json],
     )?;
-    Ok(conn.last_insert_rowid())
+    let message_id = tx.last_insert_rowid();
+
+    // Auto-title: only on the first user message of a still-unnamed conversation.
+    if role == "user" {
+        if let Some(new_title) = derive_title(content) {
+            let current_title: Option<String> = tx
+                .query_row(
+                    "SELECT title FROM conversations WHERE id = ?1",
+                    params![conv_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(current_title) = current_title {
+                if title_is_placeholder(&current_title) {
+                    let prior_user_msgs: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM messages
+                         WHERE conversation_id = ?1 AND role = 'user' AND id <> ?2",
+                        params![conv_id, message_id],
+                        |r| r.get(0),
+                    )?;
+                    if prior_user_msgs == 0 {
+                        tx.execute(
+                            "UPDATE conversations SET title = ?1 WHERE id = ?2",
+                            params![new_title, conv_id],
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+
+    tx.commit()?;
+    Ok(message_id)
 }
 
 pub fn list_messages(conv_id: i64) -> Result<Vec<Message>> {
@@ -717,6 +791,55 @@ mod tests {
             "parent rows must be identical after fork mutation"
         );
         assert_eq!(message_count(&conn, src), 4, "parent count untouched");
+    }
+
+    #[test]
+    fn derive_title_collapses_whitespace() {
+        let got = derive_title("  hello\n\tthere   world  ").unwrap();
+        assert_eq!(got, "hello there world");
+    }
+
+    #[test]
+    fn derive_title_returns_none_for_empty_or_whitespace() {
+        assert!(derive_title("").is_none());
+        assert!(derive_title("   \n\t  ").is_none());
+    }
+
+    #[test]
+    fn derive_title_keeps_short_input_verbatim() {
+        let short = "How do I parse JSON in Rust?";
+        assert_eq!(derive_title(short).unwrap(), short);
+    }
+
+    #[test]
+    fn derive_title_truncates_on_word_boundary_with_ellipsis() {
+        let long = "Please explain how the Rust borrow checker handles \
+                    nested closures and lifetimes";
+        let got = derive_title(long).unwrap();
+        assert!(got.ends_with('…'), "expected ellipsis, got {got:?}");
+        // No trailing partial word: the char before the ellipsis is not mid-word
+        // truncation — the kept text matches the start of the collapsed input.
+        let body = got.trim_end_matches('…');
+        assert!(long.starts_with(body), "kept text must be a prefix");
+        assert!(!body.ends_with(' '), "no trailing space before ellipsis");
+        // Soft cap honoured (body + ellipsis stays bounded).
+        assert!(body.chars().count() <= 48);
+    }
+
+    #[test]
+    fn derive_title_handles_no_space_overlong_input() {
+        let long = "a".repeat(120);
+        let got = derive_title(&long).unwrap();
+        assert!(got.ends_with('…'));
+        assert_eq!(got.trim_end_matches('…').chars().count(), 48);
+    }
+
+    #[test]
+    fn derive_title_is_utf8_safe() {
+        // 60 multibyte chars — truncation must not split a char.
+        let long = "数".repeat(60);
+        let got = derive_title(&long).unwrap();
+        assert!(got.ends_with('…'));
     }
 
     #[test]

@@ -361,11 +361,17 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
       baseTextRef.current = text ? text + (text.endsWith(" ") ? "" : " ") : "";
 
       r.onresult = (e: any) => {
-        let combined = "";
+        const segments = [];
         for (let i = 0; i < e.results.length; i++) {
-          combined += e.results[i][0].transcript;
+          const seg = e.results[i][0].transcript.trim();
+          if (seg) segments.push(seg);
         }
-        const next = baseTextRef.current + combined;
+        const combined = segments.join(" ");
+        const base = baseTextRef.current;
+        const next =
+          base && combined && !base.endsWith(" ")
+            ? base + " " + combined
+            : base + combined;
         lastVoiceTextRef.current = next;
         setText(next);
       };

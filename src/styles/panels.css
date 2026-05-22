@@ -852,13 +852,6 @@ button.cancel {
   background: var(--accent-bg);
 }
 
-.memory-empty {
-  text-align: center;
-  color: var(--text-3);
-  font-size: 11px;
-  padding: 16px 8px;
-}
-
 .memory-item {
   display: flex;
   align-items: flex-start;

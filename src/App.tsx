@@ -12,6 +12,7 @@ import type { Conversation, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
+import { EmptyState } from "./components/EmptyState";
 import "./App.css";
 
 // Heavy panels that aren't needed for first paint: lazy-load so they ship in
@@ -128,6 +129,16 @@ function App() {
   useTauriEvent<ServerStatus>(
     "server-status",
     useCallback((e) => setStatus(e.payload), []),
+  );
+
+  // Backend broadcasts this whenever a conversation's persisted state changes
+  // (e.g. auto-titling on the first user message). Refresh the sidebar so the
+  // derived title replaces the "New chat" placeholder without a manual reload.
+  useTauriEvent<number>(
+    "conversation-updated",
+    useCallback(() => {
+      refreshConversations().catch(() => {});
+    }, []),
   );
 
   // Rust-side warnings: forward into the in-app diagnostics ring buffer so
@@ -481,6 +492,23 @@ function App() {
           </div>
         )}
         <ul className="conv-list" data-testid="conv-list">
+          {orderedConversations.length === 0 && (
+            <li className="conv-list-empty" data-testid="conv-list-empty">
+              {conversations.length === 0 ? (
+                <EmptyState
+                  icon="💬"
+                  heading="No conversations yet"
+                  sub="Start a new chat to begin — your threads will appear here."
+                />
+              ) : (
+                <EmptyState
+                  icon="🔎"
+                  heading="No matches"
+                  sub="No conversations match your search."
+                />
+              )}
+            </li>
+          )}
           {orderedConversations.map(({ conv: c, depth }) => (
             <li
               key={c.id}

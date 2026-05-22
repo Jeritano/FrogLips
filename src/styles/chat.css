@@ -209,6 +209,8 @@
   max-width: 70%;
   white-space: pre-wrap;
   word-wrap: break-word;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   line-height: 1.4;
 }
 

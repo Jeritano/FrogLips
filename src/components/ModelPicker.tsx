@@ -254,11 +254,11 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
         />
         <span className="status-text">
           {nativeLoading
-            ? `loading · native · ${nativeLoading}`
+            ? "loading · native"
             : status?.running
               ? status.ready
-                ? `${status.backend} · ${status.model}`
-                : `loading · ${status.backend} · ${status.model}`
+                ? `${status.backend} · running`
+                : `loading · ${status.backend}`
               : "stopped"}
         </span>
         {err && <div className="error">{err}</div>}

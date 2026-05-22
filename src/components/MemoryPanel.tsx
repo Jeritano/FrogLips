@@ -10,6 +10,7 @@ import {
   saveMemory,
   setMemoryMode,
 } from "../lib/memory-client";
+import { EmptyState } from "./EmptyState";
 
 interface Props {
   refreshToken?: number;
@@ -34,6 +35,17 @@ const SCOPE_LETTERS: Record<MemoryScope, string> = {
   project: "P",
   conversation: "C",
 };
+
+/* ── Memory mode metadata ───────────────────────────────────────────────
+ * Plain-language display labels + one-line descriptions. The stored enum
+ * VALUES (off/manual/queue/direct) are unchanged — only what the user sees. */
+
+const MODE_OPTIONS: { value: MemoryMode; label: string; desc: string }[] = [
+  { value: "off", label: "Off", desc: "Memory disabled." },
+  { value: "manual", label: "Suggest", desc: "Recalls memories; add them yourself." },
+  { value: "queue", label: "Review", desc: "Auto-extracts into a queue you approve." },
+  { value: "direct", label: "Auto", desc: "Auto-extracts and auto-approves." },
+];
 
 /** Promote chain: conversation → project → global. */
 function nextUp(s: MemoryScope): MemoryScope | null {
@@ -212,11 +224,13 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
           <div className="memory-mode-row">
             <label className="memory-mode-label">Mode</label>
             <select value={mode} onChange={(e) => changeMode(e.target.value as MemoryMode)}>
-              <option value="off">Off</option>
-              <option value="manual">Manual pin only</option>
-              <option value="queue">Auto-extract → queue</option>
-              <option value="direct">Auto-extract → direct</option>
+              {MODE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
             </select>
+          </div>
+          <div className="memory-mode-desc" data-testid="memory-mode-desc">
+            {MODE_OPTIONS.find((o) => o.value === mode)?.desc}
           </div>
 
           {/* Tabs */}
@@ -286,9 +300,25 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
           {/* List */}
           <div className="memory-list">
             {list.length === 0 && (
-              <div className="memory-empty">
-                {tab === "active" ? "No memories at this scope." : "Inbox empty."}
-              </div>
+              tab === "active" ? (
+                <EmptyState
+                  icon="⭐"
+                  heading={scopeFilter === "all" ? "No memories yet" : "No memories at this scope"}
+                  sub={
+                    scopeFilter === "all"
+                      ? "Save one above, or let memory mode capture them as you chat."
+                      : "Try a different scope filter, or save a memory above."
+                  }
+                  data-testid="memory-empty-active"
+                />
+              ) : (
+                <EmptyState
+                  icon="📥"
+                  heading="Inbox empty"
+                  sub="Memories awaiting your review will appear here."
+                  data-testid="memory-empty-pending"
+                />
+              )
             )}
             {list.map((m) => {
               const up = nextUp(m.scope);
