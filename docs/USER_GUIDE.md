@@ -1,12 +1,12 @@
 # Froglips — User Guide
 
-Version 0.10.9 · macOS (Apple Silicon)
+Version 0.11.0 · macOS (Apple Silicon)
 
 ## 1. Install
 
 ### From a release
 
-1. Download `Froglips_0.10.9_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
+1. Download `Froglips_0.11.0_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
 2. Open the DMG and drag `Froglips.app` to `/Applications`.
 3. First launch: macOS may show "unidentified developer". Right-click the app → Open. Confirm.
 4. Optional one-line fix to strip Gatekeeper quarantine entirely:
@@ -57,30 +57,31 @@ Fastest path — Native, no install:
 1. Click **+ New chat** in the sidebar.
 2. Click the model dropdown → **⚡ Load a HuggingFace model natively…**
 3. Enter a small repo id, e.g. `NousResearch/Llama-3.2-1B`. Click **Start**.
-4. First load downloads weights (~2 GB for 1B-class models). After that, type and hit Enter.
+4. First load downloads weights (~2 GB for 1B-class models) — a progress indicator tracks the download and model load. After that, type and hit Enter.
 
 If you installed Ollama instead:
 
-1. Model dropdown → **Browse & download models…** → switch to the **Ollama** tab.
+1. Model dropdown → **Browse & download models…** → set **Source** to **Ollama**.
 2. Pick something small like `llama3.2:3b` or `qwen3:4b`. Click **Pull**.
 3. Close the library; the model appears in the dropdown. Pick it → **Start** → chat.
 
 ## 4. The Model Library
 
-Five tabs:
+Open with **Browse & download models…** from the model dropdown. A **Source**
+selector at the top switches between five views:
 
-| Tab | What you'll find |
+| Source | What you'll find |
 |---|---|
-| **Installed** | Everything currently pulled. Ollama models and MLX models, with sizes and a **Remove** button each. Default tab. |
-| **Ollama** | Curated catalog of popular Ollama models (cloud + local). Already-installed entries show a green `✓ installed` tag and a **Remove** button. |
-| **HuggingFace MLX** | Live search of `huggingface.co` filtered to MLX models. Sort by downloads, see likes, license, base model, last modified. |
+| **Installed** | Everything currently pulled — Ollama, MLX, and GGUF models, with sizes and a **Remove** button each. Default view. |
+| **Ollama** | Full `ollama.com/library` view: per-model description, colored capability chips (vision / tools / thinking / audio / cloud / embedding), pull counts and relative-updated metadata. Filter chips and a Popular/Newest/Updated sort. Falls back to a curated catalog with a banner if the live page can't be scraped. |
+| **HuggingFace** | Live `huggingface.co/models` view with a collapsible filter sidebar (tasks, parameter range, libraries, apps, inference providers), live total count, name filter, and sort. The action button auto-routes: MLX repos → **Pull**, GGUF repos → **View files**, others → **Open on HF ↗**. |
 | **RP / Kobold** | Curated roleplay finetunes from HF (TheDrummer, Sao10K, anthracite, ReadyArt, etc.). |
 | **Civitai** | Live search of `civitai.com`. Mostly diffusion (image gen) — direct loading not supported, but useful for browsing. Shows ratings, SHA256, file format, license, scan status. |
 
 ### Removing models
 
-- **Installed tab:** trash button next to each model. Confirms before deleting.
-- **Inline:** on Ollama / HF / RP tabs, any model that's already pulled shows a red **Remove** button instead of *Pull*.
+- **Installed view:** trash button next to each model. Confirms before deleting (two-click confirm).
+- **Inline:** on the Ollama / HuggingFace / RP views, any model that's already pulled shows a red **Remove** button instead of *Pull*.
 
 Removing frees up the actual disk space — there is no undo.
 
@@ -118,9 +119,13 @@ You can delete, promote pending → active, or add manually.
 
 ## 6. Agent mode
 
-Toggle the **Agent** button next to the chat input. Available only with the Ollama backend.
+Toggle the **Agent** button next to the chat input. Agent mode works on the
+**Ollama** and **MLX** backends. The **Native** backend has no tool-call
+support — turning Agent on while a native model is loaded shows a clear error
+instead of silently behaving like a plain chat. The Agent toggle also resets
+automatically if you switch to a backend that can't support it.
 
-The agent has direct access via 32 tools. Grouped:
+The agent has direct access via these tools. Grouped:
 
 **Filesystem**
 | Tool | What it does |
@@ -182,7 +187,7 @@ Next to the Agent toggle is a dropdown of presets:
 
 | Preset | Tools | Best for |
 |---|---|---|
-| **General** | All 32 | Mixed tasks |
+| **General** | All tools | Mixed tasks |
 | **Coder** | FS + shell + multi_edit + full git | Software work |
 | **Researcher** | Read-only FS + git + web + read_pdf | Investigation without writes |
 | **Shell** | run_shell, list, exists, read | Terminal-style tasks |
@@ -191,9 +196,11 @@ Each preset comes with a system prompt tailored to its purpose. Switching preset
 
 ### Safety
 
-- Every `run_shell`, `write_file`, and `edit_file` call requires explicit user approval.
+- Every `run_shell`, `write_file`, `edit_file`, `applescript_run`, `clipboard_set`, `open_app`, `git_commit`, and `spawn_subagent` call requires explicit user approval. An `http_request` carrying a request body always asks for confirmation too, even when you've approved a session.
 - The confirm dialog shows a `destructive` / `privileged` / `pipe-from-network` badge for risky patterns (e.g. `rm -rf /`, `sudo`, `curl … | sh`).
-- Path traversal (`..`), symlink escape, and writes to `~/.ssh`, `~/.aws`, `~/Library/Keychains`, `.env*`, sudoers, etc. are blocked by the Rust side.
+- Path traversal (`..`), symlink escape, and reads/writes to `~/.ssh`, `~/.aws`, `~/Library/Keychains`, `.env*`, sudoers, browser profiles, `.netrc`, `gh`/`gcloud` config, etc. are blocked by the Rust side.
+- Content the agent reads from outside the model — files, PDFs, the clipboard, web pages, and git output — is scanned for prompt-injection before it reaches the model.
+- Subagents do not inherit your session-wide "approve all" choices; their shell and write calls each ask again.
 - Optional **workspace root** confines all filesystem operations to a chosen directory. Set in agent settings (⚙).
 
 ### Agent settings (⚙)
@@ -218,12 +225,14 @@ While the agent is running, a small pill shows `i<iters>·t<tools>·llm<ms>·too
 
 - **Search**: search input at the top of the sidebar filters conversations by title substring.
 - **Export**: ⤓ Export button in the agent toolbar saves the current conversation as Markdown (timestamps, model tags, tool calls + results included).
-- **Per-message actions**: hover any message — Copy (clipboard), Regenerate (assistant only, deletes the prior pair and re-asks), Edit (user only, drafts the text back into the input).
+- **Per-message actions**: hover any message — Copy (clipboard), Regenerate (assistant only, deletes the prior pair and re-asks), Edit (user only — drafts your last prompt back into the input so you can change it and resend).
 
 ## 8. Themes + keyboard shortcuts
 
 - ☀/☾ in sidebar toggles **light/dark theme**. Persisted across restarts.
+- **Sidebar collapse**: a collapse/expand toggle hides the conversation sidebar to give the chat full width. State is remembered.
 - **Markdown rendering**: assistant + user messages render Markdown with code-block syntax highlighting for 20+ languages.
+- **Citation chips**: when the agent references a workspace file, the chip is clickable — Froglips confirms the resolved path and opens it. Opens are confined to the workspace root; absolute or traversal paths are rejected.
 - Cmd+N — new chat
 - Cmd+L — open model library
 - Cmd+K — focus model picker
@@ -250,8 +259,8 @@ Updates are minisign-signed; the public key is embedded in the app. A tampered b
 **"Ollama: ollama not found on PATH"**
 The app prepends common bin dirs (`/usr/local/bin`, `/opt/homebrew/bin`, `~/.local/bin`, `~/.cargo/bin`, `~/.venvs/mlx/bin`) at startup. If Ollama lives elsewhere, symlink it into one of those.
 
-**Agent says "I don't have access"**
-You're probably on the MLX backend (agent is Ollama-only). Pick an Ollama model.
+**Agent mode won't turn on / shows a backend error**
+Agent mode runs on the Ollama and MLX backends only. If a Native model is loaded, switch to an Ollama or MLX model to use tools.
 
 **Model picker shows nothing**
 Make sure Ollama is actually running (menu bar icon). For MLX, ensure `~/.venvs/mlx/bin/mlx_lm.server` exists.

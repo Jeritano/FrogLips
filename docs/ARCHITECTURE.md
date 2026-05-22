@@ -15,16 +15,16 @@ Froglips is a Tauri 2 app with a Rust core, a React 19 + TypeScript frontend, an
 │  │   Frontend (React)    │◀──▶│   Tauri Core (Rust)         │  │
 │  │   src/                │IPC │   src-tauri/src/            │  │
 │  │                       │    │                             │  │
-│  │  ChatWindow           │    │  lib.rs   (entry + cmds)    │  │
-│  │  ModelBrowser         │    │  agent.rs (tools + sandbox) │  │
-│  │  ModelPicker          │    │  history.rs (SQLite pool)   │  │
-│  │  MemoryPanel          │    │  memory.rs (embeddings)     │  │
-│  │  MessageList          │    │  models.rs (list + delete)  │  │
-│  │  ChatInput            │    │  mlx_server.rs (subprocess) │  │
-│  │                       │    │  settings.rs (persistence)  │  │
-│  │  lib/agent-loop.ts    │    │                             │  │
-│  │  lib/memory-client.ts │    │  + tauri-plugin-updater     │  │
-│  │  lib/mlx-client.ts    │    │  + tauri-plugin-process     │  │
+│  │  ChatWindow + hooks/  │    │  lib.rs   (run/setup only)  │  │
+│  │  ModelBrowser + tabs/ │    │  commands/ (IPC adapters)   │  │
+│  │  ModelPicker          │    │  agent/   (tools + sandbox) │  │
+│  │  MemoryPanel          │    │  history.rs (SQLite pool)   │  │
+│  │  MessageList          │    │  memory.rs (embeddings)     │  │
+│  │  ChatInput            │    │  models.rs (list + delete)  │  │
+│  │                       │    │  backend_process.rs (procs) │  │
+│  │  lib/agent-loop/      │    │  settings.rs (persistence)  │  │
+│  │  lib/memory-client.ts │    │  util.rs (shared helpers)   │  │
+│  │  lib/mlx-client.ts    │    │  + tauri-plugin-updater     │  │
 │  └───────────────────────┘    └─────────────────────────────┘  │
 └────────────────────────┬───────────────────────────────────────┘
                          │ HTTP (OpenAI-compatible)
@@ -40,7 +40,7 @@ Froglips is a Tauri 2 app with a Rust core, a React 19 + TypeScript frontend, an
 
 Froglips itself is one process (the Tauri binary `local-llm-app`). It spawns and supervises:
 
-- **One model server at a time** — either `mlx_lm.server` or none (Ollama runs on its own as a system service). When the user clicks *Start*, `mlx_server.rs` either spawns `mlx_lm.server` and polls TCP readiness, or in Ollama mode just probes that Ollama is listening on `127.0.0.1:11434`.
+- **One model server at a time** — either `mlx_lm.server` or none (Ollama runs on its own as a system service). When the user clicks *Start*, `backend_process.rs` either spawns `mlx_lm.server` and polls TCP readiness, or in Ollama mode just probes that Ollama is listening on `127.0.0.1:11434`.
 - **Shell subprocesses on demand** via the agent's `run_shell` tool — short-lived, killed on drop, 30 s timeout.
 
 The main process is `tokio` based throughout the Rust side. React state lives in components; no global state manager (no Redux, no Zustand).
@@ -49,11 +49,28 @@ The main process is `tokio` based throughout the Rust side. React state lives in
 
 ### `lib.rs`
 
-Entry point. Defines Tauri commands (`#[tauri::command]` functions exposed to JS via `invoke`). Wires plugins (opener, updater, process). Manages the `ServerHandle` (shared `Arc<ServerState>`). Initializes PATH for GUI launches and restores the persisted workspace root before showing the window.
+Thin entry point. Holds `run()` / `setup()` only — wires plugins (opener, updater, process), builds the tray menu, registers the `generate_handler!` command list, manages the `ServerHandle` (shared `Arc<ServerState>`), initializes PATH for GUI launches, and restores the persisted workspace root before showing the window. (It used to be a ~1800-line monolith; the command bodies now live in `commands/`.)
 
-### `agent.rs`
+### `commands/`
 
-Pure logic — no Tauri dependency aside from being called by Tauri commands. Defines:
+The Tauri command layer — every `#[tauri::command]` wrapper that JS reaches via `invoke`. Each wrapper is a thin IPC adapter delegating to a domain module. Grouped by domain:
+
+- `commands/mod.rs` — shared handle types (`ServerHandle`, `NativeHandle`), input-size limits, the `blocking()` helper that collapses the repeated `spawn_blocking` error-mapping tail.
+- `commands/agent.rs` — agent tool commands.
+- `commands/server.rs` — backend start/stop/probe.
+- `commands/models.rs` — model list / pull / delete.
+- `commands/history.rs` — conversation + message persistence.
+- `commands/memory.rs` — memory store and recall.
+- `commands/mcp.rs` — MCP server management.
+- `commands/misc.rs` — settings, diagnostics, and the remaining odds and ends.
+
+### `util.rs`
+
+Shared helpers extracted from the old monolith: `expand_home`, blob/`Vec` conversion, and the xorshift PRNG.
+
+### `agent/`
+
+Agent logic split into a module tree (`agent/fs.rs`, `agent/git.rs`, `agent/shell.rs`, `agent/web.rs`, `agent/code.rs`, `agent/system.rs`, `agent/browser.rs`, `agent/fs_watcher.rs`). Pure logic — no Tauri dependency aside from being called by command wrappers. Defines:
 
 - `validate_path` / `resolve_path` — canonicalize, reject `..`, then check against `is_protected_for_read` / `is_protected_for_write` and `within_workspace`.
 - `ToolError` enum, JSON-serialized — `not_found`, `permission_denied`, `protected`, `outside_workspace`, `invalid_argument`, `too_large`, `timeout`, `cancelled`, `io`.
@@ -78,28 +95,40 @@ Lists MLX (scans HF hub directory, decodes `models--org--name` → `org/name`) a
 
 Wraps `mistralrs-core` 0.8.1 + candle + Metal. Holds `Arc<MistralRs>` per loaded model. `NativeRuntime::load(model_id)` spawns the heavy HF download + model load on a blocking thread; `chat_stream(messages, opts, on_chunk)` builds a `Request::Normal` with `is_streaming: true`, sends it to mistralrs via `get_sender()`, and forwards `Response::Chunk` deltas through a callback so the Tauri layer can re-emit them as `native-chunk:<op_id>` events. Five Tauri commands (`native_supported`, `native_load_model`, `native_unload_model`, `native_current_model`, `native_chat_stream`) gate access. Falls back to CPU if Metal init fails. Requires full Xcode + Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) at build time.
 
-### `mlx_server.rs`
+### `backend_process.rs`
 
-Owns the spawned `mlx_lm.server` child. Captures stderr to a 64-line ring buffer (`VecDeque`). TCP readiness probe with a 90 s timeout. An `AtomicU64` generation counter prevents stale-probe emissions emitting `ready` for a process that has since been killed.
+Owns the spawned model-server child (formerly `mlx_server.rs`; renamed because it manages both the MLX and Ollama processes). Captures stderr to a 64-line ring buffer (`VecDeque`). TCP readiness probe with a 90 s timeout. An `AtomicU64` generation counter prevents stale-probe emissions emitting `ready` for a process that has since been killed.
 
 ### `settings.rs`
 
-JSON file at `~/Library/Application Support/Froglips/settings.json`. Currently stores `workspace_root`. Load on startup, save on change.
+JSON file at `~/Library/Application Support/Froglips/settings.json`. Stores `workspace_root` and other persisted prefs. Custom-backend API keys are **not** kept in this file — they live in the macOS Keychain, with a one-time migration off any legacy plaintext key and redaction of keys from the settings blob returned to the webview. Load on startup, save on change.
 
 ## Frontend modules
 
-### `ChatWindow.tsx`
+### `ChatWindow.tsx` + `src/hooks/`
 
-Owner of conversation state. Coordinates streaming (MLX) vs agent loop (Ollama). Holds:
+`ChatWindow.tsx` owns conversation state and coordinates plain streaming vs the agent loop. Its incidental concerns are decomposed into focused hooks under `src/hooks/`:
 
-- `convRef` — race-safe conversation reference
-- `streamConvId` + `isStreamConvActive()` — guards on every post-async state update so a fast convo switch doesn't pollute the new convo's state
-- `abortRef: AbortController` — for stopping inflight work
-- Agent preset, allowlist, approval flags, shell-prefix approvals
+- `useAgentSettings` — agent preset, allowlist, approval flags, shell-prefix approvals.
+- `useCitationOpener` — workspace-confined citation-chip file opens.
+- `useAskUserModal` — the `ask_user` modal state.
+- `useQuickPromptToast` — quick-prompt completion toast.
+- `usePlatformChrome` / `useWindowGeometry` — window chrome and geometry.
+- `useTauriEvent` — shared Tauri event-listener boilerplate, adopted across components that previously hand-rolled it.
 
-### `lib/agent-loop.ts`
+`ChatWindow` still holds the race-safety primitives (`convRef`, `streamConvId` + `isStreamConvActive()`, `abortRef: AbortController`) and exposes a typed `send()` / `resend()` pair (the latter backing the edit-message feature).
 
-The Ollama tool-calling loop. Per iteration:
+### `lib/agent-loop/`
+
+The tool-calling loop, split into focused modules:
+
+- `runner.ts` — the iteration loop itself (`pushToolResult` and predicate helpers extracted out).
+- `agent-chat.ts` — the backend-aware chat primitive: dispatches the LLM call to Ollama (NDJSON `/api/chat`) or MLX (OpenAI-compatible `/v1/chat/completions` with `tools`). The native backend has no tool-call support, so the runner rejects agent mode there up front.
+- `dispatch.ts` — tool dispatch, plus the split-out `url-safety.ts`, `dry-run.ts`, and `diff.ts` modules.
+- `ollama-client.ts` / `stream-types.ts` — Ollama client and shared streaming types.
+- `subagent.ts`, `system-prompt.ts`, `tools.ts`, `mcp-tools.ts`, `types.ts`, `tool-call-merge.ts`.
+
+Per iteration:
 
 1. POST `messages + tool defs` to `/api/chat` (stream=false)
 2. Read `prompt_eval_count` + `eval_count` → accumulate token metrics

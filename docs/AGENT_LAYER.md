@@ -2,6 +2,22 @@
 
 Reference for the agent system — what tools exist, how they're sandboxed, how the loop runs, and how to add or modify presets.
 
+## Backend support
+
+Agent mode runs on **Ollama** and **MLX**. The agent runner dispatches its LLM
+call by backend via `agent-chat.ts`:
+
+- **Ollama** — NDJSON `/api/chat` with `tools` (the original path).
+- **MLX** — OpenAI-compatible `/v1/chat/completions` with `tools`; `tool_calls`
+  are parsed out of the streaming deltas.
+- **Native** — `mistralrs` in-process has no tool-call support, so agent mode
+  is rejected up front with a clear error rather than silently falling through
+  to plain streaming. The Agent toggle resets when the active backend can't
+  support it.
+
+`agentBackendUnsupportedReason(backend)` / `isAgentBackendSupported(backend)`
+in `agent-chat.ts` are the single source of truth for this.
+
 ## Lifecycle of a single agent turn
 
 ```
@@ -9,13 +25,13 @@ User: <prompt>
   ↓
 ChatWindow.send()
   ↓
-runAgentLoop({ model, messages, workspaceRoot, preset, ... })
+runAgentLoop({ model, backend, messages, workspaceRoot, preset, ... })
   ↓
 buildSystemPrompt() — preset.systemPromptOverride OR default, plus env block
   ↓
 LOOP (max 20 iterations):
   ↓
-  POST http://127.0.0.1:11434/api/chat
+  agent-chat dispatch → Ollama /api/chat OR MLX /v1/chat/completions
        { model, messages, tools, options: { temperature: 0.4 } }
        retry 2x on 5xx with exponential backoff
   ↓
@@ -49,6 +65,12 @@ LOOP (max 20 iterations):
 ```
 
 ## Tools
+
+> **Untrusted-content scanning.** Tool output that originates from outside the
+> model — `read_file`, `read_pdf`, `clipboard_get`, the browser get-text tool,
+> and the git read tools — is routed through an injection-scan wrapper before
+> it reaches the model, so file, clipboard, and repo content can't smuggle
+> instructions in unwrapped.
 
 ### `read_file(path, offset?, limit?)`
 
@@ -162,7 +184,7 @@ Commits already-staged changes. Does NOT stage files itself — use `run_shell "
 
 ### Web tools (v0.8+)
 
-All share an SSRF guard that rejects hosts resolving to loopback, RFC1918 private, link-local (incl. `169.254.169.254` metadata), `.local`, and `.internal`. The `Host:` header is also blocked from being overridden on `http_request` to prevent SNI-based bypasses.
+All share an SSRF guard that rejects hosts resolving to loopback, RFC1918 private, link-local (incl. `169.254.169.254` metadata), `.local`, and `.internal`. IPv4-mapped/compatible IPv6 literals and NAT64 ranges are also rejected. Redirects are followed manually with the connection **pinned to each hop's validated IP set**, closing the DNS-rebinding TOCTOU where a redirect host could resolve safe for the check and to loopback for the connection. The `Host:` header is also blocked from being overridden on `http_request` to prevent SNI-based bypasses.
 
 #### `web_fetch(url)`
 GET only. 15 s timeout, 1 MiB response cap. HTML detected by presence of `<html`/`<body`/`<!DOCTYPE` and run through `html2text` for the agent's benefit. Returns `{url, status, content, bytes, truncated}`.
@@ -171,7 +193,7 @@ GET only. 15 s timeout, 1 MiB response cap. HTML detected by presence of `<html`
 DuckDuckGo HTML endpoint scrape — no API key. Default `n=5`, max 20. Returns `{query, hits: [{title, url, snippet}]}`.
 
 #### `http_request(method, url, headers?, body?, timeout_secs?)`
-Generic HTTP. Methods: `GET | POST | PUT | PATCH | DELETE | HEAD`. Body capped at 1 MiB. `timeout_secs` capped at 60. Same SSRF guard. **Requires user approval** (in `DANGEROUS_TOOLS` / `WRITE_TOOLS`). Returns `{status, headers, body, bytes, truncated}`.
+Generic HTTP. Methods: `GET | POST | PUT | PATCH | DELETE | HEAD`. Body capped at 1 MiB. `timeout_secs` capped at 60. Same SSRF guard. **Requires user approval** (in `DANGEROUS_TOOLS` / `WRITE_TOOLS`). Any `http_request` carrying a body is treated as **elevated risk**, so it always needs explicit confirmation even when session approvals are active. Returns `{status, headers, body, bytes, truncated}`.
 
 ### macOS automation (v0.8+)
 
@@ -228,12 +250,15 @@ Pauses the agent and pops a Tauri-event-driven modal in `ChatWindow` with a text
 Implementation: `ask_user::prepare()` registers a oneshot sender in a `Mutex<HashMap<id, Sender>>`, the command layer emits `ask-user` event, then awaits the receiver. Frontend modal calls `agent_ask_user_reply(id, answer)` to resolve.
 
 #### `spawn_subagent(prompt, preset?)`
-Recursive `runAgentLoop` in an isolated context. Caps at `MAX_SUBAGENT_DEPTH = 3` to prevent runaway recursion. Inherits parent's:
-- `model`
+Recursive `runAgentLoop` in an isolated context. Caps at `MAX_SUBAGENT_DEPTH = 3` to prevent runaway recursion. **Classified as a confirmation-gated tool** (in `DANGEROUS_TOOLS`) — spawning a subagent itself needs explicit user approval.
+
+Inherits parent's:
+- `model` / `backend`
 - `workspaceRoot`
 - `requestConfirmation`
 - `signal`
-- `approveAllShell` / `approveAllWrite` / `approvedShellPrefixes`
+
+Does **not** inherit the parent's blanket approvals — `approveAllShell` / `approveAllWrite` / `approvedShellPrefixes` are deliberately not passed down, so a subagent's shell and write calls each require their own confirmation regardless of what the user approved for the parent run.
 
 Replaces parent's:
 - `messages` → `[{role: "user", content: prompt}]`
@@ -275,7 +300,7 @@ Two complementary layers:
 
 ### Protected paths (always blocked)
 
-Read-blocked: `/Library/Keychains`, `/private/var/db/sudo`, `/var/db/sudo`, `/etc/sudoers`, `~/.ssh`, `~/.gnupg`, `~/Library/Keychains`, `~/Library/Cookies`, `~/Library/Application Support/com.apple.TCC`, files named `.env*` / `credentials` / `credentials.json`.
+Read-blocked: `/Library/Keychains`, `/private/var/db/sudo`, `/var/db/sudo`, `/etc/sudoers`, `~/.ssh`, `~/.gnupg`, `~/Library/Keychains`, `~/Library/Cookies`, `~/Library/Application Support/com.apple.TCC`, files named `.env*` / `credentials` / `credentials.json`. The read-protected list also covers extra credential files and browser profile directories: `.netrc`, `.npmrc`, the `gh` and `gcloud` config dirs, Chrome / Firefox / Safari profiles, and Froglips' own `settings.json`.
 
 Write-blocked: all of the above plus `/System`, `/private/etc`, `/etc`, `/private/var/db/sudo`, `/var/db/sudo`, `/Library/Keychains`, `/Library/Application Support/com.apple.TCC`, `/Applications/Froglips.app`, `~/.aws`, `~/.config/gh`, `~/Library/Mail`, `~/Library/Messages`.
 
@@ -285,24 +310,40 @@ Write-blocked: all of the above plus `/System`, `/private/etc`, `/etc`, `/privat
 
 When unset, the agent has full filesystem access (still subject to protected list and OS perms).
 
+## Authorization model
+
+Beyond the path sandbox, the agent's authorization layer enforces:
+
+- **No blanket subagent inheritance.** Subagents do not inherit the parent's
+  session-wide shell/write approvals (see `spawn_subagent` above).
+- **Repo-supplied policy cannot auto-approve.** Auto-approve entries in a
+  repo-local policy file are ignored, and `run_shell` / `applescript_run` can
+  never be auto-approved from a project policy. When a repo-supplied policy is
+  in effect the UI warns the user.
+- **Body-bearing `http_request` is elevated risk** — always confirmation-gated.
+- **MCP tool descriptions are sanitized** before they enter the system prompt,
+  so a malicious MCP server can't inject instructions through its tool
+  metadata. The tool audit log redacts secrets, and raw MCP protocol lines are
+  no longer logged.
+
 ## Adding a tool
 
-For tools outside the path-sandbox model (web, OS-native, code intel, etc.) put them in `agent.rs` w/o `validate_for_*` calls — but still gate dangerous behavior at `DANGEROUS_TOOLS`. For task-queue–like long-running infrastructure, use a separate module (`task_queue.rs`, `ask_user.rs`) and expose Tauri commands.
+For tools outside the path-sandbox model (web, OS-native, code intel, etc.) put them in the relevant `agent/` module (e.g. `agent/web.rs`, `agent/code.rs`) w/o `validate_for_*` calls — but still gate dangerous behavior at `DANGEROUS_TOOLS`. For task-queue–like long-running infrastructure, use a separate module (`task_queue.rs`, `ask_user.rs`) and expose Tauri commands.
 
-1. Implement the logic in `src-tauri/src/agent.rs`. Use `validate_for_read` / `validate_for_write` to get a resolved + sandboxed `PathBuf`. Return `Result<MyResult, String>` where the error string is `err_string(ToolError::…)`.
-2. Add a Tauri command in `src-tauri/src/lib.rs`:
+1. Implement the logic in the appropriate `src-tauri/src/agent/*.rs` module. Use `validate_for_read` / `validate_for_write` to get a resolved + sandboxed `PathBuf`. Return `Result<MyResult, String>` where the error string is `err_string(ToolError::…)`.
+2. Add a Tauri command wrapper in `src-tauri/src/commands/agent.rs`:
    ```rust
    #[tauri::command]
    async fn agent_my_tool(arg: String) -> Result<agent::MyResult, String> {
        agent::my_tool(arg).await
    }
    ```
-   And register in `invoke_handler!`.
+   And register it in the `generate_handler!` list in `src-tauri/src/lib.rs::run()`.
 3. Add to `src/lib/tauri-api.ts`:
    ```ts
    agentMyTool: (arg: string) => invoke<MyResult>("agent_my_tool", { arg }),
    ```
-4. Add to the `TOOLS` array in `src/lib/agent-loop.ts` with a JSON Schema describing the parameters. Add a `case "my_tool":` to `executeTool()`.
+4. Add to the `TOOLS` array in `src/lib/agent-loop/tools.ts` with a JSON Schema describing the parameters. Add a `case "my_tool":` to the dispatcher in `src/lib/agent-loop/dispatch.ts`.
 5. Optionally add to `DANGEROUS_TOOLS` if it needs confirmation.
 6. Add to `ALL_TOOL_NAMES` in `src/components/ChatWindow.tsx` so the allowlist panel shows it.
 7. Optionally add to one or more presets in `src/lib/agent-presets.ts`.
@@ -325,7 +366,7 @@ Empty `allowedTools` means "all enabled". The preset's `systemPromptOverride` re
 
 ## Tunables
 
-`src/lib/agent-loop.ts`:
+`src/lib/agent-loop/` (`ollama-client.ts`, `runner.ts`, `subagent.ts`):
 
 | Constant | Default | What |
 |---|---|---|
@@ -337,7 +378,7 @@ Empty `allowedTools` means "all enabled". The preset's `systemPromptOverride` re
 | `OLLAMA_REQUEST_TIMEOUT_MS` | 120 000 | Per-request timeout combined with caller's signal |
 | `MAX_SUBAGENT_DEPTH` | 3 | Recursion cap for `spawn_subagent` |
 
-`src-tauri/src/agent.rs`:
+`src-tauri/src/agent/`:
 
 | Constant | Default | What |
 |---|---|---|

@@ -4,14 +4,41 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
-### Fixed
-- **Panel gap** — the sidebar and main panels rendered flush to the window's top edge instead of floating with an even inset. Root cause: `.main { height: 100vh }` forced the CSS grid row to full window height, overflowing `.app`'s padded content box and pinning both panels to the top. Switched to grid-stretch sizing (`.main` → `min-height: 0`, `.app` → `height: 100%` + uniform `padding: 12px`); all four panel gaps are now an even 12px.
+### Added
+- **Agent mode on the MLX backend** — agent mode previously ran only against Ollama. The agent loop now dispatches its tool-calling LLM call by backend: Ollama via NDJSON `/api/chat`, MLX via the OpenAI-compatible `/v1/chat/completions` tools API (parsing `tool_calls` from the streaming deltas). The Native backend has no tool-call support, so agent mode there fails up front with a clear error instead of silently falling through to plain streaming; the Agent toggle resets when the active backend can't support it.
+- **Edit-message** — the previously dead edit feature is now wired: edit and resend your last user prompt via the per-message Edit action.
+- **Sidebar collapse/expand toggle** — hide the conversation sidebar to give the chat full width.
+- **Native model load progress** — listeners surface download/load progress while a HuggingFace model loads on the Native backend.
 
 ### Changed
 - Hamburger button pinned beside the macOS traffic lights; slides left into the freed corner when the window enters fullscreen (driven by a `data-fullscreen` attribute on `<html>`).
 - `+ New chat` moved directly above the conversation search field.
 - Header padding compacted to 10px above/below the model-picker row.
 - Removed a dead `.sidebar-top > .new-chat` CSS rule and corrected several stale layout comments.
+- An explicitly chosen agent preset now owns its tool scope; the General preset's empty `allowedTools` means full access, not parent inheritance.
+- The agent system prompt now lists available MCP tools so the model knows they exist.
+
+### Security
+- **API keys moved to the macOS Keychain** — custom-backend API keys are stored in the Keychain instead of plaintext `settings.json`, with a one-time migration and redaction of keys from the settings blob returned to the webview.
+- **SSRF redirect IP-pinning** — redirects are followed manually with the connection pinned to each hop's validated IP set, closing a DNS-rebinding TOCTOU. IPv4-mapped/compatible IPv6 literals and NAT64 ranges are now rejected.
+- **Untrusted-content scanning** — `read_file`, `read_pdf`, `clipboard_get`, browser get-text, and the git read tools route through the injection-scan wrapper so file, clipboard, and repo content can't smuggle instructions to the model.
+- **Citation-chip opens confined** — citation-chip file opens are now restricted to the workspace root and confirm the resolved path before opening; absolute/traversal paths are rejected.
+- **Agent authorization tightened** — subagents no longer inherit the parent's blanket shell/write approvals, `spawn_subagent` is confirmation-gated, repo-supplied policy can't auto-approve `run_shell`/`applescript_run` (and a banner warns when one is in effect), and any `http_request` carrying a body is treated as elevated risk.
+- Read-protected path list extended to credential files and browser profile directories (`.netrc`, `.npmrc`, `gh`/`gcloud` config, Chrome/Firefox/Safari profiles, the app's own settings file).
+- MCP tool descriptions are sanitized before entering the system prompt; secrets are redacted from the tool audit log; raw MCP protocol lines are no longer logged.
+- Inline images restricted to `data:image` sources (blocking remote image beacons); markdown URI policy handed to DOMPurify.
+- Closed a symlink-write TOCTOU in agent fs; bounded child stdout reads, `kill_child`, and shutdown with timeouts.
+
+### Fixed
+- **Panel gap** — the sidebar and main panels rendered flush to the window's top edge instead of floating with an even inset. Root cause: `.main { height: 100vh }` forced the CSS grid row to full window height, overflowing `.app`'s padded content box and pinning both panels to the top. Switched to grid-stretch sizing (`.main` → `min-height: 0`, `.app` → `height: 100%` + uniform `padding: 12px`); all four panel gaps are now an even 12px.
+- Suppressed the spurious "Switched to" model divider after fork or regenerate by keying it off the real last assistant turn.
+- Guarded `run_shell` and `read_pdf` truncation against panicking on a non-UTF-8 char boundary.
+- `delete_message` now emits the real conversation id so detached windows refresh after a delete.
+- Fixed the ModelPicker desired-model restore race; the memory count badge refreshes while the panel is closed; the recall threshold is clamped.
+- RagPanel colors that were unreadable in light mode are fixed.
+
+### Internal
+- Large maintainability refactor (no behavior change): `lib.rs` split into a thin `run()`/`setup()` file plus a `commands/` module tree; `mlx_server.rs` renamed to `backend_process.rs`; new `util.rs` for shared helpers; `ChatWindow` decomposed into hooks under `src/hooks/`; `ModelBrowser` decomposed into `src/components/model-browser/`; `dispatch.ts` split into `url-safety.ts`/`dry-run.ts`/`diff.ts`; `App.css` split into per-concern files under `src/styles/`.
 
 ## [0.11.0] — 2026-05-21
 
