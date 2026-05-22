@@ -65,6 +65,12 @@ export interface RunWorkflowOptions {
    * tool.
    */
   requestConfirmation?: AgentRunOptions["requestConfirmation"];
+  /**
+   * Pre-formatted "About You" profile block. When set, it is prepended as a
+   * system message to every card's agent run so workflow agents share the
+   * same user context as normal chat. Built by `formatUserProfile`.
+   */
+  userProfile?: string;
 }
 
 const HANDOFF_PREFIX = "Output from previous step:\n";
@@ -87,6 +93,15 @@ function buildCardOptions(
     card.tools.length > 0 ? card.tools : (preset?.allowedTools ?? []);
 
   const messages: Message[] = [];
+  // "About You" profile first, so the agent loop's own system prompt is
+  // followed by who the user is before any task context.
+  if (opts.userProfile) {
+    messages.push({
+      conversation_id: 0,
+      role: "system",
+      content: opts.userProfile,
+    });
+  }
   if (previousOutput != null && previousOutput.length > 0) {
     messages.push({
       conversation_id: 0,

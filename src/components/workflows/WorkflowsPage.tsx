@@ -22,6 +22,7 @@ import { WorkflowCanvas } from "./WorkflowCanvas";
 import { CardForm, type FormOrigin } from "./CardForm";
 import { RunPanel, type CardRunInfo } from "./RunPanel";
 import { generateAgentName } from "../../lib/agent-name";
+import { formatUserProfile } from "../../lib/user-profile";
 import type { CardRunState } from "./AgentCardNode";
 
 interface Props {
@@ -48,6 +49,9 @@ export function WorkflowsPage({ status }: Props) {
   const [outputs, setOutputs] = useState<Record<string, { output: string; error?: string }>>({});
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Pre-formatted "About You" block, shared by every card's agent run so
+  // workflow agents know who the user is. Refreshed on mount.
+  const [userProfile, setUserProfile] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -60,6 +64,15 @@ export function WorkflowsPage({ status }: Props) {
   }, []);
 
   useEffect(() => { void refreshList(); }, [refreshList]);
+
+  // Load the "About You" profile once; a failed read just omits it.
+  useEffect(() => {
+    api.settingsGet()
+      .then((s) => setUserProfile(formatUserProfile(s.user_profile)))
+      .catch((e) =>
+        logDiag({ level: "warn", source: "workflows", message: "settingsGet failed", detail: e }),
+      );
+  }, []);
 
   // Non-throwing graph validation drives both the inline warning and the
   // run-button gate.
@@ -245,8 +258,9 @@ export function WorkflowsPage({ status }: Props) {
       model: status.model,
       defaultBackend: (status.backend as RunWorkflowOptions["defaultBackend"]) ?? undefined,
       serverStatus: status,
+      userProfile: userProfile ?? undefined,
     };
-  }, [status]);
+  }, [status, userProfile]);
 
   function runWorkflowNow() {
     if (!selected || !validation.ok) {
