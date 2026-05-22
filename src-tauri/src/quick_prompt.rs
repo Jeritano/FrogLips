@@ -54,6 +54,75 @@ struct OllamaMessage {
     content: String,
 }
 
+/// Outcome of feeding one network chunk into a streaming line parser.
+struct StreamProgress {
+    /// Content deltas extracted from complete lines in this chunk.
+    deltas: Vec<String>,
+    /// True once a stream-terminating line was seen (`[DONE]` / `done:true`).
+    done: bool,
+}
+
+/// Parse SSE `data:` lines from the OpenAI-compatible streaming format.
+/// `buf` carries the partial trailing line between calls; complete lines are
+/// drained from it. Pure (no IO) so it's unit-testable on chunk boundaries.
+fn parse_mlx_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
+    buf.push_str(chunk);
+    let mut deltas = Vec::new();
+    while let Some(nl) = buf.find('\n') {
+        let line = buf[..nl].trim().to_string();
+        buf.drain(..=nl);
+        if !line.starts_with("data:") {
+            continue;
+        }
+        let payload = line[5..].trim();
+        if payload == "[DONE]" {
+            return StreamProgress { deltas, done: true };
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
+            if let Some(delta) = v
+                .pointer("/choices/0/delta/content")
+                .and_then(|x| x.as_str())
+            {
+                if !delta.is_empty() {
+                    deltas.push(delta.to_string());
+                }
+            }
+        }
+    }
+    StreamProgress {
+        deltas,
+        done: false,
+    }
+}
+
+/// Parse Ollama NDJSON streaming frames. Same line-buffering contract as
+/// [`parse_mlx_chunk`]: `buf` retains the partial trailing line between calls.
+fn parse_ollama_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
+    buf.push_str(chunk);
+    let mut deltas = Vec::new();
+    while let Some(nl) = buf.find('\n') {
+        let line = buf[..nl].trim().to_string();
+        buf.drain(..=nl);
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<OllamaStreamLine>(&line) {
+            if let Some(msg) = parsed.message {
+                if !msg.content.is_empty() {
+                    deltas.push(msg.content);
+                }
+            }
+            if parsed.done {
+                return StreamProgress { deltas, done: true };
+            }
+        }
+    }
+    StreamProgress {
+        deltas,
+        done: false,
+    }
+}
+
 /// Create the quick prompt window on demand. If it already exists, just
 /// show + focus it. Returns the window so the caller can position/center it.
 pub fn ensure_window(app: &AppHandle) -> Result<()> {
@@ -132,8 +201,8 @@ async fn stream_mlx(
 ) -> Result<String> {
     let url = format!(
         "http://{}:{}/v1/chat/completions",
-        crate::mlx_server::MLX_HOST,
-        crate::mlx_server::MLX_PORT
+        crate::backend_process::MLX_HOST,
+        crate::backend_process::MLX_PORT
     );
     let body = serde_json::json!({
         "model": model,
@@ -164,36 +233,21 @@ async fn stream_mlx(
     tokio::pin!(stream);
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read chunk")?;
-        buf.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(nl) = buf.find('\n') {
-            let line = buf[..nl].trim().to_string();
-            buf.drain(..=nl);
-            if !line.starts_with("data:") {
-                continue;
-            }
-            let payload = line[5..].trim();
-            if payload == "[DONE]" {
-                return Ok(acc);
-            }
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
-                if let Some(delta) = v
-                    .pointer("/choices/0/delta/content")
-                    .and_then(|x| x.as_str())
-                {
-                    if !delta.is_empty() {
-                        acc.push_str(delta);
-                        let _ = app.emit(
-                            &format!("quick-prompt-response:{op_id}"),
-                            QuickPromptChunk {
-                                op_id: op_id.clone(),
-                                delta: delta.into(),
-                                done: false,
-                                error: None,
-                            },
-                        );
-                    }
-                }
-            }
+        let progress = parse_mlx_chunk(&mut buf, &String::from_utf8_lossy(&bytes));
+        for delta in progress.deltas {
+            acc.push_str(&delta);
+            let _ = app.emit(
+                &format!("quick-prompt-response:{op_id}"),
+                QuickPromptChunk {
+                    op_id: op_id.clone(),
+                    delta,
+                    done: false,
+                    error: None,
+                },
+            );
+        }
+        if progress.done {
+            return Ok(acc);
         }
     }
     Ok(acc)
@@ -209,8 +263,8 @@ async fn stream_ollama(
 ) -> Result<String> {
     let url = format!(
         "http://{}:{}/api/chat",
-        crate::mlx_server::OLLAMA_HOST,
-        crate::mlx_server::OLLAMA_PORT
+        crate::backend_process::OLLAMA_HOST,
+        crate::backend_process::OLLAMA_PORT
     );
     let body = serde_json::json!({
         "model": model,
@@ -240,32 +294,21 @@ async fn stream_ollama(
     tokio::pin!(stream);
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read ollama chunk")?;
-        buf.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(nl) = buf.find('\n') {
-            let line = buf[..nl].trim().to_string();
-            buf.drain(..=nl);
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(parsed) = serde_json::from_str::<OllamaStreamLine>(&line) {
-                if let Some(msg) = parsed.message {
-                    if !msg.content.is_empty() {
-                        acc.push_str(&msg.content);
-                        let _ = app.emit(
-                            &format!("quick-prompt-response:{op_id}"),
-                            QuickPromptChunk {
-                                op_id: op_id.clone(),
-                                delta: msg.content,
-                                done: false,
-                                error: None,
-                            },
-                        );
-                    }
-                }
-                if parsed.done {
-                    return Ok(acc);
-                }
-            }
+        let progress = parse_ollama_chunk(&mut buf, &String::from_utf8_lossy(&bytes));
+        for delta in progress.deltas {
+            acc.push_str(&delta);
+            let _ = app.emit(
+                &format!("quick-prompt-response:{op_id}"),
+                QuickPromptChunk {
+                    op_id: op_id.clone(),
+                    delta,
+                    done: false,
+                    error: None,
+                },
+            );
+        }
+        if progress.done {
+            return Ok(acc);
         }
     }
     Ok(acc)
@@ -362,4 +405,113 @@ pub async fn run(app: AppHandle, op_id: String, text: String) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collect_mlx(chunks: &[&str]) -> (String, bool) {
+        let mut buf = String::new();
+        let mut acc = String::new();
+        let mut done = false;
+        for c in chunks {
+            let p = parse_mlx_chunk(&mut buf, c);
+            for d in p.deltas {
+                acc.push_str(&d);
+            }
+            if p.done {
+                done = true;
+                break;
+            }
+        }
+        (acc, done)
+    }
+
+    fn collect_ollama(chunks: &[&str]) -> (String, bool) {
+        let mut buf = String::new();
+        let mut acc = String::new();
+        let mut done = false;
+        for c in chunks {
+            let p = parse_ollama_chunk(&mut buf, c);
+            for d in p.deltas {
+                acc.push_str(&d);
+            }
+            if p.done {
+                done = true;
+                break;
+            }
+        }
+        (acc, done)
+    }
+
+    fn mlx_line(content: &str) -> String {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}}}}]}}\n",
+            serde_json::Value::String(content.into())
+        )
+    }
+
+    #[test]
+    fn mlx_parses_single_complete_line() {
+        let (acc, done) = collect_mlx(&[&mlx_line("hello")]);
+        assert_eq!(acc, "hello");
+        assert!(!done);
+    }
+
+    #[test]
+    fn mlx_handles_line_split_across_chunks() {
+        let full = mlx_line("split me");
+        let (a, b) = full.split_at(full.len() / 2);
+        let (acc, _) = collect_mlx(&[a, b]);
+        assert_eq!(acc, "split me");
+    }
+
+    #[test]
+    fn mlx_handles_multiple_lines_per_chunk() {
+        let blob = format!("{}{}", mlx_line("foo"), mlx_line("bar"));
+        let (acc, _) = collect_mlx(&[&blob]);
+        assert_eq!(acc, "foobar");
+    }
+
+    #[test]
+    fn mlx_done_marker_terminates() {
+        let chunk = format!("{}data: [DONE]\n", mlx_line("x"));
+        let (acc, done) = collect_mlx(&[&chunk]);
+        assert_eq!(acc, "x");
+        assert!(done);
+    }
+
+    #[test]
+    fn mlx_ignores_non_data_lines() {
+        let (acc, _) = collect_mlx(&[": keep-alive comment\n", &mlx_line("ok")]);
+        assert_eq!(acc, "ok");
+    }
+
+    #[test]
+    fn ollama_parses_and_terminates_on_done() {
+        let chunks = [
+            "{\"message\":{\"content\":\"hel\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"lo\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\"},\"done\":true}\n",
+        ];
+        let (acc, done) = collect_ollama(&chunks);
+        assert_eq!(acc, "hello");
+        assert!(done);
+    }
+
+    #[test]
+    fn ollama_handles_frame_split_mid_line() {
+        let line = "{\"message\":{\"content\":\"abc\"},\"done\":false}\n";
+        let (a, b) = line.split_at(10);
+        let (acc, _) = collect_ollama(&[a, b]);
+        assert_eq!(acc, "abc");
+    }
+
+    #[test]
+    fn ollama_skips_blank_lines() {
+        let (acc, _) =
+            collect_ollama(&["\n\n{\"message\":{\"content\":\"z\"},\"done\":false}\n"]);
+        assert_eq!(acc, "z");
+    }
 }

@@ -1,0 +1,200 @@
+/* ── Side panels: RAG / Audit log / Diagnostics ──────────────────────────
+ *
+ * Styles extracted from inline `style={{…}}` props in RagPanel.tsx,
+ * AuditLog.tsx and DiagnosticsPanel.tsx. All colors use the design tokens
+ * from tokens.css so they adapt to the light theme — the previous inline
+ * hex literals (#c33 / #2a7 / #ddd) did not.
+ */
+
+/* ── RagPanel ── */
+.rag-title { margin: 8px 0; }
+.rag-intro {
+  font-size: var(--fs-sm);
+  opacity: 0.75;
+  margin: 4px 0 12px;
+}
+.rag-msg {
+  font-size: var(--fs-sm);
+  margin-bottom: 8px;
+}
+.rag-msg-err { color: var(--danger-fg); }
+.rag-msg-info { color: var(--green-fg); }
+
+.rag-ingest-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-xs);
+  outline: none;
+  padding: 0;
+}
+.rag-ingest-form.drag-over {
+  padding: 4px;
+  outline: 2px dashed var(--accent);
+}
+
+.rag-corpora { margin-bottom: 16px; }
+.rag-empty {
+  font-size: var(--fs-sm);
+  opacity: 0.6;
+}
+.rag-table {
+  width: 100%;
+  font-size: var(--fs-sm);
+  border-collapse: collapse;
+}
+.rag-col-l { text-align: left; }
+.rag-col-r { text-align: right; }
+
+.rag-search {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.rag-search-label {
+  font-size: var(--fs-sm);
+  margin-bottom: 6px;
+  opacity: 0.7;
+}
+.rag-search-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.rag-search-corpus { flex: 0 0 auto; }
+.rag-search-query { flex: 1; }
+.rag-hits {
+  font-size: var(--fs-sm);
+  padding-left: 18px;
+  margin: 0;
+}
+.rag-hits li { margin-bottom: 6px; }
+.rag-hit-path {
+  font-family: var(--mono);
+  opacity: 0.7;
+}
+.rag-hit-score { opacity: 0.5; }
+.rag-hit-snippet {
+  white-space: pre-wrap;
+  background: var(--overlay-softer);
+  padding: 4px;
+  border-radius: 3px;
+}
+
+/* ── AuditLog ── */
+.audit-log-panel {
+  border-top: 1px solid var(--border);
+  padding: 8px;
+}
+.audit-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.audit-log-title { font-weight: 600; }
+.audit-log-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.audit-log-body { margin-top: 8px; }
+.audit-log-stats {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.audit-log-filters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.audit-log-field { font-size: var(--fs-xs); }
+.audit-input-tool { width: 140px; }
+.audit-input-conv { width: 100px; }
+.audit-input-days { width: 56px; }
+.audit-log-purge {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+}
+.audit-log-err {
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+.audit-log-table-wrap {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+}
+.audit-log-table {
+  width: 100%;
+  font-size: var(--fs-xs);
+  border-collapse: collapse;
+}
+.audit-log-table thead tr { background: var(--surface); }
+.audit-log-table th { padding: 2px 6px; }
+.audit-log-table td { padding: 2px 6px; }
+.audit-log-table tbody tr { border-top: 1px solid var(--border); }
+.audit-col-l { text-align: left; }
+.audit-col-r { text-align: right; }
+.audit-log-empty {
+  padding: 8px;
+  color: var(--text-muted);
+}
+.audit-cell-nowrap { white-space: nowrap; }
+.audit-cell-args {
+  font-family: var(--mono);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audit-outcome-denied { color: var(--accent); }
+.audit-outcome-dryrun { color: var(--accent); }
+.audit-outcome-warn { color: var(--warn-fg); }
+
+/* ── DiagnosticsPanel ── */
+.diag-modal { max-width: 960px; }
+.diag-controls {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.diag-field { font-size: var(--fs-sm); }
+.diag-clear-armed { color: var(--accent); }
+.diag-copy-status { color: var(--accent); }
+.diag-list {
+  max-height: 70vh;
+  overflow: auto;
+}
+.diag-table {
+  width: 100%;
+  font-size: var(--fs-sm);
+  border-collapse: collapse;
+}
+.diag-table thead tr { background: var(--surface); }
+.diag-table th {
+  text-align: left;
+  padding: 4px 6px;
+}
+.diag-table td { padding: 4px 6px; }
+.diag-table tbody tr { border-top: 1px solid var(--border); }
+.diag-cell-nowrap { white-space: nowrap; }
+.diag-detail {
+  margin: 4px 0 0;
+  padding: 6px;
+  font-size: var(--fs-xs);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: var(--radius-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+.diag-footer {
+  font-size: var(--fs-xs);
+  padding: 6px 0;
+  color: var(--text-muted);
+}

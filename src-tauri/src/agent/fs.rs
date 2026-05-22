@@ -52,23 +52,7 @@ pub(super) fn workspace_root_clone() -> Option<PathBuf> {
 
 /* ── Path validation w/ canonicalization + sandbox ─────────────────────────── */
 
-pub(super) fn expand_home(p: &str) -> Result<PathBuf> {
-    if p.is_empty() || p.len() > MAX_PATH_LEN {
-        return Err(anyhow!("path length invalid"));
-    }
-    if p.contains('\0') {
-        return Err(anyhow!("path contains null byte"));
-    }
-    if let Some(rest) = p.strip_prefix("~/") {
-        Ok(dirs::home_dir()
-            .ok_or_else(|| anyhow!("home dir unavailable"))?
-            .join(rest))
-    } else if p == "~" {
-        dirs::home_dir().ok_or_else(|| anyhow!("home dir unavailable"))
-    } else {
-        Ok(PathBuf::from(p))
-    }
-}
+pub(super) use crate::util::expand_home;
 
 /// Resolves a user-supplied path. For existing paths, canonicalizes (follows
 /// symlinks). For not-yet-existing paths (write targets), canonicalizes the

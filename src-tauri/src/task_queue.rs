@@ -54,26 +54,14 @@ fn now_unix() -> u64 {
 }
 
 fn random_id() -> String {
-    use std::time::SystemTime;
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("task-{:x}-{:x}", nanos, rand_seed())
+    format!("task-{:x}-{:x}", crate::util::now_nanos(), rand_seed())
 }
 
 fn rand_seed() -> u32 {
     // Cheap, not cryptographic — only used to avoid collisions on same-nanosecond calls.
     use std::cell::Cell;
     thread_local!(static SEED: Cell<u32> = const { Cell::new(0xdead_beef) });
-    SEED.with(|s| {
-        let mut x = s.get();
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        s.set(x);
-        x
-    })
+    SEED.with(crate::util::xorshift)
 }
 
 pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> {

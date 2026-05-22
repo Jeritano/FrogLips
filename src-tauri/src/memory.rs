@@ -111,20 +111,11 @@ fn with_cache<R>(f: impl FnOnce(&EmbeddingMap) -> R) -> Result<R> {
     Ok(f(map))
 }
 
-fn embedding_to_blob(v: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(v.len() * 4);
-    for f in v {
-        out.extend_from_slice(&f.to_le_bytes());
-    }
-    out
-}
+use crate::util::{blob_to_vec as blob_to_embedding, vec_to_blob as embedding_to_blob};
 
-fn blob_to_embedding(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
-}
-
+/// Cosine similarity for arbitrary (not necessarily normalized) vectors.
+/// NOTE: distinct from `rag::cosine`, which assumes pre-normalized inputs and
+/// collapses to a bare dot product. Keep both — the semantics genuinely differ.
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;

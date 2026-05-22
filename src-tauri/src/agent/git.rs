@@ -41,15 +41,28 @@ async fn git_invoke(cwd: PathBuf, args: &[&str]) -> Result<GitResult, String> {
     })
 }
 
-pub async fn git_status(path: Option<String>) -> Result<GitResult, String> {
-    let cwd = match path {
-        Some(p) => validate_for_read(&p).map_err(err_string)?,
+/// Resolve the working directory for a git command: an explicit path is
+/// validated, otherwise the workspace root is used. `for_write` selects the
+/// read- vs write-side path validator.
+fn resolve_git_cwd(path: Option<String>, for_write: bool) -> Result<PathBuf, String> {
+    match path {
+        Some(p) => {
+            if for_write {
+                validate_for_write(&p).map_err(err_string)
+            } else {
+                validate_for_read(&p).map_err(err_string)
+            }
+        }
         None => workspace_root_clone().ok_or_else(|| {
             err_string(ToolError::invalid(
                 "no path given and no workspace root set",
             ))
-        })?,
-    };
+        }),
+    }
+}
+
+pub async fn git_status(path: Option<String>) -> Result<GitResult, String> {
+    let cwd = resolve_git_cwd(path, false)?;
     git_invoke(cwd, &["status", "--short", "--branch"]).await
 }
 
@@ -62,14 +75,7 @@ fn wrap_stdout(mut r: GitResult) -> GitResult {
 }
 
 pub async fn git_diff(path: Option<String>, staged: Option<bool>) -> Result<GitResult, String> {
-    let cwd = match path {
-        Some(p) => validate_for_read(&p).map_err(err_string)?,
-        None => workspace_root_clone().ok_or_else(|| {
-            err_string(ToolError::invalid(
-                "no path given and no workspace root set",
-            ))
-        })?,
-    };
+    let cwd = resolve_git_cwd(path, false)?;
     let mut args: Vec<&str> = vec!["diff", "--no-color"];
     if staged.unwrap_or(false) {
         args.push("--staged");
@@ -78,14 +84,7 @@ pub async fn git_diff(path: Option<String>, staged: Option<bool>) -> Result<GitR
 }
 
 pub async fn git_log(path: Option<String>, limit: Option<u32>) -> Result<GitResult, String> {
-    let cwd = match path {
-        Some(p) => validate_for_read(&p).map_err(err_string)?,
-        None => workspace_root_clone().ok_or_else(|| {
-            err_string(ToolError::invalid(
-                "no path given and no workspace root set",
-            ))
-        })?,
-    };
+    let cwd = resolve_git_cwd(path, false)?;
     let n = limit.unwrap_or(20).min(200).to_string();
     git_invoke(cwd, &["log", "--oneline", "--decorate", "-n", &n])
         .await
@@ -100,28 +99,14 @@ pub async fn git_show(reference: String, path: Option<String>) -> Result<GitResu
             "ref contains illegal characters",
         )));
     }
-    let cwd = match path {
-        Some(p) => validate_for_read(&p).map_err(err_string)?,
-        None => workspace_root_clone().ok_or_else(|| {
-            err_string(ToolError::invalid(
-                "no path given and no workspace root set",
-            ))
-        })?,
-    };
+    let cwd = resolve_git_cwd(path, false)?;
     git_invoke(cwd, &["show", "--no-color", &reference])
         .await
         .map(wrap_stdout)
 }
 
 pub async fn git_branches(path: Option<String>) -> Result<GitResult, String> {
-    let cwd = match path {
-        Some(p) => validate_for_read(&p).map_err(err_string)?,
-        None => workspace_root_clone().ok_or_else(|| {
-            err_string(ToolError::invalid(
-                "no path given and no workspace root set",
-            ))
-        })?,
-    };
+    let cwd = resolve_git_cwd(path, false)?;
     git_invoke(cwd, &["branch", "-a", "--no-color"]).await
 }
 
@@ -134,13 +119,6 @@ pub async fn git_commit(message: String, path: Option<String>) -> Result<GitResu
     if message.len() > 8192 {
         return Err(err_string(ToolError::invalid("commit message too long")));
     }
-    let cwd = match path {
-        Some(p) => validate_for_write(&p).map_err(err_string)?,
-        None => workspace_root_clone().ok_or_else(|| {
-            err_string(ToolError::invalid(
-                "no path given and no workspace root set",
-            ))
-        })?,
-    };
+    let cwd = resolve_git_cwd(path, true)?;
     git_invoke(cwd, &["commit", "-m", &message]).await
 }

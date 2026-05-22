@@ -139,19 +139,19 @@ export function RagPanel({ onCorporaChanged }: Props) {
 
   return (
     <div className="rag-panel" data-testid="rag-panel">
-      <h4 style={{ margin: "8px 0" }}>Project knowledge (RAG)</h4>
-      <p style={{ fontSize: 12, opacity: 0.75, margin: "4px 0 12px" }}>
+      <h4 className="rag-title">Project knowledge (RAG)</h4>
+      <p className="rag-intro">
         Index a local folder so the agent can semantically search it via{" "}
         <code>search_project_knowledge</code>.
       </p>
 
       {err && (
-        <div role="alert" style={{ color: "#c33", fontSize: 12, marginBottom: 8 }}>
+        <div role="alert" className="rag-msg rag-msg-err">
           {err}
         </div>
       )}
       {info && (
-        <div style={{ color: "#2a7", fontSize: 12, marginBottom: 8 }}>{info}</div>
+        <div className="rag-msg rag-msg-info">{info}</div>
       )}
 
       {/* Ingest form */}
@@ -184,15 +184,7 @@ export function RagPanel({ onCorporaChanged }: Props) {
             }
           }
         }}
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr",
-          gap: 6,
-          marginBottom: 16,
-          padding: dragOver ? 4 : 0,
-          outline: dragOver ? "2px dashed #6cf" : "none",
-          borderRadius: 4,
-        }}
+        className={`rag-ingest-form${dragOver ? " drag-over" : ""}`}
       >
         <input
           type="text"
@@ -227,16 +219,16 @@ export function RagPanel({ onCorporaChanged }: Props) {
       </div>
 
       {/* Corpora list */}
-      <div style={{ marginBottom: 16 }}>
+      <div className="rag-corpora">
         {corpora.length === 0 ? (
-          <div style={{ fontSize: 12, opacity: 0.6 }}>No corpora indexed yet.</div>
+          <div className="rag-empty">No corpora indexed yet.</div>
         ) : (
-          <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+          <table className="rag-table">
             <thead>
               <tr>
-                <th style={{ textAlign: "left" }}>Name</th>
-                <th style={{ textAlign: "right" }}>Chunks</th>
-                <th style={{ textAlign: "right" }}>Updated</th>
+                <th className="rag-col-l">Name</th>
+                <th className="rag-col-r">Chunks</th>
+                <th className="rag-col-r">Updated</th>
                 <th></th>
               </tr>
             </thead>
@@ -244,9 +236,9 @@ export function RagPanel({ onCorporaChanged }: Props) {
               {corpora.map((c) => (
                 <tr key={c.id} data-testid={`rag-row-${c.name}`}>
                   <td title={c.root_path}>{c.name}</td>
-                  <td style={{ textAlign: "right" }}>{c.chunk_count}</td>
-                  <td style={{ textAlign: "right" }}>{fmtAge(c.updated_at)}</td>
-                  <td style={{ textAlign: "right" }}>
+                  <td className="rag-col-r">{c.chunk_count}</td>
+                  <td className="rag-col-r">{fmtAge(c.updated_at)}</td>
+                  <td className="rag-col-r">
                     <button
                       onClick={() =>
                         deleteConfirm.request(c.name, (n) => { void handleDelete(n); })
@@ -274,15 +266,15 @@ export function RagPanel({ onCorporaChanged }: Props) {
 
       {/* Debug search */}
       {corpora.length > 0 && (
-        <div style={{ borderTop: "1px solid #ddd", paddingTop: 12 }}>
-          <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.7 }}>
+        <div className="rag-search">
+          <div className="rag-search-label">
             Test search (debug):
           </div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+          <div className="rag-search-row">
             <select
               value={searchCorpus}
               onChange={(e) => setSearchCorpus(e.target.value)}
-              style={{ flex: "0 0 auto" }}
+              className="rag-search-corpus"
             >
               <option value="">— pick —</option>
               {corpora.map((c) => (
@@ -296,7 +288,7 @@ export function RagPanel({ onCorporaChanged }: Props) {
               placeholder="Query"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              style={{ flex: 1 }}
+              className="rag-search-query"
               data-testid="rag-query"
             />
             <button
@@ -308,23 +300,16 @@ export function RagPanel({ onCorporaChanged }: Props) {
             </button>
           </div>
           {searchHits.length > 0 && (
-            <ol style={{ fontSize: 12, paddingLeft: 18, margin: 0 }}>
+            <ol className="rag-hits">
               {searchHits.map((h, i) => (
-                <li key={i} style={{ marginBottom: 6 }}>
-                  <div style={{ fontFamily: "monospace", opacity: 0.7 }}>
+                <li key={i}>
+                  <div className="rag-hit-path">
                     {h.path}{" "}
-                    <span style={{ opacity: 0.5 }}>
+                    <span className="rag-hit-score">
                       ({h.score.toFixed(3)})
                     </span>
                   </div>
-                  <div
-                    style={{
-                      whiteSpace: "pre-wrap",
-                      background: "rgba(0,0,0,0.04)",
-                      padding: 4,
-                      borderRadius: 3,
-                    }}
-                  >
+                  <div className="rag-hit-snippet">
                     {h.snippet}
                   </div>
                 </li>

@@ -1,17 +1,9 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
 import { streamNativeChat } from "../lib/native-client";
-import type { AskUserRequest } from "../types";
 import { runAgentLoop, cancelActiveShell } from "../lib/agent-loop";
 import type { AgentMetrics, AgentStatus, ConfirmDecision } from "../lib/agent-loop";
-import {
-  loadAllPresets,
-  getActivePresetId,
-  setActivePresetId,
-} from "../lib/agent-presets";
-import type { AgentPreset } from "../lib/agent-presets";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { ChatImage, Conversation, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
@@ -38,6 +30,10 @@ import {
   saveMemory,
 } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
+import { useAgentSettings } from "../hooks/useAgentSettings";
+import { useCitationOpener } from "../hooks/useCitationOpener";
+import { useAskUserModal } from "../hooks/useAskUserModal";
+import { useQuickPromptToast } from "../hooks/useQuickPromptToast";
 
 interface Props {
   status: ServerStatus | null;
@@ -69,36 +65,55 @@ const ALL_TOOL_NAMES = [
   "ask_user", "spawn_subagent", "await_subagents", "list_subagents",
 ] as const;
 
-function loadAllowlist(): string[] {
-  try {
-    const raw = localStorage.getItem("agent.allowlist");
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.filter((v) => typeof v === "string") : [];
-  } catch { return []; }
-}
-function saveAllowlist(list: string[]) {
-  localStorage.setItem("agent.allowlist", JSON.stringify(list));
+function tmpKey(): string {
+  return `tmp:${crypto.randomUUID()}`;
 }
 
-function loadDryRun(): boolean {
+/**
+ * Extract memory facts from a completed user/assistant turn and persist them.
+ * Shared by the agent-mode and plain-streaming send paths. `source` only
+ * tags the diagnostics line. Fires `onAdded` when at least one new (non-dedup)
+ * memory landed.
+ */
+async function extractAndSaveFacts(
+  userText: string,
+  responseText: string,
+  convId: number,
+  mode: "queue" | "direct",
+  source: string,
+  onAdded: () => void,
+) {
   try {
-    return localStorage.getItem("agent.dryRun") === "true";
-  } catch { return false; }
-}
-function saveDryRun(v: boolean) {
-  try { localStorage.setItem("agent.dryRun", v ? "true" : "false"); } catch (err) {
+    const facts = await extractFacts(userText, responseText, convId);
+    if (!facts.length) return;
+    let added = 0;
+    for (const f of facts) {
+      try {
+        const r = await saveMemory({
+          content: f.fact,
+          conversationId: convId,
+          tags: mode === "queue" ? "auto,pending" : "auto",
+          status: mode === "queue" ? "pending" : "active",
+        });
+        if (!r.deduped) added++;
+      } catch (err) {
+        logDiag({
+          level: "warn",
+          source: "memory-extract",
+          message: `${source} saveMemory failed for an extracted fact`,
+          detail: err,
+        });
+      }
+    }
+    if (added > 0) onAdded();
+  } catch (err) {
     logDiag({
       level: "warn",
-      source: "chat-window",
-      message: "saveDryRun: localStorage write failed",
+      source: "memory-extract",
+      message: `${source} extractFacts pipeline rejected`,
       detail: err,
     });
   }
-}
-
-function tmpKey(): string {
-  return `tmp:${crypto.randomUUID()}`;
 }
 
 export function ChatWindow({ status, conversation, onConversationCreated, onMemoriesChanged, onForked }: Props) {
@@ -112,32 +127,29 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
   const [workspaceErr, setWorkspaceErr] = useState<string | null>(null);
-  const [allowlist, setAllowlist] = useState<string[]>(() => loadAllowlist());
-  const [approveAllShell, setApproveAllShell] = useState(false);
-  const [approveAllWrite, setApproveAllWrite] = useState(false);
-  const [dryRun, setDryRun] = useState<boolean>(() => loadDryRun());
-  const [approvedShellPrefixes, setApprovedShellPrefixes] = useState<string[]>([]);
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [rememberPrefix, setRememberPrefix] = useState(false);
   const [destructiveAck, setDestructiveAck] = useState(false);
   const [showToolHistory, setShowToolHistory] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
-  const [askUserReq, setAskUserReq] = useState<AskUserRequest | null>(null);
-  const [askUserAnswer, setAskUserAnswer] = useState("");
-  const [presets, setPresets] = useState<AgentPreset[]>(() => loadAllPresets());
-  const [activePresetId, setActivePresetIdState] = useState<string>(() => getActivePresetId());
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(null);
-  const [quickToast, setQuickToast] = useState<{ reply: string; error: string | null } | null>(null);
   // Edit-and-retry: holds the user message being edited plus its draft text.
   const [editState, setEditState] = useState<{ msg: Message; text: string } | null>(null);
-  // Citation-open confirmation: holds the resolved absolute path + line until
-  // the user explicitly confirms opening it in an external editor.
-  const [citationConfirm, setCitationConfirm] = useState<{ resolved: string; line?: number } | null>(null);
-  // Once the user confirms a citation open in a session we don't re-prompt
-  // for subsequent in-workspace citations (per-session trust).
-  const citationTrustRef = useRef(false);
-  const activePreset = presets.find((p) => p.id === activePresetId) ?? presets[0];
+
+  const agent = useAgentSettings();
+  const askUser = useAskUserModal(setErr);
+  const { quickToast, dismissToast } = useQuickPromptToast();
+
+  const onCitationOpened = useCallback((label: string) => {
+    setUpdateMsg(`Opened in ${label}`);
+    setTimeout(
+      () => setUpdateMsg((m) => (m && m.startsWith("Opened") ? null : m)),
+      2200,
+    );
+  }, []);
+  const citation = useCitationOpener(workspaceRoot, setErr, onCitationOpened);
+
   const abortRef = useRef<AbortController | null>(null);
   const creatingConvRef = useRef<Promise<Conversation> | null>(null);
   const convRef = useRef<Conversation | null>(null);
@@ -167,75 +179,6 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       .catch(() => { if (!cancelled) setProjectPolicy(null); });
     return () => { cancelled = true; };
   }, [workspaceRoot]);
-
-  // Listen for agent ask_user requests. One modal at a time — if a second
-  // request fires before the first resolves, the new one replaces (rare).
-  useEffect(() => {
-    let off: UnlistenFn | undefined;
-    listen<AskUserRequest>("ask-user", (e) => {
-      setAskUserReq(e.payload);
-      setAskUserAnswer("");
-    }).then((fn) => { off = fn; }).catch((err) =>
-      logDiag({
-        level: "warn",
-        source: "chat-window",
-        message: "ask-user listener registration failed — modal will not appear",
-        detail: err,
-      }),
-    );
-    return () => { if (off) off(); };
-  }, []);
-
-  // Quick-prompt result toast. Backend fires `quick-prompt-completed` after
-  // a menu-bar prompt finishes; we flash a small "Quick reply ready ↗" chip
-  // that the user can click to inspect (or just dismiss). Auto-clears after
-  // 8s so it doesn't linger forever.
-  useEffect(() => {
-    let off: UnlistenFn | undefined;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    listen<{ op_id: string; reply: string; model: string | null; backend: string | null; error: string | null }>("quick-prompt-completed", (e) => {
-      const payload = e.payload;
-      setQuickToast({ reply: payload.reply ?? "", error: payload.error ?? null });
-      if (timeout) clearTimeout(timeout);
-      timeout = setTimeout(() => setQuickToast(null), 8000);
-    }).then((fn) => { off = fn; }).catch((err) =>
-      logDiag({
-        level: "warn",
-        source: "chat-window",
-        message: "quick-prompt-completed listener registration failed",
-        detail: err,
-      }),
-    );
-    return () => {
-      if (off) off();
-      if (timeout) clearTimeout(timeout);
-    };
-  }, []);
-
-  async function submitAskUser() {
-    if (!askUserReq) return;
-    const id = askUserReq.id;
-    const answer = askUserAnswer.trim();
-    setAskUserReq(null);
-    setAskUserAnswer("");
-    try { await api.agentAskUserReply(id, answer); }
-    catch (e) { setErr(`ask_user reply failed: ${e}`); }
-  }
-
-  async function cancelAskUser() {
-    if (!askUserReq) return;
-    const id = askUserReq.id;
-    setAskUserReq(null);
-    setAskUserAnswer("");
-    try { await api.agentAskUserCancel(id); } catch (err) {
-      logDiag({
-        level: "info",
-        source: "chat-window",
-        message: `cancelAskUser: backend cancel failed for ${id} (may have already resolved)`,
-        detail: err,
-      });
-    }
-  }
 
   useEffect(() => {
     convRef.current = conversation;
@@ -317,20 +260,6 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     }
   }
 
-  function toggleAllowed(name: string) {
-    setAllowlist((prev) => {
-      const next = prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name];
-      saveAllowlist(next);
-      return next;
-    });
-  }
-
-  function selectPreset(id: string) {
-    setActivePresetIdState(id);
-    setActivePresetId(id);
-    setPresets(loadAllPresets());
-  }
-
   async function checkUpdates() {
     setUpdateMsg("Checking…");
     try {
@@ -366,28 +295,15 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   /* ── Send ── */
 
   /**
-   * Send a user message and stream the response.
+   * Core send: persist the user turn, recall memories, stream the response
+   * (agent loop or plain streaming) and persist the assistant turn.
    *
-   * `priorHistory` overrides the React closure's `messages` when regenerating —
-   * the caller will have already mutated `messages` (e.g. removing the prior
-   * user/assistant pair) but those updates aren't visible to this function via
-   * the closure yet. Passing the truth explicitly avoids dup'd user messages
-   * and stale-history pollution.
+   * `priorHistory`, when supplied, overrides the React closure's `messages` —
+   * the regenerate/edit callers have already truncated the message list but
+   * those updates aren't visible here via the closure yet. Passing the truth
+   * explicitly avoids dup'd user messages and stale-history pollution.
    */
-  async function send(text: string, imagesOrPriorHistory?: ChatImage[] | Message[], priorHistoryArg?: Message[]) {
-    // Overload-style dispatch: ChatInput passes images as the 2nd arg, the
-    // regenerate path passes priorHistory. Distinguish by shape — Message
-    // objects have a `role` field, ChatImage objects have `base64`.
-    let images: ChatImage[] | undefined;
-    let priorHistory: Message[] | undefined = priorHistoryArg;
-    if (Array.isArray(imagesOrPriorHistory) && imagesOrPriorHistory.length > 0) {
-      const first = imagesOrPriorHistory[0] as unknown as Record<string, unknown>;
-      if ("base64" in first) {
-        images = imagesOrPriorHistory as ChatImage[];
-      } else {
-        priorHistory = imagesOrPriorHistory as Message[];
-      }
-    }
+  async function runSend(text: string, images?: ChatImage[], priorHistory?: Message[]) {
     if (!status?.running || !status.model) {
       setErr("Start a model first");
       return;
@@ -486,7 +402,9 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         setAgentMetrics(null);
         // Preset's allowedTools wins when non-empty; otherwise fall back to manual allowlist
         const effectiveAllowlist =
-          activePreset && activePreset.allowedTools.length > 0 ? activePreset.allowedTools : allowlist;
+          agent.activePreset && agent.activePreset.allowedTools.length > 0
+            ? agent.activePreset.allowedTools
+            : agent.allowlist;
         // rAF-coalesce the per-delta onUpdate firehose. The runner mutates
         // its message snapshot once per token; without coalescing we'd thrash
         // React at 100+ tok/s. Latest snapshot wins; we never drop the final
@@ -510,14 +428,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           backend: status.backend === "mlx" ? "mlx" : "ollama",
           serverStatus: status,
           projectPolicy,
-          systemPromptOverride: activePreset?.systemPromptOverride,
+          systemPromptOverride: agent.activePreset?.systemPromptOverride,
           toolAllowlist: effectiveAllowlist,
-          approveAllShell,
-          approveAllWrite,
-          dryRun,
-          approvedShellPrefixes,
+          approveAllShell: agent.approveAllShell,
+          approveAllWrite: agent.approveAllWrite,
+          dryRun: agent.dryRun,
+          approvedShellPrefixes: agent.approvedShellPrefixes,
           onApproveShellPrefix: (p) => {
-            setApprovedShellPrefixes((prev) => (prev.includes(p) ? prev : [...prev, p]));
+            agent.setApprovedShellPrefixes((prev) => (prev.includes(p) ? prev : [...prev, p]));
           },
           onUpdate: (msgs) => {
             if (!isStreamConvActive()) return;
@@ -563,35 +481,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           }
 
           if (mode === "queue" || mode === "direct") {
-            extractFacts(text, finalText, conv.id).then(async (facts) => {
-              if (!facts.length) return;
-              let added = 0;
-              for (const f of facts) {
-                try {
-                  const r = await saveMemory({
-                    content: f.fact,
-                    conversationId: conv.id,
-                    tags: mode === "queue" ? "auto,pending" : "auto",
-                    status: mode === "queue" ? "pending" : "active",
-                  });
-                  if (!r.deduped) added++;
-                } catch (err) {
-                  logDiag({
-                    level: "warn",
-                    source: "memory-extract",
-                    message: "agent-mode saveMemory failed for an extracted fact",
-                    detail: err,
-                  });
-                }
-              }
-              if (added > 0) onMemoriesChanged?.();
-            }).catch((err) =>
-              logDiag({
-                level: "warn",
-                source: "memory-extract",
-                message: "agent-mode extractFacts pipeline rejected",
-                detail: err,
-              }),
+            void extractAndSaveFacts(text, finalText, conv.id, mode, "agent-mode", () =>
+              onMemoriesChanged?.(),
             );
           }
         }
@@ -666,35 +557,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       if (sameConv()) setMessages((m) => [...m, asst]);
 
       if (mode === "queue" || mode === "direct") {
-        extractFacts(text, acc, conv.id).then(async (facts) => {
-          if (!facts.length) return;
-          let added = 0;
-          for (const f of facts) {
-            try {
-              const r = await saveMemory({
-                content: f.fact,
-                conversationId: conv.id,
-                tags: mode === "queue" ? "auto,pending" : "auto",
-                status: mode === "queue" ? "pending" : "active",
-              });
-              if (!r.deduped) added++;
-            } catch (err) {
-              logDiag({
-                level: "warn",
-                source: "memory-extract",
-                message: "chat saveMemory failed for an extracted fact",
-                detail: err,
-              });
-            }
-          }
-          if (added > 0) onMemoriesChanged?.();
-        }).catch((err) =>
-          logDiag({
-            level: "warn",
-            source: "memory-extract",
-            message: "chat extractFacts pipeline rejected",
-            detail: err,
-          }),
+        void extractAndSaveFacts(text, acc, conv.id, mode, "chat", () =>
+          onMemoriesChanged?.(),
         );
       }
     } else if (aborted) {
@@ -718,6 +582,17 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       }
       if (sameConv()) setMessages((m) => [...m, tombstone]);
     }
+  }
+
+  /** Normal send from the composer — optional pasted/attached images. */
+  const send = useCallback((text: string, images?: ChatImage[]) => {
+    return runSend(text, images);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, agentMode, projectPolicy, workspaceRoot, messages, agent]);
+
+  /** Regenerate / edit-and-retry resend with an explicit truncated history. */
+  function resend(text: string, priorHistory: Message[]) {
+    return runSend(text, undefined, priorHistory);
   }
 
   function abort() {
@@ -771,7 +646,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     }
     const truncated = messages.slice(0, lastUserIdx).concat(messages.slice(lastAsstIdx + 1));
     setMessages(truncated);
-    await send(userText, truncated);
+    await resend(userText, truncated);
     };
   });
   const onRegenerate = useCallback(() => handleRegenerateRef.current?.(), []);
@@ -810,82 +685,12 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     }
     const truncated = messages.slice(0, editIdx);
     setMessages(truncated);
-    await send(newText, truncated);
+    await resend(newText, truncated);
   }
 
-  // Perform the actual editor-open IPC call. Only ever reached with a path
-  // that has already passed confinement checks and (first time) user confirm.
-  const doOpenCitation = useCallback((resolved: string, line?: number) => {
-    api.agentOpenPathInEditor(resolved, line)
-      .then((prog) => {
-        const label = prog === "code" ? "VS Code"
-          : prog === "cursor" ? "Cursor"
-          : "default app";
-        setUpdateMsg(`Opened in ${label}`);
-        setTimeout(
-          () => setUpdateMsg((m) => (m && m.startsWith("Opened") ? null : m)),
-          2200,
-        );
-      })
-      .catch((err2) => setErr(`Open failed: ${err2}`));
-  }, []);
-
-  // Citation chip click handler — event-delegated at the chat-window root.
-  // `.citation-chip` anchors carry model-authored data-path text. Because the
-  // model is untrusted, we must NOT pass that path straight to the editor-open
-  // IPC: confine it to the workspace root and require explicit user confirm of
-  // the resolved absolute path before the first open of a session.
-  const onCitationClick = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLElement | null;
-    if (!target) return;
-    const chip = target.closest(".citation-chip") as HTMLAnchorElement | null;
-    if (!chip) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const path = (chip.getAttribute("data-path") ?? "").trim();
-    const lineRaw = chip.getAttribute("data-line");
-    const line = lineRaw ? Number(lineRaw) : undefined;
-    if (!path) return;
-
-    // Reject anything that isn't a clearly-relative, non-traversing path.
-    // Absolute (`/…`), home-relative (`~/…`), Windows-drive (`C:\…`) and any
-    // `..` segment are refused outright — a malicious model emitting
-    // `/Users/joseph/.ssh/id_ed25519` must not be openable with one click.
-    const isAbsolute = path.startsWith("/") || path.startsWith("~") || /^[A-Za-z]:[\\/]/.test(path);
-    const hasTraversal = path.split(/[\\/]/).some((seg) => seg === "..");
-    if (isAbsolute || hasTraversal) {
-      setErr("Refused to open citation: path escapes the workspace.");
-      return;
-    }
-
-    // A relative path is only safe if we have a workspace root to anchor it.
-    // Without one we cannot bound the open, so refuse rather than guess.
-    if (!workspaceRoot) {
-      setErr("Set a workspace root before opening file citations.");
-      return;
-    }
-    const sep = workspaceRoot.includes("\\") && !workspaceRoot.includes("/") ? "\\" : "/";
-    const root = workspaceRoot.replace(/[\\/]+$/, "");
-    const resolved = `${root}${sep}${path.replace(/^[\\/]+/, "")}`;
-    // Guard the join: the resolved path must remain under the root prefix.
-    if (resolved !== root && !resolved.startsWith(root + sep)) {
-      setErr("Refused to open citation: path escapes the workspace.");
-      return;
-    }
-
-    // First citation open of the session: confirm the resolved absolute path.
-    // After the user trusts it once we open subsequent in-workspace citations
-    // directly (still confined above).
-    if (citationTrustRef.current) {
-      doOpenCitation(resolved, line);
-    } else {
-      setCitationConfirm({ resolved, line });
-    }
-  }, [workspaceRoot, doOpenCitation]);
-
   return (
-    <div className="chat-window" onClick={onCitationClick}>
-      {agentMode && dryRun && (
+    <div className="chat-window" onClick={citation.onCitationClick}>
+      {agentMode && agent.dryRun && (
         <div className="dry-run-banner" data-testid="agent-dry-run-banner">
           🛡️ Dry-run: tool side-effects suppressed
         </div>
@@ -1000,12 +805,12 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             <select
               data-testid="agent-preset-select"
               className="agent-preset-select"
-              value={activePresetId}
-              onChange={(e) => selectPreset(e.target.value)}
+              value={agent.activePresetId}
+              onChange={(e) => agent.selectPreset(e.target.value)}
               disabled={isWorking}
-              title={activePreset?.description ?? ""}
+              title={agent.activePreset?.description ?? ""}
             >
-              {presets.map((p) => (
+              {agent.presets.map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
@@ -1064,13 +869,13 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             <div className="agent-settings-row">
               <span className="agent-settings-label">Approve all this session:</span>
               <label>
-                <input type="checkbox" checked={approveAllShell}
-                       onChange={(e) => setApproveAllShell(e.target.checked)} />
+                <input type="checkbox" checked={agent.approveAllShell}
+                       onChange={(e) => agent.setApproveAllShell(e.target.checked)} />
                 shell (normal-risk only)
               </label>
               <label>
-                <input type="checkbox" checked={approveAllWrite}
-                       onChange={(e) => setApproveAllWrite(e.target.checked)} />
+                <input type="checkbox" checked={agent.approveAllWrite}
+                       onChange={(e) => agent.setApproveAllWrite(e.target.checked)} />
                 writes/edits
               </label>
             </div>
@@ -1079,11 +884,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               <label data-testid="agent-dry-run-toggle">
                 <input
                   type="checkbox"
-                  checked={dryRun}
-                  onChange={(e) => {
-                    setDryRun(e.target.checked);
-                    saveDryRun(e.target.checked);
-                  }}
+                  checked={agent.dryRun}
+                  onChange={(e) => agent.setDryRun(e.target.checked)}
                 />
                 Dry-run mode
               </label>
@@ -1094,31 +896,31 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             <div className="agent-settings-row">
               <span className="agent-settings-label">Allowed tools:</span>
               <span className="agent-settings-hint">
-                {allowlist.length === 0 ? "(all enabled)" : `${allowlist.length} selected`}
+                {agent.allowlist.length === 0 ? "(all enabled)" : `${agent.allowlist.length} selected`}
               </span>
             </div>
             <div className="agent-tool-grid">
               {ALL_TOOL_NAMES.map((n) => {
-                const enabled = allowlist.length === 0 || allowlist.includes(n);
+                const enabled = agent.allowlist.length === 0 || agent.allowlist.includes(n);
                 return (
                   <label key={n} className={`agent-tool-pill ${enabled ? "on" : "off"}`}>
                     <input type="checkbox" checked={enabled}
-                           onChange={() => toggleAllowed(n)} />
+                           onChange={() => agent.toggleAllowed(n)} />
                     {n}
                   </label>
                 );
               })}
             </div>
-            {allowlist.length > 0 && (
-              <button className="agent-settings-btn" onClick={() => { setAllowlist([]); saveAllowlist([]); }}>
+            {agent.allowlist.length > 0 && (
+              <button className="agent-settings-btn" onClick={agent.resetAllowlist}>
                 Reset to all enabled
               </button>
             )}
-            {approvedShellPrefixes.length > 0 && (
+            {agent.approvedShellPrefixes.length > 0 && (
               <div className="agent-settings-row">
                 <span className="agent-settings-label">Approved shell prefixes:</span>
-                <span className="agent-settings-value">{approvedShellPrefixes.join(", ")}</span>
-                <button className="agent-settings-btn" onClick={() => setApprovedShellPrefixes([])}>
+                <span className="agent-settings-value">{agent.approvedShellPrefixes.join(", ")}</span>
+                <button className="agent-settings-btn" onClick={() => agent.setApprovedShellPrefixes([])}>
                   Clear
                 </button>
               </div>
@@ -1155,25 +957,25 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         <ToolHistory messages={messages} onClose={() => setShowToolHistory(false)} />
       )}
 
-      {askUserReq && (
-        <div className="agent-confirm-overlay" onClick={(e) => e.target === e.currentTarget && cancelAskUser()}>
+      {askUser.askUserReq && (
+        <div className="agent-confirm-overlay" onClick={(e) => e.target === e.currentTarget && askUser.cancelAskUser()}>
           <div className="agent-confirm-box">
             <div className="agent-confirm-title">Agent asks:</div>
-            <div style={{ padding: "8px 0", fontSize: 13 }}>{askUserReq.question}</div>
-            {askUserReq.hint && (
-              <div style={{ padding: "0 0 8px 0", fontSize: 11, color: "var(--text-muted)" }}>{askUserReq.hint}</div>
+            <div style={{ padding: "8px 0", fontSize: 13 }}>{askUser.askUserReq.question}</div>
+            {askUser.askUserReq.hint && (
+              <div style={{ padding: "0 0 8px 0", fontSize: 11, color: "var(--text-muted)" }}>{askUser.askUserReq.hint}</div>
             )}
             <textarea
               className="ask-user-input"
-              value={askUserAnswer}
-              onChange={(e) => setAskUserAnswer(e.target.value)}
+              value={askUser.askUserAnswer}
+              onChange={(e) => askUser.setAskUserAnswer(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();
-                  submitAskUser();
+                  askUser.submitAskUser();
                 } else if (e.key === "Escape") {
                   e.preventDefault();
-                  cancelAskUser();
+                  askUser.cancelAskUser();
                 }
               }}
               placeholder="Your answer (Cmd+Enter to send, Esc to cancel)…"
@@ -1187,8 +989,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               }}
             />
             <div className="agent-confirm-actions">
-              <button className="agent-confirm-deny" onClick={cancelAskUser}>Cancel</button>
-              <button className="agent-confirm-allow" onClick={submitAskUser} disabled={!askUserAnswer.trim()}>
+              <button className="agent-confirm-deny" onClick={askUser.cancelAskUser}>Cancel</button>
+              <button className="agent-confirm-allow" onClick={askUser.submitAskUser} disabled={!askUser.askUserAnswer.trim()}>
                 Send
               </button>
             </div>
@@ -1245,11 +1047,11 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
       {/* Citation open confirmation — shows the resolved absolute path so the
           user sees exactly which file an untrusted model is asking to open. */}
-      {citationConfirm && (
+      {citation.citationConfirm && (
         <div
           className="agent-confirm-overlay"
           data-testid="citation-confirm-modal"
-          onClick={(e) => e.target === e.currentTarget && setCitationConfirm(null)}
+          onClick={(e) => e.target === e.currentTarget && citation.dismissConfirm()}
         >
           <div className="agent-confirm-box">
             <div className="agent-confirm-title">Open file in editor?</div>
@@ -1257,23 +1059,19 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               This citation was written by the model. It will open in an external editor:
             </div>
             <pre className="agent-confirm-args">
-              {citationConfirm.resolved}{citationConfirm.line ? `:${citationConfirm.line}` : ""}
+              {citation.citationConfirm.resolved}{citation.citationConfirm.line ? `:${citation.citationConfirm.line}` : ""}
             </pre>
             <div className="agent-confirm-actions">
               <button
                 className="agent-confirm-deny"
-                onClick={() => setCitationConfirm(null)}
+                onClick={citation.dismissConfirm}
               >
                 Cancel
               </button>
               <button
                 data-testid="citation-confirm-allow"
                 className="agent-confirm-allow"
-                onClick={() => {
-                  citationTrustRef.current = true;
-                  doOpenCitation(citationConfirm.resolved, citationConfirm.line);
-                  setCitationConfirm(null);
-                }}
+                onClick={citation.confirmOpen}
               >
                 Open
               </button>
@@ -1349,7 +1147,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           role="button"
           tabIndex={0}
           onClick={() => {
-            if (quickToast.error) { setQuickToast(null); return; }
+            if (quickToast.error) { dismissToast(); return; }
             // Click → dump the reply into the input area as a starting point.
             // Strict v1.3: no auto-resubmit, no conversation creation.
             try {
@@ -1369,7 +1167,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
                 detail: err,
               });
             }
-            setQuickToast(null);
+            dismissToast();
           }}
         >
           {quickToast.error ? (

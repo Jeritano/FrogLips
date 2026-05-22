@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { AllModels, ModelEntry, ServerStatus } from "../types";
 
 // ModelBrowser bundles three large tabs (HF, Civitai, GGUF) plus their data
@@ -44,20 +44,9 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
 
   useEffect(() => { loadModels(); }, []);
 
-  useEffect(() => {
-    const unlisten: Array<() => void> = [];
-    let mounted = true;
-    listen<string>("native-loading", (e) => {
-      if (mounted) setNativeLoading(e.payload);
-    }).then((u) => { if (mounted) unlisten.push(u); else u(); });
-    listen<string>("native-loaded", () => {
-      if (mounted) setNativeLoading(null);
-    }).then((u) => { if (mounted) unlisten.push(u); else u(); });
-    return () => {
-      mounted = false;
-      unlisten.forEach((u) => u());
-    };
-  }, []);
+  // Native models load in-process: progress only surfaces via Tauri events.
+  useTauriEvent<string>("native-loading", useCallback((e) => setNativeLoading(e.payload), []));
+  useTauriEvent<string>("native-loaded", useCallback(() => setNativeLoading(null), []));
 
   async function loadModels() {
     try {

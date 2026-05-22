@@ -1,10 +1,8 @@
 import type { Message, ServerStatus, ToolCall } from "../types";
-import {
-  finalizeToolCalls,
-  mergeToolCallChunk,
-  type PartialToolCall,
-  type StreamChatResult,
-} from "./agent-loop/ollama-client";
+import { finalizeToolCalls, mergeToolCallChunk } from "./agent-loop/tool-call-merge";
+import type { PartialToolCall, StreamChatResult } from "./agent-loop/stream-types";
+import { withTimeout } from "./signal-utils";
+import { readLines } from "./stream-lines";
 
 export interface ChatChunk {
   delta: string;
@@ -49,23 +47,6 @@ function toOpenAiMessages(messages: Message[]) {
 // huge models (60+ GB) take minutes to cold-load before MLX sends headers.
 const STREAM_CONNECT_TIMEOUT_MS = 300_000;
 
-function withTimeout(
-  parent: AbortSignal | undefined,
-  timeoutMs: number,
-): { signal: AbortSignal; clear: () => void } {
-  const ctrl = new AbortController();
-  if (parent) {
-    if (parent.aborted) ctrl.abort(parent.reason);
-    else parent.addEventListener("abort", () => ctrl.abort(parent.reason), { once: true });
-  }
-  const t = setTimeout(
-    () => ctrl.abort(new DOMException("stream connect timed out", "TimeoutError")),
-    timeoutMs,
-  );
-  ctrl.signal.addEventListener("abort", () => clearTimeout(t), { once: true });
-  return { signal: ctrl.signal, clear: () => clearTimeout(t) };
-}
-
 export async function* streamChat(
   status: ServerStatus,
   messages: Message[],
@@ -80,7 +61,7 @@ export async function* streamChat(
     messages: toOpenAiMessages(messages),
   };
 
-  const to = withTimeout(opts.signal, STREAM_CONNECT_TIMEOUT_MS);
+  const to = withTimeout(opts.signal, STREAM_CONNECT_TIMEOUT_MS, "stream connect timed out");
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -160,7 +141,7 @@ export async function streamMlxAgentChat(
   };
   if (tools.length > 0) body.tools = tools;
 
-  const to = withTimeout(signal, STREAM_CONNECT_TIMEOUT_MS);
+  const to = withTimeout(signal, STREAM_CONNECT_TIMEOUT_MS, "stream connect timed out");
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -174,14 +155,11 @@ export async function streamMlxAgentChat(
     throw new Error(`MLX ${res.status}: ${txt}`);
   }
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
   let content = "";
   const toolAcc: PartialToolCall[] = [];
   let promptTok: number | undefined;
   let evalTok: number | undefined;
-  const MAX_BUF = 1 << 20;
+  let sawDone = false;
 
   const processPayload = (payload: string) => {
     let obj: Record<string, unknown>;
@@ -213,35 +191,17 @@ export async function streamMlxAgentChat(
     }
   };
 
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      if (buf.length > MAX_BUF) {
-        const lastNl = buf.lastIndexOf("\n", buf.length - MAX_BUF);
-        buf = lastNl >= 0 ? buf.slice(lastNl + 1) : "";
-      }
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line || !line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (payload === "[DONE]") {
-          return {
-            content,
-            tool_calls: finalizeToolCalls(toolAcc),
-            prompt_eval_count: promptTok,
-            eval_count: evalTok,
-          };
-        }
-        processPayload(payload);
-      }
+  await readLines(res.body.getReader(), (rawLine) => {
+    if (sawDone) return;
+    const line = rawLine.trim();
+    if (!line || !line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (payload === "[DONE]") {
+      sawDone = true;
+      return;
     }
-  } finally {
-    try { reader.releaseLock(); } catch {/* noop */}
-  }
+    processPayload(payload);
+  });
 
   return {
     content,

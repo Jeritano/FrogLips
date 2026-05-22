@@ -26,11 +26,13 @@ impl ManageConnection for SqliteManager {
     }
 
     fn is_valid(&self, conn: &mut Connection) -> rusqlite::Result<()> {
-        conn.execute_batch("")
+        // Cheap liveness probe — fails fast if the connection is dead.
+        conn.execute_batch("SELECT 1")
     }
 
-    fn has_broken(&self, _: &mut Connection) -> bool {
-        false
+    fn has_broken(&self, conn: &mut Connection) -> bool {
+        // A connection is broken if it can no longer run a trivial query.
+        conn.execute_batch("SELECT 1").is_err()
     }
 }
 

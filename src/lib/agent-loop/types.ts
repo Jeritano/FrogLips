@@ -2,6 +2,34 @@ import type { Message, ProjectPolicy, ServerStatus } from "../../types";
 
 export type AgentStatus = "idle" | "thinking" | "tool" | "done" | "error";
 
+/**
+ * Risk classification for a tool call. These are the exact strings the Rust
+ * classifiers (`classify_shell_risk`, `classify_applescript_risk`,
+ * `classify_http_risk`) and `classifyToolRisk` can produce.
+ */
+export type Risk = "normal" | "destructive" | "pipe-from-network" | "privileged";
+
+/**
+ * Shape of a parsed tool-result body. Tools speak a JSON-over-string
+ * protocol: every result is a JSON string that deserialises to either a
+ * success or a structured failure. `ToolResultFail` carries the optional
+ * `kind`/`dry_run`/`blocked_by_safety` fields the runner sniffs for.
+ */
+export interface ToolResultOk {
+  ok: true;
+  dry_run?: boolean;
+  [k: string]: unknown;
+}
+export interface ToolResultFail {
+  ok: false;
+  kind?: string;
+  message?: string;
+  dry_run?: boolean;
+  blocked_by_safety?: string;
+  [k: string]: unknown;
+}
+export type ToolResult = ToolResultOk | ToolResultFail;
+
 /** Backends the agent loop can run a tool-calling chat against. */
 export type AgentBackend = "ollama" | "mlx" | "native";
 
@@ -69,7 +97,7 @@ export interface AgentRunOptions {
   requestConfirmation: (
     toolName: string,
     args: Record<string, unknown>,
-    risk: string,
+    risk: Risk,
   ) => Promise<ConfirmDecision>;
   signal: AbortSignal;
   /** Internal: depth counter for spawn_subagent recursion guard. */

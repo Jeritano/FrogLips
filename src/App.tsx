@@ -1,12 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { api } from "./lib/tauri-api";
 import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
 import pkg from "../package.json";
 import { useTwoClickConfirm } from "./lib/use-two-click-confirm";
 import { useModalA11y } from "./lib/use-modal-a11y";
+import { useTauriEvent } from "./hooks/useTauriEvent";
+import { usePlatformChrome } from "./hooks/usePlatformChrome";
+import { useWindowGeometry } from "./hooks/useWindowGeometry";
 import type { Conversation, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
@@ -65,36 +66,18 @@ function App() {
     containerRef: memoriesModalRef,
   });
 
+  // Platform branding + macOS fullscreen tracking on <html>. `updateFullscreen`
+  // is re-fired off the geometry event stream so the hamburger slide-over
+  // follows the traffic lights disappearing in real time.
+  const { updateFullscreen } = usePlatformChrome();
+  useWindowGeometry(updateFullscreen);
+
+  // Initial data + first-run wizard gate.
   useEffect(() => {
-    // Window uses macOS Overlay title-bar style + hiddenTitle, so the
-    // OS chrome only renders the traffic lights — no title text. We keep
-    // pkg imported so the version is available for the in-app footer.
+    // Window uses macOS Overlay title-bar style + hiddenTitle, so the OS
+    // chrome only renders the traffic lights. `pkg` stays imported so the
+    // version is available for the in-app footer.
     void pkg;
-    // Mark the platform on <html> so the CSS can swap the top padding —
-    // macOS needs ~22 px of clearance for the traffic lights; win/linux
-    // need none. navigator.userAgent is enough here (Tauri webview ships
-    // a deterministic UA per host platform).
-    const ua = navigator.userAgent || "";
-    const platform = /Mac/i.test(ua)
-      ? "mac"
-      : /Win/i.test(ua)
-        ? "win"
-        : /Linux/i.test(ua)
-          ? "linux"
-          : "other";
-    document.documentElement.dataset.platform = platform;
-    // Track macOS native fullscreen — traffic lights are hidden in fullscreen,
-    // so the hamburger button slides left into the freed space via a CSS
-    // override on :root[data-fullscreen="true"].
-    const updateFullscreen = async () => {
-      try {
-        const fs = await getCurrentWindow().isFullscreen();
-        document.documentElement.dataset.fullscreen = fs ? "true" : "false";
-      } catch {
-        document.documentElement.dataset.fullscreen = "false";
-      }
-    };
-    updateFullscreen();
     refreshStatus();
     refreshConversations();
     // First-run gate: ask Rust whether the wizard has been completed before.
@@ -122,8 +105,8 @@ function App() {
         });
         setWizardOpen(true);
       });
-    // Load settings + restore window geometry + configure memory client
-    api.settingsGet().then(async (s) => {
+    // Configure the memory client + apply the persisted theme.
+    api.settingsGet().then((s) => {
       configureMemory({
         embeddingModel: s.embedding_model,
         recallThreshold: s.recall_threshold,
@@ -131,24 +114,6 @@ function App() {
       if (s.theme === "light" || s.theme === "dark") {
         setTheme(s.theme);
         document.documentElement.dataset.theme = s.theme;
-      }
-      const win = getCurrentWindow();
-      if (s.window) {
-        try {
-          if (s.window.width > 200 && s.window.height > 200) {
-            await win.setSize(new PhysicalSize(Math.round(s.window.width), Math.round(s.window.height)));
-          }
-          if (s.window.x != null && s.window.y != null) {
-            await win.setPosition(new PhysicalPosition(Math.round(s.window.x), Math.round(s.window.y)));
-          }
-        } catch (err) {
-          logDiag({
-            level: "warn",
-            source: "app",
-            message: "restoring window geometry failed",
-            detail: err,
-          });
-        }
       }
     }).catch((err) =>
       logDiag({
@@ -158,103 +123,28 @@ function App() {
         detail: err,
       }),
     );
-
-    // Persist window geometry on resize/move with debounce
-    let saveTimer: number | undefined;
-    const win = getCurrentWindow();
-    const persistGeometry = () => {
-      // Fullscreen state changes are reported via the same onResized event
-      // stream — re-query immediately (not debounced) so the hamburger
-      // slide-over follows the lights disappearing in real time.
-      updateFullscreen();
-      if (saveTimer) window.clearTimeout(saveTimer);
-      saveTimer = window.setTimeout(async () => {
-        try {
-          const sz = await win.innerSize();
-          const pos = await win.outerPosition();
-          await api.settingsSet({
-            window: { width: sz.width, height: sz.height, x: pos.x, y: pos.y },
-          });
-        } catch (err) {
-          logDiag({
-            level: "warn",
-            source: "app",
-            message: "persistGeometry: settingsSet failed",
-            detail: err,
-          });
-        }
-      }, 500);
-    };
-    const offResize = win.onResized(persistGeometry);
-    const offMove = win.onMoved(persistGeometry);
-
-    let cancelled = false;
-    let unlisten: UnlistenFn | undefined;
-    let unlistenDiag: UnlistenFn | undefined;
-    listen<ServerStatus>("server-status", (e) => setStatus(e.payload))
-      .then((fn) => {
-        if (cancelled) { fn(); } else { unlisten = fn; }
-      })
-      .catch((err) =>
-        logDiag({
-          level: "warn",
-          source: "app",
-          message: "server-status event listener failed to register — relying on manual refresh",
-          detail: err,
-        }),
-      );
-
-    // Rust-side warnings: forward into the in-app diagnostics ring buffer
-    // so MCP/RAG/agent failures surface in the panel alongside frontend
-    // diagnostics. Payload shape mirrors `Omit<DiagEntry, "ts">`.
-    listen<{ level: "info" | "warn" | "error"; source: string; message: string; detail?: unknown }>(
-      "app-diagnostics",
-      (e) => {
-        const p = e.payload;
-        if (!p) return;
-        logDiag({
-          level: p.level === "error" || p.level === "warn" ? p.level : "info",
-          source: typeof p.source === "string" ? p.source : "rust",
-          message: typeof p.message === "string" ? p.message : "",
-          detail: p.detail,
-        });
-      },
-    )
-      .then((fn) => {
-        if (cancelled) { fn(); } else { unlistenDiag = fn; }
-      })
-      .catch((err) =>
-        logDiag({
-          level: "warn",
-          source: "app",
-          message: "app-diagnostics event listener failed to register — Rust warnings not visible",
-          detail: err,
-        }),
-      );
-
-    return () => {
-      cancelled = true;
-      if (unlisten) unlisten();
-      if (unlistenDiag) unlistenDiag();
-      offResize.then((f) => f()).catch((err) =>
-        logDiag({
-          level: "info",
-          source: "app",
-          message: "offResize cleanup rejected",
-          detail: err,
-        }),
-      );
-      offMove.then((f) => f()).catch((err) =>
-        logDiag({
-          level: "info",
-          source: "app",
-          message: "offMove cleanup rejected",
-          detail: err,
-        }),
-      );
-      if (saveTimer) window.clearTimeout(saveTimer);
-    };
   }, []);
+
+  useTauriEvent<ServerStatus>(
+    "server-status",
+    useCallback((e) => setStatus(e.payload), []),
+  );
+
+  // Rust-side warnings: forward into the in-app diagnostics ring buffer so
+  // MCP/RAG/agent failures surface in the panel alongside frontend diagnostics.
+  useTauriEvent<{ level: "info" | "warn" | "error"; source: string; message: string; detail?: unknown }>(
+    "app-diagnostics",
+    useCallback((e) => {
+      const p = e.payload;
+      if (!p) return;
+      logDiag({
+        level: p.level === "error" || p.level === "warn" ? p.level : "info",
+        source: typeof p.source === "string" ? p.source : "rust",
+        message: typeof p.message === "string" ? p.message : "",
+        detail: p.detail,
+      });
+    }, []),
+  );
 
   // Track the agent workspace root so MemoryPanel can bind newly-created
   // project-scoped memories without re-asking the user. Refetched on every

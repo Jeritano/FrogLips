@@ -230,6 +230,8 @@ pub fn embed(text: &str) -> Vec<f32> {
 
 /// Cosine similarity. Inputs must be L2-normalized (embed() guarantees this)
 /// — then cosine collapses to dot product.
+/// NOTE: distinct from `memory::cosine`, which normalizes inputs itself. Keep
+/// both — the semantics genuinely differ.
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
@@ -237,19 +239,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
-fn vec_to_blob(v: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(v.len() * 4);
-    for f in v {
-        out.extend_from_slice(&f.to_le_bytes());
-    }
-    out
-}
-
-fn blob_to_vec(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
-}
+use crate::util::{blob_to_vec, vec_to_blob};
 
 /* ─────────────────────────── Validation ─────────────────────────────── */
 

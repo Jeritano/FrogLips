@@ -1,5 +1,5 @@
 import type { AuditApproval, AuditOutcome, Message, ProjectPolicy, ToolCall } from "../../types";
-import type { AgentMetrics, AgentRunOptions } from "./types";
+import type { AgentMetrics, AgentRunOptions, Risk, ToolResult } from "./types";
 import { TOOLS } from "./tools";
 import {
   DANGEROUS_TOOLS,
@@ -114,7 +114,7 @@ export function policyDecisionFor(
   policy: ProjectPolicy | null | undefined,
   fnName: string,
   args: Record<string, unknown>,
-  risk: string = "normal",
+  risk: Risk = "normal",
 ): PolicyVerdict {
   if (!policy) return "needs-confirm";
   if (policy.auto_approve_dangerous_tools?.includes(fnName)) {
@@ -145,51 +145,14 @@ export function policyDecisionFor(
 }
 
 const MAX_ITERATIONS = 40;
-const DEDUPE_WINDOW = 3;
+// Number of recent tool-call signatures retained for duplicate detection.
+const DEDUPE_WINDOW = 6;
 // Stall detection: if agent reads the same path > this many times in
 // monotonically-advancing tiny chunks, abort the loop with an explanatory msg.
 const STALL_SAME_PATH_LIMIT = 6;
 
 function makeTmpKey() {
   return `tmp:${crypto.randomUUID()}`;
-}
-
-/* ── Cited paths registry ──────────────────────────────────────────────────
- *
- * Session-scoped record of every path that successfully resolved via a
- * `read_file` tool call, keyed by conversation id. The chat UI's citation
- * post-processor uses this in a future iteration to chip-ify *plain-text*
- * mentions of paths that the agent just read (v1 only chip-ifies backticked
- * paths). Stored at module scope so multiple agent runs in the same session
- * share state; bounded to avoid unbounded growth across long sessions.
- */
-const CITED_PATHS_LIMIT_PER_CONV = 256;
-const citedPathsByConv: Map<number, Set<string>> = new Map();
-
-function rememberCitedPath(conversationId: number, path: string): void {
-  let set = citedPathsByConv.get(conversationId);
-  if (!set) {
-    set = new Set();
-    citedPathsByConv.set(conversationId, set);
-  }
-  set.add(path);
-  // Bound the set — FIFO drop. Worst case the post-processor loses
-  // chip-ification for the oldest reads, no correctness impact.
-  if (set.size > CITED_PATHS_LIMIT_PER_CONV) {
-    const first = set.values().next().value;
-    if (first !== undefined) set.delete(first);
-  }
-}
-
-/** Read-only snapshot of cited paths for a given conversation. */
-export function getCitedPaths(conversationId: number): string[] {
-  const s = citedPathsByConv.get(conversationId);
-  return s ? Array.from(s) : [];
-}
-
-/** Test helper — clears the cited-paths cache. */
-export function _resetCitedPaths(): void {
-  citedPathsByConv.clear();
 }
 
 /* ── Main loop ── */
@@ -220,6 +183,84 @@ function recordSessionMetricsSafe(conversationId: number, metrics: AgentMetrics)
     // eslint-disable-next-line no-console
     console.warn("[session-metrics] record sync error:", e);
   }
+}
+
+/**
+ * Build a JSON body for a rejected/short-circuited tool call. Mirrors the
+ * `{ok:false, kind, message}` protocol every tool result already uses.
+ */
+function rejectionBody(kind: string, message: string): string {
+  return JSON.stringify({ ok: false, kind, message } satisfies ToolResult);
+}
+
+interface PushToolResultOpts {
+  /** Audit approval classification for the call. */
+  approval: AuditApproval;
+  /** Audit outcome classification. */
+  outcome: AuditOutcome;
+  /** Optional audit error-kind tag. */
+  errorKind?: string | null;
+  /** Tool-call arguments to record in the audit row (default `{}`). */
+  args?: Record<string, unknown>;
+  /** Tool wall-clock duration in ms (default 0 for short-circuited calls). */
+  durationMs?: number;
+}
+
+/**
+ * Push a `tool` message for `tc` carrying `body`, record the matching audit
+ * row, and fire `onUpdate`. This is the single shared tail every per-tool-call
+ * branch (allowlist-deny, bad-args, stall-guard, policy-deny, user-deny,
+ * duplicate, and the normal execution path) funnels through.
+ */
+function pushToolResult(
+  msgs: Message[],
+  conversationId: number,
+  onUpdate: (msgs: Message[]) => void,
+  tc: ToolCall,
+  body: string,
+  o: PushToolResultOpts,
+): void {
+  const fnName = tc.function?.name ?? "";
+  msgs.push({
+    _tmpKey: makeTmpKey(),
+    conversation_id: conversationId,
+    role: "tool",
+    content: body,
+    tool_call_id: tc.id,
+    tool_name: fnName,
+  });
+  recordAuditSafe({
+    toolName: fnName,
+    args: o.args ?? {},
+    resultBody: body,
+    durationMs: o.durationMs ?? 0,
+    approval: o.approval,
+    outcome: o.outcome,
+    errorKind: o.errorKind ?? null,
+    conversationId,
+  });
+  onUpdate([...msgs]);
+}
+
+/** True when every tool call this turn was already seen in the recent window. */
+function isDuplicateTurn(sigs: string[], recentSigs: string[]): boolean {
+  return recentSigs.length > 0 && sigs.every((s) => recentSigs.includes(s));
+}
+
+/**
+ * Stall predicate for `read_file`: bumps the per-path read counter and
+ * reports whether the agent has exceeded the chunk-thrashing limit.
+ */
+function isReadFileStalling(
+  fnName: string,
+  args: Record<string, unknown>,
+  readCounts: Map<string, number>,
+): { stalling: boolean; path: string; count: number } {
+  if (fnName !== "read_file") return { stalling: false, path: "", count: 0 };
+  const path = String(args.path ?? "");
+  const count = (readCounts.get(path) ?? 0) + 1;
+  readCounts.set(path, count);
+  return { stalling: count > STALL_SAME_PATH_LIMIT, path, count };
 }
 
 export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null> {
@@ -410,8 +451,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     // protocol) or the backend will reject the next request — so push one
     // duplicate_call response per call, not just the first.
     const sigs = toolCalls.map(toolCallSig);
-    const allRepeated = sigs.every((s) => recentSigs.includes(s));
-    if (allRepeated && recentSigs.length > 0) {
+    if (isDuplicateTurn(sigs, recentSigs)) {
       msgs.push({
         _tmpKey: makeTmpKey(),
         conversation_id: opts.conversationId,
@@ -419,40 +459,24 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         content: preludeText,
         tool_calls: toolCalls,
       });
-      const dupBody = JSON.stringify({
-        ok: false,
-        kind: "duplicate_call",
-        message:
-          "You just called this exact tool with these exact arguments. Try a different approach or report what you've learned to the user.",
-      });
+      const dupBody = rejectionBody(
+        "duplicate_call",
+        "You just called this exact tool with these exact arguments. Try a different approach or report what you've learned to the user.",
+      );
       for (const tc of toolCalls) {
-        const tcName = tc.function?.name ?? "";
-        msgs.push({
-          _tmpKey: makeTmpKey(),
-          conversation_id: opts.conversationId,
-          role: "tool",
-          content: dupBody,
-          tool_call_id: tc.id,
-          tool_name: tcName,
-        });
         const dupParsed = parseArgs(tc.function?.arguments);
-        recordAuditSafe({
-          toolName: tcName,
-          args: dupParsed.ok ? dupParsed.args : {},
-          resultBody: dupBody,
-          durationMs: 0,
+        pushToolResult(msgs, opts.conversationId, onUpdate, tc, dupBody, {
           approval: "auto",
           outcome: "duplicate",
           errorKind: "duplicate_call",
-          conversationId: opts.conversationId,
+          args: dupParsed.ok ? dupParsed.args : {},
         });
       }
-      onUpdate([...msgs]);
       continue;
     }
     for (const s of sigs) {
       recentSigs.push(s);
-      while (recentSigs.length > DEDUPE_WINDOW * 2) recentSigs.shift();
+      while (recentSigs.length > DEDUPE_WINDOW) recentSigs.shift();
     }
 
     // Assistant turn with tool calls
@@ -474,93 +498,38 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
 
       // Allowlist gate
       if (toolAllowlist.length && !toolAllowlist.includes(fnName)) {
-        const notAllowedBody = JSON.stringify({
-          ok: false,
-          kind: "tool_not_allowed",
-          message: `Tool '${fnName}' is not enabled for this conversation.`,
-        });
-        msgs.push({
-          _tmpKey: makeTmpKey(),
-          conversation_id: opts.conversationId,
-          role: "tool",
-          content: notAllowedBody,
-          tool_call_id: tc.id,
-          tool_name: fnName,
-        });
         const naParsed = parseArgs(tc.function?.arguments);
-        recordAuditSafe({
-          toolName: fnName,
-          args: naParsed.ok ? naParsed.args : {},
-          resultBody: notAllowedBody,
-          durationMs: 0,
-          approval: "denied",
-          outcome: "denied",
-          errorKind: "tool_not_allowed",
-          conversationId: opts.conversationId,
-        });
-        onUpdate([...msgs]);
+        pushToolResult(msgs, opts.conversationId, onUpdate, tc,
+          rejectionBody("tool_not_allowed", `Tool '${fnName}' is not enabled for this conversation.`),
+          {
+            approval: "denied",
+            outcome: "denied",
+            errorKind: "tool_not_allowed",
+            args: naParsed.ok ? naParsed.args : {},
+          });
         continue;
       }
 
       const parsed = parseArgs(tc.function?.arguments);
       if (!parsed.ok) {
-        const badBody = JSON.stringify({ ok: false, kind: "bad_arguments", message: parsed.err });
-        msgs.push({
-          _tmpKey: makeTmpKey(),
-          conversation_id: opts.conversationId,
-          role: "tool",
-          content: badBody,
-          tool_call_id: tc.id,
-          tool_name: fnName,
-        });
-        recordAuditSafe({
-          toolName: fnName,
-          args: {},
-          resultBody: badBody,
-          durationMs: 0,
-          approval: "auto",
-          outcome: "error",
-          errorKind: "bad_arguments",
-          conversationId: opts.conversationId,
-        });
-        onUpdate([...msgs]);
+        pushToolResult(msgs, opts.conversationId, onUpdate, tc,
+          rejectionBody("bad_arguments", parsed.err),
+          { approval: "auto", outcome: "error", errorKind: "bad_arguments" });
         continue;
       }
       const args = parsed.args;
 
       // Stall guard: if the agent keeps re-reading the same file in chunks,
       // bail out with a hint instead of letting it eat the iteration budget.
-      if (fnName === "read_file") {
-        const p = String(args.path ?? "");
-        const n = (readCounts.get(p) ?? 0) + 1;
-        readCounts.set(p, n);
-        if (n > STALL_SAME_PATH_LIMIT) {
-          const stallBody = JSON.stringify({
-            ok: false,
-            kind: "stall_guard",
-            message: `read_file has been called ${n} times for '${p}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`,
-          });
-          msgs.push({
-            _tmpKey: makeTmpKey(),
-            conversation_id: opts.conversationId,
-            role: "tool",
-            content: stallBody,
-            tool_call_id: tc.id,
-            tool_name: fnName,
-          });
-          recordAuditSafe({
-            toolName: fnName,
-            args,
-            resultBody: stallBody,
-            durationMs: 0,
-            approval: "auto",
-            outcome: "stall_guard",
-            errorKind: "stall_guard",
-            conversationId: opts.conversationId,
-          });
-          onUpdate([...msgs]);
-          continue;
-        }
+      const stall = isReadFileStalling(fnName, args, readCounts);
+      if (stall.stalling) {
+        pushToolResult(msgs, opts.conversationId, onUpdate, tc,
+          rejectionBody(
+            "stall_guard",
+            `read_file has been called ${stall.count} times for '${stall.path}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`,
+          ),
+          { approval: "auto", outcome: "stall_guard", errorKind: "stall_guard", args });
+        continue;
       }
 
       // Track which approval branch authorised this call — used in the
@@ -576,30 +545,12 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         // passed so a policy can never auto-approve a non-normal-risk call.
         const policyVerdict = policyDecisionFor(projectPolicy, fnName, args, risk);
         if (policyVerdict === "denied") {
-          const polBody = JSON.stringify({
-            ok: false,
-            kind: "policy_denied",
-            message: `Tool call denied by project policy${projectPolicy?.source_path ? ` (${projectPolicy.source_path})` : ""}.`,
-          });
-          msgs.push({
-            _tmpKey: makeTmpKey(),
-            conversation_id: opts.conversationId,
-            role: "tool",
-            content: polBody,
-            tool_call_id: tc.id,
-            tool_name: fnName,
-          });
-          recordAuditSafe({
-            toolName: fnName,
-            args,
-            resultBody: polBody,
-            durationMs: 0,
-            approval: "denied",
-            outcome: "denied",
-            errorKind: "policy_denied",
-            conversationId: opts.conversationId,
-          });
-          onUpdate([...msgs]);
+          pushToolResult(msgs, opts.conversationId, onUpdate, tc,
+            rejectionBody(
+              "policy_denied",
+              `Tool call denied by project policy${projectPolicy?.source_path ? ` (${projectPolicy.source_path})` : ""}.`,
+            ),
+            { approval: "denied", outcome: "denied", errorKind: "policy_denied", args });
           continue;
         }
 
@@ -624,30 +575,9 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         if (!sessionApproved) {
           const decision = await requestConfirmation(fnName, args, risk);
           if (!decision.approve) {
-            const denBody = JSON.stringify({
-              ok: false,
-              kind: "user_denied",
-              message: "User denied this tool call.",
-            });
-            msgs.push({
-              _tmpKey: makeTmpKey(),
-              conversation_id: opts.conversationId,
-              role: "tool",
-              content: denBody,
-              tool_call_id: tc.id,
-              tool_name: fnName,
-            });
-            recordAuditSafe({
-              toolName: fnName,
-              args,
-              resultBody: denBody,
-              durationMs: 0,
-              approval: "denied",
-              outcome: "denied",
-              errorKind: "user_denied",
-              conversationId: opts.conversationId,
-            });
-            onUpdate([...msgs]);
+            pushToolResult(msgs, opts.conversationId, onUpdate, tc,
+              rejectionBody("user_denied", "User denied this tool call."),
+              { approval: "denied", outcome: "denied", errorKind: "user_denied", args });
             continue;
           }
           auditApproval = "user_allowed";
@@ -698,11 +628,13 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       onMetrics?.({ ...metrics });
 
       // Determine final outcome by sniffing the result body — many tool
-      // wrappers return `{ok:false, kind:...}` rather than throwing.
+      // wrappers return `{ok:false, kind:...}` rather than throwing. The tool
+      // protocol is JSON-over-string, so parse into a `ToolResult` shape
+      // rather than `any`.
       let outcome: AuditOutcome = toolErrorKind ? "error" : "ok";
       if (!toolErrorKind) {
         try {
-          const parsedResult = JSON.parse(result);
+          const parsedResult = JSON.parse(result) as Partial<ToolResult> | null;
           if (parsedResult && typeof parsedResult === "object") {
             // Dry-run results take precedence — they're recorded as `dry_run`
             // regardless of `ok` status so the suppressed call shows up
@@ -726,34 +658,13 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         }
       }
 
-      recordAuditSafe({
-        toolName: fnName,
-        args,
-        resultBody: result,
-        durationMs,
+      pushToolResult(msgs, opts.conversationId, onUpdate, tc, result, {
         approval: auditApproval,
         outcome,
         errorKind: toolErrorKind,
-        conversationId: opts.conversationId,
+        args,
+        durationMs,
       });
-
-      // Track cited paths for the citation post-processor. We only record
-      // on a successful read_file — both because failed reads don't surface
-      // a real path and because the chip would 404 on click.
-      if (fnName === "read_file" && outcome === "ok") {
-        const p = typeof args.path === "string" ? args.path : "";
-        if (p) rememberCitedPath(opts.conversationId, p);
-      }
-
-      msgs.push({
-        _tmpKey: makeTmpKey(),
-        conversation_id: opts.conversationId,
-        role: "tool",
-        content: result,
-        tool_call_id: tc.id,
-        tool_name: fnName,
-      });
-      onUpdate([...msgs]);
     }
 
     onStatusChange("thinking");

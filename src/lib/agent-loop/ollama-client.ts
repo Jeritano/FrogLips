@@ -1,11 +1,17 @@
 import type { Message, ToolCall } from "../../types";
-import { logDiag } from "../diagnostics";
+import { withTimeout } from "../signal-utils";
+import { readLines } from "../stream-lines";
+import { finalizeToolCalls, mergeToolCallChunk } from "./tool-call-merge";
+import type { PartialToolCall, StreamChatResult } from "./stream-types";
 
 export const OLLAMA_BASE = "http://127.0.0.1:11434";
 export const RETRY_MAX = 2;
 export const RETRY_BACKOFF_MS = 500;
 
 const OLLAMA_REQUEST_TIMEOUT_MS = 120_000;
+
+export type { PartialToolCall, StreamChatResult } from "./stream-types";
+export { finalizeToolCalls, mergeToolCallChunk } from "./tool-call-merge";
 
 /* ── Message serialisation ── */
 
@@ -30,127 +36,28 @@ export function toOllamaMessages(msgs: Message[]) {
   });
 }
 
-function combinedSignal(parent: AbortSignal, timeoutMs: number): AbortSignal {
-  const ctrl = new AbortController();
-  const onAbort = () => ctrl.abort(parent.reason);
-  if (parent.aborted) ctrl.abort(parent.reason);
-  else parent.addEventListener("abort", onAbort, { once: true });
-  const t = setTimeout(() => ctrl.abort(new DOMException("Ollama request timed out", "TimeoutError")), timeoutMs);
-  ctrl.signal.addEventListener("abort", () => clearTimeout(t), { once: true });
-  return ctrl.signal;
-}
-
 /* ── Streaming chat ── */
-
-export interface StreamChatResult {
-  content: string;
-  tool_calls: ToolCall[];
-  prompt_eval_count?: number;
-  eval_count?: number;
-}
-
-export interface PartialToolCall {
-  id?: string;
-  type?: "function";
-  function: {
-    name: string;
-    arguments: unknown;
-    _argStr?: string;
-  };
-}
-
-/**
- * Merge an incoming tool_call chunk into the accumulator slot. Ollama emits
- * tool_calls in pieces — first a slot with `function.name`, then later slots
- * with additional `function.arguments` text — keyed by array index.
- * Some servers emit `arguments` as a string fragment (concat), others as a
- * full object (replace). We handle both. The OpenAI streaming format
- * (MLX) emits tool_calls the same way, so this helper is shared.
- */
-export function mergeToolCallChunk(
-  acc: PartialToolCall[],
-  index: number,
-  chunk: Partial<ToolCall> & { function?: Partial<ToolCall["function"]> },
-): void {
-  let slot = acc[index];
-  if (!slot) {
-    slot = { function: { name: "", arguments: undefined } };
-    acc[index] = slot;
-  }
-  if (chunk.id !== undefined) slot.id = chunk.id;
-  if (chunk.type !== undefined) slot.type = chunk.type;
-  if (chunk.function) {
-    if (chunk.function.name !== undefined && chunk.function.name !== "") {
-      slot.function.name = chunk.function.name;
-    }
-    if (chunk.function.arguments !== undefined) {
-      const a = chunk.function.arguments;
-      if (typeof a === "string") {
-        slot.function._argStr = (slot.function._argStr ?? "") + a;
-        // Attempt to keep arguments parsed as we go; final pass below cleans up.
-        slot.function.arguments = slot.function._argStr;
-      } else if (a && typeof a === "object") {
-        // Object form — replace (Ollama tends to send the whole object in one chunk).
-        slot.function.arguments = a as Record<string, unknown>;
-        slot.function._argStr = undefined;
-      }
-    }
-  }
-}
-
-export function finalizeToolCalls(acc: PartialToolCall[]): ToolCall[] {
-  const out: ToolCall[] = [];
-  for (const slot of acc) {
-    if (!slot) continue;
-    // Drop slots whose name never arrived — a nameless tool_call is
-    // unroutable and would crash dispatch / pollute the audit log.
-    if (!slot.function.name) continue;
-    let args: Record<string, unknown> | string = "";
-    if (slot.function._argStr !== undefined) {
-      // String form — try to JSON.parse, fall back to raw string (dispatch.parseArgs handles both).
-      const s = slot.function._argStr;
-      try {
-        const parsed = JSON.parse(s);
-        args = parsed && typeof parsed === "object" ? parsed : s;
-      } catch {
-        args = s;
-      }
-    } else if (slot.function.arguments && typeof slot.function.arguments === "object") {
-      args = slot.function.arguments as Record<string, unknown>;
-    }
-    out.push({
-      id: slot.id ?? "",
-      type: "function",
-      function: {
-        name: slot.function.name,
-        arguments: args,
-      },
-    });
-  }
-  return out;
-}
 
 /**
  * Stream an Ollama /api/chat call. Parses NDJSON lines; fires `onContentChunk`
  * for each non-empty content delta, accumulates tool_calls (merging chunks by
  * index), and returns the final aggregated result.
  *
- * Buffer handling: chunks may split mid-line, so we accumulate the leftover
- * tail across reads and only parse complete `\n`-terminated lines.
+ * Buffer handling: chunks may split mid-line — `readLines` accumulates the
+ * leftover tail across reads and only emits complete `\n`-terminated lines.
  */
 export async function streamOllamaChat(
   url: string,
   body: unknown,
   signal: AbortSignal,
   onContentChunk: (delta: string) => void,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _onToolCalls?: (calls: ToolCall[]) => void,
 ): Promise<StreamChatResult> {
+  const to = withTimeout(signal, OLLAMA_REQUEST_TIMEOUT_MS, "Ollama request timed out");
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...(body as object), stream: true }),
-    signal: combinedSignal(signal, OLLAMA_REQUEST_TIMEOUT_MS),
+    signal: to.signal,
   });
   if (!res.ok) {
     throw new Error(`Ollama ${res.status}: ${await res.text().catch(() => "")}`);
@@ -159,11 +66,6 @@ export async function streamOllamaChat(
     throw new Error("Ollama response has no body");
   }
 
-  const reader = res.body
-    .pipeThrough(new TextDecoderStream())
-    .getReader();
-
-  let buf = "";
   let content = "";
   const toolAcc: PartialToolCall[] = [];
   let promptTok: number | undefined;
@@ -198,20 +100,9 @@ export async function streamOllamaChat(
   };
 
   try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += value;
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        processLine(line);
-      }
-    }
-    if (buf.length > 0) processLine(buf);
+    await readLines(res.body.getReader(), processLine);
   } finally {
-    try { reader.releaseLock(); } catch {/* noop */}
+    to.clear();
   }
 
   return {
@@ -220,70 +111,4 @@ export async function streamOllamaChat(
     prompt_eval_count: promptTok,
     eval_count: evalTok,
   };
-}
-
-/**
- * Backwards-compat wrapper: streams under the hood, drains to a single
- * response object shaped like the prior non-streaming JSON. Retries on
- * 5xx / network errors up to RETRY_MAX with linear backoff.
- */
-export async function callOllamaWithRetry(
-  url: string,
-  body: unknown,
-  signal: AbortSignal,
-  onRetry: () => void,
-  onContentChunk?: (delta: string) => void,
-): Promise<Record<string, unknown>> {
-  let lastErr: unknown = null;
-  for (let attempt = 0; attempt <= RETRY_MAX; attempt++) {
-    if (signal.aborted) throw new Error("aborted");
-    try {
-      const result = await streamOllamaChat(
-        url,
-        body,
-        signal,
-        (delta) => onContentChunk?.(delta),
-      );
-      return {
-        message: {
-          content: result.content,
-          tool_calls: result.tool_calls,
-        },
-        prompt_eval_count: result.prompt_eval_count,
-        eval_count: result.eval_count,
-      };
-    } catch (e) {
-      lastErr = e;
-      if (signal.aborted) throw e;
-      // Whitelist of retriable failures: explicit Ollama 5xx and genuine
-      // transient connection errors. Timeouts and aborts are NOT retried —
-      // retrying a 120s hang would just multiply the wall-clock cost.
-      const msg = e instanceof Error ? e.message : String(e);
-      const name = e instanceof Error ? e.name : "";
-      const is5xx = /Ollama 5\d\d:/.test(msg);
-      // fetch() throws a bare TypeError on connection failures (DNS, refused,
-      // reset). TimeoutError/AbortError are DOMExceptions — excluded here.
-      const isConnFailure = name === "TypeError";
-      const isRetriable = is5xx || isConnFailure;
-      if (isRetriable && attempt < RETRY_MAX) {
-        logDiag({
-          level: "warn",
-          source: "ollama-client",
-          message: `Ollama call failed (attempt ${attempt + 1}/${RETRY_MAX + 1}), retrying`,
-          detail: { error: msg, url },
-        });
-        onRetry();
-        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
-        continue;
-      }
-      logDiag({
-        level: "error",
-        source: "ollama-client",
-        message: `Ollama call failed terminally after ${attempt + 1} attempt(s)`,
-        detail: { error: msg, url },
-      });
-      throw e;
-    }
-  }
-  throw lastErr ?? new Error("Ollama call failed");
 }

@@ -1,0 +1,120 @@
+:root {
+  --bg: #09090b;
+  --surface: #111113;
+  --surface-2: #18181b;
+  --surface-hover: #1c1c1f;
+  --border: #27272a;
+  --border-subtle: #1a1a1d;
+  --text: #fafafa;
+  --text-2: #71717a;
+  --text-3: #3f3f46;
+  --text-muted: #a1a1aa;
+  --accent: #6366f1;
+  --accent-bg: rgba(99, 102, 241, 0.12);
+  --accent-strong: rgba(99, 102, 241, 0.22);
+  --danger: #ef4444;
+  --danger-bg: rgba(239, 68, 68, 0.12);
+  --danger-bg-strong: rgba(239, 68, 68, 0.22);
+  --danger-fg: #f87171;
+  --danger-border: rgba(239, 68, 68, 0.30);
+  --warn: #eab308;
+  --warn-bg: rgba(234, 179, 8, 0.15);
+  --warn-fg: #fbbf24;
+  --warn-border: rgba(234, 179, 8, 0.30);
+  --green: #22c55e;
+  --green-bg: rgba(34, 197, 94, 0.12);
+  --green-fg: #4ade80;
+  --green-border: rgba(34, 197, 94, 0.30);
+  --overlay-soft: rgba(255, 255, 255, 0.06);
+  --overlay-softer: rgba(255, 255, 255, 0.04);
+  --overlay-strong: rgba(255, 255, 255, 0.10);
+  --shadow-modal: 0 12px 48px rgba(0, 0, 0, 0.5);
+  --shadow-toast: 0 6px 16px rgba(0, 0, 0, 0.4);
+  --mono: "SF Mono", Menlo, Consolas, monospace;
+
+  /* 4pt spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+
+  /* Radius scale */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-full: 999px;
+
+  /* Type scale */
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+
+  /* z-index ladder */
+  --z-popover: 50;
+  --z-toast: 60;
+  --z-modal: 100;
+  --z-modal-stack: 200;
+  --z-wizard: 300;
+  --z-confirm: 400;
+  --z-drag-strip: 9999;
+
+  /* Caret SVG for select / dropdown — re-themed in light mode below */
+  --caret-svg: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'><polyline points='6 9 12 15 18 9'/></svg>");
+
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --surface: #f4f4f5;
+  --surface-2: #e4e4e7;
+  --surface-hover: #ececef;
+  --border: #d4d4d8;
+  --border-subtle: #e4e4e7;
+  --text: #18181b;
+  --text-2: #52525b;
+  --text-3: #a1a1aa;
+  --text-muted: #71717a;
+  --accent: #4f46e5;
+  --accent-bg: rgba(79, 70, 229, 0.10);
+  --accent-strong: rgba(79, 70, 229, 0.20);
+  --danger: #dc2626;
+  --danger-bg: rgba(220, 38, 38, 0.10);
+  --danger-bg-strong: rgba(220, 38, 38, 0.20);
+  --danger-fg: #b91c1c;
+  --danger-border: rgba(220, 38, 38, 0.30);
+  --warn: #b45309;
+  --warn-bg: rgba(180, 83, 9, 0.10);
+  --warn-fg: #92400e;
+  --warn-border: rgba(180, 83, 9, 0.30);
+  --green: #16a34a;
+  --green-bg: rgba(22, 163, 74, 0.10);
+  --green-fg: #15803d;
+  --green-border: rgba(22, 163, 74, 0.30);
+  --overlay-soft: rgba(0, 0, 0, 0.04);
+  --overlay-softer: rgba(0, 0, 0, 0.02);
+  --overlay-strong: rgba(0, 0, 0, 0.08);
+  --shadow-modal: 0 12px 48px rgba(0, 0, 0, 0.15);
+  --shadow-toast: 0 6px 16px rgba(0, 0, 0, 0.10);
+  --caret-svg: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2352525b' stroke-width='2'><polyline points='6 9 12 15 18 9'/></svg>");
+  color-scheme: light;
+}
+
+/* Universal focus ring — applied via :focus-visible so mouse clicks don't draw it */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}

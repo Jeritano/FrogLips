@@ -1,3 +1,7 @@
+//! Backend process lifecycle. Manages BOTH the MLX (`mlx_lm.server`) child
+//! process and the externally-managed Ollama daemon — start/stop, readiness
+//! probing, and stderr ring buffering for whichever backend is selected.
+
 use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex as PLMutex;
 use serde::Serialize;

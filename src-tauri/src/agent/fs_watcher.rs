@@ -80,11 +80,6 @@ struct WatchEntry {
     info: WatchInfo,
     /// Bounded ring of buffered events (oldest first).
     ring: VecDeque<WatchEvent>,
-    /// Optional glob filter applied to event paths (the live one is held by the
-    /// callback closure; this copy is kept on the entry for future poll-time
-    /// re-filtering and diagnostics).
-    #[allow(dead_code)]
-    glob: Option<GlobMatcher>,
     /// Last poll time (unix ms) — drives the inactivity GC.
     last_poll_ms: u64,
     /// Held to keep the OS watcher alive; dropped on stop.
@@ -104,41 +99,18 @@ fn now_ms() -> u64 {
 }
 
 fn random_id() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    // thread-local xorshift, like task_queue::rand_seed
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Process-wide monotonic counter guarantees uniqueness even if two threads
+    // call on the same nanosecond with identically-seeded thread-local PRNGs.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     thread_local!(static SEED: Cell<u32> = const { Cell::new(0xa5a5_5a5a) });
-    let r = SEED.with(|s| {
-        let mut x = s.get();
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        s.set(x);
-        x
-    });
-    format!("w_{:x}{:x}", nanos as u64, r)
+    let r = SEED.with(crate::util::xorshift);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("w_{:x}_{:x}_{:x}", crate::util::now_nanos() as u64, n, r)
 }
 
-fn expand_home(p: &str) -> Result<PathBuf> {
-    if p.is_empty() || p.len() > 4096 {
-        return Err(anyhow!("path length invalid"));
-    }
-    if p.contains('\0') {
-        return Err(anyhow!("path contains null byte"));
-    }
-    if let Some(rest) = p.strip_prefix("~/") {
-        Ok(dirs::home_dir()
-            .ok_or_else(|| anyhow!("home dir unavailable"))?
-            .join(rest))
-    } else if p == "~" {
-        dirs::home_dir().ok_or_else(|| anyhow!("home dir unavailable"))
-    } else {
-        Ok(PathBuf::from(p))
-    }
-}
+use crate::util::expand_home;
 
 fn classify(kind: &EventKind) -> &'static str {
     match kind {
@@ -227,7 +199,7 @@ pub async fn watch_path(
 
     let id = random_id();
     let id_for_cb = id.clone();
-    let matcher_for_cb = matcher.clone();
+    let matcher_for_cb = matcher;
     let root_for_cb = canonical.clone();
 
     // Per-watch debounce map: path -> (last_ts_ms, last_kind).
@@ -302,7 +274,6 @@ pub async fn watch_path(
     let entry = WatchEntry {
         info: info.clone(),
         ring: VecDeque::with_capacity(64),
-        glob: matcher,
         last_poll_ms: now_ms(),
         _watcher: watcher,
     };
@@ -502,7 +473,6 @@ mod tests {
                 dropped: 0,
             },
             ring: VecDeque::with_capacity(64),
-            glob: None,
             last_poll_ms: now_ms(),
             _watcher: watcher,
         };

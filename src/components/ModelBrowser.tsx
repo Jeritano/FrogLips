@@ -2,9 +2,12 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
-import { EmptyState } from "./EmptyState";
+import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import type { GgufDownloadProgress, GgufFile, ModelEntry } from "../types";
 import { OllamaLibraryView } from "./OllamaLibraryView";
+import { CivitaiBrowserTab } from "./model-browser/CivitaiBrowserTab";
+import { InstalledModelsTab } from "./model-browser/InstalledModelsTab";
+import { RpBrowserTab, RP_CATALOG } from "./model-browser/RpBrowserTab";
 /** Type-only re-import for the GGUF tree shape — HuggingFaceLibraryView owns
  *  it now; this stays a type-level import so the lazy() chunk boundary holds. */
 import type { HfTreeEntry } from "./HuggingFaceLibraryView";
@@ -16,14 +19,6 @@ const HuggingFaceLibraryView = lazy(() =>
   import("./HuggingFaceLibraryView").then((m) => ({ default: m.HuggingFaceLibraryView })),
 );
 
-function fmtBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes === 0) return "—";
-  return `${bytes} B`;
-}
-
 type Backend = "ollama" | "hf" | "rp" | "civitai" | "installed";
 
 /* GGUF tree shape lives inside HuggingFaceLibraryView now (the GGUF tab
@@ -32,184 +27,12 @@ type Backend = "ollama" | "hf" | "rp" | "civitai" | "installed";
  * started here keeps progressing if the user wanders to another tab —
  * it's passed in through `ggufContext`. */
 
-/** Parse `Q4_K_M`, `Q5_K_S`, `Q8_0`, `IQ3_XXS`, etc. from a GGUF filename.
- *  Returns null if no recognizable quant tag is found — we fall back to
- *  showing the full filename in that case. Used in the "Installed" tab's
- *  GGUF card list; the HF GGUF tab has its own copy inside the library
- *  view. */
-function parseGgufQuant(filename: string): string | null {
-  const m =
-    filename.match(/\b(IQ\d+_[A-Z]+|Q\d+_[A-Z0-9_]+|F16|F32|BF16)\b/i);
-  return m ? m[1].toUpperCase() : null;
-}
-
 interface CatalogEntry {
   id: string;
   label: string;
   size: string;
   tags: string[];
   desc: string;
-}
-
-interface HfModel {
-  id: string;
-  downloads: number;
-  likes: number;
-  tags?: string[];
-  pipeline_tag?: string;
-  library_name?: string;
-  lastModified?: string;
-  createdAt?: string;
-  gated?: boolean | string;
-  private?: boolean;
-}
-
-interface CivitaiImage {
-  url: string;
-}
-
-interface CivitaiFile {
-  sizeKB?: number;
-  primary?: boolean;
-  pickleScanResult?: string;
-  virusScanResult?: string;
-  metadata?: { format?: string; size?: string; fp?: string };
-  hashes?: { SHA256?: string; AutoV2?: string };
-}
-
-interface CivitaiVersion {
-  name?: string;
-  baseModel?: string;
-  baseModelType?: string;
-  files?: CivitaiFile[];
-  images?: CivitaiImage[];
-  publishedAt?: string;
-  updatedAt?: string;
-  trainedWords?: string[];
-  availability?: string;
-}
-
-interface CivitaiModel {
-  id: number;
-  name: string;
-  description?: string;
-  type: string;
-  nsfw: boolean;
-  nsfwLevel?: number;
-  tags?: string[];
-  creator?: { username: string };
-  stats?: {
-    downloadCount?: number;
-    thumbsUpCount?: number;
-    ratingCount?: number;
-    rating?: number;
-    commentCount?: number;
-    favoriteCount?: number;
-  };
-  modelVersions?: CivitaiVersion[];
-  allowCommercialUse?: string | string[];
-  allowDerivatives?: boolean;
-  mode?: string;
-}
-
-function stripHtml(s: string): string {
-  return s.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
-}
-
-function fmtSize(kb?: number): string | null {
-  if (!kb) return null;
-  if (kb >= 1024 * 1024) return `${(kb / 1024 / 1024).toFixed(1)} GB`;
-  if (kb >= 1024) return `${(kb / 1024).toFixed(0)} MB`;
-  return `${kb} KB`;
-}
-
-// Civitai CDN URLs embed sizing as a path segment ("original=true" or "width=N").
-// Rewrite to a small thumbnail size so we don't pull multi-MB originals.
-function civitaiThumbUrl(url: string, width = 144): string {
-  return url.replace(/\/(original=true|width=\d+|height=\d+|fit=[\w-]+)\//, `/width=${width}/`);
-}
-
-function relativeTime(iso?: string): string | null {
-  if (!iso) return null;
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return null;
-  const diff = Date.now() - then;
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `${day}d ago`;
-  const mo = Math.floor(day / 30);
-  if (mo < 12) return `${mo}mo ago`;
-  const yr = Math.floor(day / 365);
-  return `${yr}y ago`;
-}
-
-interface HfTagInfo {
-  baseModel: string | null;
-  license: string | null;
-  language: string | null;
-  pipeline: string | null;
-  quant: string | null;
-}
-
-function parseHfTags(tags: string[] | undefined, pipeline_tag?: string): HfTagInfo {
-  const info: HfTagInfo = {
-    baseModel: null,
-    license: null,
-    language: null,
-    pipeline: pipeline_tag && pipeline_tag !== "text-generation" ? pipeline_tag : null,
-    quant: null,
-  };
-  if (!tags) return info;
-  for (const t of tags) {
-    if (t.startsWith("base_model:") && !t.includes(":finetune:") && !t.includes(":quantized:") && !info.baseModel) {
-      info.baseModel = t.slice("base_model:".length);
-    } else if (t.startsWith("license:") && !info.license) {
-      info.license = t.slice("license:".length);
-    }
-  }
-  return info;
-}
-
-function pipelineShort(p: string): string {
-  return p
-    .replace("automatic-speech-recognition", "ASR")
-    .replace("text-to-image", "T2I")
-    .replace("image-to-text", "I2T")
-    .replace("feature-extraction", "embed")
-    .replace("sentence-similarity", "embed")
-    .replace("text-classification", "classify")
-    .replace("question-answering", "QA");
-}
-
-function parseCommercialUse(v: string | string[] | undefined): string[] {
-  if (!v) return [];
-  if (Array.isArray(v)) return v;
-  // Civitai returns Postgres array literal: "{Image,RentCivit,Rent}"
-  return v.replace(/^\{|\}$/g, "").split(",").map((s) => s.trim()).filter(Boolean);
-}
-
-function filterCatalog(list: CatalogEntry[], query: string): CatalogEntry[] {
-  if (!query.trim()) return list;
-  const q = query.toLowerCase();
-  return list.filter((e) =>
-    e.label.toLowerCase().includes(q) ||
-    e.id.toLowerCase().includes(q) ||
-    e.desc.toLowerCase().includes(q) ||
-    e.tags.some((t) => t.includes(q))
-  );
-}
-
-function civitaiLicenseShort(m: CivitaiModel): string {
-  const commercial = parseCommercialUse(m.allowCommercialUse).length > 0;
-  if (commercial && m.allowDerivatives) return "permissive";
-  if (commercial && !m.allowDerivatives) return "comm-only";
-  if (!commercial && m.allowDerivatives) return "non-comm";
-  return "restricted";
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
@@ -387,81 +210,6 @@ const OLLAMA: CatalogEntry[] = [
   { id: "huihui_ai/mistral-small-abliterated:24b",     label: "Mistral Small 24B (abliterated)",      size: "14 GB",  tags: ["chat", "uncensored"],      desc: "Refusal-removed Mistral" },
 ];
 
-/* ───────────────────────────────────────────────────────────────────────────
-   RP / Kobold / SillyTavern curated finetunes. All live on HuggingFace.
-   ─────────────────────────────────────────────────────────────────────── */
-const RP_CATALOG: CatalogEntry[] = [
-  // TheDrummer — top RP author
-  { id: "TheDrummer/Anubis-70B-v1",             label: "Anubis 70B v1",            size: "~43 GB", tags: ["rp"],               desc: "TheDrummer's flagship Llama 3.3 RP tune" },
-  { id: "TheDrummer/Skyfall-36B-v2",            label: "Skyfall 36B v2",           size: "~22 GB", tags: ["rp"],               desc: "Solar-arch RP, balanced creativity" },
-  { id: "TheDrummer/Cydonia-24B-v2.1",          label: "Cydonia 24B v2.1",         size: "~14 GB", tags: ["rp"],               desc: "Mistral Small RP tune, very popular" },
-  { id: "TheDrummer/Big-Tiger-Gemma-27B-v1",    label: "Big Tiger Gemma 27B",      size: "~16 GB", tags: ["rp"],               desc: "Gemma 2 27B RP tune" },
-  { id: "TheDrummer/Rocinante-12B-v1.1",        label: "Rocinante 12B v1.1",       size: "~7 GB",  tags: ["rp"],               desc: "Nemo-12B compact RP model" },
-  { id: "TheDrummer/UnslopNemo-12B-v4",         label: "UnslopNemo 12B v4",        size: "~7 GB",  tags: ["rp"],               desc: "Nemo finetune, removes GPT-isms" },
-  { id: "TheDrummer/Tiger-Gemma-9B-v3",         label: "Tiger Gemma 9B v3",        size: "~5 GB",  tags: ["rp"],               desc: "Compact Gemma 2 RP tune" },
-
-  // Sao10K — classic finetuner
-  { id: "Sao10K/L3.3-70B-Euryale-v2.3",         label: "Euryale v2.3 70B",         size: "~43 GB", tags: ["rp"],               desc: "Llama 3.3 RP, top-tier" },
-  { id: "Sao10K/L3-8B-Stheno-v3.2",             label: "Stheno v3.2 8B",           size: "~5 GB",  tags: ["rp"],               desc: "Llama 3 RP classic, fast" },
-  { id: "Sao10K/L3-8B-Lunaris-v1",              label: "Lunaris v1 8B",            size: "~5 GB",  tags: ["rp"],               desc: "Llama 3 RP, balanced" },
-  { id: "Sao10K/Fimbulvetr-11B-v2",             label: "Fimbulvetr 11B v2",        size: "~6 GB",  tags: ["rp"],               desc: "Solar 11B classic RP tune" },
-  { id: "Sao10K/72B-Qwen2.5-Kunou-v1",          label: "Kunou 72B v1",             size: "~47 GB", tags: ["rp"],               desc: "Qwen2.5 72B RP tune" },
-
-  // Anthracite (Magnum series)
-  { id: "anthracite-org/magnum-v4-72b",         label: "Magnum v4 72B",            size: "~47 GB", tags: ["rp"],               desc: "Literary-prose Qwen2.5 tune" },
-  { id: "anthracite-org/magnum-v4-22b",         label: "Magnum v4 22B",            size: "~14 GB", tags: ["rp"],               desc: "Mistral Small Magnum" },
-  { id: "anthracite-org/magnum-v4-12b",         label: "Magnum v4 12B",            size: "~7 GB",  tags: ["rp"],               desc: "Nemo Magnum, compact" },
-
-  // ReadyArt — uncensored RP
-  { id: "ReadyArt/Forgotten-Safeword-70B-v5.0", label: "Forgotten Safeword 70B",   size: "~43 GB", tags: ["rp", "uncensored"], desc: "Heavy uncensored Llama 3.3 RP" },
-  { id: "ReadyArt/Forgotten-Abomination-70B-v5.0", label: "Forgotten Abomination 70B", size: "~43 GB", tags: ["rp", "uncensored"], desc: "Sister tune of Safeword, edgier" },
-
-  // Community favorites
-  { id: "LatitudeGames/Wayfarer-12B",           label: "Wayfarer 12B",             size: "~7 GB",  tags: ["rp"],               desc: "AI Dungeon's open RP model" },
-  { id: "inflatebot/MN-12B-Mag-Mell-R1",        label: "Mag-Mell 12B R1",          size: "~7 GB",  tags: ["rp"],               desc: "Strong Nemo RP merge" },
-  { id: "nbeerbower/Mistral-Nemo-Gutenberg-Doppel-12B", label: "Gutenberg Doppel 12B", size: "~7 GB", tags: ["rp"],          desc: "Literary-tuned Nemo" },
-  { id: "crestf411/MS-sunfall-v0.5.0",          label: "Sunfall MS v0.5",          size: "~14 GB", tags: ["rp"],               desc: "Mistral Small sunfall series" },
-  { id: "aetherwiing/MN-12B-Starcannon-v3",     label: "Starcannon 12B v3",        size: "~7 GB",  tags: ["rp"],               desc: "Nemo merge for creative RP" },
-  { id: "KatyTheCutie/EstopianMaid-13B",        label: "EstopianMaid 13B",         size: "~7 GB",  tags: ["rp"],               desc: "Classic Llama 2 13B RP" },
-  { id: "Doctor-Shotgun/L3.3-70B-Magnum-v5-Twilight", label: "Magnum v5 Twilight 70B", size: "~43 GB", tags: ["rp"],         desc: "Magnum + Twilight merge" },
-  { id: "SicariusSicariiStuff/Negative_LLAMA_70B", label: "Negative LLAMA 70B",    size: "~43 GB", tags: ["rp", "uncensored"], desc: "Heavy debias Llama 3 70B" },
-  { id: "mlabonne/NeuralDaredevil-8B-abliterated", label: "NeuralDaredevil 8B",    size: "~5 GB",  tags: ["uncensored"],       desc: "mlabonne abliterated DPO tune" },
-];
-
-const TAG_COLORS: Record<string, string> = {
-  chat:       "#3b82f6",
-  code:       "#22c55e",
-  reasoning:  "#a855f7",
-  vision:     "#f59e0b",
-  embed:      "#6b7280",
-  tools:      "#ec4899",
-  math:       "#06b6d4",
-  rag:        "#10b981",
-  safety:     "#f97316",
-  uncensored: "#ef4444",
-  cloud:      "#0ea5e9",
-  rp:         "#d946ef",
-  nsfw:       "#dc2626",
-};
-
-function abbrev(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
-  return String(n);
-}
-
-function inferTags(m: HfModel): string[] {
-  const tags: string[] = [];
-  const id = m.id.toLowerCase();
-  if (/coder|code/.test(id)) tags.push("code");
-  else if (/r1|reason|qwq/.test(id)) tags.push("reasoning");
-  else if (/vision|llava|vlm/.test(id)) tags.push("vision");
-  else if (/embed/.test(id)) tags.push("embed");
-  else if (/math/.test(id)) tags.push("math");
-  else tags.push("chat");
-  return tags;
-}
-
 interface Props {
   onClose: () => void;
   onPulled: () => void;
@@ -477,9 +225,11 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   const [installedMlx, setInstalledMlx] = useState<ModelEntry[]>([]);
   const [installedErr, setInstalledErr] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  // Two-click confirm for delete (window.confirm() is disabled in Tauri 2 webview)
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Two-click confirm for delete (window.confirm() is disabled in Tauri 2
+  // webview). `armed` is the id currently armed; passed to child views as
+  // the `confirmDelete` prop.
+  const removeConfirm = useTwoClickConfirm();
+  const confirmDelete = removeConfirm.armed;
 
   async function refreshInstalled() {
     try {
@@ -509,20 +259,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   );
 
   function requestRemove(id: string, backend: "ollama" | "mlx") {
-    // First click arms; second click within 4s confirms. Tauri 2 webview
-    // disables synchronous window.confirm, so we use an inline pattern.
-    if (confirmDelete !== id) {
-      setConfirmDelete(id);
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-      confirmTimerRef.current = setTimeout(() => setConfirmDelete(null), 4000);
-      return;
-    }
-    if (confirmTimerRef.current) {
-      clearTimeout(confirmTimerRef.current);
-      confirmTimerRef.current = null;
-    }
-    setConfirmDelete(null);
-    void remove(id, backend);
+    // First click arms; second click within the window confirms. Tauri 2
+    // webview disables synchronous window.confirm, so we use an inline pattern.
+    removeConfirm.request(id, () => void remove(id, backend));
   }
 
   async function remove(id: string, backend: "ollama" | "mlx") {
@@ -543,17 +282,6 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
       setDeleting(null);
     }
   }
-
-  const [hfModels, setHfModels] = useState<HfModel[]>([]);
-  const [hfLoading, setHfLoading] = useState(false);
-  const [hfErr, setHfErr] = useState<string | null>(null);
-
-  /* Full-HF tab state (hf-all). Unfiltered search across all HuggingFace
-   * models. Detects format from tags so we can show the right action button
-   * (Download for MLX, View files for GGUF, Open on HF for safetensors-only). */
-  const [hfAllModels, setHfAllModels] = useState<HfModel[]>([]);
-  const [hfAllLoading, setHfAllLoading] = useState(false);
-  const [hfAllErr, setHfAllErr] = useState<string | null>(null);
 
   /* GGUF tab state. HuggingFaceLibraryView (with `ggufMode`) does the
      server-side repo search itself; ModelBrowser only owns the long-lived
@@ -610,151 +338,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   useEffect(() => { void refreshGgufInstalled(); }, []);
   useEffect(() => { if (tab === "hf" || tab === "installed") void refreshGgufInstalled(); }, [tab]);
 
-  const [civitaiModels, setCivitaiModels] = useState<CivitaiModel[]>([]);
-  const [civitaiLoading, setCivitaiLoading] = useState(false);
-  const [civitaiErr, setCivitaiErr] = useState<string | null>(null);
-  const [civitaiVisible, setCivitaiVisible] = useState(20);
-
-  const debounceRef = useRef<number | null>(null);
-  const fetchAbortRef = useRef<AbortController | null>(null);
-
-  // Debounced fetch when query or tab changes. The GGUF tab is omitted —
-  // HuggingFaceLibraryView (in ggufMode) drives its own debounced fetch
-  // through `loadHuggingFace`, so we don't fire a duplicate request here.
-  useEffect(() => {
-    // HF tab drives its own debounced fetch inside HuggingFaceLibraryView
-    // (`loadHuggingFace`). We only handle the Civitai tab here.
-    if (tab === "civitai") {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-      debounceRef.current = window.setTimeout(() => loadCivitai(query), 250);
-    }
-    return () => {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-      fetchAbortRef.current?.abort();
-    };
-  }, [tab, query]);
-
-  // @ts-expect-error legacy MLX-only loader; kept for now in case the
-  // unified HF tab's loader needs reference shapes during further iteration.
-  async function loadHf(q: string) {
-    fetchAbortRef.current?.abort();
-    const ctrl = new AbortController();
-    fetchAbortRef.current = ctrl;
-    setHfLoading(true);
-    setHfErr(null);
-    try {
-      const params = new URLSearchParams({
-        sort: "downloads",
-        direction: "-1",
-        limit: "100",
-      });
-      if (q.trim()) {
-        params.set("search", q.trim());
-        params.set("library", "mlx");
-      } else {
-        params.set("author", "mlx-community");
-      }
-      const url = `https://huggingface.co/api/models?${params.toString()}`;
-      const timeoutId = window.setTimeout(() => ctrl.abort(new DOMException("HF request timed out", "TimeoutError")), 15_000);
-      let res: Response;
-      try {
-        res = await fetch(url, { signal: ctrl.signal });
-      } finally { window.clearTimeout(timeoutId); }
-      if (!res.ok) throw new Error(`HF API ${res.status}`);
-      const data: HfModel[] = await res.json();
-      if (ctrl.signal.aborted) return;
-      const capped = Array.isArray(data) ? data.slice(0, 200) : [];
-      setHfModels(capped);
-    } catch (e: any) {
-      if (e?.name === "AbortError") return;
-      setHfErr(String(e?.message || e));
-    } finally {
-      // Always clear loading; only clear ref if it's still ours
-      if (fetchAbortRef.current === ctrl) fetchAbortRef.current = null;
-      setHfLoading(false);
-    }
-  }
-
-  async function loadCivitai(q: string) {
-    fetchAbortRef.current?.abort();
-    const ctrl = new AbortController();
-    fetchAbortRef.current = ctrl;
-    setCivitaiLoading(true);
-    setCivitaiErr(null);
-    try {
-      const params = new URLSearchParams({
-        limit: "100",
-        sort: "Highest Rated",
-        types: "Checkpoint",
-      });
-      if (q.trim()) params.set("query", q.trim());
-      const url = `https://civitai.com/api/v1/models?${params.toString()}`;
-      const timeoutId = window.setTimeout(() => ctrl.abort(new DOMException("Civitai request timed out", "TimeoutError")), 15_000);
-      let res: Response;
-      try {
-        res = await fetch(url, { signal: ctrl.signal });
-      } finally { window.clearTimeout(timeoutId); }
-      if (!res.ok) throw new Error(`Civitai API ${res.status}`);
-      const data = await res.json();
-      if (ctrl.signal.aborted) return;
-      const items = Array.isArray(data?.items) ? data.items.slice(0, 200) : [];
-      setCivitaiModels(items);
-    } catch (e: any) {
-      if (e?.name === "AbortError") return;
-      setCivitaiErr(String(e?.message || e));
-    } finally {
-      if (fetchAbortRef.current === ctrl) fetchAbortRef.current = null;
-      setCivitaiLoading(false);
-    }
-  }
-
-  /* HF GGUF tab no longer needs a dedicated loader — HuggingFaceLibraryView
-     (in ggufMode) drives the repo search through `loadHuggingFace` and
-     surfaces the count in its own toolbar header. */
-
-  /** Fetch the full HuggingFace catalogue (no author / library pin). Used by
-   * the "All HuggingFace" tab so the user can browse anything on HF — MLX,
-   * GGUF, vanilla safetensors, etc. Compatibility hints render per row. */
-  // @ts-expect-error legacy hf-all loader; kept for now during iteration.
-  async function loadHfAll(q: string) {
-    fetchAbortRef.current?.abort();
-    const ctrl = new AbortController();
-    fetchAbortRef.current = ctrl;
-    setHfAllLoading(true);
-    setHfAllErr(null);
-    try {
-      const params = new URLSearchParams({
-        sort: "downloads",
-        direction: "-1",
-        limit: "100",
-        // Pin pipeline to text-generation so we don't surface audio / vision /
-        // diffusion repos in a chat-LLM picker. User can drop the filter later
-        // via free-text search if they want.
-        pipeline_tag: "text-generation",
-      });
-      if (q.trim()) params.set("search", q.trim());
-      const url = `https://huggingface.co/api/models?${params.toString()}`;
-      const timeoutId = window.setTimeout(
-        () => ctrl.abort(new DOMException("HF request timed out", "TimeoutError")),
-        15_000,
-      );
-      let res: Response;
-      try {
-        res = await fetch(url, { signal: ctrl.signal });
-      } finally { window.clearTimeout(timeoutId); }
-      if (!res.ok) throw new Error(`HF API ${res.status}`);
-      const data: HfModel[] = await res.json();
-      if (ctrl.signal.aborted) return;
-      const capped = Array.isArray(data) ? data.slice(0, 200) : [];
-      setHfAllModels(capped);
-    } catch (e: any) {
-      if (e?.name === "AbortError") return;
-      setHfAllErr(String(e?.message || e));
-    } finally {
-      if (fetchAbortRef.current === ctrl) fetchAbortRef.current = null;
-      setHfAllLoading(false);
-    }
-  }
+  /* The HF and Civitai tabs each own their own debounced fetch / abort /
+     state inside their respective sibling components (HuggingFaceLibraryView,
+     CivitaiBrowserTab). ModelBrowser no longer drives those requests. */
 
   /** Lazy-load the file tree for a GGUF repo when the user clicks its row. */
   async function loadGgufTree(repoId: string) {
@@ -799,18 +385,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
    *  so it can't collide with the MLX/Ollama confirm keys. */
   function requestRemoveGguf(repo: string, filename: string) {
     const id = `gguf:${repo}/${filename}`;
-    if (confirmDelete !== id) {
-      setConfirmDelete(id);
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-      confirmTimerRef.current = setTimeout(() => setConfirmDelete(null), 4000);
-      return;
-    }
-    if (confirmTimerRef.current) {
-      clearTimeout(confirmTimerRef.current);
-      confirmTimerRef.current = null;
-    }
-    setConfirmDelete(null);
-    void removeGguf(repo, filename);
+    removeConfirm.request(id, () => void removeGguf(repo, filename));
   }
 
   async function removeGguf(repo: string, filename: string) {
@@ -827,23 +402,6 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
       setDeleting(null);
     }
   }
-
-  // Ollama tab now uses <OllamaLibraryView>, which does its own query
-  // filtering. The OLLAMA constant is still consumed as the fallback dataset
-  // passed into that view.
-  const filteredRp = useMemo(() => filterCatalog(RP_CATALOG, query), [query]);
-
-  // Reset pagination when results change (new search)
-  useEffect(() => { setCivitaiVisible(20); }, [civitaiModels]);
-
-  // Precompute resized thumbnail URLs once per fetch, not per render
-  const civitaiCards = useMemo(
-    () => civitaiModels.slice(0, civitaiVisible).map((m) => {
-      const url = m.modelVersions?.[0]?.images?.find((i) => i.url)?.url;
-      return { m, thumbResized: url ? civitaiThumbUrl(url, 144) : null };
-    }),
-    [civitaiModels, civitaiVisible],
-  );
 
   async function pull(id: string, backend: Backend) {
     setPulling(id);
@@ -918,7 +476,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               RP / Kobold ({RP_CATALOG.length})
             </option>
             <option value="civitai">
-              Civitai ({civitaiModels.length || "live"})
+              Civitai (live)
             </option>
           </select>
         </div>
@@ -926,141 +484,19 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
         {/* List */}
         <div className={`mb-list ${tab === "hf" ? "mb-list-hfl" : ""}`}>
           {tab === "installed" && (
-            <>
-              {installedErr && <div className="mb-empty mb-empty-err">{installedErr}</div>}
-              {installedOllama.length === 0 && installedMlx.length === 0 && ggufInstalled.length === 0 && (
-                <EmptyState
-                  icon="📦"
-                  heading="No models installed"
-                  sub="Switch to Ollama or HuggingFace tabs above to pull a model."
-                />
-              )}
-              {(installedOllama.length + installedMlx.length + ggufInstalled.length) > 0 && (
-                <div className="mb-disk-summary">
-                  Total: <strong>
-                    {fmtBytes(
-                      installedOllama.reduce((s, m) => s + (m.size_bytes || 0), 0) +
-                      installedMlx.reduce((s, m) => s + (m.size_bytes || 0), 0) +
-                      ggufInstalled.reduce((s, f) => s + (f.size_bytes || 0), 0),
-                    )}
-                  </strong> across {installedOllama.length + installedMlx.length + ggufInstalled.length} models
-                </div>
-              )}
-              {installedOllama.length > 0 && (
-                <div className="mb-section-title">Ollama ({installedOllama.length})</div>
-              )}
-              {installedOllama
-                .filter((m) => !query.trim() || m.id.toLowerCase().includes(query.toLowerCase()))
-                .map((m) => {
-                  const isDeleting = deleting === m.id;
-                  const err = errors.get(m.id);
-                  const isCloud = m.id.endsWith(":cloud");
-                  return (
-                    <div key={`ol-${m.id}`} className="mb-card">
-                      <div className="mb-card-info">
-                        <div className="mb-card-top">
-                          <span className="mb-card-label">{m.id}</span>
-                          <div className="mb-tags">
-                            <span className="mb-tag" style={{ background: "#3b82f622", color: "#3b82f6" }}>ollama</span>
-                            {isCloud && (
-                              <span className="mb-tag" style={{ background: "#0ea5e922", color: "#0ea5e9" }}>cloud</span>
-                            )}
-                          </div>
-                        </div>
-                        {err && <div className="mb-card-err">{err}</div>}
-                      </div>
-                      <div className="mb-card-actions">
-                        <span className="mb-card-size">{m.size_bytes > 0 ? fmtBytes(m.size_bytes) : (isCloud ? "cloud" : "—")}</span>
-                        <button
-                          className="mb-delete-btn"
-                          onClick={() => requestRemove(m.id, "ollama")}
-                          disabled={isDeleting || !!deleting}
-                          title="Delete from disk"
-                        >
-                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove")}
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              {installedMlx.length > 0 && (
-                <div className="mb-section-title">MLX / HuggingFace ({installedMlx.length})</div>
-              )}
-              {installedMlx
-                .filter((m) => !query.trim() || m.id.toLowerCase().includes(query.toLowerCase()))
-                .map((m) => {
-                  const isDeleting = deleting === m.id;
-                  const err = errors.get(m.id);
-                  return (
-                    <div key={`mlx-${m.id}`} className="mb-card">
-                      <div className="mb-card-info">
-                        <div className="mb-card-top">
-                          <span className="mb-card-label">{m.id}</span>
-                          <div className="mb-tags">
-                            <span className="mb-tag" style={{ background: "#a855f722", color: "#a855f7" }}>mlx</span>
-                          </div>
-                        </div>
-                        {err && <div className="mb-card-err">{err}</div>}
-                      </div>
-                      <div className="mb-card-actions">
-                        <span className="mb-card-size">{fmtBytes(m.size_bytes)}</span>
-                        <button
-                          className="mb-delete-btn"
-                          onClick={() => requestRemove(m.id, "mlx")}
-                          disabled={isDeleting || !!deleting}
-                          title="Delete from disk"
-                        >
-                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove")}
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              {ggufInstalled.length > 0 && (
-                <div className="mb-section-title" data-testid="installed-gguf-title">
-                  GGUF (native) ({ggufInstalled.length})
-                </div>
-              )}
-              {ggufInstalledErr && <div className="mb-empty mb-empty-err">{ggufInstalledErr}</div>}
-              {ggufInstalled
-                .filter((f) =>
-                  !query.trim() ||
-                  f.filename.toLowerCase().includes(query.toLowerCase()) ||
-                  f.repo.toLowerCase().includes(query.toLowerCase()),
-                )
-                .map((f) => {
-                  const id = `gguf:${f.repo}/${f.filename}`;
-                  const isDeleting = deleting === id;
-                  const err = errors.get(id);
-                  const quant = parseGgufQuant(f.filename);
-                  return (
-                    <div key={id} className="mb-card" data-testid={`installed-gguf-card-${f.repo}-${f.filename}`}>
-                      <div className="mb-card-info">
-                        <div className="mb-card-top">
-                          <span className="mb-card-label">{f.filename}</span>
-                          <div className="mb-tags">
-                            <span className="mb-tag" style={{ background: "#22c55e22", color: "#22c55e" }}>gguf</span>
-                            {quant && <span className="mb-tag civitai-soft">{quant}</span>}
-                          </div>
-                        </div>
-                        <div className="mb-card-desc" style={{ fontSize: 11, opacity: 0.7 }}>{f.repo}</div>
-                        {err && <div className="mb-card-err">{err}</div>}
-                      </div>
-                      <div className="mb-card-actions">
-                        <span className="mb-card-size">{fmtBytes(f.size_bytes)}</span>
-                        <button
-                          className="mb-delete-btn"
-                          onClick={() => requestRemoveGguf(f.repo, f.filename)}
-                          disabled={isDeleting || !!deleting}
-                          title="Delete GGUF from disk"
-                        >
-                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === id ? "Click again to confirm" : "🗑 Remove")}
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-            </>
+            <InstalledModelsTab
+              installedOllama={installedOllama}
+              installedMlx={installedMlx}
+              ggufInstalled={ggufInstalled}
+              installedErr={installedErr}
+              ggufInstalledErr={ggufInstalledErr}
+              deleting={deleting}
+              errors={errors}
+              confirmDelete={confirmDelete}
+              query={query}
+              requestRemove={requestRemove}
+              requestRemoveGguf={requestRemoveGguf}
+            />
           )}
 
           {tab === "ollama" && (
@@ -1113,412 +549,23 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
             </Suspense>
           )}
 
-          {/* Legacy MLX-only renderer kept commented for reference — replaced by
-              <HuggingFaceLibraryView /> above. */}
-          {false && (
-            <>
-              {hfLoading && hfModels.length === 0 && (
-                <div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading from HuggingFace…</div>
-              )}
-              {hfErr && <div className="mb-empty mb-empty-err">Failed to load: {hfErr}</div>}
-              {!hfLoading && !hfErr && hfModels.length === 0 && (
-                <div className="mb-empty">No MLX models match "{query}"</div>
-              )}
-              {hfModels.map((m) => {
-                const isPulling = pulling === m.id;
-                const isDeleting = deleting === m.id;
-                const isDone = done.has(m.id);
-                const isInstalled = installedMlxIds.has(m.id);
-                const err = errors.get(m.id);
-                const label = m.id.replace("mlx-community/", "");
-                const tags = inferTags(m);
-                const info = parseHfTags(m.tags, m.pipeline_tag);
-                const updated = relativeTime(m.lastModified);
-                const author = m.id.includes("/") ? m.id.split("/")[0] : "mlx-community";
-                return (
-                  <div key={m.id} className="mb-card" data-testid="hf-model-card">
-                    <div className="mb-card-info">
-                      <div className="mb-card-top">
-                        <span className="mb-card-label">{label}</span>
-                        <div className="mb-tags">
-                          {info.pipeline && (
-                            <span className="mb-tag" style={{ background: "#f59e0b22", color: "#f59e0b" }}>
-                              {pipelineShort(info.pipeline)}
-                            </span>
-                          )}
-                          {tags.map((t) => (
-                            <span key={t} className="mb-tag" style={{ background: (TAG_COLORS[t] ?? "#6b7280") + "22", color: TAG_COLORS[t] ?? "#9ca3af" }}>
-                              {t}
-                            </span>
-                          ))}
-                          {info.license && (
-                            <span className="mb-tag civitai-soft" title="License">{info.license}</span>
-                          )}
-                          {m.gated && (
-                            <span className="mb-tag" style={{ background: "#ef444422", color: "#ef4444" }} title="Requires HF auth">
-                              gated
-                            </span>
-                          )}
-                          {isInstalled && (
-                            <span className="mb-tag mb-installed-tag" title="Already pulled">✓ installed</span>
-                          )}
-                        </div>
-                      </div>
-                      {info.baseModel && (
-                        <div className="mb-card-desc" style={{ fontSize: 11, opacity: 0.7 }}>
-                          base: <code style={{ fontFamily: "SF Mono, Menlo, monospace" }}>{info.baseModel}</code>
-                        </div>
-                      )}
-                      <div className="mb-card-desc">
-                        ↓ {abbrev(m.downloads)} · ♥ {abbrev(m.likes)}
-                        {updated && <> · {updated}</>}
-                      </div>
-                      {err && <div className="mb-card-err">{err}</div>}
-                    </div>
-                    <div className="mb-card-actions">
-                      <span className="mb-card-size">{author}</span>
-                      {isInstalled ? (
-                        <button
-                          className="mb-delete-btn"
-                          onClick={() => requestRemove(m.id, "mlx")}
-                          disabled={isDeleting || !!deleting}
-                        >
-                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove")}
-                        </button>
-                      ) : (
-                        <button
-                          className={`mb-pull-btn ${isDone ? "done" : ""}`}
-                          onClick={() => pull(m.id, "hf")}
-                          disabled={isPulling || !!pulling}
-                        >
-                          {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
-          )}
-
-          {/* Legacy hf-gguf + hf-all source-dropdown entries removed. The
-              unified `hf` tab above auto-enables ggufMode when the user
-              toggles the GGUF library chip in the sidebar. */}
-
-          {/* Legacy hf-all renderer (kept off so unused variables stay typed). */}
-          {false && (
-            <>
-              {hfAllLoading && hfAllModels.length === 0 && (
-                <div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading from HuggingFace…</div>
-              )}
-              {hfAllErr && <div className="mb-empty mb-empty-err">Failed to load: {hfAllErr}</div>}
-              {!hfAllLoading && !hfAllErr && hfAllModels.length === 0 && (
-                <div className="mb-empty">No models match "{query}"</div>
-              )}
-              {hfAllModels.length > 0 && (
-                <div className="mb-empty" style={{ padding: "8px 0 12px", textAlign: "left", fontSize: 11 }}>
-                  All text-generation repos on HF. Pull works only on MLX repos; for GGUF use the GGUF tab; safetensors-only repos open on huggingface.co.
-                </div>
-              )}
-              {hfAllModels.map((m) => {
-                const tags = inferTags(m);
-                const info = parseHfTags(m.tags, m.pipeline_tag);
-                const updated = relativeTime(m.lastModified);
-                const author = m.id.includes("/") ? m.id.split("/")[0] : "?";
-                const isMlx = tags.includes("mlx") || m.id.startsWith("mlx-community/");
-                const hasGguf = tags.includes("gguf") || (m.tags ?? []).some((t) => t.toLowerCase() === "gguf");
-                const isPulling = pulling === m.id;
-                const isDone = done.has(m.id);
-                const isInstalled = installedMlxIds.has(m.id);
-                const err = errors.get(m.id);
-                return (
-                  <div key={m.id} className="mb-card" data-testid="hf-all-model-card">
-                    <div className="mb-card-info">
-                      <div className="mb-card-top">
-                        <span className="mb-card-label">{m.id}</span>
-                        <div className="mb-tags">
-                          {info.pipeline && (
-                            <span className="mb-tag" style={{ background: "#f59e0b22", color: "#f59e0b" }}>
-                              {pipelineShort(info.pipeline)}
-                            </span>
-                          )}
-                          {tags.map((t) => (
-                            <span key={t} className="mb-tag" style={{ background: (TAG_COLORS[t] ?? "#6b7280") + "22", color: TAG_COLORS[t] ?? "#9ca3af" }}>
-                              {t}
-                            </span>
-                          ))}
-                          {info.license && (
-                            <span className="mb-tag civitai-soft" title="License">{info.license}</span>
-                          )}
-                          {m.gated && (
-                            <span className="mb-tag" style={{ background: "#ef444422", color: "#ef4444" }} title="Requires HF auth">gated</span>
-                          )}
-                          {isInstalled && (
-                            <span className="mb-tag mb-installed-tag" title="Already pulled">✓ installed</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="mb-card-desc">
-                        ↓ {abbrev(m.downloads)} · ♥ {abbrev(m.likes)}
-                        {updated && <> · {updated}</>}
-                      </div>
-                      {err && <div className="mb-card-err">{err}</div>}
-                    </div>
-                    <div className="mb-card-actions">
-                      <span className="mb-card-size">{author}</span>
-                      {isMlx ? (
-                        isInstalled ? (
-                          <button
-                            className="mb-delete-btn"
-                            onClick={() => requestRemove(m.id, "mlx")}
-                            disabled={!!deleting}
-                          >
-                            {confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove"}
-                          </button>
-                        ) : (
-                          <button
-                            className={`mb-pull-btn ${isDone ? "done" : ""}`}
-                            onClick={() => pull(m.id, "hf")}
-                            disabled={isPulling || !!pulling}
-                          >
-                            {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
-                          </button>
-                        )
-                      ) : hasGguf ? (
-                        <button
-                          className="mb-pull-btn"
-                          onClick={() => { setTab("hf"); setQuery(m.id); }}
-                          title="Switch to HF tab pre-filtered to this repo"
-                        >
-                          View GGUF files
-                        </button>
-                      ) : (
-                        <button
-                          className="mb-pull-btn"
-                          onClick={() => { window.open(`https://huggingface.co/${m.id}`, "_blank", "noreferrer"); }}
-                          title="Repo isn't MLX/GGUF — opens on huggingface.co"
-                        >
-                          Open on HF ↗
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
-          )}
-
           {/* RP / Kobold tab */}
           {tab === "rp" && (
-            <>
-              {filteredRp.length === 0 && (
-                <div className="mb-empty">No RP models match "{query}"</div>
-              )}
-              {filteredRp.map((entry) => {
-                const isPulling = pulling === entry.id;
-                const isDeleting = deleting === entry.id;
-                const isDone = done.has(entry.id);
-                const isInstalled = installedMlxIds.has(entry.id);
-                const err = errors.get(entry.id);
-                return (
-                  <div key={entry.id} className={`mb-card ${isInstalled ? "installed" : ""}`}>
-                    <div className="mb-card-info">
-                      <div className="mb-card-top">
-                        <span className="mb-card-label">{entry.label}</span>
-                        <div className="mb-tags">
-                          {entry.tags.map((t) => (
-                            <span key={t} className="mb-tag" style={{ background: (TAG_COLORS[t] ?? "#6b7280") + "22", color: TAG_COLORS[t] ?? "#9ca3af" }}>
-                              {t}
-                            </span>
-                          ))}
-                          {isInstalled && (
-                            <span className="mb-tag mb-installed-tag" title="Already pulled">✓ installed</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="mb-card-desc">{entry.desc}</div>
-                      <div className="mb-card-desc" style={{ opacity: 0.6, fontSize: 11 }}>{entry.id}</div>
-                      {err && <div className="mb-card-err">{err}</div>}
-                    </div>
-                    <div className="mb-card-actions">
-                      <span className="mb-card-size">{entry.size}</span>
-                      {isInstalled ? (
-                        <button
-                          className="mb-delete-btn"
-                          onClick={() => requestRemove(entry.id, "mlx")}
-                          disabled={isDeleting || !!deleting}
-                        >
-                          {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === entry.id ? "Click again to confirm" : "🗑 Remove")}
-                        </button>
-                      ) : (
-                        <button
-                          className={`mb-pull-btn ${isDone ? "done" : ""}`}
-                          onClick={() => pull(entry.id, "hf")}
-                          disabled={isPulling || !!pulling}
-                        >
-                          {isPulling ? <span className="mb-spinner" /> : isDone ? "✓ Done" : "Pull"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
+            <RpBrowserTab
+              query={query}
+              installedMlxIds={installedMlxIds}
+              pulling={pulling}
+              deleting={deleting}
+              done={done}
+              errors={errors}
+              confirmDelete={confirmDelete}
+              pull={(id) => void pull(id, "hf")}
+              requestRemove={(id) => requestRemove(id, "mlx")}
+            />
           )}
 
           {/* Civitai tab */}
-          {tab === "civitai" && (
-            <>
-              {civitaiLoading && civitaiModels.length === 0 && (
-                <div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading from Civitai…</div>
-              )}
-              {civitaiErr && <div className="mb-empty mb-empty-err">Failed to load: {civitaiErr}</div>}
-              {!civitaiLoading && !civitaiErr && civitaiModels.length === 0 && (
-                <div className="mb-empty">No Civitai models match "{query}"</div>
-              )}
-              {civitaiModels.length > 0 && (
-                <div className="mb-empty" style={{ padding: "8px 0 12px", textAlign: "left", fontSize: 11 }}>
-                  Note: Civitai is mostly diffusion (image gen). Click "Open ↗" to view in browser — direct MLX loading not supported.
-                </div>
-              )}
-              {civitaiCards.map(({ m, thumbResized }) => {
-                const v0 = m.modelVersions?.[0];
-                const baseModel = v0?.baseModel;
-                const baseModelType = v0?.baseModelType;
-                const primaryFile = v0?.files?.find((f) => f.primary) ?? v0?.files?.[0];
-                const fileSize = fmtSize(primaryFile?.sizeKB);
-                const fileFormat = primaryFile?.metadata?.format;
-                const fileFp = primaryFile?.metadata?.fp;
-                const fileQuant = primaryFile?.metadata?.size;
-                const pickleOk = primaryFile?.pickleScanResult === "Success";
-                const virusOk = primaryFile?.virusScanResult === "Success";
-                const versionName = v0?.name;
-                const triggerWords = (v0?.trainedWords ?? []).slice(0, 4);
-                const desc = m.description ? stripHtml(m.description) : "";
-                const descShort = desc.length > 140 ? desc.slice(0, 140).trim() + "…" : desc;
-                const topTags = (m.tags ?? []).slice(0, 3);
-                const tags: string[] = [m.type.toLowerCase()];
-                if (m.nsfw) tags.push("nsfw");
-                const licenseShort = civitaiLicenseShort(m);
-                const published = relativeTime(v0?.publishedAt);
-                const versionCount = m.modelVersions?.length ?? 0;
-
-                return (
-                  <div key={m.id} className="mb-card civitai-card">
-                    {thumbResized && (
-                      <img
-                        className="civitai-thumb"
-                        src={thumbResized}
-                        alt=""
-                        loading="lazy"
-                        referrerPolicy="no-referrer"
-                      />
-                    )}
-                    <div className="mb-card-info">
-                      <div className="mb-card-top">
-                        <span className="mb-card-label">
-                          {m.name}
-                          {versionName && <span className="civitai-version"> · {versionName}</span>}
-                        </span>
-                        <div className="mb-tags">
-                          {baseModel && (
-                            <span className="mb-tag civitai-base">
-                              {baseModel}{baseModelType && baseModelType !== "Standard" ? ` ${baseModelType}` : ""}
-                            </span>
-                          )}
-                          {tags.map((t) => (
-                            <span key={t} className="mb-tag" style={{ background: (TAG_COLORS[t] ?? "#6b7280") + "22", color: TAG_COLORS[t] ?? "#9ca3af" }}>
-                              {t}
-                            </span>
-                          ))}
-                          {fileFormat && (
-                            <span
-                              className="mb-tag"
-                              title="File format"
-                              style={{
-                                background: fileFormat === "SafeTensor" ? "#22c55e22" : "#ef444422",
-                                color: fileFormat === "SafeTensor" ? "#22c55e" : "#ef4444",
-                              }}
-                            >
-                              {fileFormat}
-                            </span>
-                          )}
-                          {topTags.map((t) => (
-                            <span key={t} className="mb-tag civitai-soft">{t}</span>
-                          ))}
-                        </div>
-                      </div>
-                      {descShort && <div className="mb-card-desc civitai-desc">{descShort}</div>}
-                      {triggerWords.length > 0 && (
-                        <div className="mb-card-desc" style={{ fontSize: 11 }}>
-                          triggers: {triggerWords.map((w) => (
-                            <code key={w} style={{
-                              background: "var(--surface-hover)",
-                              padding: "1px 5px",
-                              borderRadius: 3,
-                              marginRight: 4,
-                              fontFamily: "SF Mono, Menlo, monospace",
-                              fontSize: 10,
-                            }}>{w}</code>
-                          ))}
-                        </div>
-                      )}
-                      <div className="mb-card-desc civitai-stats">
-                        by <strong>{m.creator?.username ?? "unknown"}</strong>
-                        {m.stats?.downloadCount != null && <> · ↓ {abbrev(m.stats.downloadCount)}</>}
-                        {m.stats?.thumbsUpCount != null && <> · 👍 {abbrev(m.stats.thumbsUpCount)}</>}
-                        {m.stats?.commentCount != null && m.stats.commentCount > 0 && <> · 💬 {abbrev(m.stats.commentCount)}</>}
-                        {m.stats?.favoriteCount != null && m.stats.favoriteCount > 0 && <> · ★ {abbrev(m.stats.favoriteCount)}</>}
-                        {m.stats?.rating != null && m.stats.ratingCount != null && m.stats.ratingCount > 0 && (
-                          <> · {m.stats.rating.toFixed(2)}/5 ({abbrev(m.stats.ratingCount)})</>
-                        )}
-                        {published && <> · pub {published}</>}
-                        {v0?.updatedAt && relativeTime(v0.updatedAt) && relativeTime(v0.updatedAt) !== published && (
-                          <> · upd {relativeTime(v0.updatedAt)}</>
-                        )}
-                        {versionCount > 1 && <> · {versionCount} versions</>}
-                        {v0?.availability && v0.availability !== "Public" && <> · {v0.availability}</>}
-                        {m.mode && <> · {m.mode}</>}
-                        {" · license: "}<span title={`commercial: ${parseCommercialUse(m.allowCommercialUse).join(", ") || "no"}; derivatives: ${m.allowDerivatives ? "yes" : "no"}`}>{licenseShort}</span>
-                        {primaryFile?.hashes?.SHA256 && (
-                          <span style={{ marginLeft: 6, opacity: 0.5, fontFamily: "var(--mono, monospace)", fontSize: 10 }}
-                                title={`SHA256: ${primaryFile.hashes.SHA256}`}>
-                            sha {primaryFile.hashes.SHA256.slice(0, 8)}
-                          </span>
-                        )}
-                        {(!pickleOk || !virusOk) && (
-                          <span style={{ color: "#ef4444", marginLeft: 6 }} title={`pickle: ${primaryFile?.pickleScanResult}, virus: ${primaryFile?.virusScanResult}`}>⚠ scan</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="mb-card-actions">
-                      {fileSize && (
-                        <span className="mb-card-size">
-                          {fileSize}
-                          {(fileQuant || fileFp) && <span style={{ display: "block", fontSize: 10, opacity: 0.7 }}>
-                            {[fileQuant, fileFp].filter(Boolean).join(" · ")}
-                          </span>}
-                        </span>
-                      )}
-                      <button
-                        className="mb-pull-btn"
-                        onClick={() => api.openExternal(`https://civitai.com/models/${m.id}`).catch(() => {})}
-                      >
-                        Open ↗
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-              {civitaiVisible < civitaiModels.length && (
-                <div style={{ textAlign: "center", padding: "12px 0" }}>
-                  <button className="mb-pull-btn" onClick={() => setCivitaiVisible((n) => n + 20)}>
-                    Show more ({civitaiModels.length - civitaiVisible} remaining)
-                  </button>
-                </div>
-              )}
-            </>
-          )}
+          {tab === "civitai" && <CivitaiBrowserTab query={query} />}
         </div>
 
       </div>

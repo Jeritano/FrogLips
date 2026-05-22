@@ -7,6 +7,7 @@ import {
   type DiagLevel,
 } from "../lib/diagnostics";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 
 /* ── Diagnostics modal ────────────────────────────────────────────────────
  *
@@ -56,8 +57,10 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
   const [source, setSource] = useState<string>("");
   const [sortNewestFirst, setSortNewestFirst] = useState(true);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
-  const [clearArmed, setClearArmed] = useState(false);
-  const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Two-click confirm for the destructive Clear action (window.confirm is
+  // disabled in Tauri 2's webview).
+  const clearConfirm = useTwoClickConfirm();
+  const clearArmed = clearConfirm.armed === "clear";
 
   // Subscribe to live updates while the panel is open. We always render off
   // the latest snapshot so a warning that fires while the modal is showing
@@ -70,26 +73,11 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     };
   }, [open]);
 
-  // Clear the two-click-confirm timer on close/unmount so it doesn't fire
-  // after the panel is dismissed.
+  // Disarm the two-click-confirm when the panel closes so it doesn't carry
+  // over to the next open.
   useEffect(() => {
-    return () => {
-      if (clearTimerRef.current) {
-        clearTimeout(clearTimerRef.current);
-        clearTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!open) {
-      setClearArmed(false);
-      if (clearTimerRef.current) {
-        clearTimeout(clearTimerRef.current);
-        clearTimerRef.current = null;
-      }
-    }
-  }, [open]);
+    if (!open) clearConfirm.reset();
+  }, [open, clearConfirm]);
 
   const sourceOptions = useMemo(() => {
     const set = new Set<string>();
@@ -139,31 +127,20 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
   }, [entries]);
 
   const handleClear = useCallback(() => {
-    // Two-click confirm — first click arms (button label changes for 4s),
-    // second click within window actually clears.
-    if (!clearArmed) {
-      setClearArmed(true);
-      if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
-      clearTimerRef.current = setTimeout(() => setClearArmed(false), 4000);
-      return;
-    }
-    if (clearTimerRef.current) {
-      clearTimeout(clearTimerRef.current);
-      clearTimerRef.current = null;
-    }
-    setClearArmed(false);
-    clearDiag();
-  }, [clearArmed]);
+    // Two-click confirm — first click arms (button label changes), second
+    // click within the window actually clears.
+    clearConfirm.request("clear", () => clearDiag());
+  }, [clearConfirm]);
 
   if (!open) return null;
 
   return (
     <DiagnosticsOverlay open={open} onClose={onClose}>
-      <div className="dashboard-modal" style={{ maxWidth: 960 }}>
+      <div className="dashboard-modal diag-modal">
         <header className="dashboard-header">
           <h2>Diagnostics</h2>
-          <div className="dashboard-controls" style={{ gap: 8, flexWrap: "wrap" }}>
-            <label style={{ fontSize: 12 }}>
+          <div className="dashboard-controls diag-controls">
+            <label className="diag-field">
               Level:&nbsp;
               <select
                 data-testid="diag-level"
@@ -177,7 +154,7 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
                 ))}
               </select>
             </label>
-            <label style={{ fontSize: 12 }}>
+            <label className="diag-field">
               Source:&nbsp;
               <select
                 data-testid="diag-source"
@@ -213,9 +190,9 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
               data-testid="diag-clear"
               onClick={handleClear}
               title="Clear all diagnostic entries (two-click confirm)"
-              style={clearArmed ? { color: "var(--accent, #c66)" } : undefined}
+              className={clearArmed ? "diag-clear-armed" : undefined}
             >
-              {clearArmed ? "Click again to confirm" : "Clear"}
+              {clearConfirm.labelFor("clear", "Clear")}
             </button>
             <button
               className="dashboard-close"
@@ -229,16 +206,12 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
         </header>
 
         {copyStatus && (
-          <div className="dashboard-error" data-testid="diag-copy-status" style={{ color: "var(--info, #6cb6ff)" }}>
+          <div className="dashboard-error diag-copy-status" data-testid="diag-copy-status">
             {copyStatus}
           </div>
         )}
 
-        <div
-          className="dashboard-card"
-          data-testid="diag-list"
-          style={{ maxHeight: "70vh", overflow: "auto" }}
-        >
+        <div className="dashboard-card diag-list" data-testid="diag-list">
           {filtered.length === 0 ? (
             <div className="dashboard-empty">
               {entries.length === 0
@@ -246,13 +219,13 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
                 : "No entries match the current filters."}
             </div>
           ) : (
-            <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+            <table className="diag-table">
               <thead>
-                <tr style={{ background: "var(--surface, #1a1a1a)" }}>
-                  <th style={{ textAlign: "left", padding: "4px 6px" }}>Time</th>
-                  <th style={{ textAlign: "left", padding: "4px 6px" }}>Level</th>
-                  <th style={{ textAlign: "left", padding: "4px 6px" }}>Source</th>
-                  <th style={{ textAlign: "left", padding: "4px 6px" }}>Message</th>
+                <tr>
+                  <th>Time</th>
+                  <th>Level</th>
+                  <th>Source</th>
+                  <th>Message</th>
                 </tr>
               </thead>
               <tbody>
@@ -264,28 +237,14 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
                       data-testid="diag-row"
                       data-level={e.level}
                       data-source={e.source}
-                      style={{ borderTop: "1px solid var(--border, #2a2a2a)" }}
                     >
-                      <td style={{ padding: "4px 6px", whiteSpace: "nowrap" }}>{fmtTs(e.ts)}</td>
-                      <td style={{ padding: "4px 6px", color: LEVEL_COLORS[e.level] }}>{e.level}</td>
-                      <td style={{ padding: "4px 6px", whiteSpace: "nowrap" }}>{e.source}</td>
-                      <td style={{ padding: "4px 6px" }}>
+                      <td className="diag-cell-nowrap">{fmtTs(e.ts)}</td>
+                      <td style={{ color: LEVEL_COLORS[e.level] }}>{e.level}</td>
+                      <td className="diag-cell-nowrap">{e.source}</td>
+                      <td>
                         <div>{e.message}</div>
                         {detail && (
-                          <pre
-                            style={{
-                              margin: "4px 0 0",
-                              padding: 6,
-                              fontSize: 11,
-                              background: "var(--surface, #111)",
-                              color: "var(--text-muted, #aaa)",
-                              borderRadius: 4,
-                              whiteSpace: "pre-wrap",
-                              wordBreak: "break-word",
-                              maxHeight: 200,
-                              overflow: "auto",
-                            }}
-                          >
+                          <pre className="diag-detail">
                             {detail}
                           </pre>
                         )}
@@ -298,10 +257,7 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
           )}
         </div>
 
-        <footer
-          className="dashboard-empty"
-          style={{ fontSize: 11, padding: "6px 0", color: "var(--text-muted, #888)" }}
-        >
+        <footer className="dashboard-empty diag-footer">
           {entries.length} entr{entries.length === 1 ? "y" : "ies"} held in ring buffer (cap 500).
           Persisted across reloads via localStorage (last 100).
         </footer>

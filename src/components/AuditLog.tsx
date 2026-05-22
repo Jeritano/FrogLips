@@ -90,26 +90,23 @@ export function AuditLog() {
   }, [rows]);
 
   return (
-    <div className="audit-log-panel" style={{ borderTop: "1px solid var(--border, #333)", padding: 8 }}>
-      <div
-        style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span style={{ fontWeight: 600 }}>Audit log</span>
-        <span style={{ fontSize: 11, color: "var(--text-muted, #888)" }}>
+    <div className="audit-log-panel">
+      <div className="audit-log-toggle" onClick={() => setOpen((v) => !v)}>
+        <span className="audit-log-title">Audit log</span>
+        <span className="audit-log-hint">
           {open ? "[hide]" : "[show]"}
         </span>
         {stats && (
-          <span style={{ fontSize: 11, color: "var(--text-muted, #888)" }}>
+          <span className="audit-log-hint">
             {stats.total_calls_24h} calls / 24h
           </span>
         )}
       </div>
 
       {open && (
-        <div style={{ marginTop: 8 }}>
+        <div className="audit-log-body">
           {stats && (
-            <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginBottom: 8 }}>
+            <div className="audit-log-stats">
               <div>
                 Top tools (24h):{" "}
                 {stats.top_tools_24h.length === 0
@@ -130,15 +127,15 @@ export function AuditLog() {
             </div>
           )}
 
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
-            <label style={{ fontSize: 11 }}>
+          <div className="audit-log-filters">
+            <label className="audit-log-field">
               Tool:&nbsp;
               <input
                 list="audit-tools"
                 value={tool}
                 onChange={(e) => setTool(e.target.value)}
                 placeholder="any"
-                style={{ width: 140 }}
+                className="audit-input-tool"
               />
               <datalist id="audit-tools">
                 {toolOptions.map((t) => (
@@ -146,16 +143,16 @@ export function AuditLog() {
                 ))}
               </datalist>
             </label>
-            <label style={{ fontSize: 11 }}>
+            <label className="audit-log-field">
               Conv:&nbsp;
               <input
                 value={conv}
                 onChange={(e) => setConv(e.target.value)}
                 placeholder="any"
-                style={{ width: 100 }}
+                className="audit-input-conv"
               />
             </label>
-            <label style={{ fontSize: 11 }}>
+            <label className="audit-log-field">
               Time:&nbsp;
               <select value={timeIdx} onChange={(e) => setTimeIdx(Number(e.target.value))}>
                 {TIME_FILTERS.map((f, i) => (
@@ -168,14 +165,14 @@ export function AuditLog() {
             <button onClick={() => void refresh()} disabled={busy}>
               {busy ? "..." : "Refresh"}
             </button>
-            <span style={{ marginLeft: "auto", fontSize: 11 }}>
+            <span className="audit-log-purge">
               Purge older than&nbsp;
               <input
                 type="number"
                 min={1}
                 value={purgeDays}
                 onChange={(e) => setPurgeDays(Number(e.target.value))}
-                style={{ width: 56 }}
+                className="audit-input-days"
               />
               d&nbsp;
               <button onClick={() => void purge()} disabled={busy}>
@@ -185,67 +182,55 @@ export function AuditLog() {
           </div>
 
           {err && (
-            <div style={{ fontSize: 11, color: "var(--accent, #c66)", marginBottom: 6 }}>{err}</div>
+            <div className="audit-log-err">{err}</div>
           )}
 
-          <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border, #333)" }}>
-            <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+          <div className="audit-log-table-wrap">
+            <table className="audit-log-table">
               <thead>
-                <tr style={{ background: "var(--surface, #1a1a1a)" }}>
-                  <th style={{ textAlign: "left", padding: "2px 6px" }}>Time</th>
-                  <th style={{ textAlign: "left", padding: "2px 6px" }}>Tool</th>
-                  <th style={{ textAlign: "left", padding: "2px 6px" }}>Approval</th>
-                  <th style={{ textAlign: "left", padding: "2px 6px" }}>Outcome</th>
-                  <th style={{ textAlign: "right", padding: "2px 6px" }}>ms</th>
-                  <th style={{ textAlign: "right", padding: "2px 6px" }}>Size</th>
-                  <th style={{ textAlign: "left", padding: "2px 6px" }}>Conv</th>
-                  <th style={{ textAlign: "left", padding: "2px 6px" }}>Args</th>
+                <tr>
+                  <th className="audit-col-l">Time</th>
+                  <th className="audit-col-l">Tool</th>
+                  <th className="audit-col-l">Approval</th>
+                  <th className="audit-col-l">Outcome</th>
+                  <th className="audit-col-r">ms</th>
+                  <th className="audit-col-r">Size</th>
+                  <th className="audit-col-l">Conv</th>
+                  <th className="audit-col-l">Args</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={8} style={{ padding: 8, color: "var(--text-muted, #888)" }}>
+                    <td colSpan={8} className="audit-log-empty">
                       {busy ? "Loading…" : "No audit rows."}
                     </td>
                   </tr>
                 )}
                 {rows.map((r) => (
-                  <tr key={r.id} style={{ borderTop: "1px solid var(--border, #2a2a2a)" }}>
-                    <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>{fmtTs(r.ts)}</td>
-                    <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>{r.tool_name}</td>
-                    <td style={{ padding: "2px 6px" }}>{r.approval}</td>
+                  <tr key={r.id}>
+                    <td className="audit-cell-nowrap">{fmtTs(r.ts)}</td>
+                    <td className="audit-cell-nowrap">{r.tool_name}</td>
+                    <td>{r.approval}</td>
                     <td
-                      style={{
-                        padding: "2px 6px",
-                        color:
-                          r.outcome === "ok"
-                            ? undefined
-                            : r.outcome === "denied"
-                            ? "var(--accent, #c66)"
-                            : r.outcome === "dry_run"
-                            ? "var(--info, #6cb6ff)"
-                            : "var(--warning, #d9a86c)",
-                      }}
+                      className={
+                        r.outcome === "ok"
+                          ? undefined
+                          : r.outcome === "denied"
+                          ? "audit-outcome-denied"
+                          : r.outcome === "dry_run"
+                          ? "audit-outcome-dryrun"
+                          : "audit-outcome-warn"
+                      }
                       title={r.outcome === "dry_run" ? "Tool side-effect suppressed by dry-run mode" : undefined}
                     >
                       {r.outcome === "dry_run" ? "dry-run" : r.outcome}
                       {r.error_kind ? `:${r.error_kind}` : ""}
                     </td>
-                    <td style={{ padding: "2px 6px", textAlign: "right" }}>{r.duration_ms}</td>
-                    <td style={{ padding: "2px 6px", textAlign: "right" }}>{fmtBytes(r.result_size)}</td>
-                    <td style={{ padding: "2px 6px" }}>{r.conversation_id ?? ""}</td>
-                    <td
-                      style={{
-                        padding: "2px 6px",
-                        fontFamily: "monospace",
-                        maxWidth: 320,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                      title={r.args_json}
-                    >
+                    <td className="audit-col-r">{r.duration_ms}</td>
+                    <td className="audit-col-r">{fmtBytes(r.result_size)}</td>
+                    <td>{r.conversation_id ?? ""}</td>
+                    <td className="audit-cell-args" title={r.args_json}>
                       {r.args_json}
                     </td>
                   </tr>

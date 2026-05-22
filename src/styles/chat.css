@@ -1,0 +1,467 @@
+
+/* Markdown */
+.markdown p { margin: 0 0 0.5em 0; }
+.markdown p:last-child { margin-bottom: 0; }
+.markdown code:not(pre code) {
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+.markdown pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.markdown pre code { padding: 0; background: transparent; }
+.markdown ul, .markdown ol { margin: 0.25em 0 0.5em 1.25em; padding: 0; }
+.markdown li { margin-bottom: 2px; }
+.markdown h1, .markdown h2, .markdown h3 { margin: 0.7em 0 0.3em 0; line-height: 1.25; }
+.markdown h1 { font-size: 1.4em; }
+.markdown h2 { font-size: 1.2em; }
+.markdown h3 { font-size: 1.05em; }
+.markdown blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 10px;
+  color: var(--text-2);
+  margin: 8px 0;
+}
+.markdown a { color: var(--accent); text-decoration: underline; }
+/* Citation chips — inline `path/file.rs:42` style references rendered as
+   clickable pills that hand off to VS Code / Cursor / `open`. Lives inside
+   inline <code> so the chip inherits the mono font but overrides the
+   surrounding code-bubble background to look chip-shaped, not box-shaped. */
+.markdown code:not(pre code) a.citation-chip,
+.citation-chip {
+  display: inline;
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--accent);
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+}
+.citation-chip:hover {
+  background: var(--surface-2);
+  border-bottom-style: solid;
+}
+.markdown table { border-collapse: collapse; margin: 8px 0; }
+.markdown th, .markdown td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+  font-size: 12px;
+}
+.markdown th { background: var(--surface-2); }
+
+/* ── Model picker ── */
+
+.model-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.model-picker select,
+.model-picker input {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.model-picker select {
+  padding-right: 28px;
+  appearance: none;
+  background-image: var(--caret-svg);
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  cursor: pointer;
+}
+
+.model-picker select:focus,
+.model-picker input:focus {
+  border-color: var(--accent);
+}
+
+.model-picker select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.model-picker button {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.model-picker button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--text-3);
+}
+
+.model-picker button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.model-picker button.start-btn {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: transparent;
+}
+
+.model-picker button.start-btn:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+/* Off-screen keyboard-shortcut proxy — not a visible control. */
+.model-picker button.sr-only-shortcut {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  pointer-events: none;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot.on {
+  background: var(--green);
+  box-shadow: 0 0 5px var(--green);
+}
+
+.status-dot.off {
+  background: var(--text-3);
+}
+
+.status-text {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* ── Chat window ── */
+
+.chat-window {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  /* Tight top gap to match the header's thin top padding. */
+  padding: 6px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.message-list::-webkit-scrollbar { width: 4px; }
+.message-list::-webkit-scrollbar-track { background: transparent; }
+.message-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.message {
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+/* User bubble */
+.message.user {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 24px;
+}
+
+.message.user .content {
+  background: var(--accent);
+  color: #fff;
+  padding: 7px 14px;
+  border-radius: 18px 18px 4px 18px;
+  max-width: 70%;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.4;
+}
+
+/* Assistant row */
+.message.assistant {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 24px;
+}
+
+.message.assistant::before {
+  content: "";
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--avatar-bg, linear-gradient(135deg, var(--accent) 0%, color-mix(in oklab, var(--accent) 60%, #a855f7) 100%));
+  margin-top: 1px;
+}
+
+.message.assistant .content {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-width: 76ch;
+}
+
+/* System */
+.message.system {
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+  padding: 2px 24px;
+}
+
+/* Model dividers + end-of-conv note */
+.model-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 24px 10px;
+  color: var(--text-3);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.model-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+.model-divider.change .model-divider-line {
+  background: rgba(99, 102, 241, 0.25);
+}
+.model-divider-label code {
+  background: var(--surface-2);
+  color: var(--text-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: "SF Mono", Menlo, monospace;
+}
+.model-divider.change .model-divider-label code {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.model-end-footer {
+  text-align: center;
+  color: var(--text-3);
+  font-size: 11px;
+  padding: 16px 24px 8px;
+  border-top: 1px dashed var(--border-subtle);
+  margin: 16px 24px 0;
+}
+.model-end-footer code {
+  color: var(--text-2);
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+
+/* Pin-to-memory button */
+.message {
+  position: relative;
+}
+.pin-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+.message:hover .pin-btn { display: flex; }
+.pin-btn:hover { color: var(--text); background: var(--surface-2); }
+.pin-btn.pinned { display: flex; color: var(--warn-fg); }
+.pin-btn.pinned:hover { color: var(--warn-fg); background: transparent; cursor: default; }
+.pin-btn:disabled { cursor: default; }
+
+.message.user .pin-btn { color: rgba(255, 255, 255, 0.6); right: 8px; }
+.message.user .pin-btn:hover { color: #fff; background: var(--overlay-strong); }
+.message.user .pin-btn.pinned { color: var(--warn-fg); }
+
+.cursor {
+  display: inline-block;
+  opacity: 0.5;
+  animation: blink 1s step-start infinite;
+}
+
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ── Input area ── */
+
+.chat-input-wrap {
+  padding: 8px 20px 20px;
+  flex-shrink: 0;
+}
+
+.recall-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  margin-bottom: 6px;
+  width: fit-content;
+}
+.recall-icon { font-size: 10px; }
+
+.error-bar {
+  font-size: 12px;
+  color: var(--danger-fg);
+  padding: 4px 4px 6px;
+}
+
+.chat-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 10px 10px 16px;
+  transition: border-color 0.15s;
+}
+
+.chat-input:focus-within {
+  border-color: rgba(99, 102, 241, 0.5);
+}
+
+.chat-input.dropping {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.04);
+}
+
+.chat-input textarea {
+  flex: 1;
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  outline: none;
+  font-family: inherit;
+  font-size: 14px;
+  resize: none;
+  line-height: 1.5;
+  min-height: 22px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.chat-input textarea::placeholder {
+  color: var(--text-3);
+}
+
+.send-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--accent);
+  color: #fff;
+  transition: opacity 0.15s, background 0.15s;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.send-btn:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
+}
+
+.send-btn:hover:not(:disabled) {
+  opacity: 0.82;
+}
+
+.send-btn.stop {
+  background: var(--danger);
+}
+
+.mic-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 0;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mic-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.mic-btn.listening {
+  background: var(--danger);
+  color: #fff;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+  50%      { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+.voice-err {
+  font-size: 12px;
+  color: var(--danger-fg);
+  padding: 0 4px 6px;
+}
+

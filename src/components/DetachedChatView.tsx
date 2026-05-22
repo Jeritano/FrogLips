@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { configureMemory } from "../lib/memory-client";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { Conversation, ServerStatus } from "../types";
 import { ModelPicker } from "./ModelPicker";
 import { ChatWindow } from "./ChatWindow";
@@ -66,26 +66,22 @@ export function DetachedChatView({ conversationId }: Props) {
   // ChatWindow refetch its messages on the next id transition. For full
   // message sync we expose a re-listing via a key bump.
   const [refreshTick, setRefreshTick] = useState(0);
-  useEffect(() => {
-    let off: UnlistenFn | undefined;
-    listen<number>("conversation-updated", (e) => {
+  useTauriEvent<number>(
+    "conversation-updated",
+    useCallback((e) => {
       // Payload is the conversation id (or -1 = unknown / wildcard).
       const cid = e.payload;
       if (cid === conversationId || cid === -1) {
         setRefreshTick((t) => t + 1);
       }
-    }).then((fn) => { off = fn; }).catch(() => {/* event bus optional */});
-    return () => { if (off) off(); };
-  }, [conversationId]);
+    }, [conversationId]),
+  );
 
   // Server-status follow: same flow as the main window.
-  useEffect(() => {
-    let off: UnlistenFn | undefined;
-    listen<ServerStatus>("server-status", (e) => setStatus(e.payload))
-      .then((fn) => { off = fn; })
-      .catch(() => {});
-    return () => { if (off) off(); };
-  }, []);
+  useTauriEvent<ServerStatus>(
+    "server-status",
+    useCallback((e) => setStatus(e.payload), []),
+  );
 
   if (loadError) {
     return (

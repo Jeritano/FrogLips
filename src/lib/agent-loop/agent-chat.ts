@@ -19,8 +19,8 @@ import {
   RETRY_MAX,
   streamOllamaChat,
   toOllamaMessages,
-  type StreamChatResult,
 } from "./ollama-client";
+import type { StreamChatResult } from "./stream-types";
 import { streamMlxAgentChat } from "../mlx-client";
 
 /** Human-readable reason agent mode can't run on a given backend, or null. */
@@ -31,11 +31,6 @@ export function agentBackendUnsupportedReason(
     return "Agent mode is not supported on the native backend. Switch to the Ollama or MLX backend to use tools.";
   }
   return null;
-}
-
-/** True iff the agent tool-calling loop can run on `backend`. */
-export function isAgentBackendSupported(backend: AgentBackend): boolean {
-  return agentBackendUnsupportedReason(backend) === null;
 }
 
 /**
