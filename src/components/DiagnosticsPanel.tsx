@@ -206,7 +206,7 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
         </header>
 
         {copyStatus && (
-          <div className="dashboard-error diag-copy-status" data-testid="diag-copy-status">
+          <div className="dashboard-error diag-copy-status" data-testid="diag-copy-status" role="status">
             {copyStatus}
           </div>
         )}

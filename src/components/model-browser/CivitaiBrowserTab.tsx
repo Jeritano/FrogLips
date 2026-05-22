@@ -203,7 +203,18 @@ export function CivitaiBrowserTab({ query }: Props) {
       {civitaiLoading && civitaiModels.length === 0 && (
         <div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading from Civitai…</div>
       )}
-      {civitaiErr && <div className="mb-empty mb-empty-err">Failed to load: {civitaiErr}</div>}
+      {civitaiErr && (
+        <div className="mb-empty mb-empty-err" role="alert">
+          <div>Could not reach Civitai: {civitaiErr}</div>
+          <button
+            type="button"
+            className="mb-retry-btn"
+            onClick={() => void loadCivitai(query)}
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {!civitaiLoading && !civitaiErr && civitaiModels.length === 0 && (
         <div className="mb-empty">No Civitai models match "{query}"</div>
       )}

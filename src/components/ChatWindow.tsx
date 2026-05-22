@@ -488,7 +488,13 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         }
       } catch (e) {
         if (!ctrl.signal.aborted && isStreamConvActive()) {
-          setErr(String(e));
+          logDiag({
+            level: "error",
+            source: "agent-loop",
+            message: "agent run failed",
+            detail: e,
+          });
+          setErr(`Agent run failed: ${e}. Your message was kept — send again to retry.`);
         }
       } finally {
         abortRef.current = null;
@@ -526,7 +532,13 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       if (e instanceof DOMException && e.name === "AbortError") {
         aborted = true;
       } else if (isStreamConvActive()) {
-        setErr(String(e));
+        logDiag({
+          level: "error",
+          source: "chat-stream",
+          message: "streaming chat failed",
+          detail: e,
+        });
+        setErr(`The model stopped responding: ${e}. Send again to retry.`);
       }
     } finally {
       if (scheduled) cancelAnimationFrame(scheduled);
@@ -725,7 +737,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             Recalled {recalled.length} memor{recalled.length === 1 ? "y" : "ies"} for this turn
           </div>
         )}
-        {err && <div className="error-bar">{err}</div>}
+        {err && <div className="error-bar" role="alert">{err}</div>}
 
         {/* Agent mode toggle */}
         <div className="agent-toolbar">
@@ -796,7 +808,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             disabled={isWorking || !agentAvailable}
             title={agentAvailable ? "Toggle agent mode (tool calling)" : "Agent mode requires the Ollama or MLX backend"}
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
             </svg>
             Agent
@@ -822,6 +834,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               onClick={() => setShowAgentSettings((v) => !v)}
               disabled={isWorking}
               title="Agent settings"
+              aria-label="Agent settings"
+              aria-expanded={showAgentSettings}
             >
               ⚙
             </button>
@@ -865,7 +879,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               <code className="agent-settings-value">{workspaceRoot ?? "(full filesystem)"}</code>
               <button className="agent-settings-btn" onClick={chooseWorkspace}>Set…</button>
             </div>
-            {workspaceErr && <div className="error-bar">{workspaceErr}</div>}
+            {workspaceErr && <div className="error-bar" role="alert">{workspaceErr}</div>}
             <div className="agent-settings-row">
               <span className="agent-settings-label">Approve all this session:</span>
               <label>
@@ -959,7 +973,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
       {askUser.askUserReq && (
         <div className="agent-confirm-overlay" onClick={(e) => e.target === e.currentTarget && askUser.cancelAskUser()}>
-          <div className="agent-confirm-box">
+          <div className="agent-confirm-box" role="dialog" aria-modal="true" aria-label="Agent question">
             <div className="agent-confirm-title">Agent asks:</div>
             <div style={{ padding: "8px 0", fontSize: 13 }}>{askUser.askUserReq.question}</div>
             {askUser.askUserReq.hint && (
@@ -1005,7 +1019,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           data-testid="edit-message-modal"
           onClick={(e) => e.target === e.currentTarget && setEditState(null)}
         >
-          <div className="agent-confirm-box">
+          <div className="agent-confirm-box" role="dialog" aria-modal="true" aria-label="Edit message">
             <div className="agent-confirm-title">Edit message</div>
             <textarea
               className="ask-user-input"
@@ -1052,8 +1066,9 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           className="agent-confirm-overlay"
           data-testid="citation-confirm-modal"
           onClick={(e) => e.target === e.currentTarget && citation.dismissConfirm()}
+          onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); citation.dismissConfirm(); } }}
         >
-          <div className="agent-confirm-box">
+          <div className="agent-confirm-box" role="dialog" aria-modal="true" aria-label="Open file in editor">
             <div className="agent-confirm-title">Open file in editor?</div>
             <div style={{ padding: "8px 0", fontSize: 12, color: "var(--text-muted)" }}>
               This citation was written by the model. It will open in an external editor:
@@ -1082,8 +1097,18 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
       {/* Tool confirmation modal */}
       {confirmState && (
-        <div className="agent-confirm-overlay" data-testid="agent-confirm-modal" onClick={(e) => e.target === e.currentTarget && handleConfirm(false)}>
-          <div className={`agent-confirm-box risk-${confirmState.risk}`}>
+        <div
+          className="agent-confirm-overlay"
+          data-testid="agent-confirm-modal"
+          onClick={(e) => e.target === e.currentTarget && handleConfirm(false)}
+          onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); handleConfirm(false); } }}
+        >
+          <div
+            className={`agent-confirm-box risk-${confirmState.risk}`}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Confirm tool ${confirmState.toolName}`}
+          >
             <div className="agent-confirm-title">
               Allow <code>{confirmState.toolName}</code>?
               {confirmState.risk !== "normal" && (
@@ -1140,34 +1165,43 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         </div>
       )}
 
-      {quickToast && (
-        <div
-          className="quick-toast"
-          data-testid="quick-prompt-toast"
-          role="button"
-          tabIndex={0}
-          onClick={() => {
-            if (quickToast.error) { dismissToast(); return; }
-            // Click → dump the reply into the input area as a starting point.
-            // Strict v1.3: no auto-resubmit, no conversation creation.
-            try {
-              navigator.clipboard.writeText(quickToast.reply).catch((err) =>
-                logDiag({
-                  level: "info",
-                  source: "chat-window",
-                  message: "quick-toast clipboard.writeText rejected",
-                  detail: err,
-                }),
-              );
-            } catch (err) {
+      {quickToast && (() => {
+        const activateToast = () => {
+          if (quickToast.error) { dismissToast(); return; }
+          // Activate → dump the reply into the clipboard as a starting point.
+          // Strict v1.3: no auto-resubmit, no conversation creation.
+          try {
+            navigator.clipboard.writeText(quickToast.reply).catch((err) =>
               logDiag({
                 level: "info",
                 source: "chat-window",
-                message: "quick-toast clipboard write threw synchronously",
+                message: "quick-toast clipboard.writeText rejected",
                 detail: err,
-              });
+              }),
+            );
+          } catch (err) {
+            logDiag({
+              level: "info",
+              source: "chat-window",
+              message: "quick-toast clipboard write threw synchronously",
+              detail: err,
+            });
+          }
+          dismissToast();
+        };
+        return (
+        <div
+          className="quick-toast"
+          data-testid="quick-prompt-toast"
+          role={quickToast.error ? "alert" : "button"}
+          aria-label={quickToast.error ? undefined : "Copy quick reply to clipboard"}
+          tabIndex={0}
+          onClick={activateToast}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              activateToast();
             }
-            dismissToast();
           }}
         >
           {quickToast.error ? (
@@ -1176,7 +1210,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             <span>Quick reply ready ↗ <em style={{ color: "var(--text-muted)", fontStyle: "normal" }}>(click to copy)</em></span>
           )}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

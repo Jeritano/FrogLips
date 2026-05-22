@@ -263,8 +263,15 @@ export function McpSettings({ onConfigsChanged }: Props) {
               <code>{cfg.command}{cfg.args && cfg.args.length ? " " + cfg.args.join(" ") : ""}</code>
             </div>
             {live?.last_error && (
-              <div className="error-bar" style={{ fontSize: 11 }}>
-                {live.last_error}
+              <div className="error-bar" role="alert" style={{ fontSize: 11 }}>
+                Server error: {live.last_error}
+                <button
+                  className="agent-settings-btn"
+                  style={{ marginLeft: 6 }}
+                  onClick={() => restartConfig(cfg)}
+                >
+                  Restart
+                </button>
               </div>
             )}
             {toolNames.length > 0 && (
@@ -310,24 +317,28 @@ export function McpSettings({ onConfigsChanged }: Props) {
         >
           <input
             placeholder="name (letters, digits, _ or -)"
+            aria-label="MCP server name"
             value={draftName}
             onChange={(e) => setDraftName(e.target.value)}
             style={inputStyle}
           />
           <input
             placeholder="command (e.g. npx)"
+            aria-label="MCP server command"
             value={draftCommand}
             onChange={(e) => setDraftCommand(e.target.value)}
             style={inputStyle}
           />
           <input
             placeholder="args (space-separated, e.g. -y @modelcontextprotocol/server-filesystem /tmp)"
+            aria-label="MCP server arguments"
             value={draftArgs}
             onChange={(e) => setDraftArgs(e.target.value)}
             style={inputStyle}
           />
           <input
             placeholder='env as JSON, e.g. {"FOO":"bar"}'
+            aria-label="MCP server environment variables as JSON"
             value={draftEnv}
             onChange={(e) => setDraftEnv(e.target.value)}
             style={inputStyle}
@@ -342,7 +353,7 @@ export function McpSettings({ onConfigsChanged }: Props) {
         </div>
       )}
 
-      {err && <div className="error-bar" style={{ marginTop: 8 }}>{err}</div>}
+      {err && <div className="error-bar" role="alert" style={{ marginTop: 8 }}>{err}</div>}
     </div>
   );
 }

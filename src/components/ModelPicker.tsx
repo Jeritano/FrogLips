@@ -58,7 +58,7 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
       if (m.mlx_error) hints.push(`MLX: ${m.mlx_error}`);
       setErr(hints.length ? hints.join(" · ") : null);
     } catch (e) {
-      setErr(String(e));
+      setErr(`Could not list installed models: ${e}`);
     }
   }
 
@@ -143,8 +143,19 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
       } else {
         const s = await api.startServer(selected.id, selected.backend);
         onStatusChange(s);
+        // startServer can resolve with a non-running status when the backend
+        // process failed to come up — surface last_error so the user sees why.
+        if (!s.running) {
+          setErr(
+            s.last_error
+              ? `Could not start ${selected.backend}: ${s.last_error}`
+              : `${selected.backend} did not start. Check that the backend is installed and the model "${selected.id}" exists.`,
+          );
+        }
       }
-    } catch (e) { setErr(String(e)); }
+    } catch (e) {
+      setErr(`Could not start "${selected.id}" on ${selected.backend}: ${e}. Press Start to retry.`);
+    }
     finally { setBusy(false); }
   }
 
@@ -166,6 +177,8 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
         await api.stopServer();
         onStatusChange(await api.serverStatus());
       }
+    } catch (e) {
+      setErr(`Could not stop the model: ${e}`);
     } finally { setBusy(false); }
   }
 
@@ -261,7 +274,18 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
                 : `loading · ${status.backend}`
               : "stopped"}
         </span>
-        {err && <div className="error">{err}</div>}
+        {err && (
+          <div className="error" role="alert">
+            <span>{err}</span>
+            <button
+              type="button"
+              className="error-retry"
+              onClick={() => { setErr(null); void loadModels(); }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
       </div>
 
       {browserOpen && (

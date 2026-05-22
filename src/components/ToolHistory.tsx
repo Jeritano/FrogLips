@@ -70,10 +70,15 @@ export function ToolHistory({ messages, onClose }: Props) {
   }
 
   return (
-    <div className="tool-history-overlay" role="dialog" aria-label="Tool history">
+    <div
+      className="tool-history-overlay"
+      role="dialog"
+      aria-label="Tool history"
+      onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
+    >
       <div className="tool-history-header">
         <span className="tool-history-title">Tool history ({pairs.length})</span>
-        <button className="tool-history-close" onClick={onClose} aria-label="Close">×</button>
+        <button className="tool-history-close" onClick={onClose} aria-label="Close tool history">×</button>
       </div>
       <div className="tool-history-list">
         {pairs.length === 0 && (

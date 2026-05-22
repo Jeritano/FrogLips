@@ -185,6 +185,28 @@
   gap: 2px;
 }
 
+/* "Show earlier messages" control — revealed only when the message list is
+   windowed (history longer than the render cap). Sits above the oldest
+   rendered row. */
+.show-earlier-btn {
+  align-self: center;
+  margin: 4px 0 10px;
+  padding: 5px 14px;
+  background: transparent;
+  color: var(--text-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.show-earlier-btn:hover {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--surface-hover);
+}
+
 .message-list::-webkit-scrollbar { width: 4px; }
 .message-list::-webkit-scrollbar-track { background: transparent; }
 .message-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }

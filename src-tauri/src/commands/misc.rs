@@ -34,6 +34,13 @@ pub fn open_external(url: String, app: tauri::AppHandle) -> Result<(), String> {
     app.opener().open_url(&url, None::<&str>).map_err(map_err)
 }
 
+/// Return the local crash log (last ~64 KB), or an empty string if none.
+/// The log lives at `~/.local-llm-app/crash.log` and never leaves the device.
+#[tauri::command]
+pub fn read_crash_log() -> String {
+    crate::crash_log::read_log()
+}
+
 /* ── Settings ────────────────────────────────────────────────────────────── */
 
 #[tauri::command]

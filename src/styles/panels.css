@@ -204,6 +204,25 @@
   font-size: 12px;
   color: var(--danger-fg);
   padding: 2px 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.error-retry {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-xs);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.error-retry:hover {
+  background: var(--surface-hover);
 }
 
 button.cancel {
@@ -368,6 +387,24 @@ button.cancel {
 
 .mb-empty-err {
   color: var(--danger-fg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mb-retry-btn {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-xs);
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.mb-retry-btn:hover {
+  background: var(--surface-hover);
 }
 
 .mb-spinner-lg {

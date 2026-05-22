@@ -3,6 +3,7 @@ mod agent_audit;
 mod ask_user;
 mod backend_process;
 mod commands;
+mod crash_log;
 mod diagnostics;
 mod gguf;
 mod history;
@@ -57,6 +58,10 @@ fn ensure_path_for_gui() {
 }
 
 pub fn run() {
+    // Install the process-global panic hook before anything else so panics
+    // during startup are captured. Covers all threads, including Tokio workers.
+    crash_log::install();
+
     ensure_path_for_gui();
 
     // Restore persisted workspace root, if any
@@ -298,6 +303,7 @@ pub fn run() {
             commands::misc::quick_prompt_submit,
             commands::misc::quick_prompt_open,
             commands::misc::quick_prompt_hide,
+            commands::misc::read_crash_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -31,6 +31,16 @@ interface Row {
   divider: { label: string; tone: "start" | "change" } | null;
 }
 
+// Conservative windowing cap. Message rows have wildly variable height
+// (a one-liner vs. a long code block), which makes fixed-height
+// virtualization unsound and measure-and-cache windowing risky to combine
+// with live streaming + stick-to-bottom autoscroll. Instead of risking a
+// scroll/streaming regression, we cap the initially-rendered rows to the
+// most recent WINDOW_SIZE and gate the rest behind an explicit
+// "Show earlier messages" control. The newest messages — the ones that
+// stream and that autoscroll targets — are always fully rendered.
+const WINDOW_SIZE = 150;
+
 function keyFor(m: Message, idx: number): string {
   if (m._tmpKey) return m._tmpKey;
   if (m.id != null) return `id:${m.id}`;
@@ -340,6 +350,9 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
   const stickRef = useRef(true);
   const [pinned, setPinned] = useState<Set<string>>(new Set());
   const [pinning, setPinning] = useState<string | null>(null);
+  // How many leading (oldest) rows are collapsed behind "Show earlier
+  // messages". Reset to the cap whenever the conversation changes.
+  const [hiddenCount, setHiddenCount] = useState(0);
 
   // Distance from the bottom under which autoscroll stays engaged.
   const STICK_THRESHOLD_PX = 64;
@@ -351,9 +364,11 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
       el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
   }, []);
 
-  // New conversation → always start pinned to the bottom.
+  // New conversation → always start pinned to the bottom, and re-collapse
+  // older messages so a freshly-opened long thread stays cheap.
   useEffect(() => {
     stickRef.current = true;
+    setHiddenCount(0);
   }, [conversationId]);
 
   useEffect(() => {
@@ -394,6 +409,31 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
     }
     return { rows: out, lastAsstModel: last };
   }, [messages]);
+
+  // Conservative windowing: render at most the most-recent WINDOW_SIZE rows
+  // unless the user has expanded earlier ones. `hiddenCount` is clamped so a
+  // shrinking history (e.g. after a regenerate trims trailing turns) can't
+  // leave a stale offset that hides the whole list.
+  const maxHidden = Math.max(0, rows.length - WINDOW_SIZE);
+  const effectiveHidden = Math.min(hiddenCount === 0 ? maxHidden : hiddenCount, maxHidden);
+  const visibleRows = effectiveHidden > 0 ? rows.slice(effectiveHidden) : rows;
+
+  // Reveal the next batch of older messages while keeping the viewport
+  // anchored on the message the user was reading (the scrollHeight grows by
+  // the prepended rows' height, so we shift scrollTop by the same delta).
+  const showEarlier = useCallback(() => {
+    const el = listRef.current;
+    const before = el?.scrollHeight ?? 0;
+    const prevTop = el?.scrollTop ?? 0;
+    setHiddenCount((h) => {
+      const cur = h === 0 ? maxHidden : h;
+      return Math.max(0, cur - WINDOW_SIZE);
+    });
+    requestAnimationFrame(() => {
+      const node = listRef.current;
+      if (node) node.scrollTop = prevTop + (node.scrollHeight - before);
+    });
+  }, [maxHidden]);
 
   // Stabilize the pin handler so MessageRow's memo doesn't bust each render.
   const pin = useCallback(async (m: Message, key: string, scope: MemoryScope) => {
@@ -442,7 +482,19 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
 
   return (
     <div className="message-list" ref={listRef} onScroll={onScroll}>
-      {rows.map(({ msg: m, key: k, divider }, idx) => (
+      {effectiveHidden > 0 && (
+        <button
+          type="button"
+          className="show-earlier-btn"
+          data-testid="show-earlier"
+          onClick={showEarlier}
+        >
+          Show earlier messages ({effectiveHidden})
+        </button>
+      )}
+      {visibleRows.map(({ msg: m, key: k, divider }, sliceIdx) => {
+        const idx = effectiveHidden + sliceIdx;
+        return (
         <div key={k}>
           <MessageRow
             msg={m}
@@ -461,7 +513,8 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
             onFork={onFork}
           />
         </div>
-      ))}
+        );
+      })}
 
       {streaming !== undefined && (
         <>

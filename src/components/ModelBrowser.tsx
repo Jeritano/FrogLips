@@ -447,13 +447,14 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
             />
           )}
           {tab === "hf" && <div style={{ flex: 1 }} />}
-          <button className="mb-close" onClick={onClose}>✕</button>
+          <button className="mb-close" onClick={onClose} aria-label="Close model library">✕</button>
         </div>
 
         {/* Source selector */}
         <div className="mb-tabs">
-          <label className="mb-source-label">Source:</label>
+          <label className="mb-source-label" htmlFor="mb-source-select">Source:</label>
           <select
+            id="mb-source-select"
             className="mb-source-select"
             value={tab}
             onChange={(e) => {
@@ -496,6 +497,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               query={query}
               requestRemove={requestRemove}
               requestRemoveGguf={requestRemoveGguf}
+              onRetry={() => { void refreshInstalled(); void refreshGgufInstalled(); }}
             />
           )}
 

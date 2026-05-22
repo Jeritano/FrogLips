@@ -499,9 +499,7 @@ body {
 
 .conv-list {
   list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: block;
   /* Owns the sidebar's scroll region: search input + New chat above stay
      pinned while a long thread list scrolls independently. */
   flex: 1 1 0;
@@ -511,17 +509,34 @@ body {
   padding-right: 4px;
 }
 
+/* Spacer rows for fixed-height virtualization — they reserve the scroll
+   geometry of the off-screen conversation rows without rendering them. */
+.conv-virtual-spacer {
+  flex-shrink: 0;
+}
+
+/* Fixed-height rows: virtualization windows the list and relies on a
+   uniform 40px stride (38px row + 2px margin). Keep these in sync with
+   CONV_ROW_HEIGHT in App.tsx. */
 .conv-list li {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 4px;
-  padding: 9px 10px;
+  box-sizing: border-box;
+  height: 38px;
+  margin-bottom: 2px;
+  padding: 0 10px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
   color: var(--text-2);
   transition: background 0.1s, color 0.1s;
+}
+
+.conv-list li.conv-list-empty {
+  height: auto;
+  display: block;
 }
 
 .conv-list li:hover {

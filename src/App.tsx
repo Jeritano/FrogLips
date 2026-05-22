@@ -8,6 +8,7 @@ import { useModalA11y } from "./lib/use-modal-a11y";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 import { usePlatformChrome } from "./hooks/usePlatformChrome";
 import { useWindowGeometry } from "./hooks/useWindowGeometry";
+import { useVirtualList } from "./hooks/useVirtualList";
 import type { Conversation, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
@@ -33,6 +34,10 @@ const ForkTreeModal = lazy(() =>
 const SetupWizard = lazy(() =>
   import("./components/SetupWizard").then((m) => ({ default: m.SetupWizard })),
 );
+
+// Fixed conversation-row stride for sidebar virtualization: 38px row height
+// + 2px bottom margin. Must match `.conv-list li` in layout.css.
+const CONV_ROW_HEIGHT = 40;
 
 function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -291,6 +296,13 @@ function App() {
     return out;
   })();
 
+  // Sidebar conversation-list virtualization: render only the rows near the
+  // scrollport so a list of thousands of conversations stays cheap.
+  const convVirtual = useVirtualList<HTMLUListElement>({
+    count: orderedConversations.length,
+    rowHeight: CONV_ROW_HEIGHT,
+  });
+
   async function deleteConv(id: number) {
     try {
       await api.deleteConversation(id);
@@ -491,7 +503,12 @@ function App() {
             {err}
           </div>
         )}
-        <ul className="conv-list" data-testid="conv-list">
+        <ul
+          className="conv-list"
+          data-testid="conv-list"
+          ref={convVirtual.scrollRef}
+          onScroll={convVirtual.onScroll}
+        >
           {orderedConversations.length === 0 && (
             <li className="conv-list-empty" data-testid="conv-list-empty">
               {conversations.length === 0 ? (
@@ -509,7 +526,16 @@ function App() {
               )}
             </li>
           )}
-          {orderedConversations.map(({ conv: c, depth }) => (
+          {convVirtual.window.padTop > 0 && (
+            <li
+              className="conv-virtual-spacer"
+              aria-hidden="true"
+              style={{ height: convVirtual.window.padTop }}
+            />
+          )}
+          {orderedConversations
+            .slice(convVirtual.window.start, convVirtual.window.end)
+            .map(({ conv: c, depth }) => (
             <li
               key={c.id}
               data-testid="conv-item"
@@ -581,6 +607,13 @@ function App() {
               </button>
             </li>
           ))}
+          {convVirtual.window.padBottom > 0 && (
+            <li
+              className="conv-virtual-spacer"
+              aria-hidden="true"
+              style={{ height: convVirtual.window.padBottom }}
+            />
+          )}
         </ul>
         <div className="sidebar-spacer-bottom" aria-hidden="true" />
       </aside>

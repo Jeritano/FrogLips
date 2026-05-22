@@ -37,6 +37,8 @@ interface Props {
   query: string;
   requestRemove: (id: string, backend: "ollama" | "mlx") => void;
   requestRemoveGguf: (repo: string, filename: string) => void;
+  /** Re-runs the installed-model + GGUF scans. */
+  onRetry: () => void;
 }
 
 export function InstalledModelsTab({
@@ -51,12 +53,18 @@ export function InstalledModelsTab({
   query,
   requestRemove,
   requestRemoveGguf,
+  onRetry,
 }: Props) {
   const total = installedOllama.length + installedMlx.length + ggufInstalled.length;
 
   return (
     <>
-      {installedErr && <div className="mb-empty mb-empty-err">{installedErr}</div>}
+      {installedErr && (
+        <div className="mb-empty mb-empty-err" role="alert">
+          <div>Could not list installed models: {installedErr}</div>
+          <button type="button" className="mb-retry-btn" onClick={onRetry}>Retry</button>
+        </div>
+      )}
       {total === 0 && (
         <EmptyState
           icon="📦"
@@ -150,7 +158,12 @@ export function InstalledModelsTab({
           GGUF (native) ({ggufInstalled.length})
         </div>
       )}
-      {ggufInstalledErr && <div className="mb-empty mb-empty-err">{ggufInstalledErr}</div>}
+      {ggufInstalledErr && (
+        <div className="mb-empty mb-empty-err" role="alert">
+          <div>Could not list local GGUF files: {ggufInstalledErr}</div>
+          <button type="button" className="mb-retry-btn" onClick={onRetry}>Retry</button>
+        </div>
+      )}
       {ggufInstalled
         .filter((f) =>
           !query.trim() ||

@@ -151,7 +151,7 @@ export function RagPanel({ onCorporaChanged }: Props) {
         </div>
       )}
       {info && (
-        <div className="rag-msg rag-msg-info">{info}</div>
+        <div className="rag-msg rag-msg-info" role="status">{info}</div>
       )}
 
       {/* Ingest form */}
@@ -275,6 +275,7 @@ export function RagPanel({ onCorporaChanged }: Props) {
               value={searchCorpus}
               onChange={(e) => setSearchCorpus(e.target.value)}
               className="rag-search-corpus"
+              aria-label="Corpus to search"
             >
               <option value="">— pick —</option>
               {corpora.map((c) => (
