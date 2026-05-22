@@ -225,8 +225,11 @@ export const api = {
   // 60s token bound to a Rust command name; the four dangerous commands below
   // require it. The wrappers mint immediately before invoking, so they must
   // only be called on the agent loop's post-confirmation path.
-  mintToolApproval: (tool: string) =>
-    invoke<string>("mint_tool_approval", { tool }),
+  // `command` is required for `agent_run_shell` (the token is SHA-256-bound
+  // to that exact command on the Rust side so an approval for `ls` cannot be
+  // silently reused for `rm -rf`). Other tools ignore the binding.
+  mintToolApproval: (tool: string, command?: string) =>
+    invoke<string>("mint_tool_approval", { tool, command: command ?? null }),
 
   // Agent tools
   agentReadFile: (path: string, offset?: number, limit?: number) =>
@@ -238,7 +241,12 @@ export const api = {
       command,
       opts: opts ?? null,
       opId: opId ?? null,
-      approval: await invoke<string>("mint_tool_approval", { tool: "agent_run_shell" }),
+      // Token is bound to a SHA-256 of `command` on the Rust side; pass the
+      // exact same command we are about to run.
+      approval: await invoke<string>("mint_tool_approval", {
+        tool: "agent_run_shell",
+        command,
+      }),
     }),
   agentCancelShell: (opId: string) =>
     invoke<void>("agent_cancel_shell", { opId }),
@@ -246,14 +254,18 @@ export const api = {
     invoke<void>("agent_write_file", {
       path,
       content,
-      approval: await invoke<string>("mint_tool_approval", { tool: "agent_write_file" }),
+      approval: await invoke<string>("mint_tool_approval", { tool: "agent_write_file", command: null }),
     }),
-  agentEditFile: (path: string, oldString: string, newString: string, replaceAll?: boolean) =>
+  agentEditFile: async (path: string, oldString: string, newString: string, replaceAll?: boolean) =>
     invoke<EditResult>("agent_edit_file", {
       path,
       oldString,
       newString,
       replaceAll: replaceAll ?? null,
+      approval: await invoke<string>("mint_tool_approval", {
+        tool: "agent_edit_file",
+        command: null,
+      }),
     }),
   agentFileExists: (path: string) =>
     invoke<ExistsResult>("agent_file_exists", { path }),
@@ -263,8 +275,15 @@ export const api = {
       glob: glob ?? null,
       regex: regex ?? null,
     }),
-  agentMultiEdit: (path: string, edits: EditOp[]) =>
-    invoke<MultiEditResult>("agent_multi_edit", { path, edits }),
+  agentMultiEdit: async (path: string, edits: EditOp[]) =>
+    invoke<MultiEditResult>("agent_multi_edit", {
+      path,
+      edits,
+      approval: await invoke<string>("mint_tool_approval", {
+        tool: "agent_multi_edit",
+        command: null,
+      }),
+    }),
   agentGitStatus: (path?: string) =>
     invoke<GitResult>("agent_git_status", { path: path ?? null }),
   agentGitDiff: (path?: string, staged?: boolean) =>
@@ -298,12 +317,12 @@ export const api = {
   agentApplescriptRun: async (script: string) =>
     invoke<ShellResult>("agent_applescript_run", {
       script,
-      approval: await invoke<string>("mint_tool_approval", { tool: "agent_applescript_run" }),
+      approval: await invoke<string>("mint_tool_approval", { tool: "agent_applescript_run", command: null }),
     }),
   agentHttpRequest: async (input: HttpReqInput) =>
     invoke<HttpResp>("agent_http_request", {
       input,
-      approval: await invoke<string>("mint_tool_approval", { tool: "agent_http_request" }),
+      approval: await invoke<string>("mint_tool_approval", { tool: "agent_http_request", command: null }),
     }),
   agentFindDefinition: (symbol: string, path?: string) =>
     invoke<SearchResult>("agent_find_definition", { symbol, path: path ?? null }),

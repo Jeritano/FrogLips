@@ -16,9 +16,40 @@ use crate::{agent, agent_audit, approval, ask_user, policy, rag, task_queue};
 /// Mint a single-use approval token bound to `tool`. Wired from the frontend's
 /// post-confirmation path; the returned string is passed to the matching
 /// dangerous command as its `approval` argument.
+///
+/// For `agent_run_shell` the caller MUST additionally pass the `command`
+/// string the user just approved — the token is then payload-bound to a
+/// SHA-256 hash of that exact string so a token approved for `ls` cannot be
+/// silently reused for `rm -rf`. For other tools `command` is ignored and
+/// the token is bound to the bare tool name as before.
 #[tauri::command]
-pub fn mint_tool_approval(tool: String) -> String {
-    approval::mint(&tool)
+pub fn mint_tool_approval(tool: String, command: Option<String>) -> String {
+    if tool == "agent_run_shell" {
+        // Bind to the SHA-256 of the exact command. Empty/missing command
+        // here would mint a token bound to the hash of "" — still useless
+        // unless the caller eventually runs an empty command (which the
+        // length check in run_shell rejects), so we don't special-case it.
+        let cmd = command.unwrap_or_default();
+        let fp = shell_command_fingerprint(&cmd);
+        approval::mint_with_binding(&tool, &fp)
+    } else {
+        approval::mint(&tool)
+    }
+}
+
+/// SHA-256 hex of the exact command string. Used as the binding for shell
+/// approval tokens so the approval is non-transferable across commands.
+fn shell_command_fingerprint(command: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(command.as_bytes());
+    let out = h.finalize();
+    let mut s = String::with_capacity(64);
+    for b in out {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /* ── Agent tool commands ── */
@@ -44,7 +75,13 @@ pub async fn agent_run_shell(
     op_id: Option<String>,
     approval: String,
 ) -> Result<agent::ShellResult, String> {
-    if !approval::consume("agent_run_shell", &approval) {
+    // Approval is bound to a SHA-256 hash of the exact command string: a
+    // token approved for `ls` cannot be reused for `rm -rf` even within the
+    // 60s TTL. The fingerprint is recomputed here from the command we are
+    // about to run, so the frontend can't approve one string and execute
+    // another.
+    let fp = shell_command_fingerprint(&command);
+    if !approval::consume_with_binding("agent_run_shell", &approval, &fp) {
         return Err("tool approval required or expired".into());
     }
     agent::run_shell(command, opts, op_id).await
@@ -73,7 +110,14 @@ pub async fn agent_edit_file(
     old_string: String,
     new_string: String,
     replace_all: Option<bool>,
+    approval: String,
 ) -> Result<agent::EditResult, String> {
+    // edit_file mutates the filesystem just like write_file — require the
+    // same single-use approval token so a refactor or new caller cannot
+    // accidentally bypass the user confirmation gate.
+    if !approval::consume("agent_edit_file", &approval) {
+        return Err("tool approval required or expired".into());
+    }
     agent::edit_file(path, old_string, new_string, replace_all).await
 }
 
@@ -96,7 +140,12 @@ pub async fn agent_search_files(
 pub async fn agent_multi_edit(
     path: String,
     edits: Vec<agent::EditOp>,
+    approval: String,
 ) -> Result<agent::MultiEditResult, String> {
+    // multi_edit is just a batched form of edit_file; same approval gate.
+    if !approval::consume("agent_multi_edit", &approval) {
+        return Err("tool approval required or expired".into());
+    }
     agent::multi_edit(path, edits).await
 }
 
