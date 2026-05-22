@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useRef } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 export type CardRunState = "idle" | "running" | "done" | "failed";
@@ -10,7 +10,8 @@ export interface AgentCardNodeData {
   state: CardRunState;
   /** True when the card has an incoming edge — a single-card run is isolated. */
   midChain: boolean;
-  onConfigure: () => void;
+  /** Opens the centered form, flying from the clicked node's rect. */
+  onConfigure: (rect: DOMRect) => void;
   onRun: () => void;
   onDelete: () => void;
   [key: string]: unknown;
@@ -24,35 +25,48 @@ const STATE_LABEL: Record<CardRunState, string> = {
 };
 
 /**
- * Custom React Flow node for one configured agent in a workflow chain.
- * Source/target handles enforce the linear left→right wiring; the runner
- * rejects branches/cycles, the page surfaces a warning for them.
+ * Custom React Flow node for one placed agent on the table-top. Clicking the
+ * card body opens the centered edit form. Source/target handles enforce the
+ * linear left→right wiring; the runner rejects branches/cycles.
  */
 function AgentCardNodeImpl({ data }: NodeProps) {
   const d = data as AgentCardNodeData;
+  const ref = useRef<HTMLDivElement>(null);
+
+  function openForm() {
+    if (ref.current) d.onConfigure(ref.current.getBoundingClientRect());
+  }
+
   return (
-    <div className="wf-node" data-state={d.state} data-testid="wf-node">
+    <div className="wf-node" data-state={d.state} data-testid="wf-node" ref={ref}>
       <Handle type="target" position={Position.Left} className="wf-handle" />
-      <div className="wf-node-head">
-        <span className="wf-node-name" title={d.name}>{d.name}</span>
-        <span className={`wf-badge wf-badge-${d.state}`}>{STATE_LABEL[d.state]}</span>
-      </div>
-      <div className="wf-node-meta">
-        <span className="wf-node-preset">{d.preset}</span>
-        {d.schedule && (
-          <span className="wf-node-schedule" title={`Scheduled: ${d.schedule}`}>
-            ⏱ {d.schedule}
-          </span>
-        )}
-      </div>
+      <button
+        type="button"
+        className="wf-node-open"
+        onClick={openForm}
+        title="Edit agent"
+      >
+        <div className="wf-node-head">
+          <span className="wf-node-name" title={d.name}>{d.name}</span>
+          <span className={`wf-badge wf-badge-${d.state}`}>{STATE_LABEL[d.state]}</span>
+        </div>
+        <div className="wf-node-meta">
+          <span className="wf-node-preset">{d.preset}</span>
+          {d.schedule && (
+            <span className="wf-node-schedule" title={`Scheduled: ${d.schedule}`}>
+              ⏱ {d.schedule}
+            </span>
+          )}
+        </div>
+      </button>
       <div className="wf-node-actions">
         <button
           type="button"
           className="wf-node-btn"
-          onClick={d.onConfigure}
-          title="Configure agent"
+          onClick={openForm}
+          title="Edit agent"
         >
-          Configure
+          Edit
         </button>
         <button
           type="button"

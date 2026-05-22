@@ -122,8 +122,8 @@
   cursor: pointer;
 }
 
-/* ── Canvas ── */
-.wf-canvas { flex: 1; min-width: 0; }
+/* ── Canvas (the table-top) ── */
+.wf-canvas { flex: 1; min-width: 0; position: relative; }
 .wf-canvas .react-flow { background: var(--bg); }
 .wf-canvas .react-flow__background { color: var(--border-subtle); }
 .wf-canvas .react-flow__edge .react-flow__edge-path {
@@ -211,6 +211,21 @@
 @keyframes wfPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
+}
+
+/* Card body is a button — clicking it opens the centered edit form. */
+.wf-node-open {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
 }
 
 .wf-node-actions { display: flex; gap: var(--space-1); }
@@ -303,34 +318,105 @@
 .wf-btn-danger { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-fg); }
 .wf-btn-danger:hover:not(:disabled) { background: var(--danger-bg-strong); }
 
-/* ── Config drawer ── */
-.wf-drawer-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  justify-content: flex-end;
-  z-index: var(--z-modal);
+/* ── Card deck (corner of the table) ── */
+.wf-deck {
+  position: absolute;
+  left: var(--space-4);
+  bottom: var(--space-4);
+  width: 132px;
+  height: 168px;
+  z-index: 6;
 }
-.wf-drawer {
-  width: 380px;
-  max-width: 90vw;
-  height: 100%;
+.wf-deck-stack { position: absolute; inset: 0; }
+.wf-deck-card {
+  position: absolute;
+  width: 124px;
+  height: 156px;
+  border-radius: var(--radius-md);
   background: var(--surface);
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-toast);
+}
+/* The two cards under the top card — offset to read as a stack. */
+.wf-deck-card-3 { left: 8px; top: 8px; opacity: 0.55; }
+.wf-deck-card-2 { left: 4px; top: 4px; opacity: 0.8; }
+.wf-deck-top {
+  left: 0;
+  top: 0;
   display: flex;
   flex-direction: column;
-  box-shadow: var(--shadow-modal);
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  cursor: grab;
+  color: var(--text-2);
+  background: var(--surface);
+  transition: transform 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
-.wf-drawer-head {
+.wf-deck-top:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.wf-deck-top:active { cursor: grabbing; }
+.wf-deck-top:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wf-deck-plus { font-size: var(--fs-2xl); line-height: 1; font-weight: 300; }
+.wf-deck-label { font-size: var(--fs-sm); }
+
+/* ── Centered card form (supersedes the old config drawer) ── */
+.wf-form-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal);
+  padding: var(--space-4);
+}
+.wf-form-card {
+  width: 420px;
+  max-width: 100%;
+  max-height: 88vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  /* Fly transform: from the deck/node origin to the resting centered state. */
+  transform-origin: center center;
+  transition: transform 0.26s cubic-bezier(0.2, 0.7, 0.3, 1), opacity 0.2s ease;
+}
+/* The card starts shrunk + translated toward its origin, then settles. */
+.wf-form-card.is-entering,
+.wf-form-card.is-leaving {
+  opacity: 0;
+  transform:
+    translate(
+      calc(var(--wf-fly-x, 50vw) - 50vw),
+      calc(var(--wf-fly-y, 50vh) - 50vh)
+    )
+    scale(var(--wf-fly-scale, 0.2));
+}
+.wf-form-card.is-entered {
+  opacity: 1;
+  transform: translate(0, 0) scale(1);
+}
+.wf-form-inner {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+}
+.wf-form-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
-  font-weight: 600;
 }
-.wf-drawer-close {
+.wf-form-title { font-weight: 600; font-size: var(--fs-lg); }
+.wf-form-close {
   background: transparent;
   border: none;
   color: var(--text-2);
@@ -338,14 +424,46 @@
   cursor: pointer;
   line-height: 1;
 }
-.wf-drawer-close:hover { color: var(--text); }
-.wf-drawer-body { flex: 1; overflow-y: auto; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
-.wf-drawer-foot {
+.wf-form-close:hover { color: var(--text); }
+.wf-form-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.wf-form-foot {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border);
+}
+
+.wf-name-row { display: flex; gap: var(--space-2); align-items: stretch; }
+.wf-name-row input { flex: 1; }
+.wf-reroll {
+  flex: 0 0 auto;
+  padding: var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--fs-base);
+  line-height: 1;
+}
+.wf-reroll:hover { background: var(--surface-hover); }
+
+.wf-field-error { margin: var(--space-1) 0 0; font-size: var(--fs-xs); color: var(--danger-fg); }
+.wf-field-check { flex-direction: row; align-items: flex-start; gap: var(--space-2); }
+.wf-field-check span { font-size: var(--fs-sm); color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-deck-top,
+  .wf-form-card { transition: none; }
+  .wf-form-card.is-entering,
+  .wf-form-card.is-leaving { opacity: 1; transform: translate(0, 0) scale(1); }
 }
 
 .wf-field { display: flex; flex-direction: column; gap: var(--space-1); }

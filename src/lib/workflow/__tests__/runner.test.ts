@@ -205,3 +205,30 @@ describe("runWorkflow — unattended opt-in", () => {
     expect(await gate!("read_file", {}, "normal")).toEqual({ approve: false });
   });
 });
+
+describe("runWorkflow — per-card model pin", () => {
+  const single = (c: WorkflowCard): WorkflowGraph => ({ cards: [c], edges: [] });
+
+  it("uses the run default model when the card pins none", async () => {
+    let seen: string | undefined;
+    runAgentLoopMock.mockImplementation(async (opts) => {
+      seen = opts.model;
+      return "ok";
+    });
+
+    await runWorkflow(single(card("a")), {}, { model: "default-m" });
+    expect(seen).toBe("default-m");
+  });
+
+  it("overrides with the card's pinned model when set", async () => {
+    let seen: string | undefined;
+    runAgentLoopMock.mockImplementation(async (opts) => {
+      seen = opts.model;
+      return "ok";
+    });
+
+    const pinned = { ...card("a"), model: "pinned-m" };
+    await runWorkflow(single(pinned), {}, { model: "default-m" });
+    expect(seen).toBe("pinned-m");
+  });
+});

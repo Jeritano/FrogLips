@@ -1,0 +1,254 @@
+import { useEffect, useRef, useState } from "react";
+import type { WorkflowCard } from "../../types";
+import { loadAllPresets } from "../../lib/agent-presets";
+import { useModalA11y } from "../../lib/use-modal-a11y";
+import { generateAgentName } from "../../lib/agent-name";
+
+/** Origin rect the card flies in from / back to (the deck or a placed node). */
+export interface FormOrigin {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+interface Props {
+  card: WorkflowCard;
+  origin: FormOrigin | null;
+  onSave: (card: WorkflowCard) => void;
+  onClose: () => void;
+}
+
+/** All tool ids surfaced across the built-in presets — the explicit picker. */
+const ALL_TOOLS = [
+  "read_file", "list_dir", "search_files", "file_exists",
+  "edit_file", "multi_edit", "write_file", "run_shell",
+  "git_status", "git_diff", "git_log", "git_show", "git_branches", "git_commit",
+  "read_pdf", "web_fetch", "web_search",
+];
+
+/**
+ * Schedule grammar the Rust scheduler accepts: `every <n>m` / `every <n>h`
+ * (interval) or `daily HH:MM` (clock time). Blank = manual run only.
+ */
+const HINT = "Use 'every 30m', 'every 2h', or 'daily 09:00'.";
+
+function scheduleError(value: string): string | null {
+  const v = value.trim().toLowerCase();
+  if (v === "") return null;
+  const every = v.match(/^every\s+(\d+)\s*([mh])$/);
+  if (every) return Number(every[1]) > 0 ? null : HINT;
+  const daily = v.match(/^daily\s+(\d{1,2}):(\d{2})$/);
+  if (daily) {
+    const hh = Number(daily[1]);
+    const mm = Number(daily[2]);
+    return hh < 24 && mm < 60 ? null : HINT;
+  }
+  return HINT;
+}
+
+/**
+ * Centered card-shaped form for creating or editing one agent card. It flies
+ * in from `origin` (the deck or the placed node) on open and flies back on
+ * save/cancel. The `--wf-fly-*` custom properties drive the fly transform;
+ * all motion is gated by the global prefers-reduced-motion rule.
+ */
+export function CardForm({ card, origin, onSave, onClose }: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const presets = loadAllPresets();
+  const [draft, setDraft] = useState<WorkflowCard>(card);
+  // `entered` flips on after first paint so the CSS transition runs from the
+  // origin transform to the resting (centered) state.
+  const [entered, setEntered] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+
+  useModalA11y({ open: true, onClose, containerRef: ref });
+  useEffect(() => setDraft(card), [card]);
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  const schedErr = scheduleError(draft.schedule ?? "");
+
+  function set<K extends keyof WorkflowCard>(key: K, value: WorkflowCard[K]) {
+    setDraft((d) => ({ ...d, [key]: value }));
+  }
+
+  function toggleTool(tool: string) {
+    setDraft((d) => ({
+      ...d,
+      tools: d.tools.includes(tool)
+        ? d.tools.filter((t) => t !== tool)
+        : [...d.tools, tool],
+    }));
+  }
+
+  // Fly the card back to the origin, then run the callback once the
+  // transition ends. Falls through immediately under reduced motion (the
+  // transition is zeroed there, so `transitionend` may not fire).
+  function flyBack(then: () => void) {
+    const node = cardRef.current;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (!node || reduce) {
+      then();
+      return;
+    }
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      then();
+    };
+    node.addEventListener("transitionend", finish, { once: true });
+    setTimeout(finish, 400);
+    setLeaving(true);
+  }
+
+  function handleSave() {
+    if (schedErr != null) return;
+    flyBack(() => onSave(draft));
+  }
+
+  function handleCancel() {
+    flyBack(onClose);
+  }
+
+  // Translate from card-center to origin-center; scale down to origin size.
+  const flyStyle: React.CSSProperties = origin
+    ? {
+        ["--wf-fly-x" as string]: `${origin.x + origin.w / 2}px`,
+        ["--wf-fly-y" as string]: `${origin.y + origin.h / 2}px`,
+        ["--wf-fly-scale" as string]: String(
+          Math.max(origin.w / 420, 0.12),
+        ),
+      }
+    : {};
+
+  const stateClass = leaving ? "is-leaving" : entered ? "is-entered" : "is-entering";
+
+  return (
+    <div
+      className="wf-form-overlay"
+      onClick={(e) => { if (e.target === e.currentTarget) handleCancel(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Agent card"
+    >
+      <div
+        className={`wf-form-card ${stateClass}`}
+        ref={cardRef}
+        style={flyStyle}
+        data-testid="wf-card-form"
+      >
+        <div className="wf-form-inner" ref={ref}>
+          <div className="wf-form-head">
+            <span className="wf-form-title">{card.placed ? "Edit agent" : "New agent"}</span>
+            <button
+              type="button"
+              className="wf-form-close"
+              onClick={handleCancel}
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+          <div className="wf-form-body">
+            <label className="wf-field">
+              <span>Agent name</span>
+              <div className="wf-name-row">
+                <input
+                  value={draft.name}
+                  onChange={(e) => set("name", e.target.value)}
+                  placeholder="Agent name"
+                />
+                <button
+                  type="button"
+                  className="wf-reroll"
+                  onClick={() => set("name", generateAgentName())}
+                  title="Reroll name"
+                  aria-label="Reroll name"
+                >
+                  🎲
+                </button>
+              </div>
+            </label>
+            <label className="wf-field">
+              <span>Role</span>
+              <select value={draft.preset} onChange={(e) => set("preset", e.target.value)}>
+                {presets.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="wf-field">
+              <span>Model (blank = backend default)</span>
+              <input
+                value={draft.model ?? ""}
+                onChange={(e) => set("model", e.target.value || null)}
+                placeholder="e.g. llama3.1:8b"
+              />
+            </label>
+            <label className="wf-field">
+              <span>Instructions</span>
+              <textarea
+                value={draft.prompt}
+                onChange={(e) => set("prompt", e.target.value)}
+                rows={4}
+                placeholder="What should this agent do?"
+              />
+            </label>
+            <label className="wf-field">
+              <span>Schedule (blank = manual)</span>
+              <input
+                value={draft.schedule ?? ""}
+                onChange={(e) => set("schedule", e.target.value || null)}
+                placeholder="every 30m  ·  daily 09:00"
+                aria-invalid={schedErr != null}
+              />
+              {schedErr && <p className="wf-field-error" role="alert">{schedErr}</p>}
+            </label>
+            <label className="wf-field wf-field-check">
+              <input
+                type="checkbox"
+                checked={draft.unattended === true}
+                onChange={(e) => set("unattended", e.target.checked)}
+              />
+              <span>Auto-approve this card's tools on scheduled runs.</span>
+            </label>
+            <div className="wf-field">
+              <span>Tools</span>
+              <div className="wf-tool-grid">
+                {ALL_TOOLS.map((tool) => (
+                  <label key={tool} className="wf-tool-item">
+                    <input
+                      type="checkbox"
+                      checked={draft.tools.includes(tool)}
+                      onChange={() => toggleTool(tool)}
+                    />
+                    {tool}
+                  </label>
+                ))}
+              </div>
+              <p className="wf-field-hint">No tools selected = role default tools.</p>
+            </div>
+          </div>
+          <div className="wf-form-foot">
+            <button type="button" className="wf-btn" onClick={handleCancel}>Cancel</button>
+            <button
+              type="button"
+              className="wf-btn wf-btn-primary"
+              onClick={handleSave}
+              disabled={schedErr != null}
+              title={schedErr ?? "Save card"}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

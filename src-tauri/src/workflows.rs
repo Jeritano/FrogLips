@@ -160,6 +160,20 @@ pub fn validate_graph_json(graph_json: &str) -> Result<()> {
             Some(v) if v.is_boolean() => {}
             _ => return Err(anyhow::anyhow!("card {i} field 'unattended' must be a boolean")),
         }
+        // Optional per-card model pin: `model: string | null`. Absent or null
+        // means fall back to the backend's current model.
+        match c.get("model") {
+            None => {}
+            Some(v) if v.is_string() || v.is_null() => {}
+            _ => return Err(anyhow::anyhow!("card {i} field 'model' must be a string or null")),
+        }
+        // Optional placement flag: `placed: bool`. Absent/false = the card sits
+        // in the deck; true = placed on the canvas at its x/y.
+        match c.get("placed") {
+            None => {}
+            Some(v) if v.is_boolean() => {}
+            _ => return Err(anyhow::anyhow!("card {i} field 'placed' must be a boolean")),
+        }
     }
 
     for (i, edge) in edges.iter().enumerate() {
@@ -496,6 +510,30 @@ mod tests {
         // Present but not a boolean → rejected.
         assert!(validate_graph_json(
             r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"unattended":"yes"}],"edges":[]}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn validate_graph_accepts_optional_model_and_placed() {
+        // Both present + correctly typed → accepted.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"model":"llama3","placed":true}],"edges":[]}"#
+        )
+        .is_ok());
+        // Null model → accepted.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"model":null,"placed":false}],"edges":[]}"#
+        )
+        .is_ok());
+        // model wrong type → rejected.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"model":7}],"edges":[]}"#
+        )
+        .is_err());
+        // placed wrong type → rejected.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"placed":"yes"}],"edges":[]}"#
         )
         .is_err());
     }

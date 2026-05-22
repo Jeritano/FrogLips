@@ -115,8 +115,11 @@ function buildCardOptions(
             : baseGate(toolName, args, risk)
       : baseGate;
 
+  // A card may pin its own model; null/absent falls back to the run default.
+  const model = card.model ?? opts.model;
+
   return {
-    model: opts.model,
+    model,
     messages,
     conversationId: 0,
     workspaceRoot: opts.workspaceRoot ?? null,

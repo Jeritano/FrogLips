@@ -583,6 +583,16 @@ export interface WorkflowCard {
    * non-listed tools always use the normal confirmation gate. Default false.
    */
   unattended?: boolean;
+  /**
+   * Specific model id this agent runs on. Null/absent = fall back to the
+   * backend's current model.
+   */
+  model?: string | null;
+  /**
+   * False/absent = the card sits in the "deck" (created but not on the
+   * canvas); true = placed on the workflow canvas at its x/y.
+   */
+  placed?: boolean;
   x: number;
   y: number;
 }
@@ -658,6 +668,8 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
     schedule: typeof c.schedule === "string" ? c.schedule : null,
     backend: typeof c.backend === "string" ? c.backend : null,
     unattended: c.unattended === true,
+    model: typeof c.model === "string" ? c.model : null,
+    placed: c.placed === true,
     x: typeof c.x === "number" ? c.x : 0,
     y: typeof c.y === "number" ? c.y : 0,
   };

@@ -19,8 +19,9 @@ import {
   type WorkflowGraph,
 } from "../../types";
 import { WorkflowCanvas } from "./WorkflowCanvas";
-import { CardConfigDrawer } from "./CardConfigDrawer";
+import { CardForm, type FormOrigin } from "./CardForm";
 import { RunPanel, type CardRunInfo } from "./RunPanel";
+import { generateAgentName } from "../../lib/agent-name";
 import type { CardRunState } from "./AgentCardNode";
 
 interface Props {
@@ -38,7 +39,11 @@ export function WorkflowsPage({ status }: Props) {
   const [selected, setSelected] = useState<Workflow | null>(null);
   const [cards, setCards] = useState<WorkflowCard[]>([]);
   const [edges, setEdges] = useState<WorkflowEdge[]>([]);
-  const [configId, setConfigId] = useState<string | null>(null);
+  // The card currently open in the centered form. `formIsNew` distinguishes a
+  // freshly created (not-yet-saved) draft from editing an existing card.
+  const [formCard, setFormCard] = useState<WorkflowCard | null>(null);
+  const [formIsNew, setFormIsNew] = useState(false);
+  const [formOrigin, setFormOrigin] = useState<FormOrigin | null>(null);
   const [cardStates, setCardStates] = useState<Record<string, CardRunState>>({});
   const [outputs, setOutputs] = useState<Record<string, { output: string; error?: string }>>({});
   const [running, setRunning] = useState(false);
@@ -127,20 +132,23 @@ export function WorkflowsPage({ status }: Props) {
     }
   }
 
-  function addCard() {
-    const preset = BUILTIN_PRESETS[0];
-    const card: WorkflowCard = {
+  // A blank card with a freshly generated codename. `placed` stays false
+  // until the card lands on the table (drag-drop or save-from-deck).
+  function freshCard(x = 0, y = 0): WorkflowCard {
+    return {
       id: newCardId(),
-      name: `Agent ${cards.length + 1}`,
-      preset: preset.id,
+      name: generateAgentName(),
+      preset: BUILTIN_PRESETS[0].id,
       prompt: "",
       tools: [],
       schedule: null,
       backend: null,
-      x: 80 + (cards.length % 4) * 240,
-      y: 80 + Math.floor(cards.length / 4) * 180,
+      model: null,
+      placed: false,
+      unattended: false,
+      x,
+      y,
     };
-    setCards((c) => [...c, card]);
   }
 
   const deleteCard = useCallback((id: string) => {
@@ -148,9 +156,47 @@ export function WorkflowsPage({ status }: Props) {
     setEdges((e) => e.filter((x) => x.from !== id && x.to !== id));
   }, []);
 
+  // Convert a DOMRect (viewport coords) into the form's fly-origin shape.
+  function rectOrigin(r: DOMRect): FormOrigin {
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+
+  // Clicking the deck's top card: open the centered form on a fresh draft.
+  function createFromDeck(origin: DOMRect) {
+    setFormCard(freshCard());
+    setFormIsNew(true);
+    setFormOrigin(rectOrigin(origin));
+  }
+
+  // Dragging a card from the deck onto the table: place it immediately.
+  function placeCard(x: number, y: number) {
+    setCards((c) => [...c, { ...freshCard(x, y), placed: true }]);
+  }
+
+  // Clicking a placed node: open the centered form to edit it.
+  function editCard(id: string, origin: DOMRect) {
+    const card = cards.find((c) => c.id === id);
+    if (!card) return;
+    setFormCard(card);
+    setFormIsNew(false);
+    setFormOrigin(rectOrigin(origin));
+  }
+
+  function closeForm() {
+    setFormCard(null);
+    setFormIsNew(false);
+    setFormOrigin(null);
+  }
+
+  // Save from the centered form. A new card lands on the deck (placed:false);
+  // an edited card updates in place. The form animates back on its own.
   function saveCard(card: WorkflowCard) {
-    setCards((c) => c.map((x) => (x.id === card.id ? card : x)));
-    setConfigId(null);
+    if (formIsNew) {
+      setCards((c) => [...c, card]);
+    } else {
+      setCards((c) => c.map((x) => (x.id === card.id ? card : x)));
+    }
+    closeForm();
   }
 
   const setState = useCallback((id: string, state: CardRunState) => {
@@ -319,8 +365,6 @@ export function WorkflowsPage({ status }: Props) {
     [cards, cardStates],
   );
 
-  const configCard = configId ? cards.find((c) => c.id === configId) ?? null : null;
-
   if (!selected) {
     return (
       <div className="wf-page wf-picker" data-testid="workflows-page">
@@ -377,7 +421,6 @@ export function WorkflowsPage({ status }: Props) {
           onChange={(e) => setSelected({ ...selected, name: e.target.value })}
           aria-label="Workflow name"
         />
-        <button type="button" className="wf-btn" onClick={addCard}>+ Add card</button>
         {warning && (
           <span className="wf-warning" role="status" data-testid="wf-warning">
             ⚠ {warning}
@@ -393,9 +436,11 @@ export function WorkflowsPage({ status }: Props) {
             cardStates={cardStates}
             onCardsChange={setCards}
             onEdgesChange={setEdges}
-            onConfigure={setConfigId}
+            onConfigure={editCard}
             onRunCard={runSingleCard}
             onDeleteCard={deleteCard}
+            onPlaceCard={placeCard}
+            onCreateFromDeck={createFromDeck}
             runningCardId={runningCardId}
           />
         </ReactFlowProvider>
@@ -407,11 +452,12 @@ export function WorkflowsPage({ status }: Props) {
           onStop={stopRun}
         />
       </div>
-      {configCard && (
-        <CardConfigDrawer
-          card={configCard}
+      {formCard && (
+        <CardForm
+          card={formCard}
+          origin={formOrigin}
           onSave={saveCard}
-          onClose={() => setConfigId(null)}
+          onClose={closeForm}
         />
       )}
     </div>
