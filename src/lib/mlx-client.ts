@@ -2,6 +2,7 @@ import type { Message, ServerStatus, ToolCall } from "../types";
 import { finalizeToolCalls, mergeToolCallChunk } from "./agent-loop/tool-call-merge";
 import type { PartialToolCall, StreamChatResult } from "./agent-loop/stream-types";
 import type { ChatParams } from "./agent-loop/types";
+import { resolveAgentChatConfig } from "./agent-loop/types";
 import { withTimeout } from "./signal-utils";
 import { readLines } from "./stream-lines";
 
@@ -135,15 +136,16 @@ export async function streamMlxAgentChat(
   params?: ChatParams | null,
 ): Promise<StreamChatResult> {
   const url = `http://${status.host}:${status.port}/v1/chat/completions`;
+  // Shared AgentChatConfig base; per-conversation params override fields.
+  const cfg = resolveAgentChatConfig(params);
   const body: Record<string, unknown> = {
     model: status.model,
     stream: true,
-    // Per-conversation params override the agent defaults; null = default.
-    temperature: params?.temperature ?? 0.4,
-    max_tokens: params?.max_tokens ?? 2048,
+    temperature: cfg.temperature,
+    top_p: cfg.top_p,
+    max_tokens: cfg.max_tokens,
     messages: toOpenAiMessages(messages),
   };
-  if (params?.top_p != null) body.top_p = params.top_p;
   if (tools.length > 0) body.tools = tools;
 
   const to = withTimeout(signal, STREAM_CONNECT_TIMEOUT_MS, "stream connect timed out");

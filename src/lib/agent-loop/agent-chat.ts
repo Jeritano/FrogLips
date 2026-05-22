@@ -13,6 +13,7 @@
 
 import type { Message } from "../../types";
 import type { AgentBackend, AgentRunOptions } from "./types";
+import { resolveAgentChatConfig } from "./types";
 export type { ChatParams } from "./types";
 import {
   OLLAMA_BASE,
@@ -68,13 +69,16 @@ export async function streamAgentChat(
       if (backend === "native") {
         return await streamNativeAgentChat(msgs, tools, signal, onContentChunk, params);
       }
-      // Default: Ollama. Per-conversation params override the defaults;
-      // unset (null) fields keep today's behaviour.
+      // Default: Ollama. Base AgentChatConfig resolved once; per-conversation
+      // params override individual fields (resolveAgentChatConfig handles the
+      // null-fallthrough). Applied uniformly with the mlx/native paths.
+      const cfg = resolveAgentChatConfig(params);
       const ollamaOptions: Record<string, unknown> = {
-        temperature: params?.temperature ?? 0.4,
+        temperature: cfg.temperature,
+        top_p: cfg.top_p,
+        num_predict: cfg.max_tokens,
+        num_ctx: cfg.context_size,
       };
-      if (params?.top_p != null) ollamaOptions.top_p = params.top_p;
-      if (params?.max_tokens != null) ollamaOptions.num_predict = params.max_tokens;
       return await streamOllamaChat(
         `${OLLAMA_BASE}/api/chat`,
         {

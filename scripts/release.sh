@@ -56,6 +56,51 @@ fi
 
 set -e
 
+# ── Smoke test ───────────────────────────────────────────────────────────
+# Launch the freshly built .app, give it a moment to come up, then assert it
+# is still alive and produced no new crash.log entry. A failed smoke test
+# aborts the release — we never install a build that crashes on launch.
+BUILT_APP="src-tauri/target/release/bundle/macos/Froglips.app"
+CRASH_LOG="$HOME/.local-llm-app/crash.log"
+
+if [[ -d "$BUILT_APP" ]]; then
+  echo "▶ Smoke testing built app…"
+  crash_before=0
+  [[ -f "$CRASH_LOG" ]] && crash_before=$(wc -c < "$CRASH_LOG" | tr -d ' ')
+
+  # ad-hoc sign so Gatekeeper lets the unsigned build run for the probe.
+  codesign --sign - --deep --force --timestamp=none "$BUILT_APP" >/dev/null 2>&1 || true
+
+  smoke_bin="$BUILT_APP/Contents/MacOS/Froglips"
+  "$smoke_bin" >/dev/null 2>&1 &
+  smoke_pid=$!
+  sleep 6
+
+  smoke_ok=1
+  if ! kill -0 "$smoke_pid" 2>/dev/null; then
+    echo "  ✗ app process exited within 6s of launch" >&2
+    smoke_ok=0
+  fi
+
+  crash_after=0
+  [[ -f "$CRASH_LOG" ]] && crash_after=$(wc -c < "$CRASH_LOG" | tr -d ' ')
+  if [[ "$crash_after" -gt "$crash_before" ]]; then
+    echo "  ✗ new crash.log entry appeared during smoke test" >&2
+    smoke_ok=0
+  fi
+
+  # Quit the probe instance regardless of outcome.
+  kill "$smoke_pid" 2>/dev/null || true
+  wait "$smoke_pid" 2>/dev/null || true
+  pkill -f "Froglips.app/Contents/MacOS" 2>/dev/null || true
+
+  if [[ "$smoke_ok" -ne 1 ]]; then
+    echo "▶ Smoke test FAILED — refusing to install a broken build." >&2
+    exit 1
+  fi
+  echo "✓ Smoke test passed"
+fi
+
 # Install fresh copy
 rm -rf /Applications/Froglips.app
 cp -R src-tauri/target/release/bundle/macos/Froglips.app /Applications/

@@ -117,6 +117,37 @@ pub async fn get_conversation(id: i64) -> Result<history::Conversation, String> 
     blocking(move || history::get_conversation(id)).await
 }
 
+/* ── Conversation organization ── */
+
+/// Pin or unpin a conversation. Pinned conversations sort ahead of the rest.
+#[tauri::command]
+pub async fn set_conversation_pinned(id: i64, pinned: bool) -> Result<(), String> {
+    blocking(move || history::set_conversation_pinned(id, pinned)).await
+}
+
+/// Set (or clear, with `null`) a conversation's tags. `tags` must be `null` or
+/// a JSON-array-of-strings string; anything else is rejected.
+#[tauri::command]
+pub async fn set_conversation_tags(id: i64, tags: Option<String>) -> Result<(), String> {
+    if let Some(t) = tags.as_deref() {
+        if t.len() > MAX_MESSAGE_BYTES {
+            return Err("tags payload too large".into());
+        }
+    }
+    blocking(move || history::set_conversation_tags(id, tags.as_deref())).await
+}
+
+/// Search across message bodies, returning matching conversation ids with a
+/// snippet of the matching message. Distinct from the title-only conversation
+/// search.
+#[tauri::command]
+pub async fn search_messages(query: String) -> Result<Vec<history::MessageSearchHit>, String> {
+    if query.len() > MAX_TITLE_LEN {
+        return Err(format!("query exceeds {MAX_TITLE_LEN} chars"));
+    }
+    blocking(move || history::search_messages(&query)).await
+}
+
 /* ── Conversation branching ── */
 
 #[tauri::command]

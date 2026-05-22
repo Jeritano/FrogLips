@@ -3,6 +3,7 @@ import { api } from "./tauri-api";
 import type { Message, ToolCall } from "../types";
 import type { StreamChatResult } from "./agent-loop/stream-types";
 import type { ChatParams } from "./agent-loop/types";
+import { resolveAgentChatConfig } from "./agent-loop/types";
 
 export interface NativeChunk {
   delta: string;
@@ -153,14 +154,16 @@ export async function streamNativeAgentChat(
   );
 
   try {
+    // Shared AgentChatConfig base; per-conversation params override fields.
+    // Without this the agent path passed no token cap to the native runtime.
+    const cfg = resolveAgentChatConfig(params);
     await api.nativeChatStream({
       op_id: opId,
       messages: toNativeMessages(messages),
       tools: tools as Record<string, unknown>[],
-      // Per-conversation params; unset fields fall back to backend defaults.
-      temperature: params?.temperature ?? undefined,
-      top_p: params?.top_p ?? undefined,
-      max_tokens: params?.max_tokens ?? undefined,
+      temperature: cfg.temperature,
+      top_p: cfg.top_p,
+      max_tokens: cfg.max_tokens,
     });
   } finally {
     offChunk();

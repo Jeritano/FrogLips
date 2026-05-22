@@ -268,6 +268,25 @@ jobs:
           echo "--- latest.json ---"
           cat release-assets/latest.json
 
+      # Integrity manifest: a single SHA256SUMS covering every release asset
+      # so a manual download can be verified with `sha256sum -c SHA256SUMS`.
+      # latest.json is excluded — its content is regenerated per build and the
+      # updater verifies signatures separately.
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -e
+          cd release-assets
+          : > SHA256SUMS
+          for f in *; do
+            [ "$f" = "SHA256SUMS" ] && continue
+            [ "$f" = "latest.json" ] && continue
+            [ -f "$f" ] || continue
+            sha256sum "$f" >> SHA256SUMS
+          done
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
       - name: Attach artifacts to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

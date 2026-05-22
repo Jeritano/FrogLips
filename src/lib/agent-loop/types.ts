@@ -122,6 +122,49 @@ export interface AgentRunOptions {
   params?: ChatParams | null;
 }
 
+/**
+ * Base model parameters applied to every agent chat turn, regardless of
+ * backend. Per-conversation `ChatParams` override individual fields; this is
+ * the shared default so agent behaviour is portable across ollama/mlx/native.
+ */
+export interface AgentChatConfig {
+  temperature: number;
+  top_p: number;
+  /** Upper bound on generated tokens (ollama `num_predict` / OpenAI `max_tokens`). */
+  max_tokens: number;
+  /** Context-window size hint in tokens. */
+  context_size: number;
+}
+
+/**
+ * The single shared default. Resolved once and applied uniformly across the
+ * three backend clients' agent paths. A low temperature keeps tool-calling
+ * deterministic; the token cap stops a runaway generation.
+ */
+export const DEFAULT_AGENT_CHAT_CONFIG: AgentChatConfig = {
+  temperature: 0.4,
+  top_p: 0.95,
+  max_tokens: 4096,
+  context_size: 8192,
+};
+
+/**
+ * Merge per-conversation `ChatParams` over the base `AgentChatConfig`. Null /
+ * undefined fields fall through to the base default — this is the override
+ * layer, not a replacement.
+ */
+export function resolveAgentChatConfig(
+  params?: ChatParams | null,
+  base: AgentChatConfig = DEFAULT_AGENT_CHAT_CONFIG,
+): AgentChatConfig {
+  return {
+    temperature: params?.temperature ?? base.temperature,
+    top_p: params?.top_p ?? base.top_p,
+    max_tokens: params?.max_tokens ?? base.max_tokens,
+    context_size: base.context_size,
+  };
+}
+
 /** Resolved per-conversation model parameters threaded into chat requests. */
 export interface ChatParams {
   temperature?: number | null;

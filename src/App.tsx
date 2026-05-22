@@ -13,6 +13,10 @@ import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { EmptyState } from "./components/EmptyState";
+import { Toast } from "./components/Toast";
+import { LiveRegion } from "./components/LiveRegion";
+import { announce } from "./lib/announce";
+import { parseTags, encodeTags, tagsFromInput } from "./lib/conversation-tags";
 import "./App.css";
 
 // Heavy panels that aren't needed for first paint: lazy-load so they ship in
@@ -40,6 +44,18 @@ function App() {
   const [current, setCurrent] = useState<Conversation | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
+  // Conversation-id whose tag editor is open, plus its draft text.
+  const [tagEditingId, setTagEditingId] = useState<number | null>(null);
+  const [tagDraft, setTagDraft] = useState("");
+  // Content-search results: conversation ids whose messages match `convSearch`.
+  // null = no content search performed (title-only filtering).
+  const [contentMatchIds, setContentMatchIds] = useState<Set<number> | null>(null);
+  // Pending soft-delete. We delay the destructive IPC call by 5s so the undo
+  // toast can cancel it — this preserves the conversation AND its messages.
+  const [pendingDelete, setPendingDelete] = useState<{
+    conv: Conversation;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
   const [memoryTick, setMemoryTick] = useState(0);
   const [panelWorkspace, setPanelWorkspace] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -204,6 +220,44 @@ function App() {
     if (editingId !== null) editInputRef.current?.select();
   }, [editingId]);
 
+  // Debounced message-content search. Merges conversation ids whose message
+  // bodies match into the title-only filter. Falls back gracefully if the
+  // backend command is missing (older builds) — title search still works.
+  useEffect(() => {
+    const q = convSearch.trim();
+    if (q.length < 2) {
+      setContentMatchIds(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      api.searchMessages(q)
+        .then((hits) => {
+          if (cancelled) return;
+          setContentMatchIds(new Set(hits.map((h) => h.conversation_id)));
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setContentMatchIds(null);
+          logDiag({
+            level: "info",
+            source: "app",
+            message: "searchMessages failed — falling back to title-only search",
+            detail: err,
+          });
+        });
+    }, 220);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [convSearch]);
+
+  // Cancel any in-flight soft-delete timer on unmount so it doesn't fire
+  // against an unmounted tree.
+  useEffect(() => {
+    return () => {
+      if (pendingDelete) clearTimeout(pendingDelete.timer);
+    };
+  }, [pendingDelete]);
+
   async function refreshStatus() {
     try {
       setStatus(await api.serverStatus());
@@ -248,9 +302,18 @@ function App() {
     );
   }
 
-  const filteredConversations = conversations.filter((c) =>
-    !convSearch.trim() || c.title.toLowerCase().includes(convSearch.trim().toLowerCase()),
-  );
+  const filteredConversations = conversations.filter((c) => {
+    // Hide a conversation that is mid soft-delete so the row vanishes while
+    // the undo toast is up; undo re-inserts it.
+    if (pendingDelete && pendingDelete.conv.id === c.id) return false;
+    const q = convSearch.trim().toLowerCase();
+    if (!q) return true;
+    // Title match OR message-content match (when content search resolved).
+    return (
+      c.title.toLowerCase().includes(q) ||
+      (contentMatchIds !== null && contentMatchIds.has(c.id))
+    );
+  });
 
   /**
    * Order conversations as a forest: each root is followed immediately by its
@@ -291,15 +354,88 @@ function App() {
     return out;
   })();
 
-  async function deleteConv(id: number) {
+  // Soft-delete: hide the row immediately and schedule the destructive IPC
+  // call 5s out. The undo toast cancels the timer, which restores the
+  // conversation AND its messages intact (nothing was actually deleted yet).
+  function deleteConv(id: number) {
+    const conv = conversations.find((c) => c.id === id);
+    if (!conv) return;
+    // Commit any prior pending delete before starting a new one.
+    if (pendingDelete) {
+      clearTimeout(pendingDelete.timer);
+      void commitDelete(pendingDelete.conv.id);
+    }
+    if (current?.id === id) setCurrent(null);
+    const timer = setTimeout(() => {
+      void commitDelete(id);
+      setPendingDelete(null);
+    }, 5000);
+    setPendingDelete({ conv, timer });
+    announce(`Conversation "${conv.title}" deleted. Undo available.`);
+  }
+
+  async function commitDelete(id: number) {
     try {
       await api.deleteConversation(id);
-      if (current?.id === id) setCurrent(null);
       await refreshConversations();
     } catch (e) {
       setErr(`Failed to delete conversation: ${e}`);
       await refreshConversations();
     }
+  }
+
+  function undoDelete() {
+    if (!pendingDelete) return;
+    clearTimeout(pendingDelete.timer);
+    const restored = pendingDelete.conv;
+    setPendingDelete(null);
+    announce(`Conversation "${restored.title}" restored.`);
+  }
+
+  async function togglePin(c: Conversation, e: React.MouseEvent) {
+    e.stopPropagation();
+    const next = !c.pinned;
+    // Optimistic update so the row reorders immediately.
+    setConversations((prev) =>
+      prev.map((x) => (x.id === c.id ? { ...x, pinned: next } : x)),
+    );
+    try {
+      await api.setConversationPinned(c.id, next);
+      announce(next ? `Pinned "${c.title}"` : `Unpinned "${c.title}"`);
+      await refreshConversations();
+    } catch (err) {
+      setErr(`Failed to ${next ? "pin" : "unpin"} conversation: ${err}`);
+      await refreshConversations();
+    }
+  }
+
+  function startTagEdit(c: Conversation, e: React.MouseEvent) {
+    e.stopPropagation();
+    setTagEditingId(c.id);
+    setTagDraft(parseTags(c.tags).join(", "));
+  }
+
+  async function commitTagEdit() {
+    if (tagEditingId === null) return;
+    const id = tagEditingId;
+    const encoded = encodeTags(tagsFromInput(tagDraft));
+    setTagEditingId(null);
+    setTagDraft("");
+    setConversations((prev) =>
+      prev.map((x) => (x.id === id ? { ...x, tags: encoded } : x)),
+    );
+    try {
+      await api.setConversationTags(id, encoded);
+      await refreshConversations();
+    } catch (err) {
+      setErr(`Failed to update tags: ${err}`);
+      await refreshConversations();
+    }
+  }
+
+  function cancelTagEdit() {
+    setTagEditingId(null);
+    setTagDraft("");
   }
 
   function startEdit(c: Conversation, e: React.MouseEvent) {
@@ -346,7 +482,16 @@ function App() {
     );
   }, []);
 
-  const onMemoriesChanged = useCallback(() => setMemoryTick((t) => t + 1), []);
+  const onMemoriesChanged = useCallback(() => {
+    setMemoryTick((t) => t + 1);
+    announce("Memories updated");
+  }, []);
+
+  // Mirror error-bar text into the live region so screen-reader users hear
+  // failures they'd otherwise only see.
+  useEffect(() => {
+    if (err) announce(`Error: ${err}`);
+  }, [err]);
 
   const onForked = useCallback(async (newConvId: number) => {
     await refreshConversations();
@@ -509,13 +654,16 @@ function App() {
               )}
             </li>
           )}
-          {orderedConversations.map(({ conv: c, depth }) => (
+          {orderedConversations.map(({ conv: c, depth }) => {
+            const tags = parseTags(c.tags);
+            return (
             <li
               key={c.id}
               data-testid="conv-item"
               data-depth={depth}
-              className={current?.id === c.id ? "active" : ""}
-              onClick={() => editingId !== c.id && setCurrent(c)}
+              data-pinned={c.pinned ? "true" : undefined}
+              className={`conv-row-anim${current?.id === c.id ? " active" : ""}`}
+              onClick={() => editingId !== c.id && tagEditingId !== c.id && setCurrent(c)}
               onDoubleClick={(e) => startEdit(c, e)}
               title={depth > 0 ? "Branch — forked from another conversation" : "Double-click to rename"}
               style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 14 } : undefined}
@@ -536,12 +684,57 @@ function App() {
                 />
               ) : (
                 <span className="conv-title">
-                  {depth > 0 && (
-                    <span className="conv-branch-marker" aria-hidden="true">↳ </span>
-                  )}
-                  {c.title}
+                  <span className="conv-title-line">
+                    {c.pinned && (
+                      <span className="conv-pin-dot" aria-hidden="true" title="Pinned">📌</span>
+                    )}
+                    {depth > 0 && (
+                      <span className="conv-branch-marker" aria-hidden="true">↳ </span>
+                    )}
+                    <span className="conv-title-text">{c.title}</span>
+                  </span>
+                  {tagEditingId === c.id ? (
+                    <input
+                      className="conv-tag-input"
+                      value={tagDraft}
+                      placeholder="tags, comma-separated"
+                      onChange={(e) => setTagDraft(e.target.value)}
+                      onBlur={commitTagEdit}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); commitTagEdit(); }
+                        else if (e.key === "Escape") { e.preventDefault(); cancelTagEdit(); }
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      autoFocus
+                    />
+                  ) : tags.length > 0 ? (
+                    <span className="conv-tags" onClick={(e) => startTagEdit(c, e)} title="Edit tags">
+                      {tags.map((t) => (
+                        <span key={t} className="conv-tag-chip">{t}</span>
+                      ))}
+                    </span>
+                  ) : null}
                 </span>
               )}
+              <button
+                className="del conv-pin"
+                title={c.pinned ? "Unpin conversation" : "Pin conversation"}
+                aria-label={c.pinned ? "Unpin conversation" : "Pin conversation"}
+                aria-pressed={!!c.pinned}
+                data-testid="pin-conv"
+                onClick={(e) => togglePin(c, e)}
+              >
+                {c.pinned ? "★" : "☆"}
+              </button>
+              <button
+                className="del conv-tag-btn"
+                title="Edit tags"
+                aria-label="Edit conversation tags"
+                data-testid="tag-conv"
+                onClick={(e) => startTagEdit(c, e)}
+              >
+                🏷
+              </button>
               <button
                 className="del detach"
                 title="Open in a new window"
@@ -580,7 +773,8 @@ function App() {
                 {deleteConfirm.labelFor(String(c.id), "×")}
               </button>
             </li>
-          ))}
+            );
+          })}
         </ul>
         <div className="sidebar-spacer-bottom" aria-hidden="true" />
       </aside>
@@ -694,6 +888,24 @@ function App() {
         />
         </Suspense>
       )}
+      {pendingDelete && (
+        <Toast
+          message={`Conversation "${pendingDelete.conv.title}" deleted`}
+          actionLabel="Undo"
+          onAction={undoDelete}
+          onDismiss={() => {
+            // Toast timed out / dismissed without undo — let the scheduled
+            // delete run; nothing to do here. (The 5s soft-delete timer and
+            // the toast both run ~5s, so this is just a safety net.)
+            setPendingDelete((p) => {
+              if (p) { clearTimeout(p.timer); void commitDelete(p.conv.id); }
+              return null;
+            });
+          }}
+          durationMs={5000}
+        />
+      )}
+      <LiveRegion />
     </div>
   );
 }

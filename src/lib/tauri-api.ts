@@ -31,6 +31,7 @@ import type {
   McpToolDescriptor,
   Memory,
   Message,
+  MessageSearchHit,
   MultiEditResult,
   PdfResult,
   PolicyDecision,
@@ -96,6 +97,15 @@ export const api = {
   // (`{temperature,top_p,max_tokens,system_prompt}`) or null to clear.
   updateConversationParams: (id: number, params: string | null) =>
     invoke<void>("update_conversation_params", { id, params }),
+  // Conversation organisation — pin, tags, and full-text message search.
+  // `tags` is a raw JSON array string (or null to clear). `searchMessages`
+  // returns the conversation ids whose messages match, with a snippet.
+  setConversationPinned: (id: number, pinned: boolean) =>
+    invoke<void>("set_conversation_pinned", { id, pinned }),
+  setConversationTags: (id: number, tags: string | null) =>
+    invoke<void>("set_conversation_tags", { id, tags }),
+  searchMessages: (query: string) =>
+    invoke<MessageSearchHit[]>("search_messages", { query }),
   listMessages: async (conversationId: number) => {
     // Backend returns `images` as a JSON-encoded string (the literal SQLite
     // column). Parse here so callers see the typed `ChatImage[]` shape

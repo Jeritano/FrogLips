@@ -16,7 +16,7 @@ import { buildSystemPrompt } from "./system-prompt";
 import { applyContextBudget } from "./context-manager";
 import { agentBackendUnsupportedReason, streamAgentChat } from "./agent-chat";
 import { awaitSubagents, listSubagents, runSubagent, spawnSubagentAsync } from "./subagent";
-import { fetchMcpTools } from "./mcp-tools";
+import { fetchMcpTools, isMcpToolName } from "./mcp-tools";
 import { api } from "../tauri-api";
 import { logDiag } from "../diagnostics";
 
@@ -151,6 +151,11 @@ const DEDUPE_WINDOW = 6;
 // Stall detection: if agent reads the same path > this many times in
 // monotonically-advancing tiny chunks, abort the loop with an explanatory msg.
 const STALL_SAME_PATH_LIMIT = 6;
+// Consecutive-error budget: after this many tool results in a row come back
+// `ok:false` (even with differing args — the dedupe window only catches
+// IDENTICAL calls), inject a stop-and-report hint so a permission wall or
+// broken tool can't burn the whole iteration budget. A success resets it.
+const MAX_CONSECUTIVE_TOOL_ERRORS = 5;
 
 function makeTmpKey() {
   return `tmp:${crypto.randomUUID()}`;
@@ -330,6 +335,11 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   // Per-path read counter — guards against agents chunking the same file
   // into dozens of tiny reads and blowing the iteration budget.
   const readCounts = new Map<string, number>();
+  // Consecutive tool-failure counter — bumped on every `ok:false` result,
+  // reset on the first success. Once it crosses MAX_CONSECUTIVE_TOOL_ERRORS
+  // the loop injects a stop-and-report hint.
+  let consecutiveToolErrors = 0;
+  let stopAndReportHintPending = false;
 
   onStatusChange("thinking");
 
@@ -559,8 +569,11 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       // audit row so we can later distinguish auto/session/user approvals.
       let auditApproval: AuditApproval = "auto";
 
-      // Confirmation gate for dangerous tools
-      if (DANGEROUS_TOOLS.has(fnName)) {
+      // Confirmation gate for dangerous tools. MCP-provided tools are
+      // out-of-process and not in the built-in DANGEROUS_TOOLS list, so they
+      // are gated explicitly here — classifyToolRisk returns a non-normal
+      // risk for them, and a careless/malicious MCP tool must never auto-run.
+      if (DANGEROUS_TOOLS.has(fnName) || isMcpToolName(fnName)) {
         const risk = await classifyToolRisk(fnName, args);
 
         // Policy wins over session approval state. A loaded policy can
@@ -688,6 +701,37 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         args,
         durationMs,
       });
+
+      // Consecutive-error budget: a real failure (error outcome) bumps the
+      // counter; any non-error outcome resets it. Dry-run results count as
+      // successes — they're a deliberate suppression, not a failure.
+      if (outcome === "error") {
+        consecutiveToolErrors++;
+        if (consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
+          stopAndReportHintPending = true;
+        }
+      } else {
+        consecutiveToolErrors = 0;
+      }
+    }
+
+    // After a run of consecutive tool failures, inject a system hint so the
+    // model stops retrying and reports the blocker to the user. This is an
+    // additional guard layered on top of the dedupe / stall / MAX_ITERATIONS
+    // logic — the dedupe window only catches IDENTICAL repeated calls.
+    if (stopAndReportHintPending) {
+      stopAndReportHintPending = false;
+      consecutiveToolErrors = 0;
+      msgs.push({
+        _tmpKey: makeTmpKey(),
+        conversation_id: opts.conversationId,
+        role: "system",
+        content:
+          `[agent-loop] ${MAX_CONSECUTIVE_TOOL_ERRORS} tool calls in a row failed. ` +
+          "Stop retrying tools. Report to the user what you were trying to do, " +
+          "what failed, and the error messages — then ask how to proceed.",
+      });
+      onUpdate([...msgs]);
     }
 
     onStatusChange("thinking");

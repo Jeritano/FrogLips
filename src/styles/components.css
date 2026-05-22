@@ -198,3 +198,177 @@
   padding: 6px 0;
   color: var(--text-muted);
 }
+
+/* ── Accessibility: visually-hidden live region ──────────────────────────
+ * Off-screen but still read by assistive tech. Used by <LiveRegion>. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Toast (reusable bottom-right notification) ──────────────────────────
+ * Used for the undo-delete affordance. Mirrors .quick-toast geometry but
+ * carries an action + close button. */
+.toast {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: var(--z-toast);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 360px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-toast);
+  font-size: var(--fs-md);
+  color: var(--text);
+  animation: toastIn 200ms ease-out;
+}
+.toast-msg {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toast-action {
+  flex-shrink: 0;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-strong);
+  border-radius: var(--radius-xs);
+  padding: 3px 10px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.toast-action:hover { background: var(--accent-strong); }
+.toast-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  font-size: var(--fs-lg);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.toast-close:hover { color: var(--text); }
+@keyframes toastIn {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+
+/* ── Conversation organisation: pin + tags ───────────────────────────────
+ * Additive row affordances. The pin/tag buttons reuse the existing `.del`
+ * hover-to-reveal pattern, so they do not alter the locked row layout. */
+.conv-pin:hover { color: var(--warn-fg) !important; }
+/* A pinned conversation keeps its pin star visible even without row hover. */
+.conv-list li[data-pinned="true"] .conv-pin {
+  color: var(--warn-fg);
+}
+.conv-tag-btn { font-size: 12px; }
+.conv-tag-btn:hover { color: var(--accent) !important; }
+
+.conv-pin-dot {
+  font-size: 9px;
+  margin-right: 3px;
+}
+/* conv-title becomes a vertical stack: title line on top, optional tag
+   chips below. It keeps `flex: 1` from layout.css so the row is unchanged. */
+.conv-title { display: flex; flex-direction: column; gap: 2px; }
+.conv-title-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.conv-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.conv-tag-chip {
+  font-size: var(--fs-2xs);
+  line-height: 1.4;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--accent-bg);
+  color: var(--accent);
+  white-space: nowrap;
+}
+.conv-tag-input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  font-size: var(--fs-2xs);
+  font-family: inherit;
+  outline: none;
+  min-width: 0;
+}
+
+/* ── Motion polish ───────────────────────────────────────────────────────
+ * Tasteful entrance motion for modal surfaces + message rows. `fadeIn` is
+ * referenced by panels.css; defining it here makes those existing rules
+ * actually animate. Every animation below is gated under
+ * prefers-reduced-motion at the end of this file. */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes convRowIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Backdrop fade for every modal overlay (class name ends in -overlay). */
+[class$="-overlay"] {
+  animation: fadeIn 160ms ease-out;
+}
+/* Scale-in for the modal box itself (class name ends in -modal). */
+[class$="-modal"] {
+  animation: scaleIn 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Subtle message-row enter. */
+.message {
+  animation: fadeIn 220ms ease-out;
+}
+
+/* Conversation rows ease in when the sidebar list changes. */
+.conv-row-anim {
+  animation: convRowIn 160ms ease-out;
+}
+
+/* Honour the OS "reduce motion" setting: all non-essential animation and
+ * transition becomes instant. Scoped broadly but intentionally — none of
+ * these animations convey information, so removing them loses nothing. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

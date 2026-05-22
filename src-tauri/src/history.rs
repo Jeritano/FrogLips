@@ -130,69 +130,157 @@ fn quarantine_corrupt_db(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn setup_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA foreign_keys=ON;
-         CREATE TABLE IF NOT EXISTS conversations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            model TEXT,
-            created_at INTEGER NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
-         CREATE TABLE IF NOT EXISTS memories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            content TEXT NOT NULL,
-            conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
-            source_msg_id INTEGER,
-            tags TEXT NOT NULL DEFAULT '',
-            embedding BLOB,
-            status TEXT NOT NULL DEFAULT 'active',
-            created_at INTEGER NOT NULL,
-            last_used_at INTEGER
-         );
-         CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
-         CREATE INDEX IF NOT EXISTS idx_memories_conv ON memories(conversation_id);",
-    )?;
-    let has_model: bool = match conn.query_row(
-        "SELECT 1 FROM pragma_table_info('messages') WHERE name = 'model'",
-        [],
-        |_| Ok(true),
-    ) {
-        Ok(v) => v,
-        Err(rusqlite::Error::QueryReturnedNoRows) => false,
-        Err(e) => return Err(anyhow::anyhow!("schema check failed: {e}")),
-    };
-    if !has_model {
-        conn.execute("ALTER TABLE messages ADD COLUMN model TEXT", [])?;
-    }
-    // ── Vision attachments migration (idempotent) ────────────────────────
-    // Stores a JSON-encoded `ChatImage[]` for messages that carry image
-    // attachments. NULL for plain-text turns. Adding here so older databases
-    // upgrade in place on first open after this build ships.
-    ensure_messages_images_column(conn)?;
-    // ── Memory scopes migration (idempotent) ─────────────────────────────
-    // Adds: scope ('global'|'project'|'conversation'), project_root.
-    // Existing 'conversation_id INTEGER' column is reused for scope='conversation'
-    // filtering — it already points at the originating conversation when set.
-    ensure_memory_scope_columns(conn)?;
-    // ── Conversation branching migration (idempotent) ────────────────────
-    // Adds: parent_conv_id, parent_message_id — refs the source conversation
-    // and the cutoff message id used to seed the fork (deep-copy boundary).
-    ensure_conversation_fork_columns(conn)?;
-    // ── Per-conversation model params migration (idempotent) ─────────────
-    // Adds: params — a nullable TEXT column holding a JSON object of the
-    // shape { temperature, top_p, max_tokens, system_prompt }.
-    ensure_conversation_params_column(conn)?;
+/// A single rung of the numbered migration ladder. `version` is the
+/// `PRAGMA user_version` value the DB advances to once `apply` succeeds; the
+/// ladder runs every step whose version is greater than the current
+/// `user_version`, in ascending order, each inside its own transaction.
+///
+/// Every `apply` body must be idempotent on its own — an old-shape DB sits at
+/// `user_version = 0` even if some columns already exist (the pre-ladder
+/// ad-hoc migrations never recorded a version), so a step may re-run against
+/// a schema that already has its changes. `CREATE … IF NOT EXISTS` and the
+/// `pragma_table_info` column guards keep that safe.
+struct Migration {
+    version: i64,
+    apply: fn(&Connection) -> Result<()>,
+}
 
+/// Whether `table` has a column named `column`. Used by ladder steps to make
+/// `ALTER TABLE ADD COLUMN` idempotent (SQLite has no `ADD COLUMN IF NOT
+/// EXISTS`).
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let q = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1");
+    match conn.query_row(&q, params![column], |_| Ok(true)) {
+        Ok(v) => Ok(v),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(e) => Err(anyhow::anyhow!("pragma_table_info({table}.{column}) failed: {e}")),
+    }
+}
+
+/// The ordered migration ladder. The highest `version` here is the target
+/// schema — both a fresh DB and any older DB converge to it. Steps must only
+/// ever be appended; never reorder or renumber an existing rung.
+const MIGRATIONS: &[Migration] = &[
+    // v1 — base tables. The original schema before versioning existed.
+    Migration {
+        version: 1,
+        apply: |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    model TEXT,
+                    created_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
+                 CREATE TABLE IF NOT EXISTS memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+                    source_msg_id INTEGER,
+                    tags TEXT NOT NULL DEFAULT '',
+                    embedding BLOB,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at INTEGER NOT NULL,
+                    last_used_at INTEGER
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
+                 CREATE INDEX IF NOT EXISTS idx_memories_conv ON memories(conversation_id);",
+            )?;
+            Ok(())
+        },
+    },
+    // v2 — messages.model: per-message model attribution.
+    Migration {
+        version: 2,
+        apply: |conn| {
+            if !column_exists(conn, "messages", "model")? {
+                conn.execute("ALTER TABLE messages ADD COLUMN model TEXT", [])?;
+            }
+            Ok(())
+        },
+    },
+    // v3 — messages.images: JSON-encoded `ChatImage[]` for vision attachments.
+    Migration {
+        version: 3,
+        apply: ensure_messages_images_column,
+    },
+    // v4 — memories scope columns: scope ('global'|'project'|'conversation')
+    // and project_root, plus the scope index.
+    Migration {
+        version: 4,
+        apply: ensure_memory_scope_columns,
+    },
+    // v5 — conversation fork columns: parent_conv_id, parent_message_id and
+    // the parent index — branch/fork lineage tracking.
+    Migration {
+        version: 5,
+        apply: ensure_conversation_fork_columns,
+    },
+    // v6 — conversations.params: nullable JSON object of per-conversation
+    // model params { temperature, top_p, max_tokens, system_prompt }.
+    Migration {
+        version: 6,
+        apply: ensure_conversation_params_column,
+    },
+    // v7 — conversation organization: pinned (0/1) + tags (JSON array string).
+    Migration {
+        version: 7,
+        apply: ensure_conversation_org_columns,
+    },
+];
+
+/// Target schema version — the highest rung of the ladder.
+#[cfg(test)]
+fn latest_version() -> i64 {
+    MIGRATIONS.last().map(|m| m.version).unwrap_or(0)
+}
+
+/// Run the migration ladder against `conn`. Steps whose `version` exceeds the
+/// DB's current `PRAGMA user_version` are applied in ascending order, each in
+/// its own transaction; `user_version` is advanced after each rung commits.
+/// Running this against an up-to-date DB is a no-op.
+fn run_migrations(conn: &Connection) -> Result<()> {
+    let mut current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    for m in MIGRATIONS {
+        if m.version <= current {
+            continue;
+        }
+        conn.execute_batch("BEGIN")?;
+        let stepped = (|| -> Result<()> {
+            (m.apply)(conn)?;
+            // `user_version` cannot be parameterised — the value is a ladder
+            // constant, never user input, so the format is safe.
+            conn.execute_batch(&format!("PRAGMA user_version = {}", m.version))?;
+            Ok(())
+        })();
+        match stepped {
+            Ok(()) => {
+                conn.execute_batch("COMMIT")?;
+                current = m.version;
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e.context(format!("migration to v{} failed", m.version)));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn setup_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    // Numbered migration ladder keyed on PRAGMA user_version. A fresh DB runs
+    // every rung from 0; an existing DB runs only the rungs above its recorded
+    // version. Both converge on `latest_version()`.
+    run_migrations(conn)?;
     // Install audit table (idempotent — CREATE TABLE IF NOT EXISTS).
     crate::agent_audit::ensure_schema(conn)?;
     // Install RAG tables (idempotent).
@@ -299,6 +387,22 @@ pub(crate) fn ensure_conversation_params_column(conn: &Connection) -> Result<()>
     Ok(())
 }
 
+/// Idempotently add the conversation-organization columns to `conversations`:
+/// `pinned` (INTEGER 0/1, default 0) and `tags` (nullable TEXT holding a JSON
+/// array of strings). Detects each column via `pragma_table_info` first.
+pub(crate) fn ensure_conversation_org_columns(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "conversations", "pinned")? {
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !column_exists(conn, "conversations", "tags")? {
+        conn.execute("ALTER TABLE conversations ADD COLUMN tags TEXT", [])?;
+    }
+    Ok(())
+}
+
 fn build_pool() -> Result<Pool<SqliteManager>> {
     let path = db_path()?;
     // Corruption recovery: probe the existing DB before any pooled connection
@@ -346,6 +450,12 @@ pub struct Conversation {
     /// Shape: `{ temperature, top_p, max_tokens, system_prompt }` — the
     /// frontend `JSON.parse`s this and applies the values at inference time.
     pub params: Option<String>,
+    /// Whether the conversation is pinned. Pinned conversations sort ahead of
+    /// the rest in `list_conversations`.
+    pub pinned: bool,
+    /// Raw JSON-array-of-strings string of user tags, or `None` when unset.
+    /// The frontend `JSON.parse`s this back into a string list.
+    pub tags: Option<String>,
 }
 
 /// Direct-child branch summary, returned by `list_branches`.
@@ -395,21 +505,12 @@ pub fn create_conversation(title: &str, model: Option<&str>) -> Result<i64> {
 pub fn list_conversations() -> Result<Vec<Conversation>> {
     let conn = get_db()?;
     let mut stmt = conn.prepare(
-        "SELECT id, title, model, created_at, parent_conv_id, parent_message_id, params
-         FROM conversations ORDER BY created_at DESC",
+        "SELECT id, title, model, created_at, parent_conv_id, parent_message_id, params,
+                pinned, tags
+         FROM conversations ORDER BY pinned DESC, created_at DESC",
     )?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(Conversation {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                model: r.get(2)?,
-                created_at: r.get(3)?,
-                parent_conv_id: r.get(4)?,
-                parent_message_id: r.get(5)?,
-                params: r.get(6)?,
-            })
-        })?
+        .query_map([], row_to_conversation)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -441,26 +542,156 @@ pub fn rename_conversation(id: i64, title: &str) -> Result<()> {
     Ok(())
 }
 
+/// Map a `conversations` row (in the canonical 9-column projection) to a
+/// `Conversation`. Shared by `list_conversations` and `get_conversation`.
+fn row_to_conversation(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
+    Ok(Conversation {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        model: r.get(2)?,
+        created_at: r.get(3)?,
+        parent_conv_id: r.get(4)?,
+        parent_message_id: r.get(5)?,
+        params: r.get(6)?,
+        pinned: r.get::<_, i64>(7)? != 0,
+        tags: r.get(8)?,
+    })
+}
+
 /// Fetch a single conversation row by id, including its `params` JSON.
 pub fn get_conversation(id: i64) -> Result<Conversation> {
     let conn = get_db()?;
     conn.query_row(
-        "SELECT id, title, model, created_at, parent_conv_id, parent_message_id, params
+        "SELECT id, title, model, created_at, parent_conv_id, parent_message_id, params,
+                pinned, tags
          FROM conversations WHERE id = ?1",
         params![id],
-        |r| {
-            Ok(Conversation {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                model: r.get(2)?,
-                created_at: r.get(3)?,
-                parent_conv_id: r.get(4)?,
-                parent_message_id: r.get(5)?,
-                params: r.get(6)?,
-            })
-        },
+        row_to_conversation,
     )
     .context("conversation not found")
+}
+
+/// Validate a `tags` payload: either `None` (clears the column) or a string
+/// holding a JSON array whose every element is a string. Anything else is
+/// rejected so the column never holds a non-conforming value.
+pub fn validate_tags_json(tags: Option<&str>) -> Result<()> {
+    let Some(raw) = tags else { return Ok(()) };
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| anyhow::anyhow!("tags is not valid JSON: {e}"))?;
+    let arr = value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("tags must be a JSON array"))?;
+    if arr.iter().any(|v| !v.is_string()) {
+        return Err(anyhow::anyhow!("tags must be a JSON array of strings"));
+    }
+    Ok(())
+}
+
+/// Set the pinned flag on a conversation. Pinned conversations sort first.
+pub fn set_conversation_pinned(id: i64, pinned: bool) -> Result<()> {
+    let conn = get_db()?;
+    conn.execute(
+        "UPDATE conversations SET pinned = ?1 WHERE id = ?2",
+        params![pinned as i64, id],
+    )?;
+    Ok(())
+}
+
+/// Set (or clear, with `None`) a conversation's tags. `tags` must pass
+/// `validate_tags_json` — a JSON array of strings, or null.
+pub fn set_conversation_tags(id: i64, tags: Option<&str>) -> Result<()> {
+    validate_tags_json(tags)?;
+    let conn = get_db()?;
+    conn.execute(
+        "UPDATE conversations SET tags = ?1 WHERE id = ?2",
+        params![tags, id],
+    )?;
+    Ok(())
+}
+
+/// A message-body search hit: the conversation the match lives in plus a short
+/// snippet of the matching message for display.
+#[derive(Serialize, Clone)]
+pub struct MessageSearchHit {
+    pub conversation_id: i64,
+    pub title: String,
+    pub snippet: String,
+}
+
+/// Maximum length (chars) of a search snippet returned by `search_messages`.
+const SEARCH_SNIPPET_CHARS: usize = 160;
+
+/// Escape `%`, `_` and the escape char itself for a SQL `LIKE` pattern, so a
+/// user query containing wildcards matches literally. Paired with
+/// `ESCAPE '\'` in the query.
+fn escape_like(query: &str) -> String {
+    let mut out = String::with_capacity(query.len());
+    for c in query.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Build a single-line snippet centred on the first occurrence of `needle`
+/// within `content`, capped at `SEARCH_SNIPPET_CHARS`. Case-insensitive match.
+fn make_snippet(content: &str, needle: &str) -> String {
+    let collapsed: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars: Vec<char> = collapsed.chars().collect();
+    if chars.len() <= SEARCH_SNIPPET_CHARS {
+        return collapsed;
+    }
+    let lower = collapsed.to_lowercase();
+    let hit = lower.find(&needle.to_lowercase()).unwrap_or(0);
+    // Convert the byte offset of the hit into a char index.
+    let hit_char = collapsed[..hit].chars().count();
+    let start = hit_char.saturating_sub(SEARCH_SNIPPET_CHARS / 4);
+    let end = (start + SEARCH_SNIPPET_CHARS).min(chars.len());
+    let body: String = chars[start..end].iter().collect();
+    let prefix = if start > 0 { "…" } else { "" };
+    let suffix = if end < chars.len() { "…" } else { "" };
+    format!("{prefix}{body}{suffix}")
+}
+
+/// Full-text-ish search across message bodies. Returns at most one hit per
+/// conversation (the most recent matching message), newest conversation first.
+/// Matching uses SQL `LIKE` with `%`/`_` escaped so the query matches literally.
+pub fn search_messages(query: &str) -> Result<Vec<MessageSearchHit>> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pattern = format!("%{}%", escape_like(trimmed));
+    let conn = get_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT m.conversation_id, c.title, m.content
+         FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         WHERE m.id IN (
+            SELECT MAX(id) FROM messages
+            WHERE content LIKE ?1 ESCAPE '\\'
+            GROUP BY conversation_id
+         )
+         ORDER BY m.conversation_id DESC",
+    )?;
+    let rows = stmt
+        .query_map(params![pattern], |r| {
+            let conversation_id: i64 = r.get(0)?;
+            let title: String = r.get(1)?;
+            let content: String = r.get(2)?;
+            Ok((conversation_id, title, content))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(conversation_id, title, content)| MessageSearchHit {
+            conversation_id,
+            title,
+            snippet: make_snippet(&content, trimmed),
+        })
+        .collect())
 }
 
 /// Persist per-conversation model params. `params` must be either `None`
@@ -796,6 +1027,8 @@ mod tests {
         ensure_conversation_fork_columns(&conn).expect("fork migration 2 must not error");
         ensure_conversation_params_column(&conn).expect("params migration 1");
         ensure_conversation_params_column(&conn).expect("params migration 2 must not error");
+        ensure_conversation_org_columns(&conn).expect("org migration 1");
+        ensure_conversation_org_columns(&conn).expect("org migration 2 must not error");
 
         conn.execute(
             "INSERT INTO conversations (title, model, created_at) VALUES (?1, ?2, ?3)",
@@ -1143,6 +1376,191 @@ mod tests {
         // A non-existent path is treated as fine — schema setup will create it.
         assert!(integrity_ok(&dir.join("does-not-exist.sqlite")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The full set of columns the migration ladder must produce on each
+    /// table — the canonical "today's schema" assertion target.
+    fn assert_final_schema(conn: &Connection) {
+        let cols = |table: &str| -> Vec<String> {
+            let mut s = conn
+                .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .unwrap();
+            s.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        for c in [
+            "id",
+            "title",
+            "model",
+            "created_at",
+            "parent_conv_id",
+            "parent_message_id",
+            "params",
+            "pinned",
+            "tags",
+        ] {
+            assert!(cols("conversations").contains(&c.to_string()), "conversations.{c}");
+        }
+        for c in ["id", "conversation_id", "role", "content", "created_at", "model", "images"] {
+            assert!(cols("messages").contains(&c.to_string()), "messages.{c}");
+        }
+        for c in ["scope", "project_root"] {
+            assert!(cols("memories").contains(&c.to_string()), "memories.{c}");
+        }
+    }
+
+    fn user_version(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap()
+    }
+
+    /// A fresh DB run through the ladder lands on the final user_version with
+    /// the complete current schema.
+    #[test]
+    fn migration_ladder_fresh_db_reaches_latest() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(user_version(&conn), 0, "fresh DB starts at version 0");
+        run_migrations(&conn).expect("ladder on fresh db");
+        assert_eq!(user_version(&conn), latest_version());
+        assert_final_schema(&conn);
+    }
+
+    /// Running the ladder a second time on an already-migrated DB is a no-op:
+    /// no error, version unchanged, schema unchanged.
+    #[test]
+    fn migration_ladder_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("first run");
+        let v1 = user_version(&conn);
+        run_migrations(&conn).expect("second run must be a no-op");
+        run_migrations(&conn).expect("third run must be a no-op");
+        assert_eq!(user_version(&conn), v1);
+        assert_final_schema(&conn);
+    }
+
+    /// An old-shape DB — base tables only, user_version 0, pre-images/params —
+    /// upgrades cleanly through the ladder with no data loss.
+    #[test]
+    fn migration_ladder_upgrades_old_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Pre-ladder shape: v1 base tables, never version-stamped.
+        conn.execute_batch(
+            "CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                model TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                conversation_id INTEGER,
+                source_msg_id INTEGER,
+                tags TEXT NOT NULL DEFAULT '',
+                embedding BLOB,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER
+            );",
+        )
+        .unwrap();
+        // Seed real rows so we can prove they survive the upgrade.
+        conn.execute(
+            "INSERT INTO conversations (title, model, created_at) VALUES ('old chat', 'm', 100)",
+            [],
+        )
+        .unwrap();
+        let cid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at)
+             VALUES (?1, 'user', 'hello from the past', 101)",
+            params![cid],
+        )
+        .unwrap();
+        assert_eq!(user_version(&conn), 0);
+
+        run_migrations(&conn).expect("upgrade old db");
+
+        assert_eq!(user_version(&conn), latest_version());
+        assert_final_schema(&conn);
+        // Data preserved.
+        let (title, content): (String, String) = conn
+            .query_row(
+                "SELECT c.title, m.content FROM conversations c
+                 JOIN messages m ON m.conversation_id = c.id WHERE c.id = ?1",
+                params![cid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "old chat");
+        assert_eq!(content, "hello from the past");
+        // New columns have their defaults on the migrated row.
+        let pinned: i64 = conn
+            .query_row("SELECT pinned FROM conversations WHERE id = ?1", params![cid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pinned, 0);
+    }
+
+    #[test]
+    fn org_columns_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                model TEXT,
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        ensure_conversation_org_columns(&conn).expect("first");
+        ensure_conversation_org_columns(&conn).expect("second");
+        ensure_conversation_org_columns(&conn).expect("third");
+        assert!(column_exists(&conn, "conversations", "pinned").unwrap());
+        assert!(column_exists(&conn, "conversations", "tags").unwrap());
+    }
+
+    /// `validate_tags_json` accepts only `None` or a JSON array of strings.
+    #[test]
+    fn tags_json_validation() {
+        assert!(validate_tags_json(None).is_ok());
+        assert!(validate_tags_json(Some("[]")).is_ok());
+        assert!(validate_tags_json(Some(r#"["work","urgent"]"#)).is_ok());
+        // Malformed JSON.
+        assert!(validate_tags_json(Some("[not json")).is_err());
+        // Valid JSON but not an array.
+        assert!(validate_tags_json(Some(r#"{"a":1}"#)).is_err());
+        assert!(validate_tags_json(Some("42")).is_err());
+        // Array with non-string elements.
+        assert!(validate_tags_json(Some("[1,2,3]")).is_err());
+        assert!(validate_tags_json(Some(r#"["ok",5]"#)).is_err());
+        assert!(validate_tags_json(Some(r#"["ok",null]"#)).is_err());
+    }
+
+    #[test]
+    fn escape_like_escapes_wildcards() {
+        assert_eq!(escape_like("100%"), "100\\%");
+        assert_eq!(escape_like("a_b"), "a\\_b");
+        assert_eq!(escape_like("c:\\path"), "c:\\\\path");
+        assert_eq!(escape_like("plain"), "plain");
+    }
+
+    #[test]
+    fn snippet_is_capped_and_centred() {
+        let short = "a short message";
+        assert_eq!(make_snippet(short, "short"), short);
+        let long = format!("{} needle {}", "x ".repeat(200), "y ".repeat(200));
+        let snip = make_snippet(&long, "needle");
+        assert!(snip.chars().count() <= SEARCH_SNIPPET_CHARS + 2);
+        assert!(snip.to_lowercase().contains("needle"));
     }
 
     #[test]

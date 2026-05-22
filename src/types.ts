@@ -64,6 +64,16 @@ export interface Conversation {
    * Shape: `{ temperature, top_p, max_tokens, system_prompt }`.
    */
   params?: string | null;
+  /** Pinned conversations sort to the top of the sidebar. */
+  pinned?: boolean | null;
+  /** User tags as a raw JSON array string (e.g. `["work","urgent"]`). */
+  tags?: string | null;
+}
+
+/** One match returned by `search_messages` — a conversation id + snippet. */
+export interface MessageSearchHit {
+  conversation_id: number;
+  snippet: string;
 }
 
 /**

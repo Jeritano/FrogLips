@@ -219,6 +219,13 @@ export async function classifyToolRisk(
   fnName: string,
   args: Record<string, unknown>,
 ): Promise<Risk> {
+  // MCP-provided tools are out-of-process and attacker-influenceable — a
+  // malicious or careless server could ship an `mcp__srv__delete_everything`
+  // tool. They bypass the built-in DANGEROUS_TOOLS list entirely, so classify
+  // every MCP tool as at least `destructive` to force the confirmation gate.
+  if (isMcpToolName(fnName)) {
+    return "destructive";
+  }
   if (fnName === SHELL_TOOL) {
     try {
       return (await api.agentClassifyShell(String(args.command ?? ""))) as Risk;
