@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Node, NodeChange } from "@xyflow/react";
-import { reconcileNodeChanges } from "../WorkflowCanvas";
+import { reconcileNodeChanges, cascadeOffset } from "../WorkflowCanvas";
 import type { AgentCardNodeData } from "../AgentCardNode";
 import type { WorkflowCard } from "../../../types";
 
@@ -79,5 +79,26 @@ describe("reconcileNodeChanges", () => {
     ];
     const next = reconcileNodeChanges(changes, nodes, cards);
     expect(next[0]).toMatchObject({ x: 200, y: 120 });
+  });
+});
+
+describe("cascadeOffset", () => {
+  it("places the first card with no offset", () => {
+    expect(cascadeOffset(0)).toEqual({ dx: 0, dy: 0 });
+  });
+
+  it("nudges each successive card down-right by a small step", () => {
+    expect(cascadeOffset(1)).toEqual({ dx: 32, dy: 32 });
+    expect(cascadeOffset(3)).toEqual({ dx: 96, dy: 96 });
+  });
+
+  it("wraps the cascade so cards stay clustered, never marching off-screen", () => {
+    // Every 6 cards the offset resets to zero, keeping the cluster bounded.
+    expect(cascadeOffset(6)).toEqual({ dx: 0, dy: 0 });
+    expect(cascadeOffset(7)).toEqual({ dx: 32, dy: 32 });
+    // Offset is always within one wrap window — far smaller than a viewport.
+    for (let n = 0; n < 50; n++) {
+      expect(cascadeOffset(n).dx).toBeLessThanOrEqual(160);
+    }
   });
 });

@@ -402,6 +402,12 @@
   opacity: 1;
   transform: translate(0, 0) scale(1);
 }
+/* Saving a new card: the card materializes on the canvas, not in the deck —
+   so the form fades out in place rather than flying back to the deck. */
+.wf-form-card.is-leaving-fade {
+  opacity: 0;
+  transform: translate(0, 0) scale(0.96);
+}
 .wf-form-inner {
   display: flex;
   flex-direction: column;
@@ -463,7 +469,8 @@
   .wf-deck-top,
   .wf-form-card { transition: none; }
   .wf-form-card.is-entering,
-  .wf-form-card.is-leaving { opacity: 1; transform: translate(0, 0) scale(1); }
+  .wf-form-card.is-leaving,
+  .wf-form-card.is-leaving-fade { opacity: 1; transform: translate(0, 0) scale(1); }
 }
 
 .wf-field { display: flex; flex-direction: column; gap: var(--space-1); }

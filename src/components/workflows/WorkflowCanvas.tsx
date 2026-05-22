@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -6,6 +6,7 @@ import {
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
+  useReactFlow,
   type Node,
   type Edge,
   type Connection,
@@ -26,8 +27,13 @@ interface Props {
   onConfigure: (id: string, origin: DOMRect) => void;
   onRunCard: (id: string) => void;
   onDeleteCard: (id: string) => void;
-  /** Open the centered form for a fresh card, flying from the deck rect. */
-  onCreateFromDeck: (origin: DOMRect) => void;
+  /**
+   * Open the centered form for a fresh card. `origin` is the deck rect (the
+   * fly-in source); `position` is a flow-coordinate inside the currently
+   * visible canvas area, so the new card always lands where the user can see
+   * it rather than off-screen.
+   */
+  onCreateFromDeck: (origin: DOMRect, position: { x: number; y: number }) => void;
   runningCardId: string | null;
 }
 
@@ -63,6 +69,19 @@ export function reconcileNodeChanges(
 }
 
 /**
+ * Cascade offset for the n-th new card relative to an anchor flow-coordinate.
+ * Cards are nudged +CASCADE px down-right per existing card and wrap every
+ * CASCADE_WRAP cards, so a run of new cards stays clustered in the visible
+ * area instead of marching off-screen.
+ */
+export function cascadeOffset(n: number): { dx: number; dy: number } {
+  const CASCADE = 32;
+  const CASCADE_WRAP = 6;
+  const step = n % CASCADE_WRAP;
+  return { dx: step * CASCADE, dy: step * CASCADE };
+}
+
+/**
  * React Flow surface for the workflow graph — the "table top". Card positions
  * and edges are lifted to the parent so they can be debounced-persisted;
  * per-card run state drives the live node badges. The corner deck's top card
@@ -81,6 +100,46 @@ export function WorkflowCanvas({
   runningCardId,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const { screenToFlowPosition, fitView } = useReactFlow();
+
+  // Card width is ~420px; half that recenters the dropped node under the
+  // visible-area center rather than placing its top-left corner there.
+  const CARD_HALF_W = 210;
+  const CARD_HALF_H = 70;
+
+  // Compute a flow-coordinate near the center of the currently-visible canvas,
+  // then cascade it by the number of already-placed cards so repeated creates
+  // stay clustered on-screen instead of overlapping exactly.
+  const nextCardPosition = useCallback((): { x: number; y: number } => {
+    const rect = wrapRef.current?.getBoundingClientRect();
+    const center = rect
+      ? screenToFlowPosition({
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        })
+      : { x: 0, y: 0 };
+    const { dx, dy } = cascadeOffset(cards.filter((c) => c.placed).length);
+    return { x: center.x - CARD_HALF_W + dx, y: center.y - CARD_HALF_H + dy };
+  }, [cards, screenToFlowPosition]);
+
+  const handleCreateFromDeck = useCallback(
+    (origin: DOMRect) => {
+      onCreateFromDeck(origin, nextCardPosition());
+    },
+    [onCreateFromDeck, nextCardPosition],
+  );
+
+  // Safety net: whenever the placed-card count grows, re-fit the viewport so a
+  // newly created card is always brought into view even if placement math is
+  // off. Animated with padding so existing cards stay framed too.
+  const placedCount = cards.filter((c) => c.placed).length;
+  const prevPlacedCount = useRef(placedCount);
+  useEffect(() => {
+    if (placedCount > prevPlacedCount.current) {
+      fitView({ padding: 0.2, duration: 300 });
+    }
+    prevPlacedCount.current = placedCount;
+  }, [placedCount, fitView]);
 
   // Cards with an incoming edge are mid-chain: a single-card run gives them
   // no upstream input, so the per-card Run button is disabled for them.
@@ -165,7 +224,7 @@ export function WorkflowCanvas({
         <Background gap={20} className="wf-bg" />
         <Controls className="wf-controls" showInteractive={false} />
       </ReactFlow>
-      <CardDeck onCreate={onCreateFromDeck} />
+      <CardDeck onCreate={handleCreateFromDeck} />
     </div>
   );
 }

@@ -16,6 +16,12 @@ export interface FormOrigin {
 interface Props {
   card: WorkflowCard;
   origin: FormOrigin | null;
+  /**
+   * True when the form is creating a brand-new card. On save the card
+   * materializes on the canvas (not in the deck), so the form fades out in
+   * place instead of flying back to the deck origin.
+   */
+  isNew: boolean;
   onSave: (card: WorkflowCard) => void;
   onClose: () => void;
 }
@@ -54,7 +60,7 @@ function scheduleError(value: string): string | null {
  * save/cancel. The `--wf-fly-*` custom properties drive the fly transform;
  * all motion is gated by the global prefers-reduced-motion rule.
  */
-export function CardForm({ card, origin, onSave, onClose }: Props) {
+export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const presets = loadAllPresets();
@@ -63,6 +69,9 @@ export function CardForm({ card, origin, onSave, onClose }: Props) {
   // origin transform to the resting (centered) state.
   const [entered, setEntered] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  // A new card fades out in place on save (it lands on the canvas, not the
+  // deck); cancel and edit-mode still fly back to the origin rect.
+  const [fadeOut, setFadeOut] = useState(false);
   // Installed local models for the Model dropdown — blank = system default.
   const [models, setModels] = useState<ModelEntry[]>([]);
 
@@ -96,10 +105,11 @@ export function CardForm({ card, origin, onSave, onClose }: Props) {
     }));
   }
 
-  // Fly the card back to the origin, then run the callback once the
-  // transition ends. Falls through immediately under reduced motion (the
-  // transition is zeroed there, so `transitionend` may not fire).
-  function flyBack(then: () => void) {
+  // Animate the card out, then run the callback once the transition ends.
+  // `mode` "fly" returns it to the origin rect; "fade" dissolves it in place.
+  // Falls through immediately under reduced motion (the transition is zeroed
+  // there, so `transitionend` may not fire).
+  function exit(then: () => void, mode: "fly" | "fade" = "fly") {
     const node = cardRef.current;
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     if (!node || reduce) {
@@ -114,16 +124,19 @@ export function CardForm({ card, origin, onSave, onClose }: Props) {
     };
     node.addEventListener("transitionend", finish, { once: true });
     setTimeout(finish, 400);
-    setLeaving(true);
+    if (mode === "fade") setFadeOut(true);
+    else setLeaving(true);
   }
 
   function handleSave() {
     if (schedErr != null) return;
-    flyBack(() => onSave(draft));
+    // New card materializes on the canvas: fade out in place so the motion
+    // never implies the card went back into the deck.
+    exit(() => onSave(draft), isNew ? "fade" : "fly");
   }
 
   function handleCancel() {
-    flyBack(onClose);
+    exit(onClose, "fly");
   }
 
   // Translate from card-center to origin-center; scale down to origin size.
@@ -137,7 +150,13 @@ export function CardForm({ card, origin, onSave, onClose }: Props) {
       }
     : {};
 
-  const stateClass = leaving ? "is-leaving" : entered ? "is-entered" : "is-entering";
+  const stateClass = fadeOut
+    ? "is-leaving-fade"
+    : leaving
+      ? "is-leaving"
+      : entered
+        ? "is-entered"
+        : "is-entering";
 
   return (
     <div

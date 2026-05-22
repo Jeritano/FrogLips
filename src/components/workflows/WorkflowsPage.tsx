@@ -158,20 +158,6 @@ export function WorkflowsPage({ status }: Props) {
     };
   }
 
-  // A genuinely separated canvas position for the next created card. Nodes are
-  // ~420px wide, so cards are laid out on a grid with enough gap that they
-  // never overlap — a left→right cascade that wraps onto a new row.
-  function nextCardPosition(): { x: number; y: number } {
-    const n = cards.filter((c) => c.placed !== false).length;
-    const COLS = 3;
-    const COL_GAP = 480;
-    const ROW_GAP = 280;
-    return {
-      x: 80 + (n % COLS) * COL_GAP,
-      y: 80 + Math.floor(n / COLS) * ROW_GAP,
-    };
-  }
-
   const deleteCard = useCallback((id: string) => {
     setCards((c) => c.filter((x) => x.id !== id));
     setEdges((e) => e.filter((x) => x.from !== id && x.to !== id));
@@ -182,11 +168,11 @@ export function WorkflowsPage({ status }: Props) {
     return { x: r.left, y: r.top, w: r.width, h: r.height };
   }
 
-  // Clicking the deck's top card: open the centered form on a fresh draft
-  // pre-positioned for the canvas. Saving will land it as a visible node.
-  function createFromDeck(origin: DOMRect) {
-    const pos = nextCardPosition();
-    setFormCard(freshCard(pos.x, pos.y));
+  // Clicking the deck's top card: open the centered form on a fresh draft.
+  // `position` is a viewport-aware flow-coordinate supplied by the canvas, so
+  // saving lands the node where the user can currently see it.
+  function createFromDeck(origin: DOMRect, position: { x: number; y: number }) {
+    setFormCard(freshCard(position.x, position.y));
     setFormIsNew(true);
     setFormOrigin(rectOrigin(origin));
   }
@@ -475,6 +461,7 @@ export function WorkflowsPage({ status }: Props) {
         <CardForm
           card={formCard}
           origin={formOrigin}
+          isNew={formIsNew}
           onSave={saveCard}
           onClose={closeForm}
         />
