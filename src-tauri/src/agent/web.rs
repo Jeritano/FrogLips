@@ -22,33 +22,9 @@ pub fn is_safe_public_host(host: &str) -> bool {
         return false;
     }
     if let Ok(ip) = h.parse::<std::net::IpAddr>() {
-        match ip {
-            std::net::IpAddr::V4(a) => {
-                let oct = a.octets();
-                if a.is_loopback()
-                    || a.is_private()
-                    || a.is_link_local()
-                    || a.is_unspecified()
-                    || a.is_multicast()
-                    || a.is_broadcast()
-                {
-                    return false;
-                }
-                // 169.254.169.254 + AWS/GCP metadata, etc. — caught by link_local
-                if oct[0] == 0 || oct[0] == 127 {
-                    return false;
-                }
-            }
-            std::net::IpAddr::V6(a) => {
-                if a.is_loopback() || a.is_unspecified() || a.is_multicast() {
-                    return false;
-                }
-                let segs = a.segments();
-                if segs[0] == 0xfe80 || segs[0] == 0xfc00 || segs[0] == 0xfd00 {
-                    return false;
-                }
-            }
-        }
+        // Reuse the connect-time IP check so IP-literal hosts (incl.
+        // IPv4-mapped V6 and NAT64) get the exact same treatment.
+        return is_safe_ip(&ip);
     }
     true
 }
@@ -62,21 +38,36 @@ pub fn is_safe_public_host(host: &str) -> bool {
 /// We do this regardless of whether `host` parsed as an IP literal (which
 /// our string-level check already covered) so the same call covers both
 /// hostname and IP-literal cases.
+fn is_safe_v4(a: &std::net::Ipv4Addr) -> bool {
+    let oct = a.octets();
+    !(a.is_loopback()
+        || a.is_private()
+        || a.is_link_local()
+        || a.is_unspecified()
+        || a.is_multicast()
+        || a.is_broadcast()
+        || oct[0] == 0
+        || oct[0] == 127)
+}
+
 fn is_safe_ip(ip: &std::net::IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(a) => {
-            let oct = a.octets();
-            !(a.is_loopback()
-                || a.is_private()
-                || a.is_link_local()
-                || a.is_unspecified()
-                || a.is_multicast()
-                || a.is_broadcast()
-                || oct[0] == 0
-                || oct[0] == 127)
-        }
+        std::net::IpAddr::V4(a) => is_safe_v4(a),
         std::net::IpAddr::V6(a) => {
             let segs = a.segments();
+            // IPv4-mapped (::ffff:0:0/96) and IPv4-compatible forms tunnel a
+            // V4 address through V6 — re-run the V4 checks so e.g.
+            // `::ffff:127.0.0.1` cannot pass as a "safe" V6 literal.
+            if let Some(v4) = a.to_ipv4_mapped().or_else(|| a.to_ipv4()) {
+                if !is_safe_v4(&v4) {
+                    return false;
+                }
+            }
+            // NAT64 well-known prefix 64:ff9b::/96 embeds an arbitrary V4
+            // address translators will reach — block outright.
+            if segs[0] == 0x0064 && segs[1] == 0xff9b {
+                return false;
+            }
             !(a.is_loopback()
                 || a.is_unspecified()
                 || a.is_multicast()
@@ -121,45 +112,78 @@ pub async fn resolve_to_safe_addrs(
     Ok(addrs)
 }
 
-/// Custom redirect policy: re-validate each hop against is_safe_public_host
-/// and scheme, then re-resolve DNS so a redirect to a host that resolves to a
-/// loopback address (e.g. localtest.me) is rejected the same way the initial
-/// request is. Default `Policy::limited(5)` would happily follow a 302 to a
-/// loopback URL.
-fn ssrf_safe_redirect() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= 5 {
-            return attempt.error("too many redirects");
-        }
-        let url = attempt.url();
+/// Max redirect hops we follow manually. Matches the old `Policy::limited(5)`.
+const MAX_REDIRECT_HOPS: usize = 5;
+
+/// Build a reqwest client that follows NO redirects and pins DNS for `host`
+/// to exactly the pre-validated `safe_addrs`. Each redirect hop gets its own
+/// freshly-built client so the connection can only ever land on an address
+/// we resolved-and-validated for that specific host — closing the
+/// DNS-rebinding TOCTOU where reqwest's auto-follow would re-resolve at
+/// connect time and reach 127.0.0.1 / 169.254.169.254.
+fn pinned_no_redirect_client(
+    host: &str,
+    safe_addrs: &[std::net::SocketAddr],
+    timeout: std::time::Duration,
+) -> Result<reqwest::Client, String> {
+    let mut b = reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent("Froglips/0.9 (+https://github.com/Jeritano/FrogLips)")
+        .redirect(reqwest::redirect::Policy::none());
+    for a in safe_addrs {
+        b = b.resolve_to_addrs(host, &[*a]);
+    }
+    b.build().map_err(|e| err_string(ToolError::io(e.to_string())))
+}
+
+/// Manually follow redirects with per-hop SSRF validation + DNS pinning.
+/// `build_req` is called for every hop to produce a fresh request against the
+/// pinned client (so headers/method/body carry across as the caller intends).
+/// Returns the final non-redirect response.
+async fn send_following_redirects<F>(
+    mut url: url::Url,
+    timeout: std::time::Duration,
+    build_req: F,
+) -> Result<reqwest::Response, String>
+where
+    F: Fn(&reqwest::Client, &url::Url) -> reqwest::RequestBuilder,
+{
+    for _hop in 0..=MAX_REDIRECT_HOPS {
         if url.scheme() != "https" && url.scheme() != "http" {
-            return attempt.error("redirect to non-http(s) scheme");
+            return Err(err_string(ToolError::invalid(
+                "redirect to non-http(s) scheme",
+            )));
         }
-        let host = url.host_str().unwrap_or("");
-        if !is_safe_public_host(host) {
-            return attempt.error("redirect to private/loopback host");
+        let host = url.host_str().unwrap_or("").to_string();
+        if !is_safe_public_host(&host) {
+            return Err(err_string(ToolError::Protected {
+                message: format!("redirect host '{host}' is private/loopback — blocked (SSRF)"),
+            }));
         }
-        // The redirect-policy closure is sync, so resolve DNS synchronously
-        // here. lookup blocks briefly but only on a redirect hop.
         let port = url.port_or_known_default().unwrap_or(443);
-        match std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) {
-            Ok(addrs) => {
-                let mut any = false;
-                for a in addrs {
-                    any = true;
-                    if !is_safe_ip(&a.ip()) {
-                        return attempt
-                            .error("redirect host resolves to a private/loopback address");
-                    }
-                }
-                if !any {
-                    return attempt.error("redirect host did not resolve");
-                }
-            }
-            Err(_) => return attempt.error("redirect host did not resolve"),
+        // Resolve-and-validate, then pin the connection to that exact set.
+        let safe_addrs = resolve_to_safe_addrs(&host, port).await?;
+        let client = pinned_no_redirect_client(&host, &safe_addrs, timeout)?;
+        let resp = build_req(&client, &url)
+            .send()
+            .await
+            .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+        if !resp.status().is_redirection() {
+            return Ok(resp);
         }
-        attempt.follow()
-    })
+        // Follow the Location header — resolve relative against current url.
+        let loc = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                err_string(ToolError::io("redirect response without Location header"))
+            })?;
+        url = url
+            .join(loc)
+            .map_err(|e| err_string(ToolError::invalid(format!("bad redirect Location: {e}"))))?;
+    }
+    Err(err_string(ToolError::invalid("too many redirects")))
 }
 
 /// Stream the response body, accumulating up to `cap` bytes. Bails as soon as
@@ -200,29 +224,12 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
             ),
         }));
     }
-    let default_port = url.port_or_known_default().unwrap_or(443);
-    let safe_addrs = resolve_to_safe_addrs(&host, default_port).await?;
-
-    // Pin reqwest's DNS resolution to the addresses we pre-validated. This
-    // closes the TOCTOU window where the caller's DNS could return a
-    // different IP at connect time. The set covers the initial host only;
-    // redirect targets re-validate via ssrf_safe_redirect.
-    let mut client_builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS))
-        .user_agent("Froglips/0.9 (+https://github.com/Jeritano/FrogLips)")
-        .redirect(ssrf_safe_redirect());
-    for a in &safe_addrs {
-        client_builder = client_builder.resolve_to_addrs(&host, &[*a]);
-    }
-    let client = client_builder
-        .build()
-        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
-
-    let resp = client
-        .get(url.clone())
-        .send()
-        .await
-        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    // Follow redirects manually: every hop is resolve-validated and the
+    // connection pinned to that hop's validated IP set, so a rebinding DNS
+    // cannot point the real connection at a loopback/metadata address.
+    let timeout = std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS);
+    let resp = send_following_redirects(url.clone(), timeout, |client, u| client.get(u.clone()))
+        .await?;
     let status = resp.status().as_u16();
 
     let (bytes, total, truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;
@@ -440,52 +447,47 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
             message: format!("host '{host}' is private/loopback — blocked (SSRF)"),
         }));
     }
-    let default_port = url.port_or_known_default().unwrap_or(443);
-    let safe_addrs = resolve_to_safe_addrs(&host, default_port).await?;
     let timeout = std::time::Duration::from_secs(input.timeout_secs.unwrap_or(15).min(60));
-    let mut client_builder = reqwest::Client::builder()
-        .timeout(timeout)
-        .user_agent("Froglips/0.9 (+https://github.com/Jeritano/FrogLips)")
-        .redirect(ssrf_safe_redirect());
-    for a in &safe_addrs {
-        client_builder = client_builder.resolve_to_addrs(&host, &[*a]);
-    }
-    let client = client_builder
-        .build()
-        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     let method_obj = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|e| err_string(ToolError::invalid(e.to_string())))?;
-    let mut req = client.request(method_obj, url);
-    if let Some(hm) = input.headers {
-        for (k, v) in hm {
-            if k.is_empty() || k.len() > 256 || v.len() > 4096 {
-                return Err(err_string(ToolError::invalid(
-                    "header key/value out of range",
-                )));
-            }
-            // Block headers that could enable bypass of our SSRF guard (Host
-            // override on a CDN, for example).
-            let kl = k.to_ascii_lowercase();
-            if kl == "host" {
-                return Err(err_string(ToolError::invalid(
-                    "Host header override not allowed",
-                )));
-            }
-            req = req.header(k, v);
+
+    // Validate headers up front so a bad header fails before any network I/O.
+    let headers = input.headers.unwrap_or_default();
+    for (k, v) in &headers {
+        if k.is_empty() || k.len() > 256 || v.len() > 4096 {
+            return Err(err_string(ToolError::invalid(
+                "header key/value out of range",
+            )));
+        }
+        // Block headers that could enable bypass of our SSRF guard (Host
+        // override on a CDN, for example).
+        if k.eq_ignore_ascii_case("host") {
+            return Err(err_string(ToolError::invalid(
+                "Host header override not allowed",
+            )));
         }
     }
-    if let Some(b) = input.body {
-        if b.len() > 1_048_576 {
+    let body = match input.body {
+        Some(b) if b.len() > 1_048_576 => {
             return Err(err_string(ToolError::TooLarge {
                 message: "body exceeds 1 MiB".into(),
-            }));
+            }))
         }
-        req = req.body(b);
-    }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+        other => other,
+    };
+
+    // Manual redirect following with per-hop DNS pinning (SSRF/TOCTOU).
+    let resp = send_following_redirects(url.clone(), timeout, |client, u| {
+        let mut req = client.request(method_obj.clone(), u.clone());
+        for (k, v) in &headers {
+            req = req.header(k, v);
+        }
+        if let Some(b) = &body {
+            req = req.body(b.clone());
+        }
+        req
+    })
+    .await?;
     let status = resp.status().as_u16();
     let mut hdrs = std::collections::HashMap::new();
     for (k, v) in resp.headers() {
@@ -539,4 +541,45 @@ pub fn classify_http_risk(method: &str, has_auth: bool) -> &'static str {
         return if has_auth { "privileged" } else { "normal" };
     }
     "normal"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv4_mapped_v6_loopback_rejected() {
+        // ::ffff:127.0.0.1 must be treated as loopback, not a safe V6 literal.
+        // (url::Url strips the `[...]` brackets, so the host check sees the
+        // bare literal — test that form.)
+        assert!(!is_safe_public_host("::ffff:127.0.0.1"));
+    }
+
+    #[test]
+    fn ipv4_mapped_v6_metadata_rejected() {
+        // ::ffff:169.254.169.254 — cloud metadata via mapped form.
+        assert!(!is_safe_public_host("::ffff:169.254.169.254"));
+    }
+
+    #[test]
+    fn nat64_prefix_rejected() {
+        // 64:ff9b::/96 embeds an arbitrary V4 a translator would reach.
+        assert!(!is_safe_public_host("64:ff9b::7f00:1"));
+    }
+
+    #[test]
+    fn ordinary_public_addrs_still_allowed() {
+        assert!(is_safe_public_host("93.184.216.34")); // example.com
+        assert!(is_safe_public_host("example.com"));
+        assert!(is_safe_public_host("2606:2800:220:1:248:1893:25c8:1946"));
+    }
+
+    #[test]
+    fn private_and_loopback_still_rejected() {
+        assert!(!is_safe_public_host("127.0.0.1"));
+        assert!(!is_safe_public_host("10.0.0.1"));
+        assert!(!is_safe_public_host("169.254.169.254"));
+        assert!(!is_safe_public_host("localhost"));
+        assert!(!is_safe_public_host("::1"));
+    }
 }

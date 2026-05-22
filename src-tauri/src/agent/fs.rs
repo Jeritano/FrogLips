@@ -158,6 +158,20 @@ pub(super) fn is_protected_for_read(p: &Path) -> bool {
             "Library/Keychains",
             "Library/Cookies",
             "Library/Application Support/com.apple.TCC",
+            // Credential files blocked for write but previously readable.
+            ".netrc",
+            ".npmrc",
+            ".docker/config.json",
+            ".kube",
+            ".config/gh",
+            ".config/gcloud",
+            // Browser profile dirs holding cookies / saved credentials.
+            "Library/Application Support/Google/Chrome",
+            "Library/Application Support/Firefox",
+            "Library/Application Support/com.apple.Safari",
+            "Library/Safari",
+            // Froglips' own settings file — may still hold migrated secrets.
+            "Library/Application Support/Froglips/settings.json",
         ] {
             if p.starts_with(home.join(sub)) {
                 return true;
@@ -375,6 +389,9 @@ pub async fn read_file(
             start, end, total
         ));
     }
+    // Files can be attacker-poisoned — scan for prompt-injection patterns and
+    // wrap with a DATA-only marker before the agent ingests them.
+    let (content, _n) = super::injection_scan::scan_and_wrap(&content);
     Ok(ReadResult {
         content,
         bytes_read: end - start,

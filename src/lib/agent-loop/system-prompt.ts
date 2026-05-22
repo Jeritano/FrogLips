@@ -3,6 +3,31 @@ import type { OpenAIToolDef } from "./mcp-tools";
 
 /* ── Dynamic system prompt ── */
 
+/** Max characters of an MCP tool description allowed into the system prompt. */
+const MCP_DESC_MAX = 300;
+
+// Bidi / zero-width / control characters an MCP description could use to hide
+// injected instructions inside the most-trusted context (the system prompt).
+const MCP_DESC_STRIP = new RegExp(
+  "[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F" +
+    "\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF]",
+  "g",
+);
+
+/**
+ * Sanitize an MCP-server-supplied tool description before it is embedded in
+ * the system prompt: strip control/bidi/zero-width chars, collapse newlines
+ * (so it cannot inject multi-line fake instructions), and length-cap it.
+ */
+function sanitizeMcpDescription(desc: string): string {
+  const flat = desc
+    .replace(MCP_DESC_STRIP, "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return flat.length > MCP_DESC_MAX ? `${flat.slice(0, MCP_DESC_MAX)}…` : flat;
+}
+
 export function buildSystemPrompt(
   workspaceRoot: string | null,
   allowlist: string[],
@@ -19,7 +44,7 @@ export function buildSystemPrompt(
   const mcp = (allowlist.length
     ? mcpTools.filter((t) => allowlist.includes(t.function.name))
     : mcpTools
-  ).map((t) => `${t.function.name} — ${t.function.description}`);
+  ).map((t) => `${t.function.name} — ${sanitizeMcpDescription(t.function.description ?? "")}`);
   const ws = workspaceRoot
     ? `Workspace root: ${workspaceRoot} — all file access is confined to this directory.`
     : "No workspace root set — you have full filesystem access (within OS permissions).";

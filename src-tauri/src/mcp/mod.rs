@@ -201,6 +201,19 @@ pub async fn start_server(
         tokio::spawn(async move { h.shutdown().await });
     }
 
+    // Log the full command line + env var names so a surprise/unexpected
+    // server spawn is visible in the in-app Diagnostics panel and ring.
+    crate::diagnostics::warn_with(
+        "mcp",
+        &format!("starting server '{}': {} {}", name, command, args.join(" ")),
+        json!({
+            "server": name,
+            "command": command,
+            "args": args,
+            "env_keys": env.as_ref().map(|e| e.keys().cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        }),
+    );
+
     let mut cmd = Command::new(&command);
     cmd.args(&args)
         .stdin(Stdio::piped())
@@ -250,7 +263,6 @@ pub async fn start_server(
     // Stderr drain — keep the last STDERR_CAP bytes for diagnostics.
     {
         let buf = stderr_buf.clone();
-        let server_name = name.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
@@ -261,8 +273,9 @@ pub async fn start_server(
                     let cut = g.len() - STDERR_CAP;
                     *g = g[cut..].to_string();
                 }
-                // also surface to host stderr for live debugging
-                eprintln!("[mcp:{}] {}", server_name, line);
+                // Do NOT echo raw stderr content to host stderr — it can leak
+                // secrets. The full text stays in the capped in-app diagnostics
+                // buffer (server_stderr) only.
             }
         });
     }
@@ -303,8 +316,13 @@ pub async fn start_server(
                                     v.get("method").and_then(|m| m.as_str())
                                 {
                                     // Notification / server-initiated request.
-                                    // We don't currently route these; log and move on.
-                                    eprintln!("[mcp:{}] notification: {}", server_name, method);
+                                    // We don't currently route these; log the
+                                    // method name only (no params — may hold
+                                    // secrets) and move on.
+                                    crate::diagnostics::info(
+                                        "mcp",
+                                        &format!("{}: notification {}", server_name, method),
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -317,7 +335,8 @@ pub async fn start_server(
                                     serde_json::json!({
                                         "server": server_name,
                                         "error": e.to_string(),
-                                        "line_preview": line.chars().take(256).collect::<String>(),
+                                        // Length only — raw line content can leak secrets.
+                                        "line_len": line.len(),
                                     }),
                                 );
                             }

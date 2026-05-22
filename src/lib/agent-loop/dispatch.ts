@@ -2,6 +2,7 @@ import { api } from "../tauri-api";
 import { logDiag } from "../diagnostics";
 import type { AuditApproval, AuditOutcome, ToolCall } from "../../types";
 import { dispatchMcpTool, isMcpToolName } from "./mcp-tools";
+import { looksLikeSecret } from "../memory-client";
 
 /* ── Dry-run mode ────────────────────────────────────────────────────────
  *
@@ -26,6 +27,9 @@ export const DANGEROUS_TOOLS = new Set([
   "run_shell", "write_file", "edit_file", "multi_edit",
   "git_commit", "clipboard_set", "open_app",
   "applescript_run", "http_request",
+  // Spawning a subagent runs a fresh agent loop whose prompt can be
+  // attacker-influenced (injected content) — require explicit confirmation.
+  "spawn_subagent",
   // Browser automation — every call can navigate to or interact with arbitrary
   // public sites. SSRF-blocked at the Rust layer, but still gated behind a
   // confirm dialog so the user sees each action.
@@ -124,8 +128,43 @@ function truncateString(s: string, max: number): string {
   return `${s.slice(0, max)}...`;
 }
 
+/**
+ * Replace secret-looking substrings in a string before it is persisted. The
+ * audit DB must never hold raw credentials (a `run_shell` command may carry
+ * `export AWS_SECRET_ACCESS_KEY=...`, an http_request header a bearer token).
+ * Scans each whitespace-delimited token; any token matching a secret pattern
+ * is swapped for `[REDACTED]`. Falls back to redacting the whole value when
+ * a labeled-credential pattern spans tokens.
+ */
+function redactSecrets(s: string): string {
+  if (!s || !looksLikeSecret(s)) return s;
+  const scrubbed = s
+    .split(/(\s+)/)
+    .map((tok) => (tok.trim() && looksLikeSecret(tok) ? "[REDACTED]" : tok))
+    .join("");
+  // Per-token scrubbing misses patterns like `password = hunter2hunter2...`
+  // where the secret spans the `=` boundary — redact the whole value then.
+  return looksLikeSecret(scrubbed) ? "[REDACTED]" : scrubbed;
+}
+
+/** Recursively redact secret-looking string values within an args value. */
+function redactValue(v: unknown): unknown {
+  if (typeof v === "string") return redactSecrets(v);
+  if (Array.isArray(v)) return v.map(redactValue);
+  if (v && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
+      out[k] = redactValue(vv);
+    }
+    return out;
+  }
+  return v;
+}
+
 export function redactArgsForAudit(name: string, args: Record<string, unknown>): string {
-  const copy: Record<string, unknown> = { ...args };
+  // Secret redaction first — covers command, env, headers, body, and any
+  // nested string arg — then bulky-field truncation on top.
+  const copy = redactValue({ ...args }) as Record<string, unknown>;
   const fields = ARG_TRUNCATE_FIELDS[name] ?? [];
   for (const f of fields) {
     const v = copy[f];
@@ -215,6 +254,11 @@ export async function classifyToolRisk(
       });
     }
   } else if (fnName === "http_request") {
+    // A request carrying a body can exfiltrate data regardless of method —
+    // elevate it so it always needs confirmation and is never swept up by a
+    // blanket write-approval (which only covers `normal`-risk writes).
+    const hasBody = args.body != null && String(args.body).length > 0;
+    if (hasBody) return "privileged";
     try {
       const headers = (args.headers && typeof args.headers === "object")
         ? args.headers as Record<string, unknown>

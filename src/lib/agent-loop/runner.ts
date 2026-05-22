@@ -17,6 +17,7 @@ import { agentBackendUnsupportedReason, streamAgentChat } from "./agent-chat";
 import { awaitSubagents, listSubagents, runSubagent, spawnSubagentAsync } from "./subagent";
 import { fetchMcpTools } from "./mcp-tools";
 import { api } from "../tauri-api";
+import { logDiag } from "../diagnostics";
 
 /**
  * Policy-driven decision for a dangerous tool call. We can't reach into the
@@ -74,10 +75,38 @@ function policyWriteVerdict(policy: ProjectPolicy, path: string): PolicyVerdict 
 }
 
 /**
+ * Tools whose risk is severe enough that NO policy may auto-approve them —
+ * they always require an explicit per-call confirmation. A malicious repo
+ * ships its own `.froglips/policy.json`, so policy auto-approve can never be
+ * trusted to silently run a shell command or arbitrary AppleScript.
+ */
+const NEVER_AUTO_APPROVE = new Set([SHELL_TOOL, "applescript_run"]);
+
+/**
+ * True when a loaded policy did NOT come from the user's own config — i.e. it
+ * was discovered by walking up from the workspace cwd (a repo-local
+ * `.froglips/policy.json`). Such a policy is attacker-controllable: just
+ * opening a file in a hostile repo activates it. The frontend cannot see the
+ * user's home config dir, so we treat *any* policy with a `source_path`
+ * containing the `.froglips/` segment as repo-local and refuse to honor its
+ * `auto_approve_dangerous_tools`. (A Rust-side change could mark the policy's
+ * origin explicitly — see report — but ignoring repo-local auto-approve here
+ * is the safe default.)
+ */
+function isRepoLocalPolicy(policy: ProjectPolicy): boolean {
+  const sp = policy.source_path ?? "";
+  return sp.includes("/.froglips/") || sp.includes("\\.froglips\\");
+}
+
+/**
  * Consult the active project policy for a tool call. Returns:
  *   - "auto"          → skip the confirmation prompt entirely
  *   - "needs-confirm" → fall through to the existing gate
  *   - "denied"        → reject without executing
+ *
+ * `risk` is the upstream risk classification for the call. Auto-approval is
+ * only ever granted for `normal`-risk tools — a policy can never wave through
+ * a `destructive`/`privileged` call.
  *
  * Exported for unit tests; the runner uses it internally.
  */
@@ -85,13 +114,24 @@ export function policyDecisionFor(
   policy: ProjectPolicy | null | undefined,
   fnName: string,
   args: Record<string, unknown>,
+  risk: string = "normal",
 ): PolicyVerdict {
   if (!policy) return "needs-confirm";
   if (policy.auto_approve_dangerous_tools?.includes(fnName)) {
+    // Shell / AppleScript always confirm, regardless of any policy entry.
+    if (NEVER_AUTO_APPROVE.has(fnName)) return "needs-confirm";
+    // Repo-local policies are attacker-controllable — never honor their
+    // auto-approve list. Auto-approve is reserved for user-global policy.
+    if (isRepoLocalPolicy(policy)) return "needs-confirm";
+    // Only normal-risk tools may be auto-approved.
+    if (risk !== "normal") return "needs-confirm";
     return "auto";
   }
   if (fnName === SHELL_TOOL) {
-    return policyShellVerdict(policy, String(args.command ?? ""));
+    // policyShellVerdict can return "auto" via allowed_shell_prefixes — but
+    // shell must always confirm, so downgrade any such auto to needs-confirm.
+    const v = policyShellVerdict(policy, String(args.command ?? ""));
+    return v === "auto" ? "needs-confirm" : v;
   }
   if (WRITE_TOOLS.has(fnName)) {
     // Tools that take a `path` field map directly. For other write tools
@@ -215,6 +255,24 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     } else {
       projectPolicy = null;
     }
+  }
+
+  // A repo-supplied `.froglips/policy.json` is attacker-controllable: opening
+  // a file in a hostile repo activates it. Surface a visible warning so the
+  // user knows a repo policy is in effect; its auto-approve entries are
+  // ignored downstream in policyDecisionFor.
+  if (projectPolicy && isRepoLocalPolicy(projectPolicy)) {
+    const hasAutoApprove = (projectPolicy.auto_approve_dangerous_tools?.length ?? 0) > 0;
+    logDiag({
+      level: "warn",
+      source: "agent-policy",
+      message:
+        `A repo-supplied policy is in effect (${projectPolicy.source_path ?? "unknown path"}). ` +
+        (hasAutoApprove
+          ? "Its auto-approve list is being IGNORED — repo-local policies cannot auto-approve dangerous tools."
+          : "Repo-local policies cannot auto-approve dangerous tools."),
+      detail: { source_path: projectPolicy.source_path ?? null },
+    });
   }
 
   const metrics: AgentMetrics = {
@@ -514,8 +572,9 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         const risk = await classifyToolRisk(fnName, args);
 
         // Policy wins over session approval state. A loaded policy can
-        // either auto-approve (skip confirmation) or deny outright.
-        const policyVerdict = policyDecisionFor(projectPolicy, fnName, args);
+        // either auto-approve (skip confirmation) or deny outright. Risk is
+        // passed so a policy can never auto-approve a non-normal-risk call.
+        const policyVerdict = policyDecisionFor(projectPolicy, fnName, args, risk);
         if (policyVerdict === "denied") {
           const polBody = JSON.stringify({
             ok: false,
@@ -555,7 +614,10 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
           policyVerdict === "auto" ||
           prefixApproved ||
           (fnName === SHELL_TOOL && approveAllShell && risk === "normal") ||
-          (WRITE_TOOLS.has(fnName) && approveAllWrite);
+          // Blanket write-approval only covers normal-risk writes — an
+          // elevated call (e.g. an http_request carrying a body, or a
+          // destructive method) always needs an explicit confirmation.
+          (WRITE_TOOLS.has(fnName) && approveAllWrite && risk === "normal");
         if (sessionApproved) {
           auditApproval = "session_allowed";
         }

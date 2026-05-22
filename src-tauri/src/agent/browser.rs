@@ -276,6 +276,9 @@ mod backend {
         } else {
             text
         };
+        // Page text is untrusted external content — scan for prompt-injection
+        // patterns and wrap with a DATA-only marker before returning.
+        let (truncated_text, _n) = crate::agent::injection_scan::scan_and_wrap(&truncated_text);
         Ok(BrowserTextResult {
             text: truncated_text,
         })

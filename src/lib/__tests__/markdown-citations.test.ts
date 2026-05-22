@@ -12,12 +12,21 @@ describe("markdown citation chips", () => {
     expect(out).toContain(">foo.rs:42</a>");
   });
 
-  it("wraps an absolute backticked path without a line", () => {
+  it("does NOT chip-ify an absolute filesystem path", () => {
+    // Security: absolute paths must never become one-click "open file"
+    // chips — a malicious model could point them at e.g. ~/.ssh keys.
     const out = renderMarkdown("Read `/Users/me/proj/lib.ts` first.");
-    expect(out).toContain('class="citation-chip"');
-    expect(out).toContain('data-path="/Users/me/proj/lib.ts"');
-    expect(out).not.toContain("data-line=");
-    expect(out).toContain(">lib.ts</a>");
+    expect(out).not.toContain("citation-chip");
+  });
+
+  it("does NOT chip-ify a home-relative path", () => {
+    const out = renderMarkdown("Open `~/secrets/key.ts` now.");
+    expect(out).not.toContain("citation-chip");
+  });
+
+  it("does NOT chip-ify a relative path containing .. traversal", () => {
+    const out = renderMarkdown("See `../../etc/passwd.sh:1` here.");
+    expect(out).not.toContain("citation-chip");
   });
 
   it("does NOT chip-ify URLs outside of code spans", () => {

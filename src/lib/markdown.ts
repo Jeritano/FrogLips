@@ -110,28 +110,31 @@ const PURIFY_CONFIG = {
   ALLOW_DATA_ATTR: false,
   FORBID_TAGS: ["style", "script", "iframe", "object", "embed", "form", "input", "button"],
   FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur"],
+  // Whitelist only safe URI schemes via DOMPurify's own policy. This is
+  // whitespace/control-char hardened (the engine strips them before matching),
+  // so it can't be evaded by `java\tscript:` the way a prefix test can. Also
+  // permits scheme-relative + relative refs. Remote <img> beacons are blocked
+  // separately in the hook below regardless of this regexp.
+  ALLOWED_URI_REGEXP: /^(?:https|mailto|data):|^[^a-z]|^[a-z][a-z0-9+.-]*$|^[./?#]/i,
 };
 
-// Block javascript: + vbscript: hrefs explicitly via uri policy.
+// Belt-and-suspenders on top of ALLOWED_URI_REGEXP: enforce target/rel and
+// kill any remote/data-non-image <img> sources.
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
     const a = node as HTMLAnchorElement;
-    const href = a.getAttribute("href") ?? "";
-    if (/^(javascript|vbscript|data):/i.test(href.trim())) {
-      a.removeAttribute("href");
-    }
     a.setAttribute("target", "_blank");
     a.setAttribute("rel", "noopener noreferrer");
   }
-  // Restrict <img src>: a model-authored remote/data URL is a tracking-pixel
-  // / exfil vector. Allow only https and inline data:image/* sources.
+  // Restrict <img src>: a model-authored remote URL is a tracking-pixel /
+  // IP-exfil vector that loads on render. Allow ONLY inline data:image/*
+  // sources — never remote http(s) — and drop the node entirely otherwise.
   if (node.tagName === "IMG") {
     const img = node as HTMLImageElement;
     const src = (img.getAttribute("src") ?? "").trim();
-    const isHttps = /^https:\/\//i.test(src);
-    const isDataImage = /^data:image\//i.test(src);
-    if (!isHttps && !isDataImage) {
+    if (!/^data:image\//i.test(src)) {
       img.removeAttribute("src");
+      img.remove();
     }
   }
 });
@@ -152,18 +155,17 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 
 const CITATION_EXTS = "rs|ts|tsx|js|jsx|py|md|json|toml|yml|yaml|sh|html|css";
 
-// Matches:
-//   absolute Unix path: /a/b/c.ext optionally followed by :LINE
-//   relative path w/ ≥ 1 slash: a/b.ext optionally followed by :LINE
-// The double-slash variant in the second alternative ensures we require at
-// least one path separator so we don't chip-ify bare filenames like
-// `index.js` that could just as easily be an npm package reference.
+// Citations are WORKSPACE-RELATIVE references only. We deliberately do NOT
+// match absolute (`/...`) or home-relative (`~/...`) paths: a model that
+// writes `` `/Users/joseph/.ssh/id_ed25519` `` must never become a one-click
+// "open arbitrary file" chip. A leading `(?<![A-Za-z0-9_./~-])` boundary
+// rejects matches preceded by `/` or `~`, so an absolute path can't be
+// chip-ified by matching only its relative tail. The relative form still
+// requires ≥ 1 path separator so bare filenames like `index.js` (which could
+// be npm package refs) aren't chip-ified.
 const CITATION_RE = new RegExp(
-  String.raw`(?:` +
-    String.raw`\/[A-Za-z0-9_.\-\/]+\.(?:${CITATION_EXTS})` +
-    String.raw`|` +
+  String.raw`(?<![A-Za-z0-9_./~-])` +
     String.raw`[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)+\.(?:${CITATION_EXTS})` +
-    String.raw`)` +
     String.raw`(?::(\d+))?`,
   "g",
 );
@@ -227,6 +229,14 @@ export function chipifyCitations(root: HTMLElement | DocumentFragment): void {
       }
       const matchStr = m[0];
       const { path, line } = splitPathAndLine(matchStr);
+      // Reject path-traversal segments — a relative citation must never be
+      // able to escape the workspace via `..`. Emit the literal text instead
+      // of a clickable chip. The click handler re-checks as defense in depth.
+      if (path.split("/").some((seg) => seg === "..")) {
+        frag.appendChild(code.ownerDocument!.createTextNode(matchStr));
+        lastIndex = m.index + matchStr.length;
+        continue;
+      }
       const a = code.ownerDocument!.createElement("a");
       a.className = "citation-chip";
       a.setAttribute("data-path", path);

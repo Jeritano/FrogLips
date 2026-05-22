@@ -71,10 +71,13 @@ function buildSubOpts(
     serverStatus: parent.serverStatus,
     systemPromptOverride: presetSystemPromptOverride ?? parent.systemPromptOverride,
     toolAllowlist,
-    approveAllShell: parent.approveAllShell,
-    approveAllWrite: parent.approveAllWrite,
+    // Do NOT propagate blanket session approvals into subagents: a subagent's
+    // prompt can be attacker-influenced, so dangerous tool calls inside it must
+    // require fresh confirmation rather than inherit the parent's grants.
+    approveAllShell: false,
+    approveAllWrite: false,
     dryRun: parent.dryRun,
-    approvedShellPrefixes: parent.approvedShellPrefixes,
+    approvedShellPrefixes: [],
     onApproveShellPrefix: parent.onApproveShellPrefix,
     // Suppress UI noise: subagent runs are background work; parent's
     // metrics + UI shouldn't see every intermediate step.

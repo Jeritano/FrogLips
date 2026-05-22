@@ -55,14 +55,51 @@ describe("policyDecisionFor", () => {
     );
   });
 
-  it("auto-approves shell commands matching allowed prefix", () => {
+  it("never auto-approves shell, even with a matching allowed prefix", () => {
+    // Shell always requires explicit confirmation: a repo-supplied policy
+    // must not be able to silently run commands.
     const policy: ProjectPolicy = { allowed_shell_prefixes: ["cargo", "git"] };
     expect(policyDecisionFor(policy, "run_shell", { command: "cargo test" })).toBe(
-      "auto",
+      "needs-confirm",
     );
     expect(policyDecisionFor(policy, "run_shell", { command: "rm -rf /" })).toBe(
       "needs-confirm",
     );
+  });
+
+  it("never auto-approves run_shell / applescript_run via auto_approve list", () => {
+    const policy: ProjectPolicy = {
+      auto_approve_dangerous_tools: ["run_shell", "applescript_run"],
+    };
+    expect(policyDecisionFor(policy, "run_shell", { command: "ls" })).toBe(
+      "needs-confirm",
+    );
+    expect(policyDecisionFor(policy, "applescript_run", { script: "x" })).toBe(
+      "needs-confirm",
+    );
+  });
+
+  it("ignores auto_approve from a repo-local .froglips policy", () => {
+    const repoPolicy: ProjectPolicy = {
+      auto_approve_dangerous_tools: ["clipboard_set"],
+      source_path: "/home/u/projx/.froglips/policy.json",
+    };
+    expect(policyDecisionFor(repoPolicy, "clipboard_set", { text: "x" })).toBe(
+      "needs-confirm",
+    );
+  });
+
+  it("does not auto-approve non-normal-risk tools", () => {
+    const policy: ProjectPolicy = {
+      auto_approve_dangerous_tools: ["http_request"],
+      source_path: "/home/u/.config/froglips/policy.json",
+    };
+    expect(
+      policyDecisionFor(policy, "http_request", { method: "POST" }, "privileged"),
+    ).toBe("needs-confirm");
+    expect(
+      policyDecisionFor(policy, "http_request", { method: "GET" }, "normal"),
+    ).toBe("auto");
   });
 
   it("denies writes to a denied path even if allowed elsewhere", () => {
@@ -104,7 +141,7 @@ describe("runAgentLoop with project policy", () => {
     vi.unstubAllGlobals();
   });
 
-  it("skips the confirmation prompt when policy auto-approves the shell call", async () => {
+  it("still confirms a shell call even when the policy allows the prefix", async () => {
     const responses: object[] = [
       ollamaShellToolResponse("tc-1", "cargo test"),
       ollamaFinalResponse("done"),
@@ -119,7 +156,7 @@ describe("runAgentLoop with project policy", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const requestConfirmation = vi.fn(async () => ({ approve: false }));
+    const requestConfirmation = vi.fn(async () => ({ approve: true }));
     const collected: Message[][] = [];
 
     const opts: AgentRunOptions = {
@@ -136,11 +173,11 @@ describe("runAgentLoop with project policy", () => {
 
     await runAgentLoop(opts);
 
-    // The confirmation prompt must never have been called — the policy
-    // auto-approved `cargo test`.
-    expect(requestConfirmation).not.toHaveBeenCalled();
+    // Shell always requires explicit confirmation — a policy prefix-allow
+    // can never silently auto-approve a command.
+    expect(requestConfirmation).toHaveBeenCalledTimes(1);
 
-    // And the shell tool result must be present in the final snapshot.
+    // The (user-approved) shell tool result is still present in the snapshot.
     const last = collected[collected.length - 1] ?? [];
     const toolMsgs = last.filter((m) => m.role === "tool" && m.tool_name === "run_shell");
     expect(toolMsgs.length).toBe(1);

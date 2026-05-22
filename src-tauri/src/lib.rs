@@ -1236,7 +1236,9 @@ async fn mcp_server_stderr(name: String) -> Option<String> {
 
 #[tauri::command]
 fn settings_get() -> settings::Settings {
-    settings::load()
+    // Redact API keys before they cross to the webview — the frontend only
+    // needs to know a key is set, never its plaintext value.
+    settings::redacted(settings::load())
 }
 
 /* ── Quick prompt (menu-bar ephemeral prompt) ──────────────────────────── */
@@ -1276,7 +1278,8 @@ fn settings_set(patch: serde_json::Value) -> Result<settings::Settings, String> 
     }
     let updated: settings::Settings = serde_json::from_value(current).map_err(|e| e.to_string())?;
     settings::save(&updated).map_err(|e| e.to_string())?;
-    Ok(updated)
+    // Redact keys before returning — never echo plaintext back to the webview.
+    Ok(settings::redacted(updated))
 }
 
 /* ── First-run setup wizard ─────────────────────────────────────────────── */

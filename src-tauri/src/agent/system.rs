@@ -112,7 +112,11 @@ pub async fn clipboard_get() -> Result<String, String> {
     if code != 0 {
         return Err(err_string(ToolError::io("pbpaste failed")));
     }
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    // Clipboard contents are attacker-controllable — scan for prompt-injection
+    // patterns and wrap with a DATA-only marker before the agent ingests them.
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let (text, _n) = super::injection_scan::scan_and_wrap(&text);
+    Ok(text)
 }
 
 pub async fn clipboard_set(text: String) -> Result<(), String> {

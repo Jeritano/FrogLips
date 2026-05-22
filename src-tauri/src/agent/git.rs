@@ -53,6 +53,14 @@ pub async fn git_status(path: Option<String>) -> Result<GitResult, String> {
     git_invoke(cwd, &["status", "--short", "--branch"]).await
 }
 
+/// Repo content (commit messages, diffs) can be attacker-poisoned — scan the
+/// stdout for prompt-injection patterns and wrap with a DATA-only marker.
+fn wrap_stdout(mut r: GitResult) -> GitResult {
+    let (wrapped, _n) = crate::agent::injection_scan::scan_and_wrap(&r.stdout);
+    r.stdout = wrapped;
+    r
+}
+
 pub async fn git_diff(path: Option<String>, staged: Option<bool>) -> Result<GitResult, String> {
     let cwd = match path {
         Some(p) => validate_for_read(&p).map_err(err_string)?,
@@ -66,7 +74,7 @@ pub async fn git_diff(path: Option<String>, staged: Option<bool>) -> Result<GitR
     if staged.unwrap_or(false) {
         args.push("--staged");
     }
-    git_invoke(cwd, &args).await
+    git_invoke(cwd, &args).await.map(wrap_stdout)
 }
 
 pub async fn git_log(path: Option<String>, limit: Option<u32>) -> Result<GitResult, String> {
@@ -79,7 +87,9 @@ pub async fn git_log(path: Option<String>, limit: Option<u32>) -> Result<GitResu
         })?,
     };
     let n = limit.unwrap_or(20).min(200).to_string();
-    git_invoke(cwd, &["log", "--oneline", "--decorate", "-n", &n]).await
+    git_invoke(cwd, &["log", "--oneline", "--decorate", "-n", &n])
+        .await
+        .map(wrap_stdout)
 }
 
 pub async fn git_show(reference: String, path: Option<String>) -> Result<GitResult, String> {
@@ -98,7 +108,9 @@ pub async fn git_show(reference: String, path: Option<String>) -> Result<GitResu
             ))
         })?,
     };
-    git_invoke(cwd, &["show", "--no-color", &reference]).await
+    git_invoke(cwd, &["show", "--no-color", &reference])
+        .await
+        .map(wrap_stdout)
 }
 
 pub async fn git_branches(path: Option<String>) -> Result<GitResult, String> {

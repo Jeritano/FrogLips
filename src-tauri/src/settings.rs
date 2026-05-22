@@ -58,6 +58,84 @@ fn default_true() -> bool {
     true
 }
 
+/// macOS Keychain service name for custom-backend API keys. Stable so that
+/// `security find-generic-password` can locate keys across app restarts.
+const KEYCHAIN_SERVICE: &str = "Froglips-custom-backend";
+
+/// Masked marker returned to the webview in place of a real API key — the
+/// frontend never needs the plaintext, only whether a key is set.
+const REDACTED_MARKER: &str = "__keychain__";
+
+/// Test override: when set, keys are kept in-memory instead of touching the
+/// real macOS Keychain so the suite never prompts or pollutes the login
+/// keychain. Production code never sets this.
+fn keychain_disabled() -> bool {
+    std::env::var("FROGLIPS_SETTINGS_DIR").is_ok_and(|d| !d.is_empty())
+}
+
+/// Write an API key into the macOS Keychain under (KEYCHAIN_SERVICE, account).
+fn keychain_set(account: &str, key: &str) {
+    if keychain_disabled() {
+        return;
+    }
+    // -U updates an existing item in place rather than erroring on duplicate.
+    let _ = std::process::Command::new("security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            account,
+            "-w",
+            key,
+        ])
+        .output();
+}
+
+/// Fetch an API key from the macOS Keychain. Returns `None` if absent.
+pub fn keychain_get(account: &str) -> Option<String> {
+    if keychain_disabled() {
+        return None;
+    }
+    let out = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            account,
+            "-w",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Delete an API key from the macOS Keychain (best-effort).
+fn keychain_delete(account: &str) {
+    if keychain_disabled() {
+        return;
+    }
+    let _ = std::process::Command::new("security")
+        .args([
+            "delete-generic-password",
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            account,
+        ])
+        .output();
+}
+
 fn settings_path() -> Option<PathBuf> {
     // Test override: allows the cargo test suite to point at a tempdir without
     // clobbering the developer's real ~/Library/Application Support/Froglips
@@ -70,16 +148,43 @@ fn settings_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("Froglips/settings.json"))
 }
 
+/// Load settings with API keys resolved from the Keychain. Performs a
+/// one-time migration: any plaintext key still present in settings.json is
+/// moved into the Keychain and blanked on disk.
 pub fn load() -> Settings {
     let Some(p) = settings_path() else {
         return Settings::default();
     };
-    match std::fs::read_to_string(&p) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(_) => Settings::default(),
+    let mut s: Settings = match std::fs::read_to_string(&p) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Err(_) => return Settings::default(),
+    };
+
+    let mut migrated = false;
+    if let Some(backends) = s.custom_backends.as_mut() {
+        for b in backends.iter_mut() {
+            match b.api_key.as_deref() {
+                // Already redacted/blank on disk → pull the real key from Keychain.
+                Some("") | Some(REDACTED_MARKER) | None => {
+                    b.api_key = keychain_get(&b.id);
+                }
+                // Plaintext key on disk → migrate it into the Keychain.
+                Some(plain) => {
+                    keychain_set(&b.id, plain);
+                    migrated = true;
+                }
+            }
+        }
     }
+    if migrated {
+        // Persist the blanked-on-disk form; in-memory keeps the real keys.
+        let _ = save(&s);
+    }
+    s
 }
 
+/// Persist settings. API keys are written to the macOS Keychain and replaced
+/// with an empty placeholder in settings.json so no secret is stored cleartext.
 pub fn save(s: &Settings) -> std::io::Result<()> {
     let Some(p) = settings_path() else {
         return Ok(());
@@ -87,8 +192,38 @@ pub fn save(s: &Settings) -> std::io::Result<()> {
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text = serde_json::to_string_pretty(s).unwrap_or_else(|_| "{}".to_string());
+    // Clone so we can strip keys for disk without disturbing the caller's copy.
+    let mut on_disk = s.clone();
+    if let Some(backends) = on_disk.custom_backends.as_mut() {
+        for b in backends.iter_mut() {
+            match b.api_key.take() {
+                // A fresh plaintext key → store it.
+                Some(k) if !k.is_empty() && k != REDACTED_MARKER => keychain_set(&b.id, &k),
+                // The redacted marker means "key unchanged" — leave Keychain as-is.
+                Some(k) if k == REDACTED_MARKER => {}
+                // Explicitly empty/absent → user cleared the key.
+                _ => keychain_delete(&b.id),
+            }
+            b.api_key = Some(String::new());
+        }
+    }
+    let text = serde_json::to_string_pretty(&on_disk).unwrap_or_else(|_| "{}".to_string());
     std::fs::write(p, text)
+}
+
+/// Redact API keys for transport to the webview — replaces any present key
+/// with a masked marker so the frontend can tell a key is set without ever
+/// receiving the plaintext.
+pub fn redacted(mut s: Settings) -> Settings {
+    if let Some(backends) = s.custom_backends.as_mut() {
+        for b in backends.iter_mut() {
+            b.api_key = match b.api_key.as_deref() {
+                Some(k) if !k.is_empty() => Some(REDACTED_MARKER.to_string()),
+                _ => Some(String::new()),
+            };
+        }
+    }
+    s
 }
 
 #[cfg(test)]
@@ -146,6 +281,34 @@ mod tests {
             save(&s).expect("save 2");
             let s2 = load();
             assert_eq!(s2.setup_complete, Some(false));
+        });
+    }
+
+    /// API keys must never be written cleartext to settings.json, and
+    /// `redacted()` must mask any key before it reaches the webview.
+    #[test]
+    fn api_keys_not_persisted_cleartext_and_redacted() {
+        with_tempdir(|dir| {
+            let s = Settings {
+                custom_backends: Some(vec![CustomBackend {
+                    id: "b1".into(),
+                    name: "Test".into(),
+                    base_url: "https://example.com".into(),
+                    model: "m".into(),
+                    api_key: Some("sk-secret-value".into()),
+                }]),
+                ..Default::default()
+            };
+            save(&s).expect("save");
+
+            // Raw file must not contain the plaintext secret.
+            let raw = std::fs::read_to_string(dir.join("settings.json")).expect("read");
+            assert!(!raw.contains("sk-secret-value"), "secret leaked to disk");
+
+            // redacted() never exposes the plaintext.
+            let r = redacted(s.clone());
+            let key = r.custom_backends.unwrap()[0].api_key.clone().unwrap();
+            assert_ne!(key, "sk-secret-value");
         });
     }
 }

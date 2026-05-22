@@ -131,6 +131,12 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [quickToast, setQuickToast] = useState<{ reply: string; error: string | null } | null>(null);
   // Edit-and-retry: holds the user message being edited plus its draft text.
   const [editState, setEditState] = useState<{ msg: Message; text: string } | null>(null);
+  // Citation-open confirmation: holds the resolved absolute path + line until
+  // the user explicitly confirms opening it in an external editor.
+  const [citationConfirm, setCitationConfirm] = useState<{ resolved: string; line?: number } | null>(null);
+  // Once the user confirms a citation open in a session we don't re-prompt
+  // for subsequent in-workspace citations (per-session trust).
+  const citationTrustRef = useRef(false);
   const activePreset = presets.find((p) => p.id === activePresetId) ?? presets[0];
   const abortRef = useRef<AbortController | null>(null);
   const creatingConvRef = useRef<Promise<Conversation> | null>(null);
@@ -807,22 +813,10 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     await send(newText, truncated);
   }
 
-  // Citation chip click handler — event-delegated at the chat-window root.
-  // `.citation-chip` anchors are emitted by the markdown post-processor with
-  // data-path and (optional) data-line attributes. We intercept the click,
-  // resolve to a Tauri command, and toast the resulting editor.
-  const onCitationClick = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLElement | null;
-    if (!target) return;
-    const chip = target.closest(".citation-chip") as HTMLAnchorElement | null;
-    if (!chip) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const path = chip.getAttribute("data-path") ?? "";
-    const lineRaw = chip.getAttribute("data-line");
-    const line = lineRaw ? Number(lineRaw) : undefined;
-    if (!path) return;
-    api.agentOpenPathInEditor(path, line)
+  // Perform the actual editor-open IPC call. Only ever reached with a path
+  // that has already passed confinement checks and (first time) user confirm.
+  const doOpenCitation = useCallback((resolved: string, line?: number) => {
+    api.agentOpenPathInEditor(resolved, line)
       .then((prog) => {
         const label = prog === "code" ? "VS Code"
           : prog === "cursor" ? "Cursor"
@@ -835,6 +829,59 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       })
       .catch((err2) => setErr(`Open failed: ${err2}`));
   }, []);
+
+  // Citation chip click handler — event-delegated at the chat-window root.
+  // `.citation-chip` anchors carry model-authored data-path text. Because the
+  // model is untrusted, we must NOT pass that path straight to the editor-open
+  // IPC: confine it to the workspace root and require explicit user confirm of
+  // the resolved absolute path before the first open of a session.
+  const onCitationClick = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const chip = target.closest(".citation-chip") as HTMLAnchorElement | null;
+    if (!chip) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const path = (chip.getAttribute("data-path") ?? "").trim();
+    const lineRaw = chip.getAttribute("data-line");
+    const line = lineRaw ? Number(lineRaw) : undefined;
+    if (!path) return;
+
+    // Reject anything that isn't a clearly-relative, non-traversing path.
+    // Absolute (`/…`), home-relative (`~/…`), Windows-drive (`C:\…`) and any
+    // `..` segment are refused outright — a malicious model emitting
+    // `/Users/joseph/.ssh/id_ed25519` must not be openable with one click.
+    const isAbsolute = path.startsWith("/") || path.startsWith("~") || /^[A-Za-z]:[\\/]/.test(path);
+    const hasTraversal = path.split(/[\\/]/).some((seg) => seg === "..");
+    if (isAbsolute || hasTraversal) {
+      setErr("Refused to open citation: path escapes the workspace.");
+      return;
+    }
+
+    // A relative path is only safe if we have a workspace root to anchor it.
+    // Without one we cannot bound the open, so refuse rather than guess.
+    if (!workspaceRoot) {
+      setErr("Set a workspace root before opening file citations.");
+      return;
+    }
+    const sep = workspaceRoot.includes("\\") && !workspaceRoot.includes("/") ? "\\" : "/";
+    const root = workspaceRoot.replace(/[\\/]+$/, "");
+    const resolved = `${root}${sep}${path.replace(/^[\\/]+/, "")}`;
+    // Guard the join: the resolved path must remain under the root prefix.
+    if (resolved !== root && !resolved.startsWith(root + sep)) {
+      setErr("Refused to open citation: path escapes the workspace.");
+      return;
+    }
+
+    // First citation open of the session: confirm the resolved absolute path.
+    // After the user trusts it once we open subsequent in-workspace citations
+    // directly (still confined above).
+    if (citationTrustRef.current) {
+      doOpenCitation(resolved, line);
+    } else {
+      setCitationConfirm({ resolved, line });
+    }
+  }, [workspaceRoot, doOpenCitation]);
 
   return (
     <div className="chat-window" onClick={onCitationClick}>
@@ -1190,6 +1237,45 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
                 disabled={!editState.text.trim()}
               >
                 Resend
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Citation open confirmation — shows the resolved absolute path so the
+          user sees exactly which file an untrusted model is asking to open. */}
+      {citationConfirm && (
+        <div
+          className="agent-confirm-overlay"
+          data-testid="citation-confirm-modal"
+          onClick={(e) => e.target === e.currentTarget && setCitationConfirm(null)}
+        >
+          <div className="agent-confirm-box">
+            <div className="agent-confirm-title">Open file in editor?</div>
+            <div style={{ padding: "8px 0", fontSize: 12, color: "var(--text-muted)" }}>
+              This citation was written by the model. It will open in an external editor:
+            </div>
+            <pre className="agent-confirm-args">
+              {citationConfirm.resolved}{citationConfirm.line ? `:${citationConfirm.line}` : ""}
+            </pre>
+            <div className="agent-confirm-actions">
+              <button
+                className="agent-confirm-deny"
+                onClick={() => setCitationConfirm(null)}
+              >
+                Cancel
+              </button>
+              <button
+                data-testid="citation-confirm-allow"
+                className="agent-confirm-allow"
+                onClick={() => {
+                  citationTrustRef.current = true;
+                  doOpenCitation(citationConfirm.resolved, citationConfirm.line);
+                  setCitationConfirm(null);
+                }}
+              >
+                Open
               </button>
             </div>
           </div>
