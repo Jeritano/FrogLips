@@ -6,7 +6,6 @@ import {
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
-  useReactFlow,
   type Node,
   type Edge,
   type Connection,
@@ -27,8 +26,6 @@ interface Props {
   onConfigure: (id: string, origin: DOMRect) => void;
   onRunCard: (id: string) => void;
   onDeleteCard: (id: string) => void;
-  /** Create a fresh card placed at the given flow coords (drag-drop). */
-  onPlaceCard: (x: number, y: number) => void;
   /** Open the centered form for a fresh card, flying from the deck rect. */
   onCreateFromDeck: (origin: DOMRect) => void;
   runningCardId: string | null;
@@ -39,8 +36,8 @@ const nodeTypes: NodeTypes = { agentCard: AgentCardNode };
 /**
  * React Flow surface for the workflow graph — the "table top". Card positions
  * and edges are lifted to the parent so they can be debounced-persisted;
- * per-card run state drives the live node badges. The corner deck drags new
- * cards onto the pane via the onDrop/onDragOver pattern.
+ * per-card run state drives the live node badges. The corner deck's top card
+ * opens the centered form; saving the form lands a node directly on the pane.
  */
 export function WorkflowCanvas({
   cards,
@@ -51,12 +48,10 @@ export function WorkflowCanvas({
   onConfigure,
   onRunCard,
   onDeleteCard,
-  onPlaceCard,
   onCreateFromDeck,
   runningCardId,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition } = useReactFlow();
 
   // Cards with an incoming edge are mid-chain: a single-card run gives them
   // no upstream input, so the per-card Run button is disabled for them.
@@ -137,32 +132,8 @@ export function WorkflowCanvas({
     [flowEdges, onEdgesChange],
   );
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes("application/wf-card")) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "copy";
-    }
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      if (!e.dataTransfer.types.includes("application/wf-card")) return;
-      e.preventDefault();
-      const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      // Center the ~200px-wide card on the cursor.
-      onPlaceCard(pos.x - 100, pos.y - 60);
-    },
-    [screenToFlowPosition, onPlaceCard],
-  );
-
   return (
-    <div
-      className="wf-canvas"
-      data-testid="wf-canvas"
-      ref={wrapRef}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
-    >
+    <div className="wf-canvas" data-testid="wf-canvas" ref={wrapRef}>
       <ReactFlow
         nodes={nodes}
         edges={flowEdges}

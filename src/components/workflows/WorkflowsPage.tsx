@@ -64,7 +64,14 @@ export function WorkflowsPage({ status }: Props) {
   // Non-throwing graph validation drives both the inline warning and the
   // run-button gate.
   const validation = useMemo(() => validateGraph({ cards, edges }), [cards, edges]);
-  const warning = validation.ok ? null : validation.error;
+  // Suppress the validation banner while the user is still building: a lone
+  // card or several not-yet-connected cards is a normal mid-build state, not
+  // an error. The Run button stays gated by `validation.ok` either way.
+  const warning = useMemo(() => {
+    if (validation.ok) return null;
+    if (edges.length === 0) return null;
+    return validation.error;
+  }, [validation, edges]);
 
   // Latest unsaved graph/name, kept in a ref so unmount/navigate-away can
   // flush a pending debounced save without re-subscribing the effect.
@@ -132,8 +139,8 @@ export function WorkflowsPage({ status }: Props) {
     }
   }
 
-  // A blank card with a freshly generated codename. `placed` stays false
-  // until the card lands on the table (drag-drop or save-from-deck).
+  // A blank card with a freshly generated codename. Created cards are placed
+  // on the canvas straight away so the user can position and connect them.
   function freshCard(x = 0, y = 0): WorkflowCard {
     return {
       id: newCardId(),
@@ -144,11 +151,18 @@ export function WorkflowsPage({ status }: Props) {
       schedule: null,
       backend: null,
       model: null,
-      placed: false,
+      placed: true,
       unattended: false,
       x,
       y,
     };
+  }
+
+  // A staggered canvas position for the next created card, offset per existing
+  // placed card so multiple new cards don't stack exactly on top of each other.
+  function nextCardPosition(): { x: number; y: number } {
+    const n = cards.filter((c) => c.placed !== false).length;
+    return { x: 80 + (n % 6) * 36, y: 80 + (n % 6) * 36 };
   }
 
   const deleteCard = useCallback((id: string) => {
@@ -161,16 +175,13 @@ export function WorkflowsPage({ status }: Props) {
     return { x: r.left, y: r.top, w: r.width, h: r.height };
   }
 
-  // Clicking the deck's top card: open the centered form on a fresh draft.
+  // Clicking the deck's top card: open the centered form on a fresh draft
+  // pre-positioned for the canvas. Saving will land it as a visible node.
   function createFromDeck(origin: DOMRect) {
-    setFormCard(freshCard());
+    const pos = nextCardPosition();
+    setFormCard(freshCard(pos.x, pos.y));
     setFormIsNew(true);
     setFormOrigin(rectOrigin(origin));
-  }
-
-  // Dragging a card from the deck onto the table: place it immediately.
-  function placeCard(x: number, y: number) {
-    setCards((c) => [...c, { ...freshCard(x, y), placed: true }]);
   }
 
   // Clicking a placed node: open the centered form to edit it.
@@ -188,11 +199,11 @@ export function WorkflowsPage({ status }: Props) {
     setFormOrigin(null);
   }
 
-  // Save from the centered form. A new card lands on the deck (placed:false);
-  // an edited card updates in place. The form animates back on its own.
+  // Save from the centered form. A new card lands directly on the canvas
+  // (placed:true), visible and connectable; an edited card updates in place.
   function saveCard(card: WorkflowCard) {
     if (formIsNew) {
-      setCards((c) => [...c, card]);
+      setCards((c) => [...c, { ...card, placed: true }]);
     } else {
       setCards((c) => c.map((x) => (x.id === card.id ? card : x)));
     }
@@ -350,13 +361,15 @@ export function WorkflowsPage({ status }: Props) {
 
   const runInfo = useMemo<CardRunInfo[]>(
     () =>
-      cards.map((c) => ({
-        id: c.id,
-        name: c.name,
-        state: cardStates[c.id] ?? "idle",
-        output: outputs[c.id]?.output ?? "",
-        error: outputs[c.id]?.error,
-      })),
+      cards
+        .filter((c) => c.placed !== false)
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          state: cardStates[c.id] ?? "idle",
+          output: outputs[c.id]?.output ?? "",
+          error: outputs[c.id]?.error,
+        })),
     [cards, cardStates, outputs],
   );
 
@@ -439,14 +452,13 @@ export function WorkflowsPage({ status }: Props) {
             onConfigure={editCard}
             onRunCard={runSingleCard}
             onDeleteCard={deleteCard}
-            onPlaceCard={placeCard}
             onCreateFromDeck={createFromDeck}
             runningCardId={runningCardId}
           />
         </ReactFlowProvider>
         <RunPanel
           running={running}
-          canRun={cards.length > 0 && validation.ok}
+          canRun={runInfo.length > 0 && validation.ok}
           cards={runInfo}
           onRun={runWorkflowNow}
           onStop={stopRun}

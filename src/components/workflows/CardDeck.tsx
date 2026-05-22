@@ -7,8 +7,8 @@ interface Props {
 
 /**
  * The card deck — a neat stack in the corner of the table. The top card is
- * always a fresh "new agent" card: clicking it opens the centered form,
- * dragging it onto the table-top creates a placed node at the drop point.
+ * the "new agent" affordance: clicking it opens the centered form, and saving
+ * the form lands a configured card directly on the canvas.
  */
 export function CardDeck({ onCreate }: Props) {
   const topRef = useRef<HTMLDivElement>(null);
@@ -24,7 +24,6 @@ export function CardDeck({ onCreate }: Props) {
         ref={topRef}
         role="button"
         tabIndex={0}
-        draggable
         data-testid="wf-deck-top"
         onClick={() => {
           if (topRef.current) onCreate(topRef.current.getBoundingClientRect());
@@ -35,11 +34,7 @@ export function CardDeck({ onCreate }: Props) {
             onCreate(topRef.current.getBoundingClientRect());
           }
         }}
-        onDragStart={(e) => {
-          e.dataTransfer.effectAllowed = "copy";
-          e.dataTransfer.setData("application/wf-card", "new");
-        }}
-        title="Click to configure · drag onto the table to place"
+        title="Click to add a new agent"
       >
         <span className="wf-deck-plus" aria-hidden="true">+</span>
         <span className="wf-deck-label">New agent</span>

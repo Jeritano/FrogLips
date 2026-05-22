@@ -18,18 +18,28 @@ export class WorkflowGraphError extends Error {
  * Returns cards in run order — the start card (no incoming edge) first.
  */
 export function resolveLinearOrder(graph: WorkflowGraph): WorkflowCard[] {
-  const { cards, edges } = graph;
-  if (cards.length === 0) return [];
-
-  const byId = new Map(cards.map((c) => [c.id, c]));
-  for (const e of edges) {
-    if (!byId.has(e.from)) {
+  // Edges to genuinely unknown cards are still a hard error. Edges touching an
+  // unplaced (deck/limbo) card are simply ignored — that card is off-canvas.
+  const allIds = new Set(graph.cards.map((c) => c.id));
+  for (const e of graph.edges) {
+    if (!allIds.has(e.from)) {
       throw new WorkflowGraphError(`Edge references unknown card "${e.from}".`);
     }
-    if (!byId.has(e.to)) {
+    if (!allIds.has(e.to)) {
       throw new WorkflowGraphError(`Edge references unknown card "${e.to}".`);
     }
   }
+
+  // Only cards actually on the canvas (placed) take part in the chain. Cards
+  // default to placed when the flag is absent (legacy/test graphs).
+  const cards = graph.cards.filter((c) => c.placed !== false);
+  const placedIds = new Set(cards.map((c) => c.id));
+  const edges = graph.edges.filter(
+    (e) => placedIds.has(e.from) && placedIds.has(e.to),
+  );
+  if (cards.length === 0) return [];
+
+  const byId = new Map(cards.map((c) => [c.id, c]));
 
   const outDeg = new Map<string, number>();
   const inDeg = new Map<string, number>();

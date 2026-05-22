@@ -88,6 +88,36 @@ describe("resolveLinearOrder", () => {
   });
 });
 
+describe("placed filtering", () => {
+  it("ignores unplaced cards when resolving the chain", () => {
+    const a = { ...card("a"), placed: true };
+    const b = { ...card("b"), placed: true };
+    const ghost = { ...card("ghost"), placed: false };
+    const graph: WorkflowGraph = {
+      cards: [a, b, ghost],
+      edges: [{ from: "a", to: "b" }],
+    };
+    expect(resolveLinearOrder(graph).map((c) => c.id)).toEqual(["a", "b"]);
+  });
+
+  it("does not flag unplaced cards as disconnected start cards", () => {
+    const a = { ...card("a"), placed: true };
+    const ghost = { ...card("ghost"), placed: false };
+    const res = validateGraph({ cards: [a, ghost], edges: [] });
+    expect(res.ok).toBe(true);
+  });
+
+  it("drops edges that reference unplaced cards", () => {
+    const a = { ...card("a"), placed: true };
+    const ghost = { ...card("ghost"), placed: false };
+    const graph: WorkflowGraph = {
+      cards: [a, ghost],
+      edges: [{ from: "a", to: "ghost" }],
+    };
+    expect(resolveLinearOrder(graph).map((c) => c.id)).toEqual(["a"]);
+  });
+});
+
 describe("validateGraph", () => {
   it("returns ok with the resolved order for a valid chain", () => {
     const graph: WorkflowGraph = {
