@@ -3,6 +3,22 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
+/// `O_NOFOLLOW` open flag. Defined per-target to avoid pulling in `libc` as a
+/// direct dependency. The values match the platforms' `<fcntl.h>`:
+///   - macOS / BSDs: 0x0100
+///   - Linux: 0o400000 (0x20000)
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+const O_NOFOLLOW: i32 = 0x0100;
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW: i32 = 0o400000;
+
 pub(super) const MAX_READ_BYTES: usize = 65_536;
 pub(super) const MAX_SHELL_OUTPUT: usize = 32_768;
 pub(super) const MAX_PATH_LEN: usize = 4096;
@@ -326,6 +342,24 @@ pub struct ReadResult {
     pub binary: bool,
 }
 
+/// Threshold beyond which we treat a file as binary purely on size, without
+/// scanning the head bytes. A "text" file 8× larger than the per-call read
+/// cap is almost certainly something the agent should not be slurping in
+/// full (large log, minified bundle, generated asset) — short-circuiting
+/// here also caps the worst-case bytes read by `tokio::fs::read` below.
+pub(super) const BINARY_SIZE_THRESHOLD: u64 = (MAX_READ_BYTES as u64) * 8;
+
+pub(super) fn looks_binary_with_size(bytes: &[u8], total_bytes: u64) -> bool {
+    // Size short-circuit: anything materially larger than the read cap is
+    // treated as binary regardless of its head bytes. Cheap and bounds the
+    // damage from a giant text-ish payload that would otherwise stream in
+    // its entirety only to be truncated for display.
+    if total_bytes > BINARY_SIZE_THRESHOLD {
+        return true;
+    }
+    looks_binary(bytes)
+}
+
 pub(super) fn looks_binary(bytes: &[u8]) -> bool {
     // Scan the first ~8 KB for bytes that text files never contain.
     // - NUL is the classic binary tell.
@@ -345,11 +379,29 @@ pub async fn read_file(
     limit: Option<u64>,
 ) -> Result<ReadResult, String> {
     let resolved = validate_for_read(&path).map_err(err_string)?;
+    // Stat first so we can short-circuit on size before slurping a huge file
+    // off disk just to call it binary. Anything beyond BINARY_SIZE_THRESHOLD
+    // is reported as binary on the metadata alone.
+    let meta = tokio::fs::metadata(&resolved)
+        .await
+        .map_err(|e| err_string(classify_io(&e)))?;
+    let total_meta = meta.len();
+    if total_meta > BINARY_SIZE_THRESHOLD {
+        return Ok(ReadResult {
+            content: format!(
+                "[binary file, {total_meta} bytes — use a different tool for binary data]"
+            ),
+            bytes_read: 0,
+            total_bytes: total_meta,
+            truncated: true,
+            binary: true,
+        });
+    }
     let bytes = tokio::fs::read(&resolved)
         .await
         .map_err(|e| err_string(classify_io(&e)))?;
     let total = bytes.len() as u64;
-    if looks_binary(&bytes) {
+    if looks_binary_with_size(&bytes, total) {
         return Ok(ReadResult {
             content: format!("[binary file, {total} bytes — use a different tool for binary data]"),
             bytes_read: 0,
@@ -428,6 +480,36 @@ pub async fn list_dir(path: String) -> Result<DirListing, String> {
 
 /* ── Write file ──────────────────────────────────────────────────────────── */
 
+/// Open `resolved` for writing with O_NOFOLLOW set, then write `bytes`.
+///
+/// Closes the TOCTOU at the leaf: `validate_for_write` checks the path, then
+/// previously a separate `tokio::fs::write` would re-open it — if an attacker
+/// races a symlink into place between the two operations, the write follows
+/// the symlink to an arbitrary target. With `O_NOFOLLOW` the kernel refuses
+/// to open a symlink at the final path component, so the race is closed.
+///
+/// `must_be_new` controls O_CREAT vs O_CREAT|O_EXCL semantics:
+///   - `true` → fail if any file exists at `resolved` (used when callers
+///     want true create-only behavior; we don't currently rely on it).
+///   - `false` → truncate-or-create existing regular files. Combined with
+///     `O_NOFOLLOW` this still rejects symlink leaves.
+fn write_nofollow_sync(resolved: &Path, bytes: &[u8], must_be_new: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true)
+        .create(true)
+        .truncate(!must_be_new)
+        .custom_flags(O_NOFOLLOW);
+    if must_be_new {
+        opts.create_new(true);
+    }
+    let mut f = opts.open(resolved)?;
+    f.write_all(bytes)?;
+    f.sync_data().ok();
+    Ok(())
+}
+
 pub async fn write_file(path: String, content: String) -> Result<(), String> {
     let resolved = validate_for_write(&path).map_err(err_string)?;
     if content.len() > MAX_WRITE_BYTES {
@@ -440,8 +522,11 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
             .await
             .map_err(|e| err_string(classify_io(&e)))?;
     }
-    tokio::fs::write(&resolved, content.as_bytes())
+    let bytes = content.into_bytes();
+    let target = resolved.clone();
+    tokio::task::spawn_blocking(move || write_nofollow_sync(&target, &bytes, false))
         .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?
         .map_err(|e| err_string(classify_io(&e)))?;
     Ok(())
 }
@@ -499,8 +584,11 @@ pub async fn edit_file(
             message: format!("edited content exceeds {MAX_WRITE_BYTES} bytes"),
         }));
     }
-    tokio::fs::write(&resolved, updated.as_bytes())
+    let bytes = updated.into_bytes();
+    let target = resolved.clone();
+    tokio::task::spawn_blocking(move || write_nofollow_sync(&target, &bytes, false))
         .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?
         .map_err(|e| err_string(classify_io(&e)))?;
     Ok(EditResult {
         replacements: if replace_all { count as u32 } else { 1 },
@@ -792,8 +880,11 @@ pub async fn multi_edit(path: String, edits: Vec<EditOp>) -> Result<MultiEditRes
         }));
     }
     let new_size = content.len() as u64;
-    tokio::fs::write(&resolved, content.as_bytes())
+    let bytes = content.into_bytes();
+    let target = resolved.clone();
+    tokio::task::spawn_blocking(move || write_nofollow_sync(&target, &bytes, false))
         .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?
         .map_err(|e| err_string(classify_io(&e)))?;
     Ok(MultiEditResult {
         edits_applied: edits.len() as u32,
@@ -826,6 +917,17 @@ mod tests {
         assert!(looks_binary(b"\x7fELF\x02"));
         assert!(looks_binary(b"some\0text"));
         assert!(!looks_binary(&[]));
+    }
+
+    #[test]
+    fn looks_binary_with_size_short_circuits_on_large_files() {
+        // Even pure-ASCII content is flagged binary once the file is
+        // materially larger than the per-call read cap — protects against
+        // slurping a multi-MiB log/minified bundle just to truncate.
+        let ascii = b"abcd";
+        assert!(!looks_binary_with_size(ascii, 1024));
+        assert!(!looks_binary_with_size(ascii, BINARY_SIZE_THRESHOLD));
+        assert!(looks_binary_with_size(ascii, BINARY_SIZE_THRESHOLD + 1));
     }
 
     #[test]

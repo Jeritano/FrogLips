@@ -23,6 +23,13 @@ pub const QUICK_HEIGHT: f64 = 120.0;
 /// Stable label for the quick prompt window. Single instance; reopen reuses it.
 pub const QUICK_LABEL: &str = "quick";
 
+/// Hard cap on the accumulated reply body. A hostile or buggy local server
+/// could stream unbounded bytes back; without a cap we'd grow `acc` until the
+/// process is OOM-killed. 8 MiB is far larger than any reasonable single-turn
+/// reply (typical replies are well under 32 KiB), but small enough that even
+/// a runaway stream lands inside resident memory.
+const QUICK_REPLY_MAX_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Serialize, Clone)]
 pub struct QuickPromptChunk {
     pub op_id: String,
@@ -235,6 +242,31 @@ async fn stream_mlx(
         let bytes = chunk.context("read chunk")?;
         let progress = parse_mlx_chunk(&mut buf, &String::from_utf8_lossy(&bytes));
         for delta in progress.deltas {
+            // Body cap: if appending this delta would exceed the per-reply
+            // ceiling, append what fits and bail out — defends against a
+            // hostile local server replying with unbounded bytes.
+            if acc.len() + delta.len() > QUICK_REPLY_MAX_BYTES {
+                let remaining = QUICK_REPLY_MAX_BYTES.saturating_sub(acc.len());
+                // Respect char boundaries so we don't push half a codepoint.
+                let mut take = delta.len().min(remaining);
+                while take > 0 && !delta.is_char_boundary(take) {
+                    take -= 1;
+                }
+                let truncated_delta = delta[..take].to_string();
+                if !truncated_delta.is_empty() {
+                    acc.push_str(&truncated_delta);
+                    let _ = app.emit(
+                        &format!("quick-prompt-response:{op_id}"),
+                        QuickPromptChunk {
+                            op_id: op_id.clone(),
+                            delta: truncated_delta,
+                            done: false,
+                            error: None,
+                        },
+                    );
+                }
+                return Ok(acc);
+            }
             acc.push_str(&delta);
             let _ = app.emit(
                 &format!("quick-prompt-response:{op_id}"),
@@ -296,6 +328,28 @@ async fn stream_ollama(
         let bytes = chunk.context("read ollama chunk")?;
         let progress = parse_ollama_chunk(&mut buf, &String::from_utf8_lossy(&bytes));
         for delta in progress.deltas {
+            // Same body cap as the MLX path — bail at QUICK_REPLY_MAX_BYTES.
+            if acc.len() + delta.len() > QUICK_REPLY_MAX_BYTES {
+                let remaining = QUICK_REPLY_MAX_BYTES.saturating_sub(acc.len());
+                let mut take = delta.len().min(remaining);
+                while take > 0 && !delta.is_char_boundary(take) {
+                    take -= 1;
+                }
+                let truncated_delta = delta[..take].to_string();
+                if !truncated_delta.is_empty() {
+                    acc.push_str(&truncated_delta);
+                    let _ = app.emit(
+                        &format!("quick-prompt-response:{op_id}"),
+                        QuickPromptChunk {
+                            op_id: op_id.clone(),
+                            delta: truncated_delta,
+                            done: false,
+                            error: None,
+                        },
+                    );
+                }
+                return Ok(acc);
+            }
             acc.push_str(&delta);
             let _ = app.emit(
                 &format!("quick-prompt-response:{op_id}"),

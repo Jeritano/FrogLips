@@ -93,15 +93,101 @@ fn redact_secrets(value: &mut serde_json::Value) {
     }
 }
 
+/// Reject obviously dangerous destinations for a write performed by a
+/// privileged backend command. The diagnostics bundle path comes from a save
+/// dialog, but a hostile or buggy caller could pass anything — so we apply
+/// the same shape constraints as the agent's `validate_for_write`: absolute
+/// path, no `..` traversal, and not pointing into the system/credential
+/// directories the agent fs layer denylists.
+fn validate_diagnostics_dest(dest: &str) -> Result<std::path::PathBuf, String> {
+    if dest.trim().is_empty() {
+        return Err("destination path must not be empty".into());
+    }
+    let raw = std::path::PathBuf::from(dest);
+    // Absolute-only: relative paths resolve against the app's cwd, which the
+    // caller cannot reliably reason about (and can land in app-bundle dirs).
+    if !raw.is_absolute() {
+        return Err("destination path must be absolute".into());
+    }
+    // Explicit `..` segment blocked outright — same as `resolve_path` in the
+    // agent fs layer. Prevents `/Users/joe/Downloads/../../../etc/foo` shapes.
+    if raw
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("destination path may not contain '..'".into());
+    }
+    // Canonicalize the parent (which must exist for the write to succeed
+    // anyway) so symlinked dirs are resolved before the denylist check.
+    let parent = raw
+        .parent()
+        .ok_or_else(|| "destination path has no parent".to_string())?;
+    let canon_parent = std::fs::canonicalize(parent)
+        .map_err(|e| format!("destination parent not accessible: {e}"))?;
+    let file_name = raw
+        .file_name()
+        .ok_or_else(|| "destination path has no file name".to_string())?;
+    let resolved = canon_parent.join(file_name);
+
+    // Reject writes through an existing symlink leaf — would let the resolved
+    // path escape to a denylisted target.
+    if let Ok(md) = std::fs::symlink_metadata(&resolved) {
+        if md.file_type().is_symlink() {
+            return Err("refusing to write through a symlink".into());
+        }
+    }
+
+    // Denylist mirrored from `agent::fs::is_protected_for_write`: system dirs,
+    // sudo state, keychains, TCC db, plus per-user credential locations.
+    let mut deny: Vec<std::path::PathBuf> = [
+        "/System",
+        "/private/etc",
+        "/etc",
+        "/private/var/db/sudo",
+        "/var/db/sudo",
+        "/Library/Keychains",
+        "/Library/Application Support/com.apple.TCC",
+        "/Applications/Froglips.app",
+    ]
+    .iter()
+    .map(std::path::PathBuf::from)
+    .collect();
+    if let Some(home) = dirs::home_dir() {
+        for sub in [
+            ".ssh",
+            ".aws",
+            ".config/gh",
+            ".gnupg",
+            "Library/Keychains",
+            "Library/Cookies",
+            "Library/Application Support/com.apple.TCC",
+            "Library/Mail",
+            "Library/Messages",
+        ] {
+            deny.push(home.join(sub));
+        }
+    }
+    if deny.iter().any(|pre| resolved.starts_with(pre)) {
+        return Err("destination path is in a protected directory".into());
+    }
+    // Block credential-style basenames so a stray click can't overwrite
+    // ~/.env or ~/credentials.json with a diag bundle (would still be inside
+    // home and outside the explicit denylist above).
+    if let Some(name) = resolved.file_name().and_then(|n| n.to_str()) {
+        if name.starts_with(".env") || name == "credentials" || name == "credentials.json" {
+            return Err("destination filename is reserved".into());
+        }
+    }
+    Ok(resolved)
+}
+
 /// Write a single diagnostics bundle to `dest_path`: a concatenated text file
 /// containing the rolling app.log tail, the crash.log, the app version, the
 /// host OS, and settings.json with secret-like values redacted. Turns "the app
 /// misbehaved" into a single actionable artifact the user can share.
 #[tauri::command]
 pub fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> {
-    if dest_path.trim().is_empty() {
-        return Err("destination path must not be empty".into());
-    }
+    let dest_resolved = validate_diagnostics_dest(&dest_path)?;
 
     let app_log = crate::logging::read_tail(256 * 1024);
     let crash_log = crate::crash_log::read_log();
@@ -145,7 +231,7 @@ pub fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> {
         settings = settings_section,
     );
 
-    std::fs::write(&dest_path, bundle).map_err(|e| format!("failed to write bundle: {e}"))
+    std::fs::write(&dest_resolved, bundle).map_err(|e| format!("failed to write bundle: {e}"))
 }
 
 /* ── Settings ────────────────────────────────────────────────────────────── */

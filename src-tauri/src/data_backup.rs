@@ -83,6 +83,11 @@ pub fn backup_database(dest: &Path) -> Result<()> {
         bail!("backup destination must differ from the live database");
     }
     let src = Connection::open(&src_path).context("open source db for backup")?;
+    // Wait up to 5s if the source DB is currently locked by a writer rather
+    // than failing immediately with SQLITE_BUSY. Backups run concurrently with
+    // normal app traffic, so a transient lock is the common case.
+    src.busy_timeout(std::time::Duration::from_millis(5000))
+        .context("set source busy_timeout")?;
     let mut dst = Connection::open(dest)
         .with_context(|| format!("open backup destination {}", dest.display()))?;
     let backup =
@@ -251,6 +256,17 @@ pub fn apply_import(conn: &mut Connection, doc: &ExportDoc) -> Result<ImportSumm
     }
 
     for mem in &doc.memories {
+        // Match the same allowlists `memory::add_memory` enforces — refuse to
+        // import a memory row whose `scope` or `status` would be rejected by
+        // the live insert path. Without this, an attacker-crafted export
+        // could smuggle unknown enum values straight into the DB and trip
+        // every downstream matches!(...) check that assumes valid input.
+        if !matches!(mem.scope.as_str(), "global" | "project" | "conversation") {
+            bail!("import rejected: invalid memory scope {:?}", mem.scope);
+        }
+        if !matches!(mem.status.as_str(), "active" | "pending" | "archived") {
+            bail!("import rejected: invalid memory status {:?}", mem.status);
+        }
         // Remap the source conversation id; drop the link if the referenced
         // conversation isn't part of this import (can't fabricate a target).
         let conv_id = match mem.conversation_id {
@@ -433,6 +449,56 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("malformed"), "got: {err}");
+    }
+
+    #[test]
+    fn import_rejects_unknown_memory_scope() {
+        let mut dst = seed_db();
+        let doc = ExportDoc {
+            schema_version: SCHEMA_VERSION,
+            app_version: "x".into(),
+            exported_at: 0,
+            conversations: vec![],
+            memories: vec![ExportMemory {
+                content: "m".into(),
+                conversation_id: None,
+                tags: String::new(),
+                status: "active".into(),
+                created_at: 0,
+                scope: "evil".into(),
+                project_root: None,
+            }],
+        };
+        let err = match apply_import(&mut dst, &doc) {
+            Ok(_) => panic!("expected rejection"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("invalid memory scope"), "got: {err}");
+    }
+
+    #[test]
+    fn import_rejects_unknown_memory_status() {
+        let mut dst = seed_db();
+        let doc = ExportDoc {
+            schema_version: SCHEMA_VERSION,
+            app_version: "x".into(),
+            exported_at: 0,
+            conversations: vec![],
+            memories: vec![ExportMemory {
+                content: "m".into(),
+                conversation_id: None,
+                tags: String::new(),
+                status: "bogus".into(),
+                created_at: 0,
+                scope: "global".into(),
+                project_root: None,
+            }],
+        };
+        let err = match apply_import(&mut dst, &doc) {
+            Ok(_) => panic!("expected rejection"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("invalid memory status"), "got: {err}");
     }
 
     #[test]

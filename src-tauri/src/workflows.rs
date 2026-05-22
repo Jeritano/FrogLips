@@ -272,12 +272,24 @@ pub fn save_workflow(id: Option<i64>, name: &str, graph_json: &str) -> Result<i6
 }
 
 pub fn delete_workflow(id: i64) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
+    let mut conn = get_db()?;
+    // All three deletes go in a single transaction so a crash mid-delete can
+    // never leave orphan run rows or fire-tracking rows pointing at a
+    // workflow that no longer exists. The `workflow_card_fired` rows are
+    // keyed `"<workflow_id>:<card_id>"`, so we delete by `card_key LIKE
+    // 'id:%'`. The escape clause is here as belt-and-suspenders even though
+    // numeric ids cannot contain `%`/`_`/`\`.
+    let tx = conn.transaction()?;
+    tx.execute(
         "DELETE FROM workflow_runs WHERE workflow_id = ?1",
         params![id],
     )?;
-    conn.execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
+    tx.execute(
+        "DELETE FROM workflow_card_fired WHERE card_key LIKE ?1 ESCAPE '\\'",
+        params![format!("{id}:%")],
+    )?;
+    tx.execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -385,6 +397,12 @@ pub fn schedule_is_due(sched: Schedule, now: i64, last_fired: Option<i64>) -> bo
             None => false,
         },
         Schedule::Daily(minute_of_day) => {
+            // NOTE: the "daily HH:MM" schedule string is interpreted as UTC.
+            // `now.rem_euclid(86_400)` gives the seconds-since-the-UTC-midnight
+            // because unix time itself is UTC-based; `day_start` is therefore
+            // today's 00:00 UTC. The frontend currently shows the same HH:MM
+            // verbatim — if/when local-time UX lands, convert at the IPC edge
+            // so this comparison stays in UTC.
             let day_start = now - now.rem_euclid(86_400);
             let target = day_start + minute_of_day * 60;
             if now < target {
@@ -487,14 +505,21 @@ fn scheduler_scan(
 /// Start the app-lifetime workflow scheduler. Spawns a tokio task that scans
 /// every ~30s for due cards and emits `workflow-trigger`. Runs only while the
 /// app is open — the per-card timer state lives in memory and is not persisted.
-pub fn start_scheduler(app: tauri::AppHandle) {
+///
+/// `shutdown` is the app-level `Notify` flipped on `RunEvent::Exit`; the loop
+/// `select!`s on it so the task exits promptly on app exit instead of being
+/// torn down mid-sleep with the runtime.
+pub fn start_scheduler(app: tauri::AppHandle, shutdown: std::sync::Arc<tokio::sync::Notify>) {
     tauri::async_runtime::spawn(async move {
         // Seed from the persisted table so daily/interval cards keep their
         // last-fired state across app restarts.
         let mut last_fired: std::collections::HashMap<String, i64> =
             load_card_last_fired().unwrap_or_default();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(SCAN_INTERVAL_SECS)).await;
+            tokio::select! {
+                _ = shutdown.notified() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(SCAN_INTERVAL_SECS)) => {}
+            }
             scheduler_scan(&app, &mut last_fired, now_unix());
         }
     });

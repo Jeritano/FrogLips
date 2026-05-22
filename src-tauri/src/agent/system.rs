@@ -172,35 +172,34 @@ pub async fn open_app(name: String) -> Result<(), String> {
 }
 
 pub async fn show_notification(title: String, body: String) -> Result<(), String> {
-    // Both fields go into osascript via a `-e` arg. Three rules to keep the
-    // model from escaping the string literal:
-    //  - swap " for ' (closing the title/body string literal early)
-    //  - swap \ for / (backslash escape sequences in AppleScript strings)
-    //  - swap any C0 control character (newline, CR, tab, etc.) for a single
-    //    space. A literal newline inside a quoted string truncates the
-    //    AppleScript line and lets the model append additional statements.
-    fn sanitize(s: &str) -> String {
-        s.chars()
-            .map(|c| match c {
-                '"' => '\'',
-                '\\' => '/',
-                c if (c as u32) < 0x20 || c as u32 == 0x7F => ' ',
-                c => c,
-            })
-            .collect()
-    }
-    let safe_title = sanitize(&title);
-    let safe_body = sanitize(&body);
-    if safe_title.len() + safe_body.len() > 4096 {
+    // Parameterize via environment variables rather than interpolating user
+    // input into the AppleScript source. AppleScript's `system attribute`
+    // reads an env var verbatim — quotes, newlines, unicode look-alikes, and
+    // backslashes inside the value are inert because they never touch the
+    // script's tokenizer. The script source itself is a constant string,
+    // so there is no way for the model to break out of the string literal
+    // (the old approach swapped `"` → `'`, but a unicode close-quote, NEL,
+    // or `\n` could still terminate or extend the line).
+    if title.len() > 2048 || body.len() > 2048 {
         return Err(err_string(ToolError::invalid("notification text too long")));
     }
-    let script = format!(
-        r#"display notification "{}" with title "{}""#,
-        safe_body, safe_title
-    );
+    // Reject NULs outright — env vars can't contain them and the spawn
+    // would error in a less-clear way otherwise.
+    if title.contains('\0') || body.contains('\0') {
+        return Err(err_string(ToolError::invalid(
+            "notification text may not contain NUL",
+        )));
+    }
+    const SCRIPT: &str = r#"
+        set t to (system attribute "FROGLIPS_NOTIF_TITLE")
+        set b to (system attribute "FROGLIPS_NOTIF_BODY")
+        display notification b with title t
+    "#;
     let status = tokio::process::Command::new("osascript")
         .arg("-e")
-        .arg(&script)
+        .arg(SCRIPT)
+        .env("FROGLIPS_NOTIF_TITLE", &title)
+        .env("FROGLIPS_NOTIF_BODY", &body)
         .kill_on_drop(true)
         .status()
         .await

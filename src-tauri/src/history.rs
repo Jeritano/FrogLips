@@ -37,7 +37,14 @@ impl ManageConnection for SqliteManager {
     }
 }
 
-static DB: Lazy<Pool<SqliteManager>> = Lazy::new(|| build_pool().expect("build db pool"));
+/// Lazy-built connection pool. Wrapped in a `Result` so a failure to build the
+/// pool (disk full, permission denied on `~/.local-llm-app`, corrupt DB that
+/// quarantine couldn't move aside, etc.) is *captured* rather than panicking
+/// the whole app at first DB touch. `get_db()` surfaces the failure as a
+/// regular `Err` so the UI can show "DB unavailable" instead of crashing, and
+/// `db_unavailable_notice()` exposes the message for an IPC banner.
+static DB: Lazy<Result<Pool<SqliteManager>, String>> =
+    Lazy::new(|| build_pool().map_err(|e| e.to_string()));
 
 /// Set when a corrupt DB was detected and quarantined on startup. Holds the
 /// path the corrupt file was renamed to so a command can surface it.
@@ -47,6 +54,24 @@ static DB_RECOVERY: RwLock<Option<String>> = RwLock::new(None);
 /// corrupt file. `None` means the DB opened cleanly.
 pub fn recovery_notice() -> Option<String> {
     DB_RECOVERY.read().clone()
+}
+
+/// If the DB pool failed to build (disk full, permission denied, etc.),
+/// returns the underlying error string for surfacing in the UI. `None` means
+/// the pool is healthy. Safe to call from any IPC command — never panics.
+///
+/// Intended caller: an IPC command (e.g. `db_unavailable_notice`) that the
+/// frontend probes on app boot to show a "DB unavailable" banner instead of
+/// every history-touching command failing with a generic error. Marked
+/// `allow(dead_code)` so the structured-error mechanism lands even before
+/// the command wrapper is wired (the panic-on-startup behaviour it replaces
+/// is the higher-severity risk).
+#[allow(dead_code)]
+pub fn db_unavailable_notice() -> Option<String> {
+    match &*DB {
+        Ok(_) => None,
+        Err(e) => Some(e.clone()),
+    }
 }
 
 pub(crate) fn db_path() -> Result<PathBuf> {
@@ -423,14 +448,23 @@ fn build_pool() -> Result<Pool<SqliteManager>> {
         setup_schema(&conn)?;
     }
     let manager = SqliteManager { path };
+    // Pool sized for concurrent IPC handlers + background workers (scheduler,
+    // restart-watcher, agent loop, MCP, RAG). The previous cap of 4 was
+    // routinely exhausted under realistic concurrency; 16 keeps short-lived
+    // reads from queueing behind a slow write while still bounding open fds.
     Pool::builder()
-        .max_size(4)
+        .max_size(16)
         .build(manager)
         .map_err(|e| anyhow::anyhow!("pool build failed: {e}"))
 }
 
 pub(crate) fn get_db() -> Result<PooledConnection<SqliteManager>> {
-    DB.get().context("db pool exhausted")
+    match &*DB {
+        Ok(pool) => pool.get().context("db pool exhausted"),
+        // Pool build failed at startup — surface the captured reason rather
+        // than panicking. Callers map this into IPC errors / UI banners.
+        Err(e) => Err(anyhow::anyhow!("db unavailable: {e}")),
+    }
 }
 
 pub(crate) fn now_unix() -> i64 {

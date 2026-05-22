@@ -232,16 +232,25 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
     let resp =
         send_following_redirects(url.clone(), timeout, |client, u| client.get(u.clone())).await?;
     let status = resp.status().as_u16();
+    // Trust the server's Content-Type for HTML detection rather than peeking
+    // at the body. Substring sniffing tripped on any page that merely
+    // mentioned `<html>` in a code block, fed legitimate HTML through unchanged
+    // when the body started with whitespace, and treated charset-suffixed
+    // content-types inconsistently. The header is also already authoritative
+    // for the http_request path — use the same signal here.
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let looks_html =
+        content_type.contains("text/html") || content_type.contains("application/xhtml");
 
     let (bytes, total, truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;
     let cap = bytes.len();
     let body_text = String::from_utf8_lossy(&bytes[..cap]).into_owned();
 
-    // Strip HTML if it looks like HTML — agent gets clean text.
-    let looks_html = body_text.contains("<html")
-        || body_text.contains("<HTML")
-        || body_text.contains("<body")
-        || body_text.contains("<!DOCTYPE");
     let content = if looks_html {
         html2text::from_read(body_text.as_bytes(), 100).unwrap_or(body_text)
     } else {
@@ -448,18 +457,34 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
 
     // Validate headers up front so a bad header fails before any network I/O.
     let headers = input.headers.unwrap_or_default();
+    // Headers we refuse to let an agent set. Two categories:
+    //   1. Authentication/cookies — the model should never be smuggling
+    //      credentials of its own into outbound requests on the user's
+    //      behalf, and any value here came from somewhere the agent
+    //      shouldn't be reaching (the user, prior tool output, prompt).
+    //   2. Forwarded-for/host overrides — front-end CDNs and reverse
+    //      proxies trust these for routing/origin decisions; allowing the
+    //      agent to set them lets it impersonate other clients or escape
+    //      our SSRF guard at the next hop.
+    const DENY_HEADERS: &[&str] = &[
+        "host",
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-real-ip",
+    ];
     for (k, v) in &headers {
         if k.is_empty() || k.len() > 256 || v.len() > 4096 {
             return Err(err_string(ToolError::invalid(
                 "header key/value out of range",
             )));
         }
-        // Block headers that could enable bypass of our SSRF guard (Host
-        // override on a CDN, for example).
-        if k.eq_ignore_ascii_case("host") {
-            return Err(err_string(ToolError::invalid(
-                "Host header override not allowed",
-            )));
+        if DENY_HEADERS.iter().any(|d| k.eq_ignore_ascii_case(d)) {
+            return Err(err_string(ToolError::invalid(format!(
+                "header '{k}' is not allowed"
+            ))));
         }
     }
     let body = match input.body {

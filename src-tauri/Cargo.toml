@@ -16,6 +16,13 @@ tauri-build = { version = "2", features = [] }
 [dev-dependencies]
 # `test` feature exposes `tauri::test::mock_app` for unit-testing the
 # WebviewWindow plumbing in lib.rs (multi_window_tests).
+#
+# Verified safe: Cargo unifies features *per-target*, so dev-dep feature flags
+# (here, "test") do NOT propagate into release/runtime builds.
+# `cargo tree --edges normal -e features` shows zero occurrences of
+# `tauri feature "test"` outside the dev-deps subtree, confirming the
+# tray-icon-only feature set is what ships. No `[features] test-utils = …`
+# refactor needed; this comment is the documentation requested by the audit.
 tauri = { version = "2", features = ["tray-icon", "test"] }
 
 [dependencies]

@@ -29,6 +29,21 @@ use tauri::{
     tray::TrayIconBuilder,
     Manager,
 };
+use tokio::sync::Notify;
+
+/// App-lifetime shutdown signal. Background loops (restart-watcher, workflow
+/// scheduler, MCP stderr drainers, …) `.notified()` against this so they exit
+/// cleanly on `RunEvent::Exit` instead of being abruptly torn down with the
+/// runtime — which used to leak file descriptors and occasionally hang on
+/// pending awaits during teardown.
+static SHUTDOWN: once_cell::sync::Lazy<Arc<Notify>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Notify::new()));
+
+/// Shared accessor so other modules (workflows, mcp) can subscribe without
+/// holding a back-reference to this crate's internals.
+pub fn shutdown_signal() -> Arc<Notify> {
+    SHUTDOWN.clone()
+}
 
 use backend_process::ServerState;
 use commands::{NativeHandle, ServerHandle};
@@ -143,10 +158,13 @@ pub fn run() {
                 diagnostics::set_app_handle(app.handle().clone());
 
                 // App-lifetime workflow scheduler: scans workflows every ~30s
-                // and emits `workflow-trigger` for due agent cards.
-                workflows::start_scheduler(app.handle().clone());
+                // and emits `workflow-trigger` for due agent cards. Subscribes
+                // to the shared shutdown Notify so it exits cleanly on app
+                // exit instead of being torn down mid-sleep.
+                workflows::start_scheduler(app.handle().clone(), shutdown_signal());
 
                 let s = state.clone();
+                let shutdown = shutdown_signal();
                 tauri::async_runtime::spawn(async move {
                     use backend_process::{
                         restart_backoff_secs, should_attempt_restart, WatchOutcome,
@@ -157,7 +175,13 @@ pub fn run() {
                     // budget rather than inheriting an exhausted one.
                     let mut attempts: u32 = 0;
                     loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        // Race the sleep against the shutdown notify so the
+                        // watcher exits promptly on app exit instead of
+                        // sleeping for up to its full poll interval.
+                        tokio::select! {
+                            _ = shutdown.notified() => break,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+                        }
                         match s.poll().await {
                             WatchOutcome::Idle => {
                                 attempts = 0;
@@ -194,7 +218,10 @@ pub fn run() {
                                         "backoff_secs": backoff,
                                     }),
                                 );
-                                tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+                                tokio::select! {
+                                    _ = shutdown.notified() => break,
+                                    _ = tokio::time::sleep(std::time::Duration::from_secs(backoff)) => {}
+                                }
                                 if let Err(e) = s.start(model.clone(), backend.clone()).await {
                                     diagnostics::error_with(
                                         "backend",
@@ -398,6 +425,17 @@ pub fn run() {
     // kill_on_drop on the child handles teardown; this is belt-and-suspenders
     let cleanup = server_state.clone();
     app.run(move |_app, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+        ) {
+            // Wake every subscribed background loop (restart watcher, workflow
+            // scheduler, MCP stderr drainers) so they exit before teardown
+            // proper begins. `notify_waiters()` wakes all current waiters;
+            // there is no need to retain pending notifications because all
+            // subscribers loop on `.notified()`.
+            SHUTDOWN.notify_waiters();
+        }
         if matches!(event, tauri::RunEvent::Exit) {
             let s = cleanup.clone();
             tauri::async_runtime::block_on(async move {

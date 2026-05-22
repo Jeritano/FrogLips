@@ -260,22 +260,40 @@ pub async fn start_server(
         last_error: RwLock::new(None),
     });
 
-    // Stderr drain — keep the last STDERR_CAP bytes for diagnostics.
+    // Stderr drain — keep the last STDERR_CAP bytes for diagnostics. The task
+    // is tied to the shared shutdown Notify so it exits cleanly on app exit
+    // even if the child has not yet been killed (otherwise it would block on
+    // `next_line().await` after the registry entry is dropped and only
+    // unblock when the kernel finally tears down the pipe).
     {
         let buf = stderr_buf.clone();
+        let shutdown = crate::shutdown_signal();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let mut g = buf.lock().await;
-                g.push_str(&line);
-                g.push('\n');
-                if g.len() > STDERR_CAP {
-                    let cut = g.len() - STDERR_CAP;
-                    *g = g[cut..].to_string();
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => break,
+                    line = reader.next_line() => {
+                        match line {
+                            Ok(Some(line)) => {
+                                let mut g = buf.lock().await;
+                                g.push_str(&line);
+                                g.push('\n');
+                                if g.len() > STDERR_CAP {
+                                    let cut = g.len() - STDERR_CAP;
+                                    *g = g[cut..].to_string();
+                                }
+                                // Do NOT echo raw stderr content to host stderr
+                                // — it can leak secrets. The full text stays in
+                                // the capped in-app diagnostics buffer
+                                // (server_stderr) only.
+                            }
+                            // EOF or read error — child closed its stderr, no
+                            // point in spinning. Drop out and let the task end.
+                            _ => break,
+                        }
+                    }
                 }
-                // Do NOT echo raw stderr content to host stderr — it can leak
-                // secrets. The full text stays in the capped in-app diagnostics
-                // buffer (server_stderr) only.
             }
         });
     }
