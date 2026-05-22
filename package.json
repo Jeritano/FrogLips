@@ -3,6 +3,8 @@
   "private": true,
   "version": "0.11.0",
   "type": "module",
+  "license": "UNLICENSED",
+  "author": "Joseph D Eriano",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

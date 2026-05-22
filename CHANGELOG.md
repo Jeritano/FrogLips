@@ -4,6 +4,9 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+### Licensing
+- The project is now **proprietary** — Copyright (c) 2026 Joseph D Eriano, All Rights Reserved. The previous MIT `LICENSE` has been replaced with an all-rights-reserved notice; `package.json` is `UNLICENSED`, the Rust crate is `publish = false` with `license-file`. Bundled third-party dependencies keep their own licenses.
+
 ### Positioning
 - Froglips is now framed as **the local-LLM power workstation**, built on three pillars — **Agent** (tools, MCP, workspace sandbox, dry-run), **Knowledge** (memory + RAG + searchable history), and **Models** (backend/model fleet management, parameters). Plain chat is the substrate, not the headline.
 

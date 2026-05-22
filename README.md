@@ -114,4 +114,9 @@ Then upload `src-tauri/target/release/bundle/macos/Froglips.app.tar.gz{,.sig}` a
 
 ## License
 
-Personal project. Use at your own risk.
+Copyright (c) 2026 Joseph D Eriano. All Rights Reserved.
+
+Proprietary software — **not** open source. No permission is granted to use,
+copy, modify, or distribute it without the express written permission of the
+copyright holder. See [LICENSE](LICENSE) for the full terms. Bundled
+third-party dependencies remain under their own respective licenses.
