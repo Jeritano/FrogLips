@@ -44,6 +44,15 @@ export function useModalA11y(opts: {
   // Snapshot the opener so we can restore focus on close. Captured fresh
   // every time the modal opens (a single hook instance can be re-opened).
   const openerRef = useRef<HTMLElement | null>(null);
+  // Hold `onClose` in a ref so the main effect does NOT depend on it.
+  // Callers routinely pass an inline arrow that changes identity on every
+  // parent re-render; if the effect depended on `onClose` it would tear
+  // down + re-run on each re-render — restoring focus to the opener and
+  // re-autofocusing, which dismisses any open native <select> popup.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -63,7 +72,7 @@ export function useModalA11y(opts: {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab") return;
@@ -102,5 +111,5 @@ export function useModalA11y(opts: {
         }
       }
     };
-  }, [open, onClose, containerRef, autoFocus]);
+  }, [open, containerRef, autoFocus]);
 }
