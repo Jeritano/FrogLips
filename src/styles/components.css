@@ -340,24 +340,11 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Backdrop fade for every modal overlay (class name ends in -overlay). */
-[class$="-overlay"] {
-  animation: fadeIn 160ms ease-out;
-}
-/* Scale-in for the modal box itself (class name ends in -modal). */
-[class$="-modal"] {
-  animation: scaleIn 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-/* Subtle message-row enter. */
-.message {
-  animation: fadeIn 220ms ease-out;
-}
-
-/* Conversation rows ease in when the sidebar list changes. */
-.conv-row-anim {
-  animation: convRowIn 160ms ease-out;
-}
+/* NOTE: blanket entrance animations on [class$="-overlay"] / [class$="-modal"]
+   and on .message were removed — they re-ran on React re-renders and
+   dismissed native <select> popups (the model-browser Source dropdown)
+   mid-interaction. Motion polish must never disrupt interaction; if
+   re-introduced, scope it to mount-only and exclude interactive surfaces. */
 
 /* Honour the OS "reduce motion" setting: all non-essential animation and
  * transition becomes instant. Scoped broadly but intentionally — none of
