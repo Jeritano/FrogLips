@@ -448,6 +448,66 @@ body {
 }
 .memories-close:hover { color: var(--text); }
 
+/* ── About You profile modal ── */
+.profile-intro {
+  margin: 0 4px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.profile-loading {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.profile-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0 4px 4px;
+}
+.profile-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.profile-field input,
+.profile-field textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 9px;
+  resize: vertical;
+}
+.profile-field input:focus,
+.profile-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.profile-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.profile-save {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 /* ── Sidebar ── */
 
 .sidebar {

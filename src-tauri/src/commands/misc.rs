@@ -165,7 +165,13 @@ const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     "custom_backends",
     "mcp_servers",
     "setup_complete",
+    "user_profile",
 ];
+
+/// Per-field byte caps for the "About You" profile. Keeps a hostile or
+/// runaway IPC call from injecting an unbounded blob into every system prompt.
+const PROFILE_SHORT_MAX: usize = 200;
+const PROFILE_LONG_MAX: usize = 2048;
 
 /// Validate a `settings_set` patch before it is merged + persisted. Rejects
 /// unknown top-level keys, bounds `mcp_servers` entries (name shape, args/env
@@ -230,6 +236,44 @@ fn validate_settings_patch(patch: &serde_json::Map<String, serde_json::Value>) -
                             Some(_) => return Err(format!("mcp_servers[{i}] env value too large")),
                             None => return Err(format!("mcp_servers[{i}] env values must be strings")),
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(up) = patch.get("user_profile") {
+        if !up.is_null() {
+            let o = up
+                .as_object()
+                .ok_or("user_profile must be an object")?;
+            for k in o.keys() {
+                if !["enabled", "name", "occupation", "location", "about", "response_style"]
+                    .contains(&k.as_str())
+                {
+                    return Err(format!("user_profile: unknown field '{k}'"));
+                }
+            }
+            if let Some(v) = o.get("enabled") {
+                if !v.is_null() && !v.is_boolean() {
+                    return Err("user_profile.enabled must be a boolean".into());
+                }
+            }
+            for (key, max) in [
+                ("name", PROFILE_SHORT_MAX),
+                ("occupation", PROFILE_SHORT_MAX),
+                ("location", PROFILE_SHORT_MAX),
+                ("about", PROFILE_LONG_MAX),
+                ("response_style", PROFILE_LONG_MAX),
+            ] {
+                if let Some(v) = o.get(key) {
+                    if v.is_null() {
+                        continue;
+                    }
+                    match v.as_str() {
+                        Some(s) if s.len() <= max => {}
+                        Some(_) => return Err(format!("user_profile.{key} exceeds {max} bytes")),
+                        None => return Err(format!("user_profile.{key} must be a string")),
                     }
                 }
             }

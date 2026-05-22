@@ -13,6 +13,7 @@ import {
   saveMemory,
 } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
+import { formatUserProfile } from "../lib/user-profile";
 import type { AgentSettings } from "./useAgentSettings";
 import { useEvent } from "./useEvent";
 
@@ -219,6 +220,27 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     const systemPreamble: Message[] = [
       { _tmpKey: tmpKey(), conversation_id: conv.id, role: "system", content: identityPrompt },
     ];
+    // "About You" profile — the user-authored identity block. Injected here so
+    // it reaches both plain chat and agent mode (both consume `historyForApi`).
+    // A failed settings read just omits the block; chat proceeds normally.
+    try {
+      const profileBlock = formatUserProfile((await api.settingsGet()).user_profile);
+      if (profileBlock) {
+        systemPreamble.push({
+          _tmpKey: tmpKey(),
+          conversation_id: conv.id,
+          role: "system",
+          content: profileBlock,
+        });
+      }
+    } catch (err) {
+      logDiag({
+        level: "warn",
+        source: "user-profile",
+        message: "settingsGet() failed — sending without the About You profile",
+        detail: err,
+      });
+    }
     // Per-conversation system prompt — prepended as its own system message so
     // it composes with (rather than replaces) the identity preamble. Unset =
     // no extra message, exactly as before.

@@ -4,8 +4,7 @@ version = "0.11.0"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["Joseph D Eriano"]
 edition = "2021"
-publish = false
-license-file = "../LICENSE"
+license = "MIT"
 
 [lib]
 name = "local_llm_app_lib"
