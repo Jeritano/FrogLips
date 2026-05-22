@@ -4,8 +4,27 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+### Positioning
+- Froglips is now framed as **the local-LLM power workstation**, built on three pillars — **Agent** (tools, MCP, workspace sandbox, dry-run), **Knowledge** (memory + RAG + searchable history), and **Models** (backend/model fleet management, parameters). Plain chat is the substrate, not the headline.
+
 ### Added
-- **Agent mode on the MLX backend** — agent mode previously ran only against Ollama. The agent loop now dispatches its tool-calling LLM call by backend: Ollama via NDJSON `/api/chat`, MLX via the OpenAI-compatible `/v1/chat/completions` tools API (parsing `tool_calls` from the streaming deltas). The Native backend has no tool-call support, so agent mode there fails up front with a clear error instead of silently falling through to plain streaming; the Agent toggle resets when the active backend can't support it.
+- **Agent mode on the Native backend** — `mistralrs-core` 0.8.1 exposes a real `tools`/`tool_choice` API and returns `tool_calls` in its stream, so the native chat command now accepts tool definitions and tool-role messages and the agent loop routes the native backend through a native agent-chat path. **Agent mode now works on all three backends** (Ollama, MLX, Native); it is no longer rejected on Native.
+- **Agent-loop context-window manager** — before each model call the message array is budgeted against the model's context size: oversized tool results are truncated in the sent copy and the oldest turns collapse into a synthetic summary, while the system prompt is always kept. Stops long agent runs from overflowing small-context models and evicting their own tool definitions.
+- **Per-conversation model parameters** — a `params` column plus commands and a params panel for temperature / top-p / max-tokens / system-prompt, threaded through all three backends, with a context-usage meter by the composer. Every field is independently nullable and falls back to the backend default.
+- **Conversation organization** — conversations can be pinned and tagged; message-content search replaces title-only search; pinned conversations sort first. Pin/tag affordances use the existing hover-button pattern (the locked sidebar layout is untouched).
+- **Conversation auto-titling** — new conversations are titled from the first user message (whitespace-collapsed, word-boundary-truncated) so the sidebar is navigable instead of a wall of "New chat".
+- **Data backup / export / import** — an online-backup command for the SQLite database, a versioned JSON export of conversations + messages + memory, and an additive import that remaps ids inside a transaction. Surfaced in the Diagnostics panel.
+- **Local crash logging** — a process-global panic hook appends timestamped panic records with backtraces to `~/.local-llm-app/crash.log` (size-capped, rotated). A `read_crash_log` command surfaces it in a refreshable Diagnostics-panel section. Purely on-disk, no network.
+- **Observability** — a rolling on-disk `app.log` via `tracing`, plus an export-diagnostics-bundle command (logs + crash log + redacted settings + versions) for actionable bug reports.
+- **DB corruption recovery** — startup runs `PRAGMA integrity_check` and quarantines a corrupt `db.sqlite` (renamed with a timestamp) so the app starts fresh instead of panicking into a bricked state.
+- **Numbered migration ladder** — ad-hoc per-column migrations are replaced by a numbered `user_version` ladder; each step is transactional and idempotent, and fresh and existing databases converge on the same schema.
+- **Model-server auto-restart** — a crashed MLX model server is auto-restarted with bounded retries and backoff; after the cap it gives up with a clear diagnostic. A user-initiated stop never triggers a restart.
+- **Empty-chat landing** — the blank chat surface is replaced with clickable example prompts; agent mode surfaces its active preset + workspace as chips and shows a one-time coach hint.
+- **Error states with retry** — backend/model start, library fetch, model download, and MCP connection failures now surface clear, recoverable inline errors with retry/restart affordances instead of failing silently.
+- **Undo for conversation delete** — deleting a conversation soft-deletes it with a 5-second undo toast that preserves the conversation and its messages.
+- **Cross-platform CI** — a job compile-checks the Rust crate on Linux and Windows on every PR, so platform-specific breaks surface before release-tag time.
+- **Release hardening** — `release.sh` smoke-tests the built app before installing, and `release.yml` publishes a `SHA256SUMS` file.
+- **Agent mode on the MLX backend** — agent mode previously ran only against Ollama. The agent loop now dispatches its tool-calling LLM call by backend: Ollama via NDJSON `/api/chat`, MLX via the OpenAI-compatible `/v1/chat/completions` tools API (parsing `tool_calls` from the streaming deltas).
 - **Edit-message** — the previously dead edit feature is now wired: edit and resend your last user prompt via the per-message Edit action.
 - **Sidebar collapse/expand toggle** — hide the conversation sidebar to give the chat full width.
 - **Native model load progress** — listeners surface download/load progress while a HuggingFace model loads on the Native backend.
@@ -17,6 +36,13 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 - Removed a dead `.sidebar-top > .new-chat` CSS rule and corrected several stale layout comments.
 - An explicitly chosen agent preset now owns its tool scope; the General preset's empty `allowedTools` means full access, not parent inheritance.
 - The agent system prompt now lists available MCP tools so the model knows they exist.
+- Chat autoscroll now pauses when the user scrolls up to read, and resumes when they return to the bottom.
+- The three backends now share one resolved per-backend chat config so agent behaviour is consistent across them (per-conversation params still override).
+- Memory modes are relabelled to plain language (Off / Suggest / Review / Auto) without changing stored enum values.
+- The duplicate model id is dropped from the header status text — status now reads backend + state only; voice dictation segments are space-joined and user-message bubbles use `pre-wrap` so original spacing survives.
+- Settings writes are now atomic (temp file + rename).
+- `ChatWindow` decomposed (~1300 → ~610 lines): the send pipeline moved into a `useChatSend` hook, the near-identical modals collapsed into one `ConfirmDialog`, and the agent toolbar, settings panel, and export menu extracted as components.
+- One shared polite `aria-live` region; entrance motion gated behind `prefers-reduced-motion`; an accessibility pass adding dialog roles, Escape-to-close, `role="alert"` error banners, and icon-button labels.
 
 ### Security
 - **API keys moved to the macOS Keychain** — custom-backend API keys are stored in the Keychain instead of plaintext `settings.json`, with a one-time migration and redaction of keys from the settings blob returned to the webview.
@@ -28,6 +54,8 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 - MCP tool descriptions are sanitized before entering the system prompt; secrets are redacted from the tool audit log; raw MCP protocol lines are no longer logged.
 - Inline images restricted to `data:image` sources (blocking remote image beacons); markdown URI policy handed to DOMPurify.
 - Closed a symlink-write TOCTOU in agent fs; bounded child stdout reads, `kill_child`, and shutdown with timeouts.
+- **MCP tools are now risk-classified and always require confirmation** — a malicious MCP server can't slip an auto-approved tool call past the user.
+- A **consecutive-tool-error budget** stops the agent loop after repeated failures instead of burning every iteration.
 
 ### Fixed
 - **Panel gap** — the sidebar and main panels rendered flush to the window's top edge instead of floating with an even inset. Root cause: `.main { height: 100vh }` forced the CSS grid row to full window height, overflowing `.app`'s padded content box and pinning both panels to the top. Switched to grid-stretch sizing (`.main` → `min-height: 0`, `.app` → `height: 100%` + uniform `padding: 12px`); all four panel gaps are now an even 12px.

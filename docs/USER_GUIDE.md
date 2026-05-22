@@ -87,14 +87,14 @@ Removing frees up the actual disk space — there is no undo.
 
 ## 5. Memory system
 
-Froglips remembers things across conversations. There are four modes (set via the small ⓘ button next to the model name):
+Froglips remembers things across conversations. There are four modes (set via the small ⓘ button next to the model name). The labels are plain-language; the behavior is unchanged from earlier versions:
 
 | Mode | What it does |
 |---|---|
-| **off** | No memory recall. No fact extraction. |
-| **manual** | Recalls relevant memories for context. You add memories manually via the Memories panel. |
-| **queue** | Same as manual, plus automatically extracts facts after each turn into a **pending** queue. You review and approve. |
-| **direct** | Same as queue, but auto-approved into the active set. Most automatic. |
+| **Off** | No memory recall. No fact extraction. |
+| **Suggest** | Recalls relevant memories for context. You add memories manually via the Memories panel. |
+| **Review** | Same as Suggest, plus automatically extracts facts after each turn into a **pending** queue. You review and approve. |
+| **Auto** | Same as Review, but auto-approved into the active set. Most automatic. |
 
 ### How recall works
 
@@ -113,17 +113,15 @@ Secrets are auto-rejected: AWS/OpenAI/GitHub/Slack tokens, JWTs, bearer-prefixed
 Open from the sidebar's ⭐ button. Two tabs:
 
 - **Active** — memories that will be recalled
-- **Pending** — auto-extracted memories awaiting your approval (in `queue` mode)
+- **Pending** — auto-extracted memories awaiting your approval (in **Review** mode)
 
 You can delete, promote pending → active, or add manually.
 
 ## 6. Agent mode
 
-Toggle the **Agent** button next to the chat input. Agent mode works on the
-**Ollama** and **MLX** backends. The **Native** backend has no tool-call
-support — turning Agent on while a native model is loaded shows a clear error
-instead of silently behaving like a plain chat. The Agent toggle also resets
-automatically if you switch to a backend that can't support it.
+Toggle the **Agent** button next to the chat input. **Agent mode works on all
+three backends — Ollama, MLX, and Native.** (Earlier versions limited it to
+Ollama and MLX; the Native backend now supports tool-calling too.)
 
 The agent has direct access via these tools. Grouped:
 
@@ -201,6 +199,9 @@ Each preset comes with a system prompt tailored to its purpose. Switching preset
 - Path traversal (`..`), symlink escape, and reads/writes to `~/.ssh`, `~/.aws`, `~/Library/Keychains`, `.env*`, sudoers, browser profiles, `.netrc`, `gh`/`gcloud` config, etc. are blocked by the Rust side.
 - Content the agent reads from outside the model — files, PDFs, the clipboard, web pages, and git output — is scanned for prompt-injection before it reaches the model.
 - Subagents do not inherit your session-wide "approve all" choices; their shell and write calls each ask again.
+- **MCP server tools always require confirmation** — they can't be auto-approved, even with a session "approve all" active.
+- The agent loop manages the model's context window for you: on long runs it trims oversized tool results and summarizes the oldest turns so a small-context model doesn't overflow and forget its tools mid-task.
+- If tool calls keep failing turn after turn, the agent stops with a clear message rather than burning its whole iteration budget retrying.
 - Optional **workspace root** confines all filesystem operations to a chosen directory. Set in agent settings (⚙).
 
 ### Agent settings (⚙)
@@ -221,31 +222,83 @@ While the agent is running, a small pill shows `i<iters>·t<tools>·llm<ms>·too
 
 ⌖ Tools button in the agent toolbar opens a slide-out panel listing every tool call in the current conversation with name, ok/err status badge, collapsible args + JSON result. Useful for debugging agent runs.
 
-## 7. Conversation search + export
+## 7. Per-conversation model parameters
 
-- **Search**: search input at the top of the sidebar filters conversations by title substring.
+Each conversation can carry its own model-parameter overrides. Open the params
+panel (the sliders/⚙-style control by the composer) to set any of:
+
+- **Temperature**, **top-p**, **max tokens**
+- A conversation-specific **system prompt**
+
+Every field is optional — leave one blank and that conversation uses the
+backend default, exactly as before. Parameters apply on all three backends.
+
+A small **context-usage meter** sits by the composer, showing how much of the
+model's context window the current conversation is using so you can see when
+you're approaching the limit.
+
+## 8. Organizing conversations
+
+- **Auto-titling**: a new conversation is automatically titled from your first
+  message, so the sidebar reads as real titles instead of a wall of
+  "New chat".
+- **Pin**: pin important conversations from the row's hover controls; pinned
+  conversations sort to the top of the sidebar.
+- **Tags**: tag conversations from the same hover controls to group related
+  work.
+- **Search**: the sidebar search field now searches **message content**, not
+  just titles — so you can find a conversation by something said inside it.
+- **Undo delete**: deleting a conversation shows a 5-second undo toast. Click
+  **Undo** and the conversation and all its messages come back; ignore it and
+  the delete finalizes.
+
+## 9. Conversation export + per-message actions
+
 - **Export**: ⤓ Export button in the agent toolbar saves the current conversation as Markdown (timestamps, model tags, tool calls + results included).
 - **Per-message actions**: hover any message — Copy (clipboard), Regenerate (assistant only, deletes the prior pair and re-asks), Edit (user only — drafts your last prompt back into the input so you can change it and resend).
 
-## 8. Themes + keyboard shortcuts
+## 10. Themes + keyboard shortcuts
 
 - ☀/☾ in sidebar toggles **light/dark theme**. Persisted across restarts.
 - **Sidebar collapse**: a collapse/expand toggle hides the conversation sidebar to give the chat full width. State is remembered.
 - **Markdown rendering**: assistant + user messages render Markdown with code-block syntax highlighting for 20+ languages.
 - **Citation chips**: when the agent references a workspace file, the chip is clickable — Froglips confirms the resolved path and opens it. Opens are confined to the workspace root; absolute or traversal paths are rejected.
+- **Scroll behavior**: the chat sticks to the bottom while a reply streams, but if you scroll up to read, autoscroll pauses so you aren't yanked back down — it resumes when you return to the bottom.
+- **Empty-chat landing**: a brand-new chat shows clickable example prompts instead of a blank surface; click one to drop it into the composer.
+- **Reduced motion**: entrance animations are disabled when your system "reduce motion" setting is on.
 - Cmd+N — new chat
 - Cmd+L — open model library
 - Cmd+K — focus model picker
 
-## 9. Voice input
+## 11. Voice input
 
-Click the microphone icon next to the chat input. Uses Web Speech API. Speak, then click again to stop. Manual edits while listening are preserved — the transcript rebases around them.
+Click the microphone icon next to the chat input. Uses Web Speech API. Speak, then click again to stop. Manual edits while listening are preserved — the transcript rebases around them. Recognized speech segments are joined with proper spacing.
 
-## 10. File drag-drop
+## 12. File drag-drop
 
 Drag any text file into the chat input area. Its path gets attached. The model sees the path in context. Total attached bytes capped at 1 MiB per turn.
 
-## 11. Updates
+## 13. Diagnostics, backup, and crash logs
+
+Open the **Diagnostics** panel from the menu.
+
+- **Crash log**: if Froglips ever panics, the crash is recorded to
+  `~/.local-llm-app/crash.log`. The Diagnostics panel has a refreshable
+  crash-log section showing recorded panics (or an empty state when there are
+  none). Everything stays on disk — there is no telemetry.
+- **Diagnostics bundle**: export a single archive (logs + crash log + redacted
+  settings + version info) to attach to a bug report. API keys and other
+  secrets are redacted before it is written.
+- **Data backup**: take an online backup of the conversation database.
+- **Export / import**: export your conversations, messages, and memory to a
+  versioned JSON file, and import one back. Import is **additive** — it merges
+  into your existing data inside a transaction rather than overwriting it.
+
+Your data also self-protects: on startup Froglips integrity-checks the
+database and, if it finds corruption, quarantines the bad file and starts
+fresh instead of failing to launch.
+
+## 14. Updates
 
 Two ways to get a new version:
 
@@ -254,13 +307,10 @@ Two ways to get a new version:
 
 Updates are minisign-signed; the public key is embedded in the app. A tampered build will fail verification and refuse to install.
 
-## 12. Troubleshooting
+## 15. Troubleshooting
 
 **"Ollama: ollama not found on PATH"**
 The app prepends common bin dirs (`/usr/local/bin`, `/opt/homebrew/bin`, `~/.local/bin`, `~/.cargo/bin`, `~/.venvs/mlx/bin`) at startup. If Ollama lives elsewhere, symlink it into one of those.
-
-**Agent mode won't turn on / shows a backend error**
-Agent mode runs on the Ollama and MLX backends only. If a Native model is loaded, switch to an Ollama or MLX model to use tools.
 
 **Model picker shows nothing**
 Make sure Ollama is actually running (menu bar icon). For MLX, ensure `~/.venvs/mlx/bin/mlx_lm.server` exists.

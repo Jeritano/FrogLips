@@ -21,7 +21,15 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 npx tsc --noEmit
 ```
 
-CI runs the same three commands on every push.
+CI runs the same three commands on every push. A separate CI job also
+compile-checks the Rust crate on Linux and Windows on every PR, so
+platform-specific breaks surface before release-tag time — keep cross-platform
+code (`cfg`-gated backends, path handling) building on all targets.
+
+Database schema changes go through the numbered `user_version` migration
+ladder in `src-tauri/src/history.rs`: add a new numbered step rather than an
+ad-hoc `ALTER`, and make it transactional and idempotent so fresh and existing
+databases converge on the same schema.
 
 ## Style
 

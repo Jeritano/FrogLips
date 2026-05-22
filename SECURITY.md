@@ -41,7 +41,10 @@ See [docs/AGENT_LAYER.md](docs/AGENT_LAYER.md) for the full list of protected pa
 - Custom-backend API keys are stored in the macOS Keychain, not in plaintext `settings.json`, and redacted from the settings blob returned to the webview.
 - SSRF guard on all agent web tools: rejects loopback/private/link-local/metadata hosts, IPv4-mapped IPv6 literals, and NAT64 ranges; redirects are followed with the connection pinned to each hop's validated IP set, closing DNS-rebinding TOCTOU.
 - Untrusted tool output (`read_file`, `read_pdf`, `clipboard_get`, browser get-text, git read tools) is routed through an injection-scan wrapper before reaching the model.
-- Agent authorization: subagents don't inherit the parent's blanket approvals, `spawn_subagent` is confirmation-gated, repo-supplied policy can't auto-approve `run_shell`/`applescript_run`, and body-bearing `http_request` is treated as elevated risk. MCP tool descriptions are sanitized before entering the system prompt.
+- Agent authorization: subagents don't inherit the parent's blanket approvals, `spawn_subagent` is confirmation-gated, repo-supplied policy can't auto-approve `run_shell`/`applescript_run`, and body-bearing `http_request` is treated as elevated risk.
+- MCP tools are treated as untrusted: tool descriptions are sanitized before entering the system prompt, and every MCP tool is risk-classified so its calls always require explicit confirmation and can never be auto-approved (not under session approvals, not under a project policy).
+- DB durability: on startup the app runs `PRAGMA integrity_check` and quarantines a corrupt database (timestamp-renamed) so a damaged file degrades to a clean start instead of a panic. Settings-file writes are atomic (temp file + rename).
+- Diagnostics are local-only: a crash log (`~/.local-llm-app/crash.log`), a rolling `app.log`, and the export-diagnostics-bundle command all stay on disk — no telemetry, no network transmission. The diagnostics bundle redacts settings (including API keys) before it is written.
 - Updater binaries verified against an embedded minisign public key; tampered payloads refused.
 - Memory recall block escapes `<`, `>`, and Unicode RTL marks before injection.
 - `open_external` allow-list: huggingface, civitai, ollama hosts only.

@@ -4,19 +4,21 @@ Reference for the agent system — what tools exist, how they're sandboxed, how 
 
 ## Backend support
 
-Agent mode runs on **Ollama** and **MLX**. The agent runner dispatches its LLM
-call by backend via `agent-chat.ts`:
+Agent mode runs on **all three backends — Ollama, MLX, and Native**. The agent
+runner dispatches its LLM call by backend via `agent-chat.ts`:
 
 - **Ollama** — NDJSON `/api/chat` with `tools` (the original path).
 - **MLX** — OpenAI-compatible `/v1/chat/completions` with `tools`; `tool_calls`
   are parsed out of the streaming deltas.
-- **Native** — `mistralrs` in-process has no tool-call support, so agent mode
-  is rejected up front with a clear error rather than silently falling through
-  to plain streaming. The Agent toggle resets when the active backend can't
-  support it.
+- **Native** — `mistralrs-core` 0.8.1 exposes a real `tools`/`tool_choice` API
+  and returns `tool_calls` in its stream, so the native chat command accepts
+  tool definitions and tool-role messages, and the agent loop routes the native
+  backend through a native agent-chat path. Agent mode is no longer rejected on
+  Native.
 
-`agentBackendUnsupportedReason(backend)` / `isAgentBackendSupported(backend)`
-in `agent-chat.ts` are the single source of truth for this.
+The three backends share **one resolved per-backend chat config** so agent
+behaviour is consistent across them; per-conversation model parameters
+(temperature / top-p / max-tokens / system-prompt) still override it.
 
 ## Lifecycle of a single agent turn
 
@@ -31,7 +33,11 @@ buildSystemPrompt() — preset.systemPromptOverride OR default, plus env block
   ↓
 LOOP (max 20 iterations):
   ↓
+  context-manager budgets the message array against the model context
+       (truncate oversized tool results, summarize oldest turns, keep system prompt)
+  ↓
   agent-chat dispatch → Ollama /api/chat OR MLX /v1/chat/completions
+       OR Native (in-process mistralrs tool-calling)
        { model, messages, tools, options: { temperature: 0.4 } }
        retry 2x on 5xx with exponential backoff
   ↓
@@ -63,6 +69,28 @@ LOOP (max 20 iterations):
   ↓
   continue loop
 ```
+
+## Context-window management
+
+`context-manager.ts` runs before every model call. The message array is
+budgeted against the active model's context size:
+
+- The **system prompt is always kept** in full — including the tool
+  definitions, so the model never loses the schemas mid-run.
+- **Oversized tool results are truncated** in the sent copy of the
+  conversation (the stored transcript is untouched).
+- The **oldest turns collapse into a synthetic summary message** once the
+  budget is exceeded.
+
+This stops long agent runs from silently overflowing small-context models and
+evicting their own tool definitions.
+
+## Consecutive-error budget
+
+Beyond the iteration cap, the runner tracks a **consecutive-tool-error
+budget**. If tool calls keep failing turn after turn, the loop stops with a
+clear message instead of burning every remaining iteration retrying a hopeless
+path. A successful tool call resets the counter.
 
 ## Tools
 
@@ -325,6 +353,10 @@ Beyond the path sandbox, the agent's authorization layer enforces:
   so a malicious MCP server can't inject instructions through its tool
   metadata. The tool audit log redacts secrets, and raw MCP protocol lines are
   no longer logged.
+- **MCP tools are risk-classified and always require confirmation.** An MCP
+  server's tools are treated as untrusted: every MCP tool call is
+  confirmation-gated and can never be auto-approved, even under session
+  approvals or a project policy.
 
 ## Adding a tool
 

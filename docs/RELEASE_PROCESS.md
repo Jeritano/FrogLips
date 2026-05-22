@@ -39,10 +39,11 @@ This script (`scripts/release.sh`):
 1. Kills any running `Froglips.app` (so DMG bundling can mount cleanly)
 2. Exports `TAURI_SIGNING_PRIVATE_KEY=~/.tauri/froglips.key` if present
 3. Runs `npm run tauri build -- --features native-inference` (set `FROGLIPS_SKIP_NATIVE=1` to build a lean ~14 MB binary without mistralrs / candle / Metal kernels — useful for fast iteration when you only need Ollama / MLX)
-4. Replaces `/Applications/Froglips.app`
-5. Strips Gatekeeper quarantine
-6. Ad-hoc codesigns (`codesign --sign - --deep --force`)
-7. Refreshes the `~/Desktop/Froglips` alias
+4. **Smoke-tests the built app before installing** — launches the bundle and confirms it starts cleanly, so a broken build never replaces a working install. (The probe reads `CFBundleExecutable` from the bundle `Info.plist`; the executable inside the bundle is the Cargo bin name `local-llm-app`, not `Froglips`.)
+5. Replaces `/Applications/Froglips.app`
+6. Strips Gatekeeper quarantine
+7. Ad-hoc codesigns (`codesign --sign - --deep --force`)
+8. Refreshes the `~/Desktop/Froglips` alias
 
 Build artifacts land in:
 
@@ -95,6 +96,9 @@ gh release create v${VERSION} \
 ```
 
 The auto-updater queries `https://github.com/Jeritano/FrogLips/releases/latest/download/latest.json`. GitHub redirects `latest/download/<filename>` to the asset on the most-recent release — so as long as you upload `latest.json` to every release, the URL stays stable.
+
+The tagged `release.yml` CI workflow additionally publishes a `SHA256SUMS`
+file alongside the binaries so downloads can be integrity-verified.
 
 ## Signing key
 

@@ -1,6 +1,12 @@
 # Froglips
 
-Cross-platform chat app for local LLMs. **v2.0 is the first cross-platform release** — alongside the original macOS arm64 build, signed binaries now ship for **Intel macOS, Linux x86_64, and Windows x86_64**. Three backends — **Native** (in-process `mistralrs` + Metal on Apple Silicon, `llama.cpp` via `llama-cpp-2` everywhere else, zero install), MLX, and Ollama. Agent mode (Ollama + MLX) w/ filesystem/shell/web/code/task tools, vector-recall memory, signed auto-updates.
+**Froglips — the local-LLM power workstation.** A cross-platform desktop app that turns a model running entirely on your own machine into a real working environment. Plain chat is the substrate; the product is built on three pillars:
+
+- **Agent** — a tool-calling loop with filesystem/shell/web/code/task tools, MCP servers, an optional workspace sandbox, dry-run mode, and risk-classified confirmation. Runs on all three backends.
+- **Knowledge** — vector-recall memory, project RAG, and a searchable, taggable conversation history.
+- **Models** — manage a fleet of backends and models, with per-conversation parameters and a live context-usage meter.
+
+**v2.0 is the first cross-platform release** — alongside the original macOS arm64 build, signed binaries now ship for **Intel macOS, Linux x86_64, and Windows x86_64**. Three backends — **Native** (in-process `mistralrs` + Metal on Apple Silicon, `llama.cpp` via `llama-cpp-2` everywhere else, zero install), MLX, and Ollama — all with agent mode, vector-recall memory, and signed auto-updates.
 
 ![version](https://img.shields.io/badge/version-0.11.0-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
 
@@ -8,14 +14,17 @@ Cross-platform chat app for local LLMs. **v2.0 is the first cross-platform relea
 
 - Native desktop app (Tauri 2 + React 19 + Rust) — no Electron, ~66 MB binary
 - **Three backends**: **MLX** (Metal, via `mlx_lm.server`), **Ollama** (local + cloud), and **Native** (in-process `mistralrs` + candle + Metal, no subprocess)
-- Conversation history in SQLite with WAL + connection pooling
+- Conversation history in SQLite with WAL + connection pooling, a numbered `user_version` migration ladder, and DB-corruption recovery (integrity-check + quarantine on startup)
 - **Markdown rendering** w/ syntax highlighting via `marked` + `highlight.js` (20+ languages). DOMPurify-sanitized.
-- **Light + dark themes**, ☀/☾ toggle in sidebar, persisted
-- **Conversation search** in sidebar, **Markdown export** per conversation
+- **Light + dark themes**, ☀/☾ toggle in sidebar, persisted; reduced-motion support
+- **Conversation organization**: pin, tag, and message-content search (not just titles); pinned conversations sort first; auto-titling from the first message; **Markdown export** per conversation; undo toast for conversation delete
 - **Memory system**: vector recall (`nomic-embed-text`), automatic fact extraction, dedup at 0.85 cosine, Unicode injection sanitization
-- **Agent mode** (Ollama + MLX backends): tool-calling loop — filesystem (`read_file`/`list_dir`/`search_files` literal+regex/`file_exists`/`edit_file`/`multi_edit`/`write_file`), shell (`run_shell` + `applescript_run`), full git (`status`/`diff`/`log`/`show`/`branches`/`commit`), web (`web_fetch` + `web_search` + `http_request`, all SSRF-guarded), code intel (`find_definition`/`find_references`/`format_code`), macOS (`screenshot`/`clipboard_get`+`set`/`open_app`/`show_notification`), docs (`read_pdf`), background tasks (`task_create`/`status`/`list`/`cancel`), and recursive `spawn_subagent` + `ask_user` for human-in-the-loop. Sandboxed by optional workspace root, structured errors, untrusted-content injection scanning, per-call confirmation w/ destructive-pattern badges. (Native backend has no tool-call support — agent mode is Ollama/MLX only.)
+- **Agent mode** (all three backends — Ollama, MLX, and Native): tool-calling loop — filesystem (`read_file`/`list_dir`/`search_files` literal+regex/`file_exists`/`edit_file`/`multi_edit`/`write_file`), shell (`run_shell` + `applescript_run`), full git (`status`/`diff`/`log`/`show`/`branches`/`commit`), web (`web_fetch` + `web_search` + `http_request`, all SSRF-guarded), code intel (`find_definition`/`find_references`/`format_code`), macOS (`screenshot`/`clipboard_get`+`set`/`open_app`/`show_notification`), docs (`read_pdf`), background tasks (`task_create`/`status`/`list`/`cancel`), and recursive `spawn_subagent` + `ask_user` for human-in-the-loop. Sandboxed by optional workspace root, structured errors, untrusted-content injection scanning, an agent-loop context-window manager (budgets messages so small-context models don't overflow), a consecutive-error budget, per-call confirmation w/ destructive-pattern badges, and risk-classified MCP tools that always require confirmation.
 - **Agent presets**: General / Coder / Researcher / Shell — selectable per turn
+- **Per-conversation model parameters**: temperature / top-p / max-tokens / system-prompt overrides, threaded through all three backends, with a live context-usage meter by the composer
 - **Tool-history slide-out panel** for debugging agent runs (⌖ Tools button)
+- **Data backup**: online SQLite backup, versioned JSON export (conversations + messages + memory), and additive import
+- **Diagnostics**: local crash logging (`~/.local-llm-app/crash.log`), a rolling `app.log`, a crash-log viewer, and an export-diagnostics-bundle command — all on-disk, no telemetry
 - **Model library**: curated Ollama + MLX catalogs, live HuggingFace + Civitai search, inline pull/delete, dedicated *Installed* tab w/ sizes + total disk usage
 - **Auto-updater**: signed minisign releases via GitHub Releases
 - **Keyboard shortcuts**: Cmd+N (new chat), Cmd+L (model library), Cmd+K (focus picker)

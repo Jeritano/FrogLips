@@ -18,10 +18,12 @@ Froglips is a Tauri 2 app with a Rust core, a React 19 + TypeScript frontend, an
 │  │  ChatWindow + hooks/  │    │  lib.rs   (run/setup only)  │  │
 │  │  ModelBrowser + tabs/ │    │  commands/ (IPC adapters)   │  │
 │  │  ModelPicker          │    │  agent/   (tools + sandbox) │  │
-│  │  MemoryPanel          │    │  history.rs (SQLite pool)   │  │
+│  │  MemoryPanel          │    │  history.rs (SQLite + mig.) │  │
 │  │  MessageList          │    │  memory.rs (embeddings)     │  │
 │  │  ChatInput            │    │  models.rs (list + delete)  │  │
-│  │                       │    │  backend_process.rs (procs) │  │
+│  │  ParamsPanel          │    │  backend_process.rs (procs) │  │
+│  │  DiagnosticsPanel     │    │  data_backup.rs (export)    │  │
+│  │                       │    │  crash_log.rs / logging.rs  │  │
 │  │  lib/agent-loop/      │    │  settings.rs (persistence)  │  │
 │  │  lib/memory-client.ts │    │  util.rs (shared helpers)   │  │
 │  │  lib/mlx-client.ts    │    │  + tauri-plugin-updater     │  │
@@ -62,7 +64,8 @@ The Tauri command layer — every `#[tauri::command]` wrapper that JS reaches vi
 - `commands/history.rs` — conversation + message persistence.
 - `commands/memory.rs` — memory store and recall.
 - `commands/mcp.rs` — MCP server management.
-- `commands/misc.rs` — settings, diagnostics, and the remaining odds and ends.
+- `commands/data.rs` — data backup, JSON export, and additive import.
+- `commands/misc.rs` — settings, diagnostics, crash-log read, the diagnostics bundle, and the remaining odds and ends.
 
 ### `util.rs`
 
@@ -81,7 +84,21 @@ Agent logic split into a module tree (`agent/fs.rs`, `agent/git.rs`, `agent/shel
 
 ### `history.rs`
 
-SQLite via `rusqlite` + `r2d2` connection pool (max 4 connections, `PRAGMA busy_timeout=5000`, `journal_mode=WAL`). Two tables: `conversations` and `messages`. Schema migration tolerates `QueryReturnedNoRows` so first-run is clean.
+SQLite via `rusqlite` + `r2d2` connection pool (max 4 connections, `PRAGMA busy_timeout=5000`, `journal_mode=WAL`). Core tables: `conversations` and `messages`.
+
+**Schema migration ladder.** Ad-hoc per-column migrations have been replaced by a numbered `user_version` ladder. Each step is transactional and idempotent, and a fresh database and an old one converge on the same schema by running every step at or above their current `user_version`. The `conversations` table now carries `params` (per-conversation model parameter overrides as a JSON string), `pinned`, and `tags` (a JSON-array string) columns; message-content search queries `messages` directly rather than only conversation titles. Soft-deletion backs the conversation-delete undo toast.
+
+**Corruption recovery.** On startup, before opening the pool, the app runs `PRAGMA integrity_check`. If the database is corrupt it is quarantined (renamed with a timestamp suffix) and a fresh one is created, so a damaged file degrades to a clean start instead of a permanent panic.
+
+### `crash_log.rs` / `logging.rs`
+
+`crash_log.rs` installs a process-global panic hook that appends timestamped panic records with backtraces to `~/.local-llm-app/crash.log` (size-capped and rotated, never networked). The `read_crash_log` command exposes the file for the Diagnostics-panel crash-log viewer.
+
+`logging.rs` configures a rolling on-disk `app.log` via `tracing`. Together with the crash log and redacted settings, it feeds the export-diagnostics-bundle command (`commands/misc.rs`) that produces a single shareable bug-report archive.
+
+### `data_backup.rs`
+
+Data durability and portability: an online SQLite backup command, a versioned JSON export of conversations + messages + memory, and an additive import that remaps row ids inside a single transaction so importing never collides with existing data. Surfaced through `commands/data.rs` in the Diagnostics panel.
 
 ### `memory.rs`
 
@@ -95,9 +112,11 @@ Lists MLX (scans HF hub directory, decodes `models--org--name` → `org/name`) a
 
 Wraps `mistralrs-core` 0.8.1 + candle + Metal. Holds `Arc<MistralRs>` per loaded model. `NativeRuntime::load(model_id)` spawns the heavy HF download + model load on a blocking thread; `chat_stream(messages, opts, on_chunk)` builds a `Request::Normal` with `is_streaming: true`, sends it to mistralrs via `get_sender()`, and forwards `Response::Chunk` deltas through a callback so the Tauri layer can re-emit them as `native-chunk:<op_id>` events. Five Tauri commands (`native_supported`, `native_load_model`, `native_unload_model`, `native_current_model`, `native_chat_stream`) gate access. Falls back to CPU if Metal init fails. Requires full Xcode + Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) at build time.
 
+`mistralrs-core` 0.8.1 exposes a real `tools`/`tool_choice` API and returns `tool_calls` in its stream, so the native chat command accepts tool definitions and tool-role messages and collects tool calls from the stream. **Agent mode works on the native backend** alongside Ollama and MLX — see `docs/AGENT_LAYER.md`.
+
 ### `backend_process.rs`
 
-Owns the spawned model-server child (formerly `mlx_server.rs`; renamed because it manages both the MLX and Ollama processes). Captures stderr to a 64-line ring buffer (`VecDeque`). TCP readiness probe with a 90 s timeout. An `AtomicU64` generation counter prevents stale-probe emissions emitting `ready` for a process that has since been killed.
+Owns the spawned model-server child (formerly `mlx_server.rs`; renamed because it manages both the MLX and Ollama processes). Captures stderr to a 64-line ring buffer (`VecDeque`). TCP readiness probe with a 90 s timeout. An `AtomicU64` generation counter prevents stale-probe emissions emitting `ready` for a process that has since been killed. A crashed MLX server is auto-restarted with bounded retries and backoff; after the cap it gives up with a clear diagnostic, and a user-initiated stop never triggers a restart.
 
 ### `settings.rs`
 
@@ -105,10 +124,19 @@ JSON file at `~/Library/Application Support/Froglips/settings.json`. Stores `wor
 
 ## Frontend modules
 
-### `ChatWindow.tsx` + `src/hooks/`
+### `ChatWindow.tsx` + `src/hooks/` + extracted components
 
-`ChatWindow.tsx` owns conversation state and coordinates plain streaming vs the agent loop. Its incidental concerns are decomposed into focused hooks under `src/hooks/`:
+`ChatWindow.tsx` owns conversation state and coordinates plain streaming vs the agent loop. It has been decomposed from a ~1300-line component to ~610 lines:
 
+- The **send pipeline** moved into a `useChatSend` hook — the whole "persist user message → recall memory → stream or run agent → persist assistant message → extract facts" flow, which also fixed a stale-closure lint. A `useEvent` hook replaces the old render-time ref-mutation pattern.
+- The four near-identical confirmation modals collapsed into one `ConfirmDialog`.
+- The agent toolbar, agent settings panel, and export menu are extracted as `AgentToolbar`, `AgentSettingsPanel`, and `ExportMenu` components.
+- `EmptyChatLanding` replaces the blank chat surface with clickable example prompts.
+- `ParamsPanel` edits per-conversation model parameters; `ContextMeter` shows live context usage by the composer.
+
+Incidental concerns remain in focused hooks under `src/hooks/`:
+
+- `useChatSend` — the send pipeline (above).
 - `useAgentSettings` — agent preset, allowlist, approval flags, shell-prefix approvals.
 - `useCitationOpener` — workspace-confined citation-chip file opens.
 - `useAskUserModal` — the `ask_user` modal state.
@@ -118,12 +146,17 @@ JSON file at `~/Library/Application Support/Froglips/settings.json`. Stores `wor
 
 `ChatWindow` still holds the race-safety primitives (`convRef`, `streamConvId` + `isStreamConvActive()`, `abortRef: AbortController`) and exposes a typed `send()` / `resend()` pair (the latter backing the edit-message feature).
 
+### `lib/conversation-params.ts` / `lib/conversation-tags.ts`
+
+`conversation-params.ts` decodes/encodes the `conversations.params` JSON string into a typed `ConversationParams` (temperature / top-p / max-tokens / system-prompt). Every field is independently nullable; a `null` field or absent params means "use the backend default", and bad or partial JSON degrades to all-null rather than throwing — a corrupt column must never break sending a chat. `conversation-tags.ts` similarly decodes/encodes the `tags` JSON-array string defensively (dedup, trim, case-insensitive).
+
 ### `lib/agent-loop/`
 
 The tool-calling loop, split into focused modules:
 
-- `runner.ts` — the iteration loop itself (`pushToolResult` and predicate helpers extracted out).
-- `agent-chat.ts` — the backend-aware chat primitive: dispatches the LLM call to Ollama (NDJSON `/api/chat`) or MLX (OpenAI-compatible `/v1/chat/completions` with `tools`). The native backend has no tool-call support, so the runner rejects agent mode there up front.
+- `runner.ts` — the iteration loop itself (`pushToolResult` and predicate helpers extracted out). Also enforces a consecutive-tool-error budget that stops the loop after repeated failures instead of burning every iteration.
+- `agent-chat.ts` — the backend-aware chat primitive: dispatches the LLM call to Ollama (NDJSON `/api/chat`), MLX (OpenAI-compatible `/v1/chat/completions` with `tools`), or Native (in-process `mistralrs` tool-calling). **Agent mode is supported on all three backends.** The three backends share one resolved per-backend chat config so behaviour is consistent.
+- `context-manager.ts` — budgets the message array against the model's context size before each call: oversized tool results are truncated in the sent copy and the oldest turns collapse into a synthetic summary, while the system prompt is always kept.
 - `dispatch.ts` — tool dispatch, plus the split-out `url-safety.ts`, `dry-run.ts`, and `diff.ts` modules.
 - `ollama-client.ts` / `stream-types.ts` — Ollama client and shared streaming types.
 - `subagent.ts`, `system-prompt.ts`, `tools.ts`, `mcp-tools.ts`, `types.ts`, `tool-call-merge.ts`.
@@ -233,13 +266,19 @@ ModelBrowser.pull()
 | Setting | Where | Default |
 |---|---|---|
 | Workspace root | `~/Library/Application Support/Froglips/settings.json` | None |
+| Per-conversation model params | `conversations.params` column (SQLite, JSON) | None (backend default) |
+| Conversation pin / tags | `conversations.pinned` / `conversations.tags` columns | Unpinned / no tags |
 | Agent allowlist (per-conv override) | `localStorage["agent.allowlist"]` | All enabled |
 | Active preset | `localStorage["agent.activePresetId"]` | `general` |
 | Custom presets | `localStorage["agent.presets.custom"]` | None |
 | Memory mode | `localStorage["memoryMode"]` | `off` |
+| Crash log | `~/.local-llm-app/crash.log` | (created on first panic) |
+| App log | rolling on-disk `app.log` | (created at startup) |
 | Updater pubkey | `tauri.conf.json` | (embedded) |
 | Updater endpoint | `tauri.conf.json` | GitHub Releases `latest.json` |
 | Updater privkey | `~/.tauri/froglips.key` | (generated) |
+
+Settings-file writes are atomic (write to a temp file, then rename) so a crash mid-write can't truncate `settings.json`.
 
 ## Build artifacts
 
