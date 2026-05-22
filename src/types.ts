@@ -577,6 +577,12 @@ export interface WorkflowCard {
   tools: string[];
   schedule: string | null;
   backend: string | null;
+  /**
+   * When true, a scheduler-triggered run auto-approves this card's tool calls
+   * — but only for tool names in its own `tools` allowlist. Manual runs and
+   * non-listed tools always use the normal confirmation gate. Default false.
+   */
+  unattended?: boolean;
   x: number;
   y: number;
 }
@@ -624,13 +630,59 @@ export interface WorkflowRun {
   created_at: number;
 }
 
+/**
+ * Validate and normalize one raw card. Returns a well-formed `WorkflowCard`,
+ * or `null` if required string fields are missing — a malformed card is
+ * dropped rather than allowed to crash the runner (e.g. `card.tools.length`).
+ */
+function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
+  if (!raw || typeof raw !== "object") return null;
+  const c = raw as Record<string, unknown>;
+  if (
+    typeof c.id !== "string" ||
+    typeof c.name !== "string" ||
+    typeof c.preset !== "string" ||
+    typeof c.prompt !== "string"
+  ) {
+    return null;
+  }
+  const tools = Array.isArray(c.tools)
+    ? c.tools.filter((t): t is string => typeof t === "string")
+    : [];
+  return {
+    id: c.id,
+    name: c.name,
+    preset: c.preset,
+    prompt: c.prompt,
+    tools,
+    schedule: typeof c.schedule === "string" ? c.schedule : null,
+    backend: typeof c.backend === "string" ? c.backend : null,
+    unattended: c.unattended === true,
+    x: typeof c.x === "number" ? c.x : 0,
+    y: typeof c.y === "number" ? c.y : 0,
+  };
+}
+
 /** Parse a backend `RawWorkflow` row into a typed `Workflow`. */
 export function parseWorkflow(raw: RawWorkflow): Workflow {
   let graph: WorkflowGraph = { cards: [], edges: [] };
   try {
     const parsed = JSON.parse(raw.graph_json) as Partial<WorkflowGraph>;
     if (parsed && Array.isArray(parsed.cards) && Array.isArray(parsed.edges)) {
-      graph = { cards: parsed.cards, edges: parsed.edges };
+      // Drop or normalize malformed cards; drop edges to unknown card ids.
+      const cards = parsed.cards
+        .map(normalizeWorkflowCard)
+        .filter((c): c is WorkflowCard => c !== null);
+      const ids = new Set(cards.map((c) => c.id));
+      const edges = parsed.edges.filter(
+        (e): e is WorkflowEdge =>
+          !!e &&
+          typeof (e as WorkflowEdge).from === "string" &&
+          typeof (e as WorkflowEdge).to === "string" &&
+          ids.has((e as WorkflowEdge).from) &&
+          ids.has((e as WorkflowEdge).to),
+      );
+      graph = { cards, edges };
     }
   } catch {/* malformed column → empty graph */}
   return {

@@ -8,6 +8,8 @@ export interface AgentCardNodeData {
   preset: string;
   schedule: string | null;
   state: CardRunState;
+  /** True when the card has an incoming edge — a single-card run is isolated. */
+  midChain: boolean;
   onConfigure: () => void;
   onRun: () => void;
   onDelete: () => void;
@@ -56,8 +58,12 @@ function AgentCardNodeImpl({ data }: NodeProps) {
           type="button"
           className="wf-node-btn"
           onClick={d.onRun}
-          disabled={d.state === "running"}
-          title="Run this card alone"
+          disabled={d.state === "running" || d.midChain}
+          title={
+            d.midChain
+              ? "Disabled: a mid-chain card has no upstream input when run alone"
+              : "Run this card alone"
+          }
         >
           Run
         </button>

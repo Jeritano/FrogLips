@@ -92,6 +92,14 @@ export function dryRunValidateUrl(urlStr: string): { ok: true; url: URL } | { ok
         reason: `data: URL mime '${mime || "(none)"}' not allowed (only image/* permitted)`,
       };
     }
+    // SVG (and any XML-based image) can carry inline <script> — reject it
+    // while still allowing raster image/* (png, jpeg, gif, webp).
+    if (mime.endsWith("+xml") || mime === "image/svg") {
+      return {
+        ok: false,
+        reason: `data: URL mime '${mime}' not allowed (XML images can execute script)`,
+      };
+    }
     return { ok: true, url: u };
   }
   // The WHATWG URL parser keeps IPv6 literals bracketed in `.hostname`;

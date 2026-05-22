@@ -156,3 +156,52 @@ describe("runWorkflow — abort", () => {
     expect(runAgentLoopMock).not.toHaveBeenCalled();
   });
 });
+
+describe("runWorkflow — unattended opt-in", () => {
+  function unattendedCard(): WorkflowCard {
+    return { ...card("u"), tools: ["read_file"], unattended: true };
+  }
+  const single = (c: WorkflowCard): WorkflowGraph => ({ cards: [c], edges: [] });
+
+  it("auto-approves only listed tools for an unattended card on a scheduled run", async () => {
+    let gate: AgentRunOptions["requestConfirmation"] | undefined;
+    runAgentLoopMock.mockImplementation(async (opts) => {
+      gate = opts.requestConfirmation;
+      return "ok";
+    });
+
+    await runWorkflow(single(unattendedCard()), {}, { model: "m", scheduled: true });
+
+    expect(gate).toBeDefined();
+    // A tool in the card's allowlist is auto-approved.
+    expect(await gate!("read_file", {}, "normal")).toEqual({ approve: true });
+    // A tool NOT in the allowlist falls through to the deny-all default gate.
+    expect(await gate!("run_shell", {}, "destructive")).toEqual({ approve: false });
+  });
+
+  it("uses the normal gate for an unattended card on a MANUAL run", async () => {
+    let gate: AgentRunOptions["requestConfirmation"] | undefined;
+    runAgentLoopMock.mockImplementation(async (opts) => {
+      gate = opts.requestConfirmation;
+      return "ok";
+    });
+
+    // scheduled omitted → manual run; unattended must NOT auto-approve.
+    await runWorkflow(single(unattendedCard()), {}, { model: "m" });
+
+    expect(await gate!("read_file", {}, "normal")).toEqual({ approve: false });
+  });
+
+  it("still denies for a non-unattended card on a scheduled run", async () => {
+    let gate: AgentRunOptions["requestConfirmation"] | undefined;
+    runAgentLoopMock.mockImplementation(async (opts) => {
+      gate = opts.requestConfirmation;
+      return "ok";
+    });
+
+    const plain = { ...card("p"), tools: ["read_file"], unattended: false };
+    await runWorkflow(single(plain), {}, { model: "m", scheduled: true });
+
+    expect(await gate!("read_file", {}, "normal")).toEqual({ approve: false });
+  });
+});

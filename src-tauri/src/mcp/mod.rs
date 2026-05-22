@@ -171,7 +171,7 @@ impl ServerHandle {
 static REGISTRY: Lazy<RwLock<HashMap<String, Arc<ServerHandle>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
-fn validate_name(name: &str) -> Result<()> {
+pub fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > 64 {
         bail!("server name length out of range (1..=64)");
     }

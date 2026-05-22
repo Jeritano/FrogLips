@@ -2,7 +2,24 @@
 //! filesystem watcher, task queue, ask-user, policy, RAG, and audit log.
 
 use super::{blocking, MAX_RAG_NAME_LEN, MAX_RAG_QUERY_LEN};
-use crate::{agent, agent_audit, ask_user, policy, rag, task_queue};
+use crate::{agent, agent_audit, approval, ask_user, policy, rag, task_queue};
+
+/* ── Dangerous-tool capability gate ──────────────────────────────────────────
+ * Dangerous tool commands take a single-use, short-TTL `approval` token. The
+ * frontend mints one via `mint_tool_approval` only after the user confirms in
+ * the dangerous-tool modal, then passes it through. This backstops the
+ * frontend gate against accidental bypass / refactor drift — a new call site
+ * that forgets to mint fails closed. It is NOT a defense against a fully
+ * compromised renderer (the webview could mint its own token); that is an
+ * inherent Tauri trust limit. See `approval.rs`. */
+
+/// Mint a single-use approval token bound to `tool`. Wired from the frontend's
+/// post-confirmation path; the returned string is passed to the matching
+/// dangerous command as its `approval` argument.
+#[tauri::command]
+pub fn mint_tool_approval(tool: String) -> String {
+    approval::mint(&tool)
+}
 
 /* ── Agent tool commands ── */
 
@@ -25,7 +42,11 @@ pub async fn agent_run_shell(
     command: String,
     opts: Option<agent::ShellOpts>,
     op_id: Option<String>,
+    approval: String,
 ) -> Result<agent::ShellResult, String> {
+    if !approval::consume("agent_run_shell", &approval) {
+        return Err("tool approval required or expired".into());
+    }
     agent::run_shell(command, opts, op_id).await
 }
 
@@ -35,7 +56,14 @@ pub fn agent_cancel_shell(op_id: String) {
 }
 
 #[tauri::command]
-pub async fn agent_write_file(path: String, content: String) -> Result<(), String> {
+pub async fn agent_write_file(
+    path: String,
+    content: String,
+    approval: String,
+) -> Result<(), String> {
+    if !approval::consume("agent_write_file", &approval) {
+        return Err("tool approval required or expired".into());
+    }
     agent::write_file(path, content).await
 }
 
@@ -163,12 +191,24 @@ pub async fn agent_open_path_in_editor(path: String, line: Option<u32>) -> Resul
 }
 
 #[tauri::command]
-pub async fn agent_applescript_run(script: String) -> Result<agent::ShellResult, String> {
+pub async fn agent_applescript_run(
+    script: String,
+    approval: String,
+) -> Result<agent::ShellResult, String> {
+    if !approval::consume("agent_applescript_run", &approval) {
+        return Err("tool approval required or expired".into());
+    }
     agent::applescript_run(script).await
 }
 
 #[tauri::command]
-pub async fn agent_http_request(input: agent::HttpReqInput) -> Result<agent::HttpResp, String> {
+pub async fn agent_http_request(
+    input: agent::HttpReqInput,
+    approval: String,
+) -> Result<agent::HttpResp, String> {
+    if !approval::consume("agent_http_request", &approval) {
+        return Err("tool approval required or expired".into());
+    }
     agent::http_request(input).await
 }
 

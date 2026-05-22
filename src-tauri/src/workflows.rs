@@ -54,8 +54,54 @@ pub(crate) fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
             status TEXT NOT NULL,
             results_json TEXT
          );
-         CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);",
+         CREATE INDEX IF NOT EXISTS idx_workflow_runs_wf ON workflow_runs(workflow_id);
+         CREATE TABLE IF NOT EXISTS workflow_card_fired (
+            card_key TEXT PRIMARY KEY,
+            last_fired INTEGER NOT NULL
+         );",
     )?;
+    Ok(())
+}
+
+/// Load the persisted last-fired map: `"<workflow_id>:<card_id>"` → unix secs.
+/// Survives app restarts so a `daily HH:MM` card fires at most once per day
+/// even across relaunches (an in-memory-only map re-fires every cold start).
+pub fn load_card_last_fired() -> Result<std::collections::HashMap<String, i64>> {
+    let conn = get_db()?;
+    let mut stmt = conn.prepare("SELECT card_key, last_fired FROM workflow_card_fired")?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
+    Ok(rows)
+}
+
+/// Persist a single card's last-fired unix time (upsert).
+pub fn persist_card_last_fired(card_key: &str, ts: i64) -> Result<()> {
+    let conn = get_db()?;
+    conn.execute(
+        "INSERT INTO workflow_card_fired (card_key, last_fired) VALUES (?1, ?2)
+         ON CONFLICT(card_key) DO UPDATE SET last_fired = excluded.last_fired",
+        params![card_key, ts],
+    )?;
+    Ok(())
+}
+
+/// Drop persisted last-fired rows whose card_key is not in `keep` — keeps the
+/// table from growing as workflows/cards are edited or deleted.
+pub fn prune_card_last_fired(keep: &std::collections::HashSet<String>) -> Result<()> {
+    let conn = get_db()?;
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT card_key FROM workflow_card_fired")?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for k in existing {
+        if !keep.contains(&k) {
+            conn.execute("DELETE FROM workflow_card_fired WHERE card_key = ?1", params![k])?;
+        }
+    }
     Ok(())
 }
 
@@ -106,6 +152,13 @@ pub fn validate_graph_json(graph_json: &str) -> Result<()> {
                 Some(v) if v.is_number() => {}
                 _ => return Err(anyhow::anyhow!("card {i} field '{key}' must be a number")),
             }
+        }
+        // Optional per-card opt-in: cards may carry `unattended: bool`. Absent
+        // is fine; if present it must be a boolean (not a string/number).
+        match c.get("unattended") {
+            None => {}
+            Some(v) if v.is_boolean() => {}
+            _ => return Err(anyhow::anyhow!("card {i} field 'unattended' must be a boolean")),
         }
     }
 
@@ -366,14 +419,19 @@ fn scheduler_scan(
             seen.insert(key.clone());
 
             // Seed a never-seen interval card so its first fire lands one full
-            // window from now rather than immediately.
+            // window from now rather than immediately. Persisted so a restart
+            // does not reset the window.
             if matches!(sched, Schedule::Every(_)) && !last_fired.contains_key(&key) {
-                last_fired.insert(key, now);
+                last_fired.insert(key.clone(), now);
+                let _ = persist_card_last_fired(&key, now);
                 continue;
             }
 
             if schedule_is_due(sched, now, last_fired.get(&key).copied()) {
-                last_fired.insert(key, now);
+                last_fired.insert(key.clone(), now);
+                // Persist the fire time so a `daily HH:MM` card cannot
+                // multi-fire across app restarts within the same day.
+                let _ = persist_card_last_fired(&key, now);
                 let _ = app.emit(
                     TRIGGER_EVENT,
                     serde_json::json!({ "workflow_id": wf.id, "card_id": card_id }),
@@ -385,6 +443,7 @@ fn scheduler_scan(
     // Drop tracking for cards that no longer exist so the map can't grow
     // unbounded as workflows are edited/deleted over a long app session.
     last_fired.retain(|k, _| seen.contains(k));
+    let _ = prune_card_last_fired(&seen);
 }
 
 /// Start the app-lifetime workflow scheduler. Spawns a tokio task that scans
@@ -392,8 +451,10 @@ fn scheduler_scan(
 /// app is open — the per-card timer state lives in memory and is not persisted.
 pub fn start_scheduler(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
+        // Seed from the persisted table so daily/interval cards keep their
+        // last-fired state across app restarts.
         let mut last_fired: std::collections::HashMap<String, i64> =
-            std::collections::HashMap::new();
+            load_card_last_fired().unwrap_or_default();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(SCAN_INTERVAL_SECS)).await;
             scheduler_scan(&app, &mut last_fired, now_unix());
@@ -423,6 +484,20 @@ mod tests {
             r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0}],"edges":[]}"#
         )
         .is_ok());
+    }
+
+    #[test]
+    fn validate_graph_accepts_optional_unattended_flag() {
+        // Present + boolean → accepted.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"unattended":true}],"edges":[]}"#
+        )
+        .is_ok());
+        // Present but not a boolean → rejected.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"unattended":"yes"}],"edges":[]}"#
+        )
+        .is_err());
     }
 
     #[test]
@@ -543,6 +618,43 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM workflows", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn card_last_fired_table_persists_and_prunes() {
+        let conn = fresh_db();
+        // Upsert mirrors persist_card_last_fired (the public fn uses the pool).
+        let upsert = |k: &str, ts: i64| {
+            conn.execute(
+                "INSERT INTO workflow_card_fired (card_key, last_fired) VALUES (?1, ?2)
+                 ON CONFLICT(card_key) DO UPDATE SET last_fired = excluded.last_fired",
+                params![k, ts],
+            )
+            .unwrap();
+        };
+        upsert("1:a", 100);
+        upsert("1:b", 200);
+        // Upsert overwrites.
+        upsert("1:a", 999);
+        let got: i64 = conn
+            .query_row(
+                "SELECT last_fired FROM workflow_card_fired WHERE card_key='1:a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(got, 999, "upsert must overwrite last_fired");
+
+        // Prune everything not in the keep-set.
+        conn.execute(
+            "DELETE FROM workflow_card_fired WHERE card_key NOT IN ('1:a')",
+            [],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workflow_card_fired", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "prune must drop stale card keys");
     }
 
     #[test]

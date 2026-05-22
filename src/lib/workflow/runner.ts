@@ -35,9 +35,18 @@ export interface WorkflowHooks {
   onWorkflowDone?: (results: WorkflowRunResult) => void;
 }
 
+/** Per-card output cap (chars) applied to the JSON persisted as a run record. */
+const RECORD_OUTPUT_CAP = 6144;
+
 export interface RunWorkflowOptions {
   /** The persisted workflow id — used to record the run. Null skips recording. */
   workflowId?: number | null;
+  /**
+   * True when the run was started by the scheduler (a `workflow-trigger`
+   * event) rather than the user clicking Run. Only scheduled runs honor a
+   * card's `unattended` opt-in to auto-approve its own declared tools.
+   */
+  scheduled?: boolean;
   /** Stops the chain when aborted; remaining cards are marked skipped. */
   signal?: AbortSignal;
   /** Workspace root threaded into every card's agent run. */
@@ -94,6 +103,18 @@ function buildCardOptions(
   const backend = (card.backend ?? opts.defaultBackend ?? "ollama") as
     AgentRunOptions["backend"];
 
+  // On a scheduled run, a card opted into `unattended` auto-approves tool
+  // calls — but only for tool names in its own declared allowlist. Every
+  // other case keeps the caller's gate (default deny-all).
+  const baseGate = opts.requestConfirmation ?? denyAll;
+  const requestConfirmation: AgentRunOptions["requestConfirmation"] =
+    opts.scheduled && card.unattended
+      ? async (toolName, args, risk) =>
+          card.tools.includes(toolName)
+            ? { approve: true }
+            : baseGate(toolName, args, risk)
+      : baseGate;
+
   return {
     model: opts.model,
     messages,
@@ -108,7 +129,7 @@ function buildCardOptions(
     onUpdate: () => {},
     onStatusChange: () => {},
     onAssistantDelta: (text) => hooks.onCardOutput?.(card.id, text),
-    requestConfirmation: opts.requestConfirmation ?? denyAll,
+    requestConfirmation,
     signal,
   };
 }
@@ -186,7 +207,8 @@ export async function runWorkflow(
         output,
       };
       results.push(result);
-      hooks.onCardOutput?.(card.id, output);
+      // Output was already streamed incrementally via `onAssistantDelta →
+      // onCardOutput`; do NOT re-emit the full text here or it shows twice.
       hooks.onCardDone?.(card.id, result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -213,10 +235,20 @@ export async function runWorkflow(
   // successful (or already-failed) workflow result.
   if (opts.workflowId != null) {
     try {
+      // Cap each card's output before persisting — full agent transcripts
+      // would bloat the run-record table.
+      const recorded: WorkflowRunResult = {
+        status: runResult.status,
+        cards: runResult.cards.map((c) =>
+          c.output.length > RECORD_OUTPUT_CAP
+            ? { ...c, output: `${c.output.slice(0, RECORD_OUTPUT_CAP)}… [truncated]` }
+            : c,
+        ),
+      };
       await api.workflowRunRecord(
         opts.workflowId,
         runResult.status,
-        JSON.stringify(runResult),
+        JSON.stringify(recorded),
       );
     } catch {/* recording is best-effort */}
   }

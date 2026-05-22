@@ -61,25 +61,39 @@ export function WorkflowsPage({ status }: Props) {
   const validation = useMemo(() => validateGraph({ cards, edges }), [cards, edges]);
   const warning = validation.ok ? null : validation.error;
 
-  // Debounced persistence of card positions + edges back into the workflow.
+  // Latest unsaved graph/name, kept in a ref so unmount/navigate-away can
+  // flush a pending debounced save without re-subscribing the effect.
+  const pendingSave = useRef<{ id: number; name: string; graph: WorkflowGraph } | null>(null);
+
+  const flushSave = useCallback(() => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const p = pendingSave.current;
+    if (!p) return;
+    pendingSave.current = null;
+    api.workflowSave(p.id, p.name, serializeWorkflowGraph(p.graph))
+      .then(() => {
+        setSelected((s) => (s && s.id === p.id ? { ...s, graph: p.graph, updated_at: Date.now() } : s));
+        setList((l) => l.map((w) => (w.id === p.id ? { ...w, name: p.name, graph: p.graph } : w)));
+      })
+      .catch((e) =>
+        logDiag({ level: "warn", source: "workflows", message: "workflowSave failed", detail: e }),
+      );
+  }, []);
+
+  // Debounced persistence of card positions, edges and name into the workflow.
   useEffect(() => {
     if (!selected) return;
+    pendingSave.current = { id: selected.id, name: selected.name, graph: { cards, edges } };
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      const graph: WorkflowGraph = { cards, edges };
-      api.workflowSave(selected.id, selected.name, serializeWorkflowGraph(graph))
-        .then(() => {
-          setSelected((s) => (s ? { ...s, graph, updated_at: Date.now() } : s));
-          setList((l) =>
-            l.map((w) => (w.id === selected.id ? { ...w, name: selected.name, graph } : w)),
-          );
-        })
-        .catch((e) =>
-          logDiag({ level: "warn", source: "workflows", message: "workflowSave failed", detail: e }),
-        );
-    }, 600);
+    saveTimer.current = setTimeout(flushSave, 600);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [cards, edges, selected]);
+  }, [cards, edges, selected, flushSave]);
+
+  // Flush any pending save on unmount so a rename is never lost.
+  useEffect(() => () => flushSave(), [flushSave]);
 
   function openWorkflow(w: Workflow) {
     setSelected(w);
@@ -189,6 +203,10 @@ export function WorkflowsPage({ status }: Props) {
       setErr("Fix the chain warning before running.");
       return;
     }
+    if (running) {
+      setErr("A run is already in progress.");
+      return;
+    }
     const opts = baseRunOpts();
     if (!opts) return;
     const ac = new AbortController();
@@ -211,6 +229,10 @@ export function WorkflowsPage({ status }: Props) {
   function runSingleCard(id: string) {
     const card = cards.find((c) => c.id === id);
     if (!card || !selected) return;
+    if (running) {
+      setErr("A run is already in progress.");
+      return;
+    }
     const opts = baseRunOpts();
     if (!opts) return;
     const ac = new AbortController();
@@ -238,14 +260,33 @@ export function WorkflowsPage({ status }: Props) {
 
   // Scheduled cards: the backend emits `workflow-trigger`; the schedule glue
   // loads the workflow and runs it from the triggered card.
+  //
+  // A trigger for a workflow OTHER than the one open in the editor must not
+  // paint into the editor's live buffers — it runs with empty hooks. A
+  // trigger for the open workflow uses the visual hooks. Either way the run
+  // is `scheduled: true` so cards may honor their `unattended` opt-in.
   useTauriEvent<unknown>(
     "workflow-trigger",
     useCallback(
       (e) => {
+        if (running) {
+          logDiag({
+            level: "warn",
+            source: "workflows",
+            message: "workflow-trigger ignored — a run is already in progress",
+          });
+          return;
+        }
         const opts = baseRunOpts();
         if (!opts) return;
+        const p = e.payload as { workflow_id?: unknown } | null;
+        const targetsOpen =
+          !!selected && !!p && p.workflow_id === selected.id;
+        const hooks = targetsOpen
+          ? makeHooks(() => void refreshList())
+          : { onWorkflowDone: () => { setRunning(false); void refreshList(); } };
         setRunning(true);
-        void handleWorkflowTrigger(e.payload, makeHooks(() => void refreshList()), opts).catch(
+        void handleWorkflowTrigger(e.payload, hooks, { ...opts, scheduled: true }).catch(
           (err) => {
             setRunning(false);
             logDiag({
@@ -257,7 +298,7 @@ export function WorkflowsPage({ status }: Props) {
           },
         );
       },
-      [baseRunOpts, makeHooks, refreshList],
+      [baseRunOpts, makeHooks, refreshList, running, selected],
     ),
   );
 
@@ -323,7 +364,11 @@ export function WorkflowsPage({ status }: Props) {
   return (
     <div className="wf-page wf-editor" data-testid="workflows-page">
       <div className="wf-editor-bar">
-        <button type="button" className="wf-btn" onClick={() => setSelected(null)}>
+        <button
+          type="button"
+          className="wf-btn"
+          onClick={() => { flushSave(); setSelected(null); }}
+        >
           ← Workflows
         </button>
         <input

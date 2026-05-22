@@ -16,7 +16,20 @@ pub struct GitResult {
 
 async fn git_invoke(cwd: PathBuf, args: &[&str]) -> Result<GitResult, String> {
     let mut cmd = tokio::process::Command::new("git");
-    cmd.current_dir(&cwd).args(args).kill_on_drop(true);
+    // Harden against a malicious repo `.git/config`: pager / fsmonitor /
+    // alias hooks can execute arbitrary commands on an otherwise read-only
+    // operation like `git status`. Force-disable those mechanisms via `-c`
+    // overrides, and `GIT_CONFIG_NOSYSTEM=1` blocks the system-wide config.
+    cmd.arg("-c")
+        .arg("core.fsmonitor=false")
+        .arg("-c")
+        .arg("core.pager=cat")
+        .arg("-c")
+        .arg("core.hooksPath=/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .current_dir(&cwd)
+        .args(args)
+        .kill_on_drop(true);
     let timeout = std::time::Duration::from_secs(10);
     // capped_output bounds stdout/stderr buffering — git output can be huge.
     let (out, err, code) = match tokio::time::timeout(

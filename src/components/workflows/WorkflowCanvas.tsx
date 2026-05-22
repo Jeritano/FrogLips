@@ -46,6 +46,13 @@ export function WorkflowCanvas({
   onDeleteCard,
   runningCardId,
 }: Props) {
+  // Cards with an incoming edge are mid-chain: a single-card run gives them
+  // no upstream input, so the per-card Run button is disabled for them.
+  const hasUpstream = useMemo(
+    () => new Set(edges.map((e) => e.to)),
+    [edges],
+  );
+
   const nodes = useMemo<Node<AgentCardNodeData>[]>(
     () =>
       cards.map((c) => ({
@@ -57,12 +64,13 @@ export function WorkflowCanvas({
           preset: c.preset,
           schedule: c.schedule,
           state: cardStates[c.id] ?? "idle",
+          midChain: hasUpstream.has(c.id),
           onConfigure: () => onConfigure(c.id),
           onRun: () => onRunCard(c.id),
           onDelete: () => onDeleteCard(c.id),
         },
       })),
-    [cards, cardStates, onConfigure, onRunCard, onDeleteCard],
+    [cards, cardStates, hasUpstream, onConfigure, onRunCard, onDeleteCard],
   );
 
   const flowEdges = useMemo<Edge[]>(
@@ -80,13 +88,16 @@ export function WorkflowCanvas({
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
       const next = applyNodeChanges(changes, nodes) as Node<AgentCardNodeData>[];
-      // Only position changes round-trip to the card model.
+      // Sync both position and removal (Backspace) changes to the card model;
+      // a node dropped from `next` is gone — keep `cards` consistent.
       const byId = new Map(next.map((n) => [n.id, n.position]));
       onCardsChange(
-        cards.map((c) => {
-          const pos = byId.get(c.id);
-          return pos ? { ...c, x: pos.x, y: pos.y } : c;
-        }),
+        cards
+          .filter((c) => byId.has(c.id))
+          .map((c) => {
+            const pos = byId.get(c.id)!;
+            return { ...c, x: pos.x, y: pos.y };
+          }),
       );
     },
     [nodes, cards, onCardsChange],

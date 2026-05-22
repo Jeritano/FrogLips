@@ -18,6 +18,26 @@ const ALL_TOOLS = [
 ];
 
 /**
+ * Schedule grammar the Rust scheduler accepts: `every <n>m` / `every <n>h`
+ * (interval) or `daily HH:MM` (clock time). Blank = manual run only.
+ */
+const HINT = "Use 'every 30m', 'every 2h', or 'daily 09:00'.";
+
+function scheduleError(value: string): string | null {
+  const v = value.trim().toLowerCase();
+  if (v === "") return null;
+  const every = v.match(/^every\s+(\d+)\s*([mh])$/);
+  if (every) return Number(every[1]) > 0 ? null : HINT;
+  const daily = v.match(/^daily\s+(\d{1,2}):(\d{2})$/);
+  if (daily) {
+    const hh = Number(daily[1]);
+    const mm = Number(daily[2]);
+    return hh < 24 && mm < 60 ? null : HINT;
+  }
+  return HINT;
+}
+
+/**
  * Side drawer to edit one agent card — name, preset, prompt, tools, backend
  * and schedule. A blank schedule means "manual run only".
  */
@@ -28,6 +48,8 @@ export function CardConfigDrawer({ card, onSave, onClose }: Props) {
 
   useModalA11y({ open: true, onClose, containerRef: ref });
   useEffect(() => setDraft(card), [card]);
+
+  const schedErr = scheduleError(draft.schedule ?? "");
 
   function set<K extends keyof WorkflowCard>(key: K, value: WorkflowCard[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -94,12 +116,27 @@ export function CardConfigDrawer({ card, onSave, onClose }: Props) {
             </select>
           </label>
           <label className="wf-field">
-            <span>Schedule (cron, blank = manual)</span>
+            <span>Schedule (blank = manual)</span>
             <input
               value={draft.schedule ?? ""}
               onChange={(e) => set("schedule", e.target.value || null)}
-              placeholder="e.g. 0 9 * * *"
+              placeholder="every 30m  ·  daily 09:00"
+              aria-invalid={schedErr != null}
             />
+            {schedErr && (
+              <p className="wf-field-error" role="alert">{schedErr}</p>
+            )}
+          </label>
+          <label className="wf-field wf-field-check">
+            <input
+              type="checkbox"
+              checked={draft.unattended === true}
+              onChange={(e) => set("unattended", e.target.checked)}
+            />
+            <span>
+              Allow unattended runs (auto-approves this card's tools when run
+              on a schedule)
+            </span>
           </label>
           <div className="wf-field">
             <span>Tools</span>
@@ -124,6 +161,8 @@ export function CardConfigDrawer({ card, onSave, onClose }: Props) {
             type="button"
             className="wf-btn wf-btn-primary"
             onClick={() => onSave(draft)}
+            disabled={schedErr != null}
+            title={schedErr ?? "Save card"}
           >
             Save
           </button>

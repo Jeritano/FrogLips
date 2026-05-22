@@ -123,8 +123,9 @@ fn protected_prefixes() -> Vec<PathBuf> {
 }
 
 pub(super) fn is_protected_for_read(p: &Path) -> bool {
-    let lossy = p.to_string_lossy();
-    // Keychain + TCC database etc. blocked even for read
+    // Keychain + TCC database etc. blocked even for read. Use component-wise
+    // `Path::starts_with` — a plain string prefix check would let
+    // `/etc/sudoersfoo` slip past `/etc/sudoers`.
     let read_block: &[&str] = &[
         "/Library/Keychains",
         "/private/var/db/sudo",
@@ -132,7 +133,7 @@ pub(super) fn is_protected_for_read(p: &Path) -> bool {
         "/etc/sudoers",
         "/private/etc/sudoers",
     ];
-    if read_block.iter().any(|r| lossy.starts_with(r)) {
+    if read_block.iter().any(|r| p.starts_with(r)) {
         return true;
     }
     if let Some(home) = dirs::home_dir() {
