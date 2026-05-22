@@ -32,6 +32,9 @@ const DiagnosticsPanel = lazy(() =>
 const ForkTreeModal = lazy(() =>
   import("./components/ForkTree").then((m) => ({ default: m.ForkTreeModal })),
 );
+const AboutYouModal = lazy(() =>
+  import("./components/AboutYouModal").then((m) => ({ default: m.AboutYouModal })),
+);
 // First-run-only flow: never seen by returning users, so it has no business
 // living in the initial chunk. Mounts behind `wizardOpen === true`.
 const SetupWizard = lazy(() =>
@@ -65,6 +68,7 @@ function App() {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [forkTreeOpen, setForkTreeOpen] = useState(false);
   const [memoriesOpen, setMemoriesOpen] = useState(false);
+  const [aboutYouOpen, setAboutYouOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // First-run setup wizard. `undefined` = haven't checked the flag yet, so we
@@ -555,6 +559,15 @@ function App() {
                 >
                   <span aria-hidden="true">⭐</span> Memories
                 </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="menu-about-you"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setAboutYouOpen(true); setMenuOpen(false); }}
+                >
+                  <span aria-hidden="true">👤</span> About You
+                </button>
                 {current && (
                   <button
                     type="button"
@@ -834,6 +847,11 @@ function App() {
             />
           </div>
         </div>
+      )}
+      {aboutYouOpen && (
+        <Suspense fallback={null}>
+          <AboutYouModal onClose={() => setAboutYouOpen(false)} />
+        </Suspense>
       )}
       {diagnosticsOpen && (
         <Suspense fallback={null}>

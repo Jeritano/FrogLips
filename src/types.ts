@@ -309,6 +309,24 @@ export interface AppSettings {
   mcp_servers?: McpServerConfig[] | null;
   /** First-run setup wizard completion flag. Absent on legacy installs. */
   setup_complete?: boolean | null;
+  /** User-authored "About You" profile. Absent on legacy installs. */
+  user_profile?: UserProfile | null;
+}
+
+/**
+ * Explicit, user-edited identity facts injected into chat + workflow system
+ * prompts so the model knows who the user is. Never auto-populated.
+ */
+export interface UserProfile {
+  /** Master switch — when false the profile is ignored even if filled. */
+  enabled: boolean;
+  name?: string | null;
+  occupation?: string | null;
+  location?: string | null;
+  /** Free-text "anything else the AI should know about you". */
+  about?: string | null;
+  /** Free-text "how the AI should respond" (tone, format, length). */
+  response_style?: string | null;
 }
 
 export interface McpServerConfig {

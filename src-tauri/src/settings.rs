@@ -30,6 +30,27 @@ pub struct Settings {
     /// field is absent) deserialize as `None` → wizard treats as `false` →
     /// runs once, then writes `Some(true)` and never bothers them again.
     pub setup_complete: Option<bool>,
+    /// User-authored "About You" profile. When `enabled`, its fields are
+    /// formatted into a system-prompt block so every chat and workflow agent
+    /// knows who the user is. Absent on legacy installs → `None` → not used.
+    pub user_profile: Option<UserProfile>,
+}
+
+/// Explicit, user-edited identity facts (the "Custom Instructions" pattern).
+/// Stored locally in settings.json; never auto-populated. All fields optional
+/// so a partially-filled profile is valid.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct UserProfile {
+    /// Master switch. When false the profile is ignored even if filled in.
+    pub enabled: bool,
+    pub name: Option<String>,
+    pub occupation: Option<String>,
+    pub location: Option<String>,
+    /// Free-text "anything else the AI should know about you".
+    pub about: Option<String>,
+    /// Free-text "how the AI should respond" (tone, format, length).
+    pub response_style: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
