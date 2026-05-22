@@ -31,8 +31,7 @@ struct TokenEntry {
     minted: Instant,
 }
 
-static STORE: Lazy<Mutex<HashMap<String, TokenEntry>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static STORE: Lazy<Mutex<HashMap<String, TokenEntry>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Generate a random opaque token string. Uses the process RNG via
 /// `SystemTime` + an incrementing counter — tokens only need to be
@@ -127,7 +126,10 @@ mod tests {
                 },
             );
         }
-        assert!(!consume("agent_http_request", &token), "expired token must fail");
+        assert!(
+            !consume("agent_http_request", &token),
+            "expired token must fail"
+        );
     }
 
     #[test]

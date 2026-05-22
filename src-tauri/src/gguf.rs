@@ -353,7 +353,11 @@ pub async fn download<R: tauri::Runtime>(
     }
     let resuming = status.as_u16() == 206 && existing > 0;
     let content_len = resp.content_length().unwrap_or(0);
-    let total = if resuming { existing + content_len } else { content_len };
+    let total = if resuming {
+        existing + content_len
+    } else {
+        content_len
+    };
 
     // Stream the body to disk. Open in append mode when resuming so we
     // don't truncate the head we already have.
@@ -527,10 +531,16 @@ mod tests {
     fn repo_dir_roundtrip_preserves_safe_names() {
         // Slash → underscore is reversible for the common "org/name" shape
         // when neither side contains an underscore.
-        assert_eq!(repo_to_dir("mlx-community/Foo-GGUF"), "mlx-community_Foo-GGUF");
+        assert_eq!(
+            repo_to_dir("mlx-community/Foo-GGUF"),
+            "mlx-community_Foo-GGUF"
+        );
         // Reverse: best-effort. We split on the last underscore so names
         // with multiple underscores still come out reasonably.
-        assert_eq!(dir_to_repo("mlx-community_Foo-GGUF"), "mlx-community/Foo-GGUF");
+        assert_eq!(
+            dir_to_repo("mlx-community_Foo-GGUF"),
+            "mlx-community/Foo-GGUF"
+        );
     }
 
     #[test]

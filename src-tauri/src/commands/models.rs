@@ -284,7 +284,10 @@ pub async fn native_chat_stream(
         NativeBackend::chat_stream_tools(&rt, json_msgs, args.tools, opts, Box::new(on_chunk))
             .await
             .map_err(|e| e.to_string())?;
-    let _ = app.emit(&format!("native-toolcalls:{}", args.op_id), &turn.tool_calls);
+    let _ = app.emit(
+        &format!("native-toolcalls:{}", args.op_id),
+        &turn.tool_calls,
+    );
     let _ = app.emit(&format!("native-done:{}", args.op_id), &turn.content);
     Ok(turn.content)
 }

@@ -99,7 +99,10 @@ pub fn prune_card_last_fired(keep: &std::collections::HashSet<String>) -> Result
     };
     for k in existing {
         if !keep.contains(&k) {
-            conn.execute("DELETE FROM workflow_card_fired WHERE card_key = ?1", params![k])?;
+            conn.execute(
+                "DELETE FROM workflow_card_fired WHERE card_key = ?1",
+                params![k],
+            )?;
         }
     }
     Ok(())
@@ -138,13 +141,23 @@ pub fn validate_graph_json(graph_json: &str) -> Result<()> {
             }
         }
         match c.get("tools") {
-            Some(v) if v.as_array().is_some_and(|a| a.iter().all(|t| t.is_string())) => {}
-            _ => return Err(anyhow::anyhow!("card {i} field 'tools' must be a string array")),
+            Some(v)
+                if v.as_array()
+                    .is_some_and(|a| a.iter().all(|t| t.is_string())) => {}
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "card {i} field 'tools' must be a string array"
+                ))
+            }
         }
         for key in ["schedule", "backend"] {
             match c.get(key) {
                 Some(v) if v.is_string() || v.is_null() => {}
-                _ => return Err(anyhow::anyhow!("card {i} field '{key}' must be a string or null")),
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "card {i} field '{key}' must be a string or null"
+                    ))
+                }
             }
         }
         for key in ["x", "y"] {
@@ -158,14 +171,22 @@ pub fn validate_graph_json(graph_json: &str) -> Result<()> {
         match c.get("unattended") {
             None => {}
             Some(v) if v.is_boolean() => {}
-            _ => return Err(anyhow::anyhow!("card {i} field 'unattended' must be a boolean")),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "card {i} field 'unattended' must be a boolean"
+                ))
+            }
         }
         // Optional per-card model pin: `model: string | null`. Absent or null
         // means fall back to the backend's current model.
         match c.get("model") {
             None => {}
             Some(v) if v.is_string() || v.is_null() => {}
-            _ => return Err(anyhow::anyhow!("card {i} field 'model' must be a string or null")),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "card {i} field 'model' must be a string or null"
+                ))
+            }
         }
         // Optional placement flag: `placed: bool`. Absent/false = the card sits
         // in the deck; true = placed on the canvas at its x/y.
@@ -252,7 +273,10 @@ pub fn save_workflow(id: Option<i64>, name: &str, graph_json: &str) -> Result<i6
 
 pub fn delete_workflow(id: i64) -> Result<()> {
     let conn = get_db()?;
-    conn.execute("DELETE FROM workflow_runs WHERE workflow_id = ?1", params![id])?;
+    conn.execute(
+        "DELETE FROM workflow_runs WHERE workflow_id = ?1",
+        params![id],
+    )?;
     conn.execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
     Ok(())
 }
@@ -636,8 +660,8 @@ mod tests {
         assert!(validate_graph_json(&graph).is_ok());
 
         // Update path keeps the same id.
-        let same = save_into(&conn, Some(id), "Renamed", r#"{"cards":[],"edges":[]}"#)
-            .expect("update");
+        let same =
+            save_into(&conn, Some(id), "Renamed", r#"{"cards":[],"edges":[]}"#).expect("update");
         assert_eq!(same, id);
         let name2: String = conn
             .query_row("SELECT name FROM workflows WHERE id=?1", params![id], |r| {
@@ -736,7 +760,7 @@ mod tests {
         // Target = 09:00 UTC = 540 min = 32_400 s into the day.
         let s = Schedule::Daily(540);
         let day = 20_000 * 86_400; // some arbitrary day boundary
-        // Before the target time: not due.
+                                   // Before the target time: not due.
         assert!(!schedule_is_due(s, day + 30_000, None));
         // At/after target, never fired today: due.
         assert!(schedule_is_due(s, day + 32_400, None));

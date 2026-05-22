@@ -175,12 +175,12 @@ async fn fetch_html(target: &str) -> Result<String, String> {
     }
     // 2 MiB is plenty — the library HTML is ~300 KiB. Cap defends against a
     // misbehaving CDN handing us a runaway response.
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("read body: {e}"))?;
+    let bytes = resp.bytes().await.map_err(|e| format!("read body: {e}"))?;
     if bytes.len() > 2 * 1024 * 1024 {
-        return Err(format!("ollama.com response too large: {} bytes", bytes.len()));
+        return Err(format!(
+            "ollama.com response too large: {} bytes",
+            bytes.len()
+        ));
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
@@ -514,10 +514,7 @@ mod tests {
     #[test]
     fn description_is_truncated_at_cap() {
         let long = "a".repeat(DESC_CAP + 50);
-        let html = format!(
-            r#"<li x-test-model><h2>foo</h2><p>{}</p></li>"#,
-            long
-        );
+        let html = format!(r#"<li x-test-model><h2>foo</h2><p>{}</p></li>"#, long);
         let entries = parse_library(&html);
         assert_eq!(entries.len(), 1);
         let desc = &entries[0].description;
@@ -578,7 +575,12 @@ mod tests {
     #[test]
     fn parses_cloud_page_with_same_selectors() {
         let entries = parse_library(CLOUD_FIXTURE);
-        assert_eq!(entries.len(), 2, "expected 2 cloud cards, got {:?}", entries);
+        assert_eq!(
+            entries.len(),
+            2,
+            "expected 2 cloud cards, got {:?}",
+            entries
+        );
         assert_eq!(entries[0].name, "deepseek-v4-pro");
         assert_eq!(entries[0].capabilities, vec!["thinking", "tools"]);
     }
@@ -606,7 +608,10 @@ mod tests {
         assert_eq!(llama.len(), 1, "llama4 must be de-duplicated");
         let caps = &llama[0].capabilities;
         assert!(caps.contains(&"cloud".to_string()), "keeps cloud tag");
-        assert!(caps.contains(&"vision".to_string()), "unions library vision");
+        assert!(
+            caps.contains(&"vision".to_string()),
+            "unions library vision"
+        );
         assert!(caps.contains(&"tools".to_string()), "unions library tools");
     }
 

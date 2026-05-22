@@ -99,10 +99,7 @@ pub async fn delete_message(id: i64, app: tauri::AppHandle) -> Result<(), String
 /// `{ temperature, top_p, max_tokens, system_prompt }`. Malformed JSON is
 /// rejected — the column never holds unparseable garbage.
 #[tauri::command]
-pub async fn update_conversation_params(
-    id: i64,
-    params: Option<String>,
-) -> Result<(), String> {
+pub async fn update_conversation_params(id: i64, params: Option<String>) -> Result<(), String> {
     if let Some(p) = params.as_deref() {
         if p.len() > MAX_MESSAGE_BYTES {
             return Err("params payload too large".into());

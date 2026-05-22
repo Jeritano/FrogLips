@@ -343,7 +343,11 @@ async fn gc_old_screenshots(dir: &std::path::Path) {
         }
         if let Ok(meta) = entry.metadata().await {
             if let Ok(modified) = meta.modified() {
-                if now.duration_since(modified).map(|a| a > max_age).unwrap_or(false) {
+                if now
+                    .duration_since(modified)
+                    .map(|a| a > max_age)
+                    .unwrap_or(false)
+                {
                     let _ = tokio::fs::remove_file(entry.path()).await;
                 }
             }

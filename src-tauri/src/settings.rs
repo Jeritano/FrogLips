@@ -244,10 +244,7 @@ pub fn save(s: &Settings) -> std::io::Result<()> {
 /// same filesystem. Falls back to the temp file's cleanup on rename failure.
 fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let tmp = dir.join(format!(
-        ".settings.json.tmp-{}",
-        std::process::id()
-    ));
+    let tmp = dir.join(format!(".settings.json.tmp-{}", std::process::id()));
     {
         use std::io::Write;
         let mut f = std::fs::File::create(&tmp)?;

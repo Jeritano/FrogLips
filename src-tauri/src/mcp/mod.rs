@@ -328,10 +328,7 @@ pub async fn start_server(
                             Err(e) => {
                                 crate::diagnostics::warn_with(
                                     "mcp",
-                                    &format!(
-                                        "{}: bad JSON from server ({})",
-                                        server_name, e
-                                    ),
+                                    &format!("{}: bad JSON from server ({})", server_name, e),
                                     serde_json::json!({
                                         "server": server_name,
                                         "error": e.to_string(),

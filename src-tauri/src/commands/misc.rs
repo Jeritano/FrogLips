@@ -132,8 +132,16 @@ pub fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> {
         version = env!("CARGO_PKG_VERSION"),
         os = os_description(),
         ts = crate::crash_log::now_rfc3339(),
-        app_log = if app_log.is_empty() { "<empty>" } else { &app_log },
-        crash_log = if crash_log.is_empty() { "<empty>" } else { &crash_log },
+        app_log = if app_log.is_empty() {
+            "<empty>"
+        } else {
+            &app_log
+        },
+        crash_log = if crash_log.is_empty() {
+            "<empty>"
+        } else {
+            &crash_log
+        },
         settings = settings_section,
     );
 
@@ -176,7 +184,9 @@ const PROFILE_LONG_MAX: usize = 2048;
 /// Validate a `settings_set` patch before it is merged + persisted. Rejects
 /// unknown top-level keys, bounds `mcp_servers` entries (name shape, args/env
 /// sizes), and rejects obviously malformed `custom_backends`.
-fn validate_settings_patch(patch: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+fn validate_settings_patch(
+    patch: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     for k in patch.keys() {
         if !ALLOWED_SETTINGS_KEYS.contains(&k.as_str()) {
             return Err(format!("unknown settings key: {k}"));
@@ -185,9 +195,7 @@ fn validate_settings_patch(patch: &serde_json::Map<String, serde_json::Value>) -
 
     if let Some(mcp) = patch.get("mcp_servers") {
         if !mcp.is_null() {
-            let arr = mcp
-                .as_array()
-                .ok_or("mcp_servers must be an array")?;
+            let arr = mcp.as_array().ok_or("mcp_servers must be an array")?;
             if arr.len() > 64 {
                 return Err("too many mcp_servers (max 64)".into());
             }
@@ -215,7 +223,9 @@ fn validate_settings_patch(patch: &serde_json::Map<String, serde_json::Value>) -
                     for a in args {
                         match a.as_str() {
                             Some(s) if s.len() <= 4096 => {}
-                            Some(_) => return Err(format!("mcp_servers[{i}] arg exceeds 4096 bytes")),
+                            Some(_) => {
+                                return Err(format!("mcp_servers[{i}] arg exceeds 4096 bytes"))
+                            }
                             None => return Err(format!("mcp_servers[{i}] args must be strings")),
                         }
                     }
@@ -234,7 +244,9 @@ fn validate_settings_patch(patch: &serde_json::Map<String, serde_json::Value>) -
                         match ev.as_str() {
                             Some(s) if s.len() <= 16_384 => {}
                             Some(_) => return Err(format!("mcp_servers[{i}] env value too large")),
-                            None => return Err(format!("mcp_servers[{i}] env values must be strings")),
+                            None => {
+                                return Err(format!("mcp_servers[{i}] env values must be strings"))
+                            }
                         }
                     }
                 }
@@ -244,12 +256,17 @@ fn validate_settings_patch(patch: &serde_json::Map<String, serde_json::Value>) -
 
     if let Some(up) = patch.get("user_profile") {
         if !up.is_null() {
-            let o = up
-                .as_object()
-                .ok_or("user_profile must be an object")?;
+            let o = up.as_object().ok_or("user_profile must be an object")?;
             for k in o.keys() {
-                if !["enabled", "name", "occupation", "location", "about", "response_style"]
-                    .contains(&k.as_str())
+                if ![
+                    "enabled",
+                    "name",
+                    "occupation",
+                    "location",
+                    "about",
+                    "response_style",
+                ]
+                .contains(&k.as_str())
                 {
                     return Err(format!("user_profile: unknown field '{k}'"));
                 }
@@ -282,9 +299,7 @@ fn validate_settings_patch(patch: &serde_json::Map<String, serde_json::Value>) -
 
     if let Some(cb) = patch.get("custom_backends") {
         if !cb.is_null() {
-            let arr = cb
-                .as_array()
-                .ok_or("custom_backends must be an array")?;
+            let arr = cb.as_array().ok_or("custom_backends must be an array")?;
             if arr.len() > 64 {
                 return Err("too many custom_backends (max 64)".into());
             }
@@ -435,7 +450,9 @@ pub fn list_open_conversation_windows(app: tauri::AppHandle) -> Vec<String> {
     list_open_conversation_windows_impl(&app)
 }
 
-fn list_open_conversation_windows_impl<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<String> {
+fn list_open_conversation_windows_impl<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Vec<String> {
     // Only return labels matching our convention so callers can map them
     // back to conversation ids. The main window's "main" label is filtered.
     app.webview_windows()
@@ -479,13 +496,14 @@ mod settings_validation_tests {
         ))
         .is_err());
         // Empty command is rejected.
-        assert!(validate_settings_patch(&obj(
-            r#"{"mcp_servers":[{"name":"ok","command":""}]}"#
-        ))
-        .is_err());
+        assert!(
+            validate_settings_patch(&obj(r#"{"mcp_servers":[{"name":"ok","command":""}]}"#))
+                .is_err()
+        );
         // Oversized arg is rejected.
         let big = "a".repeat(5000);
-        let patch = format!(r#"{{"mcp_servers":[{{"name":"ok","command":"node","args":["{big}"]}}]}}"#);
+        let patch =
+            format!(r#"{{"mcp_servers":[{{"name":"ok","command":"node","args":["{big}"]}}]}}"#);
         assert!(validate_settings_patch(&obj(&patch)).is_err());
     }
 

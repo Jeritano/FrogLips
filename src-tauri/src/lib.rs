@@ -194,13 +194,8 @@ pub fn run() {
                                         "backoff_secs": backoff,
                                     }),
                                 );
-                                tokio::time::sleep(std::time::Duration::from_secs(
-                                    backoff,
-                                ))
-                                .await;
-                                if let Err(e) =
-                                    s.start(model.clone(), backend.clone()).await
-                                {
+                                tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+                                if let Err(e) = s.start(model.clone(), backend.clone()).await {
                                     diagnostics::error_with(
                                         "backend",
                                         "auto-restart launch failed",

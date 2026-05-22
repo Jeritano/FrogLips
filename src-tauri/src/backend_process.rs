@@ -437,7 +437,10 @@ mod tests {
     fn restart_attempts_are_capped() {
         // First MAX_RESTART_ATTEMPTS tries are allowed...
         for done in 0..MAX_RESTART_ATTEMPTS {
-            assert!(should_attempt_restart(done), "attempt {done} should proceed");
+            assert!(
+                should_attempt_restart(done),
+                "attempt {done} should proceed"
+            );
         }
         // ...then the watcher must give up.
         assert!(!should_attempt_restart(MAX_RESTART_ATTEMPTS));

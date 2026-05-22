@@ -510,8 +510,7 @@ mod tests {
 
     #[test]
     fn ollama_skips_blank_lines() {
-        let (acc, _) =
-            collect_ollama(&["\n\n{\"message\":{\"content\":\"z\"},\"done\":false}\n"]);
+        let (acc, _) = collect_ollama(&["\n\n{\"message\":{\"content\":\"z\"},\"done\":false}\n"]);
         assert_eq!(acc, "z");
     }
 }

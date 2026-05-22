@@ -133,7 +133,8 @@ fn pinned_no_redirect_client(
     for a in safe_addrs {
         b = b.resolve_to_addrs(host, &[*a]);
     }
-    b.build().map_err(|e| err_string(ToolError::io(e.to_string())))
+    b.build()
+        .map_err(|e| err_string(ToolError::io(e.to_string())))
 }
 
 /// Manually follow redirects with per-hop SSRF validation + DNS pinning.
@@ -228,8 +229,8 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
     // connection pinned to that hop's validated IP set, so a rebinding DNS
     // cannot point the real connection at a loopback/metadata address.
     let timeout = std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS);
-    let resp = send_following_redirects(url.clone(), timeout, |client, u| client.get(u.clone()))
-        .await?;
+    let resp =
+        send_following_redirects(url.clone(), timeout, |client, u| client.get(u.clone())).await?;
     let status = resp.status().as_u16();
 
     let (bytes, total, truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;

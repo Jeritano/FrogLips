@@ -27,7 +27,11 @@ fn rfc3339_utc(unix_secs: u64) -> String {
     // Days since 1970-01-01 (civil calendar, valid for all years we care about).
     let days = (unix_secs / 86_400) as i64;
     let secs_of_day = unix_secs % 86_400;
-    let (hh, mm, ss) = (secs_of_day / 3600, (secs_of_day % 3600) / 60, secs_of_day % 60);
+    let (hh, mm, ss) = (
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60,
+        secs_of_day % 60,
+    );
 
     // Howard Hinnant's civil-from-days algorithm.
     let z = days + 719_468;
@@ -163,7 +167,8 @@ mod tests {
 
     #[test]
     fn rotation_shrinks_oversized_file() {
-        let dir = std::env::temp_dir().join(format!("froglips-crashlog-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("froglips-crashlog-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("crash.log");
 
@@ -177,7 +182,10 @@ mod tests {
 
         let after = fs::metadata(&path).unwrap().len();
         assert!(after < before, "file should shrink after rotation");
-        assert!(after <= MAX_LOG_BYTES, "file should be within cap after rotation");
+        assert!(
+            after <= MAX_LOG_BYTES,
+            "file should be within cap after rotation"
+        );
         // Tail is preserved (still all 'x').
         let kept = fs::read(&path).unwrap();
         assert!(kept.iter().all(|&b| b == b'x'));

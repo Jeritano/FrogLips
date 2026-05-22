@@ -11,7 +11,7 @@ use indexmap::IndexMap;
 use mistralrs_core::{
     Constraint, DefaultSchedulerMethod, DeviceMapSetting, MistralRs, MistralRsBuilder, ModelDType,
     NormalLoaderBuilder, NormalRequest, NormalSpecificConfig, Request, RequestMessage, Response,
-    SamplingParams, SchedulerConfig, Tool, TokenSource, ToolChoice,
+    SamplingParams, SchedulerConfig, TokenSource, Tool, ToolChoice,
 };
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -286,9 +286,7 @@ impl NativeRuntime {
 /// Carries `role`/`content` plus, when present, the structured `tool_calls`
 /// of an assistant turn and the `name`/`tool_call_id` of a tool result —
 /// all of which the chat template needs to round-trip an agent loop.
-fn build_chat_message(
-    msg: serde_json::Value,
-) -> IndexMap<String, mistralrs_core::MessageContent> {
+fn build_chat_message(msg: serde_json::Value) -> IndexMap<String, mistralrs_core::MessageContent> {
     let mut m = IndexMap::new();
     let role = msg
         .get("role")
@@ -324,10 +322,7 @@ fn build_chat_message(
 
 /// Merge a batch of streamed `ToolCallResponse`s into the accumulator,
 /// de-duplicating by call id (the stream may repeat a completed call).
-fn collect_tool_calls(
-    acc: &mut Vec<NativeToolCall>,
-    calls: Vec<mistralrs_core::ToolCallResponse>,
-) {
+fn collect_tool_calls(acc: &mut Vec<NativeToolCall>, calls: Vec<mistralrs_core::ToolCallResponse>) {
     for c in calls {
         if acc.iter().any(|existing| existing.id == c.id) {
             continue;

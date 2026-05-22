@@ -396,11 +396,7 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
             Err(e) => {
                 crate::diagnostics::info(
                     "rag-ingest",
-                    &format!(
-                        "skipping non-utf8/unreadable {} ({})",
-                        file.display(),
-                        e
-                    ),
+                    &format!("skipping non-utf8/unreadable {} ({})", file.display(), e),
                 );
                 continue;
             }

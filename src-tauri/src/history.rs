@@ -153,7 +153,9 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     match conn.query_row(&q, params![column], |_| Ok(true)) {
         Ok(v) => Ok(v),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
-        Err(e) => Err(anyhow::anyhow!("pragma_table_info({table}.{column}) failed: {e}")),
+        Err(e) => Err(anyhow::anyhow!(
+            "pragma_table_info({table}.{column}) failed: {e}"
+        )),
     }
 }
 
@@ -1304,8 +1306,8 @@ mod tests {
     /// must then produce a usable fresh DB at the original path.
     #[test]
     fn corrupt_db_is_quarantined_and_recreated() {
-        let dir = std::env::temp_dir()
-            .join(format!("froglips-db-corrupt-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("froglips-db-corrupt-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("db.sqlite");
@@ -1368,8 +1370,8 @@ mod tests {
     /// A healthy DB must pass the integrity probe untouched.
     #[test]
     fn healthy_db_passes_integrity_check() {
-        let dir = std::env::temp_dir()
-            .join(format!("froglips-db-healthy-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("froglips-db-healthy-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("db.sqlite");
@@ -1406,9 +1408,20 @@ mod tests {
             "pinned",
             "tags",
         ] {
-            assert!(cols("conversations").contains(&c.to_string()), "conversations.{c}");
+            assert!(
+                cols("conversations").contains(&c.to_string()),
+                "conversations.{c}"
+            );
         }
-        for c in ["id", "conversation_id", "role", "content", "created_at", "model", "images"] {
+        for c in [
+            "id",
+            "conversation_id",
+            "role",
+            "content",
+            "created_at",
+            "model",
+            "images",
+        ] {
             assert!(cols("messages").contains(&c.to_string()), "messages.{c}");
         }
         for c in ["scope", "project_root"] {
@@ -1417,7 +1430,8 @@ mod tests {
     }
 
     fn user_version(conn: &Connection) -> i64 {
-        conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap()
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
     }
 
     /// A fresh DB run through the ladder lands on the final user_version with
@@ -1509,7 +1523,11 @@ mod tests {
         assert_eq!(content, "hello from the past");
         // New columns have their defaults on the migrated row.
         let pinned: i64 = conn
-            .query_row("SELECT pinned FROM conversations WHERE id = ?1", params![cid], |r| r.get(0))
+            .query_row(
+                "SELECT pinned FROM conversations WHERE id = ?1",
+                params![cid],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(pinned, 0);
     }

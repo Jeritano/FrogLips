@@ -85,8 +85,8 @@ pub fn backup_database(dest: &Path) -> Result<()> {
     let src = Connection::open(&src_path).context("open source db for backup")?;
     let mut dst = Connection::open(dest)
         .with_context(|| format!("open backup destination {}", dest.display()))?;
-    let backup = rusqlite::backup::Backup::new(&src, &mut dst)
-        .context("initialize online backup")?;
+    let backup =
+        rusqlite::backup::Backup::new(&src, &mut dst).context("initialize online backup")?;
     backup
         .run_to_completion(64, std::time::Duration::from_millis(50), None)
         .context("run online backup")?;
@@ -109,8 +109,9 @@ struct ConvRow {
 pub fn collect_export(conn: &Connection) -> Result<ExportDoc> {
     let mut conversations = Vec::new();
     {
-        let mut conv_stmt = conn
-            .prepare("SELECT id, title, model, created_at, params FROM conversations ORDER BY id")?;
+        let mut conv_stmt = conn.prepare(
+            "SELECT id, title, model, created_at, params FROM conversations ORDER BY id",
+        )?;
         let convs: Vec<ConvRow> = conv_stmt
             .query_map([], |r| {
                 Ok(ConvRow {
@@ -186,8 +187,7 @@ pub fn export_data(dest: &Path) -> Result<()> {
     let conn = get_db()?;
     let doc = collect_export(&conn)?;
     let json = serde_json::to_string_pretty(&doc).context("serialize export document")?;
-    std::fs::write(dest, json)
-        .with_context(|| format!("write export to {}", dest.display()))?;
+    std::fs::write(dest, json).with_context(|| format!("write export to {}", dest.display()))?;
     Ok(())
 }
 
@@ -204,8 +204,8 @@ pub struct ImportSummary {
 /// Parse and validate an export document from JSON text. Rejects unknown or
 /// incompatible `schema_version` values with a clear error.
 pub fn parse_export(text: &str) -> Result<ExportDoc> {
-    let doc: ExportDoc = serde_json::from_str(text)
-        .map_err(|e| anyhow!("malformed export file: {e}"))?;
+    let doc: ExportDoc =
+        serde_json::from_str(text).map_err(|e| anyhow!("malformed export file: {e}"))?;
     if doc.schema_version != SCHEMA_VERSION {
         bail!(
             "incompatible export file: schema_version {} (this build expects {})",

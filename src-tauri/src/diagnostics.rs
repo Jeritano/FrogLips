@@ -66,10 +66,7 @@ fn emit(level: DiagLevel, source: &str, message: &str, detail: Option<Value>) {
     // Route through `tracing` so the event lands in the persistent rolling
     // log at ~/.local-llm-app/app.log (and stderr, via the fmt subscriber).
     // Non-panic failures are now durable across restarts.
-    let detail_str = detail
-        .as_ref()
-        .map(|d| d.to_string())
-        .unwrap_or_default();
+    let detail_str = detail.as_ref().map(|d| d.to_string()).unwrap_or_default();
     match level {
         DiagLevel::Info => {
             tracing::info!(target: "diagnostics", source, detail = %detail_str, "{message}")
@@ -146,7 +143,12 @@ mod tests {
     fn diag_emit_without_handle_falls_back_to_stderr() {
         // Should not panic when APP_HANDLE is absent.
         emit(DiagLevel::Info, "test", "no handle", None);
-        emit(DiagLevel::Warn, "test", "no handle", Some(json!({"k": "v"})));
+        emit(
+            DiagLevel::Warn,
+            "test",
+            "no handle",
+            Some(json!({"k": "v"})),
+        );
     }
 
     #[test]
