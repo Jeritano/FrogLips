@@ -118,6 +118,36 @@ describe("placed filtering", () => {
   });
 });
 
+describe("multiple placed cards", () => {
+  it("keeps every placed card in a connected chain", () => {
+    const cards = ["a", "b", "c", "d"].map((id) => ({ ...card(id), placed: true }));
+    const graph: WorkflowGraph = {
+      cards,
+      edges: [
+        { from: "a", to: "b" },
+        { from: "b", to: "c" },
+        { from: "c", to: "d" },
+      ],
+    };
+    const order = resolveLinearOrder(graph);
+    expect(order.map((c) => c.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("validates a four-card chain as a runnable workflow", () => {
+    const cards = ["a", "b", "c", "d"].map((id) => ({ ...card(id), placed: true }));
+    const res = validateGraph({
+      cards,
+      edges: [
+        { from: "a", to: "b" },
+        { from: "b", to: "c" },
+        { from: "c", to: "d" },
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.order).toHaveLength(4);
+  });
+});
+
 describe("validateGraph", () => {
   it("returns ok with the resolved order for a valid chain", () => {
     const graph: WorkflowGraph = {

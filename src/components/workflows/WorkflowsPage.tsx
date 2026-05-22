@@ -158,11 +158,18 @@ export function WorkflowsPage({ status }: Props) {
     };
   }
 
-  // A staggered canvas position for the next created card, offset per existing
-  // placed card so multiple new cards don't stack exactly on top of each other.
+  // A genuinely separated canvas position for the next created card. Nodes are
+  // ~420px wide, so cards are laid out on a grid with enough gap that they
+  // never overlap — a left→right cascade that wraps onto a new row.
   function nextCardPosition(): { x: number; y: number } {
     const n = cards.filter((c) => c.placed !== false).length;
-    return { x: 80 + (n % 6) * 36, y: 80 + (n % 6) * 36 };
+    const COLS = 3;
+    const COL_GAP = 480;
+    const ROW_GAP = 280;
+    return {
+      x: 80 + (n % COLS) * COL_GAP,
+      y: 80 + Math.floor(n / COLS) * ROW_GAP,
+    };
   }
 
   const deleteCard = useCallback((id: string) => {

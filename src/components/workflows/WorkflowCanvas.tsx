@@ -34,6 +34,35 @@ interface Props {
 const nodeTypes: NodeTypes = { agentCard: AgentCardNode };
 
 /**
+ * Reconcile a React Flow `NodeChange` batch back onto the card model.
+ *
+ * Deletion is taken ONLY from explicit `remove` changes — a node merely absent
+ * from `applyNodeChanges` output is NOT deleted. React Flow can emit
+ * measurement/select batches before a freshly added node is in its internal
+ * store; treating that absence as a deletion would silently drop a just-created
+ * card. Positions come from the applied changes so drag moves are reflected.
+ */
+export function reconcileNodeChanges(
+  changes: NodeChange[],
+  nodes: Node<AgentCardNodeData>[],
+  cards: WorkflowCard[],
+): WorkflowCard[] {
+  const removed = new Set(
+    changes
+      .filter((c): c is Extract<NodeChange, { type: "remove" }> => c.type === "remove")
+      .map((c) => c.id),
+  );
+  const next = applyNodeChanges(changes, nodes) as Node<AgentCardNodeData>[];
+  const posById = new Map(next.map((n) => [n.id, n.position]));
+  return cards
+    .filter((c) => !removed.has(c.id))
+    .map((c) => {
+      const pos = posById.get(c.id);
+      return pos ? { ...c, x: pos.x, y: pos.y } : c;
+    });
+}
+
+/**
  * React Flow surface for the workflow graph — the "table top". Card positions
  * and edges are lifted to the parent so they can be debounced-persisted;
  * per-card run state drives the live node badges. The corner deck's top card
@@ -98,19 +127,7 @@ export function WorkflowCanvas({
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      const next = applyNodeChanges(changes, nodes) as Node<AgentCardNodeData>[];
-      // Sync position and removal (Backspace) changes back to the card model.
-      // A placed card missing from `next` was deleted; unplaced (deck) cards
-      // are never nodes, so they pass through untouched.
-      const byId = new Map(next.map((n) => [n.id, n.position]));
-      onCardsChange(
-        cards
-          .filter((c) => !c.placed || byId.has(c.id))
-          .map((c) => {
-            const pos = byId.get(c.id);
-            return pos ? { ...c, x: pos.x, y: pos.y } : c;
-          }),
-      );
+      onCardsChange(reconcileNodeChanges(changes, nodes, cards));
     },
     [nodes, cards, onCardsChange],
   );
