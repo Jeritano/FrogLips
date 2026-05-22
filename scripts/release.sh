@@ -71,7 +71,12 @@ if [[ -d "$BUILT_APP" ]]; then
   # ad-hoc sign so Gatekeeper lets the unsigned build run for the probe.
   codesign --sign - --deep --force --timestamp=none "$BUILT_APP" >/dev/null 2>&1 || true
 
-  smoke_bin="$BUILT_APP/Contents/MacOS/Froglips"
+  # The executable inside the bundle is the Cargo bin name (local-llm-app),
+  # not "Froglips" — read CFBundleExecutable so a rename can't break this.
+  smoke_exe=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+    "$BUILT_APP/Contents/Info.plist" 2>/dev/null \
+    || ls "$BUILT_APP/Contents/MacOS" | head -1)
+  smoke_bin="$BUILT_APP/Contents/MacOS/$smoke_exe"
   "$smoke_bin" >/dev/null 2>&1 &
   smoke_pid=$!
   sleep 6
