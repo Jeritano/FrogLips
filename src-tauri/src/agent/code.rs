@@ -151,7 +151,12 @@ pub async fn read_pdf(path: String, limit: Option<u64>) -> Result<PdfResult, Str
     let truncated = extracted.len() > cap;
     let bytes_read = extracted.len().min(cap) as u64;
     let content = if truncated {
-        let mut s = extracted[..cap].to_string();
+        // Clamp to a char boundary so slicing non-Latin text never panics mid-codepoint.
+        let mut boundary = cap.min(extracted.len());
+        while boundary > 0 && !extracted.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        let mut s = extracted[..boundary].to_string();
         s.push_str(&format!(
             "\n[... truncated — full text is {} chars]",
             extracted.len()

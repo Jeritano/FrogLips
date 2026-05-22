@@ -1,6 +1,9 @@
-import type { Message, ProjectPolicy } from "../../types";
+import type { Message, ProjectPolicy, ServerStatus } from "../../types";
 
 export type AgentStatus = "idle" | "thinking" | "tool" | "done" | "error";
+
+/** Backends the agent loop can run a tool-calling chat against. */
+export type AgentBackend = "ollama" | "mlx" | "native";
 
 export interface AgentMetrics {
   iterations: number;
@@ -22,6 +25,18 @@ export interface AgentRunOptions {
   messages: Message[];
   conversationId: number;
   workspaceRoot: string | null;
+  /**
+   * Which LLM backend to run the tool-calling loop against. Defaults to
+   * "ollama" when omitted (back-compat). MLX uses the OpenAI-compatible
+   * `/v1/chat/completions` endpoint; native (mistralrs) has no tool-call
+   * support and the runner rejects it before the loop starts.
+   */
+  backend?: AgentBackend;
+  /**
+   * Connection details for the MLX backend (host/port/model). Required when
+   * `backend === "mlx"`; ignored otherwise. Ollama uses a fixed local URL.
+   */
+  serverStatus?: ServerStatus | null;
   /** Optional system-prompt override (from active preset). */
   systemPromptOverride?: string;
   /** Tools the user has allowed for this conversation. Empty = all allowed. */

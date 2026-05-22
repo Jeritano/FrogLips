@@ -1,4 +1,5 @@
 import { TOOLS } from "./tools";
+import type { OpenAIToolDef } from "./mcp-tools";
 
 /* ── Dynamic system prompt ── */
 
@@ -6,14 +7,24 @@ export function buildSystemPrompt(
   workspaceRoot: string | null,
   allowlist: string[],
   override?: string,
+  mcpTools: OpenAIToolDef[] = [],
 ): string {
-  const tools = allowlist.length
+  // Built-in tools the model may call, filtered by the active allowlist.
+  const builtIn = allowlist.length
     ? TOOLS.filter((t) => allowlist.includes(t.function.name)).map((t) => t.function.name)
     : TOOLS.map((t) => t.function.name);
+  // MCP tools are subject to the same allowlist; when one is callable the
+  // model must be told it exists, with a one-line description so it knows
+  // when to reach for it.
+  const mcp = (allowlist.length
+    ? mcpTools.filter((t) => allowlist.includes(t.function.name))
+    : mcpTools
+  ).map((t) => `${t.function.name} — ${t.function.description}`);
   const ws = workspaceRoot
     ? `Workspace root: ${workspaceRoot} — all file access is confined to this directory.`
     : "No workspace root set — you have full filesystem access (within OS permissions).";
-  const env = `${ws}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\nAvailable tools: ${tools.join(", ")}`;
+  const mcpBlock = mcp.length ? `\nMCP tools: ${mcp.join("; ")}` : "";
+  const env = `${ws}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}`;
   if (override && override.trim()) {
     return `${override.trim()}\n\n${env}`;
   }

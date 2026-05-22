@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import type { AllModels, ModelEntry, ServerStatus } from "../types";
 
@@ -37,8 +38,26 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [nativeRepo, setNativeRepo] = useState<string | null>(null);
+  // Native models load in-process (no host:port), so their progress only
+  // surfaces via Tauri events rather than the polled ServerStatus.
+  const [nativeLoading, setNativeLoading] = useState<string | null>(null);
 
   useEffect(() => { loadModels(); }, []);
+
+  useEffect(() => {
+    const unlisten: Array<() => void> = [];
+    let mounted = true;
+    listen<string>("native-loading", (e) => {
+      if (mounted) setNativeLoading(e.payload);
+    }).then((u) => { if (mounted) unlisten.push(u); else u(); });
+    listen<string>("native-loaded", () => {
+      if (mounted) setNativeLoading(null);
+    }).then((u) => { if (mounted) unlisten.push(u); else u(); });
+    return () => {
+      mounted = false;
+      unlisten.forEach((u) => u());
+    };
+  }, []);
 
   async function loadModels() {
     try {
@@ -62,6 +81,11 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
     }
   }, [status, models]);
 
+  // Tracks the desiredModel value already restored, so a restore that can't
+  // run yet (models still loading) retries once models arrive — even if
+  // status.running flipped true in between.
+  const appliedDesiredRef = useRef<string | null>(null);
+
   // Restore the model used in the currently-selected conversation. Fires
   // whenever the parent passes a new `desiredModel` (i.e. user clicked
   // another conversation in the sidebar). Skips the swap if:
@@ -70,15 +94,31 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   //   - the model is already what's running/selected (no-op)
   //   - a model is currently running (don't yank under the user's feet)
   useEffect(() => {
-    if (!desiredModel) return;
+    if (!desiredModel) {
+      appliedDesiredRef.current = null;
+      return;
+    }
+    // A fresh desiredModel resets the applied marker so the new value gets
+    // its own restore attempt.
+    if (appliedDesiredRef.current !== desiredModel) {
+      appliedDesiredRef.current = null;
+    }
     if (status?.running) return;
-    if (selected?.id === desiredModel) return;
+    if (selected?.id === desiredModel) {
+      appliedDesiredRef.current = desiredModel;
+      return;
+    }
+    if (appliedDesiredRef.current === desiredModel) return;
     const all = [...models.mlx, ...models.ollama];
     const match = all.find((m) => m.id === desiredModel);
-    if (match) setSelected(match);
-    // Not found = stale conv config. Silent — picker keeps whatever was
-    // there. User stays in control.
-  }, [desiredModel, models, status?.running]);
+    if (match) {
+      setSelected(match);
+      appliedDesiredRef.current = desiredModel;
+    }
+    // Not found yet = models may still be loading; leave the marker unset so
+    // the effect retries when `models` populates. Stale config silently
+    // keeps whatever was there once models are confirmed loaded.
+  }, [desiredModel, models, selected, status?.running]);
 
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const v = e.target.value;
@@ -224,11 +264,13 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
           aria-label={status?.running ? "Server running" : "Server stopped"}
         />
         <span className="status-text">
-          {status?.running
-            ? status.ready
-              ? `${status.backend} · ${status.model}`
-              : `loading · ${status.backend} · ${status.model}`
-            : "stopped"}
+          {nativeLoading
+            ? `loading · native · ${nativeLoading}`
+            : status?.running
+              ? status.ready
+                ? `${status.backend} · ${status.model}`
+                : `loading · ${status.backend} · ${status.model}`
+              : "stopped"}
         </span>
         {err && <div className="error">{err}</div>}
       </div>

@@ -109,9 +109,9 @@ const ToolCallBlockMemo = memo(ToolCallBlock);
 const ToolResultBlockMemo = memo(ToolResultBlock);
 
 function MessageActions({
-  msg, isLast, onRegenerate, onEditUser,
+  msg, isLast, isLastUser, onRegenerate, onEditUser,
 }: {
-  msg: Message; isLast: boolean;
+  msg: Message; isLast: boolean; isLastUser: boolean;
   onRegenerate?: () => void;
   onEditUser?: (m: Message) => void;
 }) {
@@ -134,7 +134,7 @@ function MessageActions({
           ↻ Regenerate
         </button>
       )}
-      {msg.role === "user" && isLast && onEditUser && (
+      {msg.role === "user" && isLastUser && onEditUser && (
         <button className="msg-action" title="Edit and retry" onClick={() => onEditUser(msg)}>
           Edit
         </button>
@@ -147,6 +147,8 @@ interface RowProps {
   msg: Message;
   divider: Row["divider"];
   isLast: boolean;
+  /** True iff this is the most recent user-role message in the list. */
+  isLastUser: boolean;
   isPinned: boolean;
   isPinning: boolean;
   onPin: (m: Message, key: string, scope: MemoryScope) => void;
@@ -162,7 +164,7 @@ interface RowProps {
   onFork?: (m: Message) => void;
 }
 
-function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowKey, canPinProject, canPinConversation, onRegenerate, onEditUser, canFork, onFork }: RowProps) {
+function MessageRowImpl({ msg, divider, isLast, isLastUser, isPinned, isPinning, onPin, rowKey, canPinProject, canPinConversation, onRegenerate, onEditUser, canFork, onFork }: RowProps) {
   if (msg.role === "tool") {
     return <ToolResultBlockMemo name={msg.tool_name} content={msg.content} />;
   }
@@ -204,7 +206,7 @@ function MessageRowImpl({ msg, divider, isLast, isPinned, isPinning, onPin, rowK
         ) : (
           <div className="content markdown" dangerouslySetInnerHTML={{ __html: cachedMarkdown(msg.content) }} />
         )}
-        <MessageActions msg={msg} isLast={isLast} onRegenerate={onRegenerate} onEditUser={onEditUser} />
+        <MessageActions msg={msg} isLast={isLast} isLastUser={isLastUser} onRegenerate={onRegenerate} onEditUser={onEditUser} />
         <PinControl
           msg={msg}
           rowKey={rowKey}
@@ -347,7 +349,7 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
     };
   }, [messages.length, streaming, agentStatus]);
 
-  const { rows, lastAsstModel, finalPrevAsst } = useMemo(() => {
+  const { rows, lastAsstModel } = useMemo(() => {
     let prev: string | null = null;
     const out: Row[] = messages.map((m, i) => {
       let divider: Row["divider"] = null;
@@ -359,6 +361,10 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
       }
       return { msg: m, key: keyFor(m, i), divider };
     });
+    // Last assistant model anywhere in history, INCLUDING tool turns. The
+    // streaming divider keys off this so a history ending on a tool turn
+    // (e.g. after a fork/regenerate) doesn't flash a false "Switched to"
+    // banner — `prev` would be stale there because it ignores tool turns.
     let last: string | null = null;
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === "assistant" && messages[i].model) {
@@ -366,7 +372,7 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
         break;
       }
     }
-    return { rows: out, lastAsstModel: last, finalPrevAsst: prev };
+    return { rows: out, lastAsstModel: last };
   }, [messages]);
 
   // Stabilize the pin handler so MessageRow's memo doesn't bust each render.
@@ -403,6 +409,13 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
   // an in-flight (still-streaming) message has no id to use as the cutoff.
   const canForkBase = conversationId != null && !!onFork;
 
+  // Index of the most recent user message — the Edit affordance attaches
+  // here even when an assistant reply follows it.
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") { lastUserIdx = i; break; }
+  }
+
   const showEndFooter =
     messages.length > 0 && streaming === undefined && agentStatus === "idle" && lastAsstModel;
   const modelMatches = currentModel && lastAsstModel && currentModel === lastAsstModel;
@@ -415,6 +428,7 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
             msg={m}
             divider={divider}
             isLast={idx === rows.length - 1}
+            isLastUser={idx === lastUserIdx}
             isPinned={pinned.has(k)}
             isPinning={pinning === k}
             onPin={pin}
@@ -431,11 +445,11 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
 
       {streaming !== undefined && (
         <>
-          {currentModel && finalPrevAsst !== currentModel && (
-            <div className={`model-divider ${finalPrevAsst === null ? "start" : "change"}`}>
+          {currentModel && lastAsstModel !== currentModel && (
+            <div className={`model-divider ${lastAsstModel === null ? "start" : "change"}`}>
               <span className="model-divider-line" />
               <span className="model-divider-label">
-                {finalPrevAsst === null ? "Started with" : "Switched to"} <code>{currentModel}</code>
+                {lastAsstModel === null ? "Started with" : "Switched to"} <code>{currentModel}</code>
               </span>
               <span className="model-divider-line" />
             </div>

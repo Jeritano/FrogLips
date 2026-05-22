@@ -11,6 +11,15 @@ use super::fs::{err_string, validate_for_read, workspace_root_clone, ToolError, 
 
 const SHELL_TIMEOUT_SECS: u64 = 30;
 
+/// Largest char-boundary index <= `max` so `String::truncate` never panics mid-codepoint.
+fn safe_truncate_idx(s: &str, max: usize) -> usize {
+    let mut idx = max.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 /* ── Shell result ────────────────────────────────────────────────────────── */
 
 #[derive(Serialize, Clone)]
@@ -106,11 +115,11 @@ pub async fn run_shell(
         let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         if stdout.len() > MAX_SHELL_OUTPUT {
-            stdout.truncate(MAX_SHELL_OUTPUT);
+            stdout.truncate(safe_truncate_idx(&stdout, MAX_SHELL_OUTPUT));
             stdout.push_str("\n[truncated]");
         }
         if stderr.len() > MAX_SHELL_OUTPUT {
-            stderr.truncate(MAX_SHELL_OUTPUT);
+            stderr.truncate(safe_truncate_idx(&stderr, MAX_SHELL_OUTPUT));
             stderr.push_str("\n[truncated]");
         }
         Ok(ShellResult {

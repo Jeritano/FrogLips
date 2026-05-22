@@ -129,6 +129,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(null);
   const [quickToast, setQuickToast] = useState<{ reply: string; error: string | null } | null>(null);
+  // Edit-and-retry: holds the user message being edited plus its draft text.
+  const [editState, setEditState] = useState<{ msg: Message; text: string } | null>(null);
   const activePreset = presets.find((p) => p.id === activePresetId) ?? presets[0];
   const abortRef = useRef<AbortController | null>(null);
   const creatingConvRef = useRef<Promise<Conversation> | null>(null);
@@ -185,7 +187,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   useEffect(() => {
     let off: UnlistenFn | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    listen<{ reply: string; error: string | null }>("quick-prompt-completed", (e) => {
+    listen<{ op_id: string; reply: string; model: string | null; backend: string | null; error: string | null }>("quick-prompt-completed", (e) => {
       const payload = e.payload;
       setQuickToast({ reply: payload.reply ?? "", error: payload.error ?? null });
       if (timeout) clearTimeout(timeout);
@@ -472,7 +474,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     const historyForApi: Message[] = [...systemPreamble, ...baseHistory];
 
     /* ── Agent mode ── */
-    if (agentMode && status.backend === "ollama") {
+    if (agentMode && agentAvailable) {
       if (isStreamConvActive()) setAgentStatus("thinking");
       try {
         setAgentMetrics(null);
@@ -498,6 +500,9 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           messages: historyForApi,
           conversationId: conv.id,
           workspaceRoot,
+          // Gated by `agentAvailable` above, so backend is "ollama" | "mlx".
+          backend: status.backend === "mlx" ? "mlx" : "ollama",
+          serverStatus: status,
           projectPolicy,
           systemPromptOverride: activePreset?.systemPromptOverride,
           toolAllowlist: effectiveAllowlist,
@@ -715,7 +720,15 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   }
 
   const isWorking = streaming !== undefined || agentStatus === "thinking" || agentStatus === "tool";
-  const agentAvailable = status?.backend === "ollama";
+  // Agent mode (tool-calling loop) runs on Ollama and MLX. The native
+  // (mistralrs) backend has no tool-call support — agent mode is disabled.
+  const agentAvailable = status?.backend === "ollama" || status?.backend === "mlx";
+
+  // When the backend changes to one that can't do agent mode, drop the
+  // agent toggle so send() never silently falls through to plain streaming.
+  useEffect(() => {
+    if (!agentAvailable && agentMode) setAgentMode(false);
+  }, [agentAvailable, agentMode]);
 
   // Stable handler identity for MessageRow's React.memo. The closure always
   // sees the latest state via a ref-style indirection: we refresh the inner
@@ -756,6 +769,43 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     };
   });
   const onRegenerate = useCallback(() => handleRegenerateRef.current?.(), []);
+
+  // Edit-and-retry. Opens a small editor seeded with the user message's
+  // current text; on submit we truncate everything from that message onward
+  // (mirroring regenerate) and resend with the edited text.
+  const onEditUser = useCallback((msg: Message) => {
+    if (isWorking) return;
+    setEditState({ msg, text: msg.content });
+  }, [isWorking]);
+
+  async function submitEdit() {
+    if (!editState || isWorking || !conversation) return;
+    const { msg, text } = editState;
+    const newText = text.trim();
+    setEditState(null);
+    if (!newText) return;
+    const editIdx = messages.findIndex(
+      (m) => (msg.id != null && m.id === msg.id) || (msg._tmpKey && m._tmpKey === msg._tmpKey),
+    );
+    if (editIdx === -1) return;
+    // Delete the edited user message and everything after it from the DB.
+    for (let i = editIdx; i < messages.length; i++) {
+      const id = messages[i]?.id;
+      if (id != null) {
+        try { await api.deleteMessage(id); } catch (err) {
+          logDiag({
+            level: "warn",
+            source: "chat-window",
+            message: `edit: deleteMessage(${id}) failed — proceeding anyway`,
+            detail: err,
+          });
+        }
+      }
+    }
+    const truncated = messages.slice(0, editIdx);
+    setMessages(truncated);
+    await send(newText, truncated);
+  }
 
   // Citation chip click handler — event-delegated at the chat-window root.
   // `.citation-chip` anchors are emitted by the markdown post-processor with
@@ -801,6 +851,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         currentModel={status?.running ? status.model : null}
         agentStatus={agentStatus}
         onRegenerate={onRegenerate}
+        onEditUser={onEditUser}
         onFork={async (msg) => {
           // Fork-from-here. The button already confirmed with the user; we
           // just need the persisted message id + current conv id. Missing
@@ -891,7 +942,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             className={`agent-toggle ${agentMode ? "active" : ""}`}
             onClick={() => setAgentMode((v) => !v)}
             disabled={isWorking || !agentAvailable}
-            title={agentAvailable ? "Toggle agent mode (tool calling)" : "Agent mode requires Ollama backend"}
+            title={agentAvailable ? "Toggle agent mode (tool calling)" : "Agent mode requires the Ollama or MLX backend"}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
@@ -1092,6 +1143,53 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               <button className="agent-confirm-deny" onClick={cancelAskUser}>Cancel</button>
               <button className="agent-confirm-allow" onClick={submitAskUser} disabled={!askUserAnswer.trim()}>
                 Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit-and-retry modal */}
+      {editState && (
+        <div
+          className="agent-confirm-overlay"
+          data-testid="edit-message-modal"
+          onClick={(e) => e.target === e.currentTarget && setEditState(null)}
+        >
+          <div className="agent-confirm-box">
+            <div className="agent-confirm-title">Edit message</div>
+            <textarea
+              className="ask-user-input"
+              value={editState.text}
+              onChange={(e) => setEditState((s) => (s ? { ...s, text: e.target.value } : s))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  submitEdit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setEditState(null);
+                }
+              }}
+              placeholder="Edit your message (Cmd+Enter to resend, Esc to cancel)…"
+              autoFocus
+              rows={4}
+              style={{
+                width: "100%", boxSizing: "border-box",
+                background: "var(--surface)", color: "var(--text)",
+                border: "1px solid var(--border)", borderRadius: 6,
+                padding: 8, fontSize: 13, fontFamily: "inherit", resize: "vertical",
+              }}
+            />
+            <div className="agent-confirm-actions">
+              <button className="agent-confirm-deny" onClick={() => setEditState(null)}>Cancel</button>
+              <button
+                data-testid="edit-message-submit"
+                className="agent-confirm-allow"
+                onClick={submitEdit}
+                disabled={!editState.text.trim()}
+              >
+                Resend
               </button>
             </div>
           </div>

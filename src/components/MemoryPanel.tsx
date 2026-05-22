@@ -83,7 +83,10 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
     }
   }, []);
 
-  useEffect(() => { if (open) refresh(); }, [open, refreshToken, refresh]);
+  // Refresh on open AND on every refreshToken bump — even while collapsed —
+  // so the count badge (active.length / pending.length) stays accurate after
+  // onMemoriesChanged fires without the panel needing to be opened first.
+  useEffect(() => { refresh(); }, [open, refreshToken, refresh]);
 
   function changeMode(m: MemoryMode) {
     setMode(m);

@@ -46,9 +46,20 @@ function buildSubOpts(
   prompt: string,
   presetSystemPromptOverride: string | undefined,
   presetAllowedTools: string[] | undefined,
+  /**
+   * True when the caller explicitly chose a preset. An explicit preset owns
+   * its tool scope: an empty `allowedTools` then means "all tools" (e.g. the
+   * `general` preset) — NOT "inherit the parent's restriction".
+   */
+  presetChosen: boolean,
   depth: number,
   childSignal: AbortSignal,
 ): AgentRunOptions {
+  // Explicit preset → use its allowlist verbatim (empty = all tools).
+  // No preset → inherit the parent's allowlist.
+  const toolAllowlist = presetChosen
+    ? (presetAllowedTools ?? [])
+    : parent.toolAllowlist;
   return {
     model: parent.model,
     messages: [
@@ -56,10 +67,10 @@ function buildSubOpts(
     ],
     conversationId: parent.conversationId,
     workspaceRoot: parent.workspaceRoot,
+    backend: parent.backend,
+    serverStatus: parent.serverStatus,
     systemPromptOverride: presetSystemPromptOverride ?? parent.systemPromptOverride,
-    toolAllowlist: presetAllowedTools && presetAllowedTools.length
-      ? presetAllowedTools
-      : parent.toolAllowlist,
+    toolAllowlist,
     approveAllShell: parent.approveAllShell,
     approveAllWrite: parent.approveAllWrite,
     dryRun: parent.dryRun,
@@ -124,6 +135,7 @@ export async function runSubagent(
     prompt,
     chosen?.systemPromptOverride,
     chosen?.allowedTools,
+    chosen != null,
     depth,
     childAbort.signal,
   );
@@ -170,6 +182,7 @@ export async function spawnSubagentAsync(
     prompt,
     chosen?.systemPromptOverride,
     chosen?.allowedTools,
+    chosen != null,
     depth,
     childAbort.signal,
   );

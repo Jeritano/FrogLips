@@ -13,7 +13,7 @@ import {
   toolCallSig,
 } from "./dispatch";
 import { buildSystemPrompt } from "./system-prompt";
-import { OLLAMA_BASE, RETRY_BACKOFF_MS, RETRY_MAX, streamOllamaChat, toOllamaMessages } from "./ollama-client";
+import { agentBackendUnsupportedReason, streamAgentChat } from "./agent-chat";
 import { awaitSubagents, listSubagents, runSubagent, spawnSubagentAsync } from "./subagent";
 import { fetchMcpTools } from "./mcp-tools";
 import { api } from "../tauri-api";
@@ -184,13 +184,22 @@ function recordSessionMetricsSafe(conversationId: number, metrics: AgentMetrics)
 
 export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null> {
   const {
-    model, onUpdate, onStatusChange, onMetrics, onAssistantDelta, requestConfirmation, signal,
+    onUpdate, onStatusChange, onMetrics, onAssistantDelta, requestConfirmation, signal,
     workspaceRoot, systemPromptOverride,
     toolAllowlist = [], approveAllShell, approveAllWrite,
     approvedShellPrefixes = [], onApproveShellPrefix,
     dryRun = false,
   } = opts;
   const msgs: Message[] = [...opts.messages];
+
+  // Fail loudly before the loop starts if the active backend can't do
+  // tool-calling. Native (mistralrs) has no tool support — surface a clear
+  // error rather than silently degrading to plain streaming.
+  const backendReason = agentBackendUnsupportedReason(opts.backend ?? "ollama");
+  if (backendReason) {
+    onStatusChange("error");
+    throw new Error(backendReason);
+  }
 
   // Project policy: either explicitly supplied (tests / subagents) or loaded
   // lazily from the workspace cwd. Failures are swallowed so a missing
@@ -207,13 +216,6 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       projectPolicy = null;
     }
   }
-
-  const sysMsg: Message = {
-    conversation_id: opts.conversationId,
-    role: "system",
-    content: buildSystemPrompt(workspaceRoot, toolAllowlist, systemPromptOverride),
-  };
-  msgs.unshift(sysMsg);
 
   const metrics: AgentMetrics = {
     iterations: 0,
@@ -234,6 +236,15 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   // Discover MCP-provided tools once per run. Failures are swallowed inside
   // fetchMcpTools so the loop never blocks on a broken server.
   const mcpTools = await fetchMcpTools();
+
+  // System prompt built after MCP discovery so the "Available tools" section
+  // can name MCP tools — the model is otherwise never told they exist.
+  const sysMsg: Message = {
+    conversation_id: opts.conversationId,
+    role: "system",
+    content: buildSystemPrompt(workspaceRoot, toolAllowlist, systemPromptOverride, mcpTools),
+  };
+  msgs.unshift(sysMsg);
 
   // Wrap the rest of the run in a try/finally so the session-metrics row is
   // written exactly once regardless of how we exit (completion, abort,
@@ -277,47 +288,23 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
 
     let result: { content: string; tool_calls: ToolCall[]; prompt_eval_count?: number; eval_count?: number };
     try {
-      let lastErr: unknown = null;
-      let finalResult:
-        | { content: string; tool_calls: ToolCall[]; prompt_eval_count?: number; eval_count?: number }
-        | null = null;
-      for (let attempt = 0; attempt <= RETRY_MAX; attempt++) {
-        if (signal.aborted) return null;
-        try {
-          // Reset the placeholder's content on retry so the bubble doesn't
-          // duplicate partial text from a half-streamed previous attempt.
+      result = await streamAgentChat(
+        opts,
+        msgs.filter((m) => m._tmpKey !== streamingKey),
+        tools,
+        signal,
+        (delta) => {
+          streamingMsg.content += delta;
+          onAssistantDelta?.(delta);
+          onUpdate([...msgs]);
+        },
+        () => {
+          // Retry fired — bump the counter and reset the placeholder so the
+          // bubble doesn't duplicate text from the half-streamed attempt.
+          metrics.retries++;
           streamingMsg.content = "";
-          finalResult = await streamOllamaChat(
-            `${OLLAMA_BASE}/api/chat`,
-            {
-              model,
-              options: { temperature: 0.4 },
-              messages: toOllamaMessages(msgs.filter((m) => m._tmpKey !== streamingKey)),
-              tools,
-            },
-            signal,
-            (delta) => {
-              streamingMsg.content += delta;
-              onAssistantDelta?.(delta);
-              onUpdate([...msgs]);
-            },
-          );
-          break;
-        } catch (e) {
-          lastErr = e;
-          if (signal.aborted) throw e;
-          const msgErr = e instanceof Error ? e.message : String(e);
-          const isRetriable = /Ollama 5\d\d:/.test(msgErr) || !/Ollama \d{3}:/.test(msgErr);
-          if (isRetriable && attempt < RETRY_MAX) {
-            metrics.retries++;
-            await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
-            continue;
-          }
-          throw e;
-        }
-      }
-      if (!finalResult) throw lastErr ?? new Error("Ollama call failed");
-      result = finalResult;
+        },
+      );
     } catch (e) {
       // Drop the streaming placeholder so error paths don't leak a stub bubble.
       if (streamPushed) {

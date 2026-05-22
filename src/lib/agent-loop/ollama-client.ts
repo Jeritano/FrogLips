@@ -49,7 +49,7 @@ export interface StreamChatResult {
   eval_count?: number;
 }
 
-interface PartialToolCall {
+export interface PartialToolCall {
   id?: string;
   type?: "function";
   function: {
@@ -64,9 +64,10 @@ interface PartialToolCall {
  * tool_calls in pieces — first a slot with `function.name`, then later slots
  * with additional `function.arguments` text — keyed by array index.
  * Some servers emit `arguments` as a string fragment (concat), others as a
- * full object (replace). We handle both.
+ * full object (replace). We handle both. The OpenAI streaming format
+ * (MLX) emits tool_calls the same way, so this helper is shared.
  */
-function mergeToolCallChunk(
+export function mergeToolCallChunk(
   acc: PartialToolCall[],
   index: number,
   chunk: Partial<ToolCall> & { function?: Partial<ToolCall["function"]> },
@@ -97,10 +98,13 @@ function mergeToolCallChunk(
   }
 }
 
-function finalizeToolCalls(acc: PartialToolCall[]): ToolCall[] {
+export function finalizeToolCalls(acc: PartialToolCall[]): ToolCall[] {
   const out: ToolCall[] = [];
   for (const slot of acc) {
     if (!slot) continue;
+    // Drop slots whose name never arrived — a nameless tool_call is
+    // unroutable and would crash dispatch / pollute the audit log.
+    if (!slot.function.name) continue;
     let args: Record<string, unknown> | string = "";
     if (slot.function._argStr !== undefined) {
       // String form — try to JSON.parse, fall back to raw string (dispatch.parseArgs handles both).

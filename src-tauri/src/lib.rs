@@ -363,15 +363,12 @@ async fn add_message(
 
 #[tauri::command]
 async fn delete_message(id: i64, app: tauri::AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || history::delete_message(id))
+    let conversation_id = tauri::async_runtime::spawn_blocking(move || history::delete_message(id))
         .await
         .map_err(map_err)?
         .map_err(map_err)?;
-    // We don't know the conv id post-delete; broadcast id=-1 as a wildcard
-    // "something changed, re-fetch if you care" hint. Receivers ignore
-    // unknown ids (their conv id check fails) so the cost is one cheap
-    // event per delete.
-    let _ = app.emit("conversation-updated", -1i64);
+    // Broadcast the real conversation id so a detached window viewing it refreshes.
+    let _ = app.emit("conversation-updated", conversation_id);
     Ok(())
 }
 

@@ -389,7 +389,7 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "task_create",
-      description: "Start a long-running shell command in the background. Returns a task_id immediately. Use task_status/task_result/task_cancel to inspect.",
+      description: "Start a long-running shell command in the background. Returns a task_id immediately. Use task_status to check progress and read output, task_list to see all tasks, and task_cancel to stop one.",
       parameters: {
         type: "object",
         properties: {

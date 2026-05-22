@@ -301,10 +301,16 @@ pub fn delete_conversation(id: i64) -> Result<()> {
     Ok(())
 }
 
-pub fn delete_message(id: i64) -> Result<()> {
+/// Returns the conversation_id of the deleted message so callers can scope refresh events.
+pub fn delete_message(id: i64) -> Result<i64> {
     let conn = get_db()?;
+    let conv_id: i64 = conn.query_row(
+        "SELECT conversation_id FROM messages WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )?;
     conn.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
-    Ok(())
+    Ok(conv_id)
 }
 
 pub fn rename_conversation(id: i64, title: &str) -> Result<()> {

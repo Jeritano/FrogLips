@@ -28,12 +28,21 @@ const MODE_KEY = "froglips.memoryMode";
 let _embedModel = DEFAULT_EMBED_MODEL;
 let _recallThreshold = DEFAULT_RECALL_THRESHOLD;
 
+// A cosine-similarity threshold must stay strictly inside (0,1): 0 matches
+// everything, 1 matches nothing. Clamp into a usable open interval rather
+// than silently discarding an out-of-range value the UI slider can produce.
+const RECALL_THRESHOLD_MIN = 0.05;
+const RECALL_THRESHOLD_MAX = 0.95;
+
 export function configureMemory(opts: { embeddingModel?: string | null; recallThreshold?: number | null }) {
   if (opts.embeddingModel && typeof opts.embeddingModel === "string") {
     _embedModel = opts.embeddingModel;
   }
-  if (typeof opts.recallThreshold === "number" && opts.recallThreshold > 0 && opts.recallThreshold < 1) {
-    _recallThreshold = opts.recallThreshold;
+  if (typeof opts.recallThreshold === "number" && Number.isFinite(opts.recallThreshold)) {
+    _recallThreshold = Math.min(
+      RECALL_THRESHOLD_MAX,
+      Math.max(RECALL_THRESHOLD_MIN, opts.recallThreshold),
+    );
   }
 }
 
