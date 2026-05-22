@@ -194,7 +194,42 @@ While the agent is running, a small pill shows `i<iters>·t<tools>·llm<ms>·too
 
 ⌖ Tools button in the agent toolbar opens a slide-out panel listing every tool call in the current conversation with name, ok/err status badge, collapsible args + JSON result. Useful for debugging agent runs.
 
-## 7. Per-conversation model parameters
+## 7. Workflows
+
+Workflows turn single agents into multi-agent pipelines. Open it from the
+sidebar (the 🧩 Workflows entry).
+
+- **Create a workflow** — click **+ New workflow**, give it a name.
+- **The table-top** — the open canvas is your workspace. A **card deck** sits in
+  the corner; the top card is the "new agent" affordance.
+- **Add an agent** — click the deck's top card. A centered form opens: pick a
+  name (auto-generated, editable), a role/preset, a model (defaults to the
+  system default), a prompt, and an optional tool allowlist and schedule. Save
+  and the configured card lands on the canvas.
+- **Wire the chain** — drag from one card's right handle to the next card's
+  left handle. The chain runs left→right; each card's final output is handed to
+  the next card as its input.
+- **Run** — **Run workflow** runs the whole chain; a single card's **Run**
+  button runs just that card (disabled for mid-chain cards, which have no
+  upstream input on their own).
+- **Schedule** — a card with a schedule triggers the workflow unattended. A
+  card must explicitly opt into `unattended` for its declared tools to
+  auto-approve on a scheduled run; everything else still hits the deny-all gate.
+
+## 8. About You
+
+The **About You** profile tells the model who you are. Open it from the topbar
+menu (☰ → 👤 About You).
+
+- Fill in any of: name, what you do, location, a free-text "anything else", and
+  how you want the AI to respond.
+- Tick **Use my profile** to enable it.
+- When enabled, the profile is formatted into a system-prompt block injected
+  into **every chat and every workflow agent run**, so responses fit you.
+- It is stored locally in `settings.json`, never auto-populated, and never sent
+  anywhere except to the model you are already chatting with.
+
+## 9. Per-conversation model parameters
 
 Each conversation can carry its own model-parameter overrides. Open the params
 panel (the sliders/⚙-style control by the composer) to set any of:
@@ -209,7 +244,7 @@ A small **context-usage meter** sits by the composer, showing how much of the
 model's context window the current conversation is using so you can see when
 you're approaching the limit.
 
-## 8. Organizing conversations
+## 10. Organizing conversations
 
 - **Auto-titling**: a new conversation is automatically titled from your first
   message, so the sidebar reads as real titles instead of a wall of
@@ -224,12 +259,12 @@ you're approaching the limit.
   **Undo** and the conversation and all its messages come back; ignore it and
   the delete finalizes.
 
-## 9. Conversation export + per-message actions
+## 11. Conversation export + per-message actions
 
 - **Export**: ⤓ Export button in the agent toolbar saves the current conversation as Markdown (timestamps, model tags, tool calls + results included).
 - **Per-message actions**: hover any message — Copy (clipboard), Regenerate (assistant only, deletes the prior pair and re-asks), Edit (user only — drafts your last prompt back into the input so you can change it and resend).
 
-## 10. Themes + keyboard shortcuts
+## 12. Themes + keyboard shortcuts
 
 - ☀/☾ in sidebar toggles **light/dark theme**. Persisted across restarts.
 - **Sidebar collapse**: a collapse/expand toggle hides the conversation sidebar to give the chat full width. State is remembered.
@@ -242,15 +277,15 @@ you're approaching the limit.
 - Cmd+L — open model library
 - Cmd+K — focus model picker
 
-## 11. Voice input
+## 13. Voice input
 
 Click the microphone icon next to the chat input. Uses Web Speech API. Speak, then click again to stop. Manual edits while listening are preserved — the transcript rebases around them. Recognized speech segments are joined with proper spacing.
 
-## 12. File drag-drop
+## 14. File drag-drop
 
 Drag any text file into the chat input area. Its path gets attached. The model sees the path in context. Total attached bytes capped at 1 MiB per turn.
 
-## 13. Diagnostics, backup, and crash logs
+## 15. Diagnostics, backup, and crash logs
 
 Open the **Diagnostics** panel from the menu.
 
@@ -270,7 +305,7 @@ Your data also self-protects: on startup Froglips integrity-checks the
 database and, if it finds corruption, quarantines the bad file and starts
 fresh instead of failing to launch.
 
-## 14. Updates
+## 16. Updates
 
 Two ways to get a new version:
 
@@ -279,7 +314,7 @@ Two ways to get a new version:
 
 Updates are minisign-signed; the public key is embedded in the app. A tampered build will fail verification and refuse to install.
 
-## 15. Troubleshooting
+## 17. Troubleshooting
 
 **Model picker shows nothing**
 Load a model first: model dropdown → **⚡ Load a HuggingFace model natively…** and enter a repo id. Until a model has finished loading, the picker has nothing to show.
