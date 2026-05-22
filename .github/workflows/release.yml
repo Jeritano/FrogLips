@@ -112,6 +112,16 @@ jobs:
           MAC_ARM=$(find_one '*aarch64*.app.tar.gz')
           MAC_ARM_SIG=$(find_one '*aarch64*.app.tar.gz.sig')
 
+          # Fail loudly instead of publishing a manifest with an empty
+          # `platforms` map. A missing signature here almost always means the
+          # build job ran without TAURI_SIGNING_PRIVATE_KEY — shipping the
+          # resulting latest.json would silently break the in-app updater for
+          # everyone on the previous version.
+          if [ -z "$MAC_ARM" ] || [ ! -s "$MAC_ARM" ] || [ -z "$MAC_ARM_SIG" ] || [ ! -s "$MAC_ARM_SIG" ]; then
+            echo "::error::missing signed mac-arm64 artifact"
+            exit 1
+          fi
+
           export VERSION PUB_DATE BASE_URL MAC_ARM MAC_ARM_SIG
 
           python3 <<'PY' > release-assets/latest.json

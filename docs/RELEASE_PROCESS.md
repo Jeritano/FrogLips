@@ -38,7 +38,7 @@ This script (`scripts/release.sh`):
 
 1. Kills any running `Froglips.app` (so DMG bundling can mount cleanly)
 2. Exports `TAURI_SIGNING_PRIVATE_KEY=~/.tauri/froglips.key` if present
-3. Runs `npm run tauri build -- --features native-inference` (set `FROGLIPS_SKIP_NATIVE=1` to build a lean ~14 MB binary without mistralrs / candle / Metal kernels — useful for fast iteration when you only need Ollama / MLX)
+3. Runs `npm run tauri build -- --features native-mistralrs` (set `FROGLIPS_SKIP_NATIVE=1` to build a lean ~14 MB binary without mistralrs / candle / Metal kernels — useful for fast iteration when you only need Ollama / MLX). The umbrella `native-inference` flag was retired in Phase 2 — use `native-mistralrs` directly.
 4. **Smoke-tests the built app before installing** — launches the bundle and confirms it starts cleanly, so a broken build never replaces a working install. (The probe reads `CFBundleExecutable` from the bundle `Info.plist`; the executable inside the bundle is the Cargo bin name `local-llm-app`, not `Froglips`.)
 5. Replaces `/Applications/Froglips.app`
 6. Strips Gatekeeper quarantine

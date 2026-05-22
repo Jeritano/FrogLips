@@ -45,6 +45,39 @@ jobs:
         working-directory: src-tauri
         run: cargo audit
 
+  # Production backend lint/test. `native-mistralrs` is the only backend
+  # actually shipped to users; the lean `--no-default-features` job above
+  # only protects the dev-iteration build. This job is what guards the
+  # release path.
+  rust-native:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: native-mistralrs
+
+      - name: cargo check (native-mistralrs)
+        working-directory: src-tauri
+        run: cargo check --features native-mistralrs
+
+      - name: cargo clippy (native-mistralrs)
+        working-directory: src-tauri
+        run: cargo clippy --features native-mistralrs -- -D warnings
+
+      - name: cargo test (native-mistralrs)
+        working-directory: src-tauri
+        run: cargo test --features native-mistralrs --lib
+
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -58,6 +91,13 @@ jobs:
 
       - name: npm ci
         run: npm ci
+
+      # Non-blocking dependency advisory check. Findings get triaged into
+      # follow-up issues; we don't want a transitive CVE to redline CI before
+      # it can be evaluated. Promote to blocking once the baseline is clean.
+      - name: npm audit (advisory only)
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
 
       - name: TypeScript check
         run: npx tsc --noEmit

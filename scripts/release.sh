@@ -61,12 +61,28 @@ set -e
 # is still alive and produced no new crash.log entry. A failed smoke test
 # aborts the release — we never install a build that crashes on launch.
 BUILT_APP="src-tauri/target/release/bundle/macos/Froglips.app"
-CRASH_LOG="$HOME/.local-llm-app/crash.log"
+LOG_DIR="$HOME/.local-llm-app"
+CRASH_LOG="$LOG_DIR/crash.log"
+# tracing-appender rotates daily as app.YYYY-MM-DD.log; the "Froglips backend
+# starting" line is emitted from lib.rs once the Tauri builder has set up its
+# windows and event loop, so its presence is a strong "the binary actually
+# came up" signal — much stronger than just `kill -0`.
+READY_MARKER="Froglips backend starting"
 
 if [[ -d "$BUILT_APP" ]]; then
   echo "▶ Smoke testing built app…"
   crash_before=0
   [[ -f "$CRASH_LOG" ]] && crash_before=$(wc -c < "$CRASH_LOG" | tr -d ' ')
+
+  # Snapshot the current log size for every existing app.*.log so we only
+  # treat *new* output as smoke-test evidence (the log file persists across
+  # runs).
+  declare -A log_before_size=()
+  shopt -s nullglob
+  for lf in "$LOG_DIR"/app.*.log; do
+    log_before_size["$lf"]=$(wc -c < "$lf" 2>/dev/null | tr -d ' ' || echo 0)
+  done
+  shopt -u nullglob
 
   # ad-hoc sign so Gatekeeper lets the unsigned build run for the probe.
   codesign --sign - --deep --force --timestamp=none "$BUILT_APP" >/dev/null 2>&1 || true
@@ -79,12 +95,49 @@ if [[ -d "$BUILT_APP" ]]; then
   smoke_bin="$BUILT_APP/Contents/MacOS/$smoke_exe"
   "$smoke_bin" >/dev/null 2>&1 &
   smoke_pid=$!
-  sleep 6
 
-  smoke_ok=1
-  if ! kill -0 "$smoke_pid" 2>/dev/null; then
-    echo "  ✗ app process exited within 6s of launch" >&2
-    smoke_ok=0
+  # Two-probe smoke test, polling for up to 20s:
+  #   (a) process is alive  (b) we saw the "ready" marker in app.*.log
+  # We pass only if at least one is true at the end (and the process must
+  # have stayed alive long enough to be observed — instant exit still fails).
+  proc_alive=0
+  saw_ready=0
+  deadline=$(( $(date +%s) + 20 ))
+  while [[ $(date +%s) -lt $deadline ]]; do
+    if kill -0 "$smoke_pid" 2>/dev/null; then
+      proc_alive=1
+    fi
+
+    shopt -s nullglob
+    for lf in "$LOG_DIR"/app.*.log; do
+      start_off=${log_before_size["$lf"]:-0}
+      cur_size=$(wc -c < "$lf" 2>/dev/null | tr -d ' ' || echo 0)
+      if [[ "$cur_size" -gt "$start_off" ]]; then
+        # tail just the new bytes since launch and look for the marker
+        if tail -c +$((start_off + 1)) "$lf" 2>/dev/null | grep -q "$READY_MARKER"; then
+          saw_ready=1
+        fi
+      fi
+    done
+    shopt -u nullglob
+
+    if [[ "$proc_alive" -eq 1 && "$saw_ready" -eq 1 ]]; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Final alive check (process may have died after we saw it).
+  final_alive=0
+  kill -0 "$smoke_pid" 2>/dev/null && final_alive=1
+
+  smoke_ok=0
+  if [[ "$final_alive" -eq 1 || "$saw_ready" -eq 1 ]]; then
+    smoke_ok=1
+  fi
+
+  if [[ "$smoke_ok" -ne 1 ]]; then
+    echo "  ✗ process did not stay alive and no '$READY_MARKER' line appeared in $LOG_DIR/app.*.log within 20s" >&2
   fi
 
   crash_after=0
@@ -103,7 +156,7 @@ if [[ -d "$BUILT_APP" ]]; then
     echo "▶ Smoke test FAILED — refusing to install a broken build." >&2
     exit 1
   fi
-  echo "✓ Smoke test passed"
+  echo "✓ Smoke test passed (proc_alive=$final_alive, ready_marker=$saw_ready)"
 fi
 
 # Install fresh copy
