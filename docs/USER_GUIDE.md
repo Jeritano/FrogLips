@@ -27,61 +27,33 @@ This kills any running Froglips, builds, ad-hoc signs, and installs to `/Applica
 
 ## 2. Prerequisites
 
-Froglips has three backends. **Native works out of the box — install nothing.** The other two are opt-in.
+**Install nothing.** Froglips ships its own native backend — an in-process engine (`mistralrs` + candle + Metal kernels) that runs models directly on your hardware. There is no daemon to install, no Python to set up.
 
-### Native (recommended; zero install)
-
-No setup. Pick "⚡ Load a HuggingFace model natively…" from the model dropdown and enter a repo id (e.g. `NousResearch/Llama-3.2-1B`). First load downloads weights from HuggingFace into `~/.cache/huggingface/hub`; subsequent loads are instant. Runs in-process via embedded `mistralrs` + candle + Metal kernels.
-
-### Ollama (optional — broader catalog + cloud routing)
-
-Install only if you want Ollama's local + `:cloud` model library or stronger tool-call support on some smaller models.
-
-1. Install from <https://ollama.com>
-2. Start it: it lives in the menu bar
-3. For cloud models: `ollama signin`
-
-### MLX (optional — Apple first-party inference via Python)
-
-Install only if you already use MLX models elsewhere. Froglips spawns `mlx_lm.server` automatically when you pick an MLX model.
-
-```bash
-python3 -m venv ~/.venvs/mlx
-~/.venvs/mlx/bin/pip install mlx-lm
-```
+Pick "⚡ Load a HuggingFace model natively…" from the model dropdown and enter a repo id (e.g. `NousResearch/Llama-3.2-1B`). First load downloads weights from HuggingFace into `~/.cache/huggingface/hub`; subsequent loads are instant.
 
 ## 3. First chat
-
-Fastest path — Native, no install:
 
 1. Click **+ New chat** in the sidebar.
 2. Click the model dropdown → **⚡ Load a HuggingFace model natively…**
 3. Enter a small repo id, e.g. `NousResearch/Llama-3.2-1B`. Click **Start**.
 4. First load downloads weights (~2 GB for 1B-class models) — a progress indicator tracks the download and model load. After that, type and hit Enter.
 
-If you installed Ollama instead:
-
-1. Model dropdown → **Browse & download models…** → set **Source** to **Ollama**.
-2. Pick something small like `llama3.2:3b` or `qwen3:4b`. Click **Pull**.
-3. Close the library; the model appears in the dropdown. Pick it → **Start** → chat.
-
 ## 4. The Model Library
 
 Open with **Browse & download models…** from the model dropdown. A **Source**
-selector at the top switches between five views:
+selector at the top switches between views:
 
 | Source | What you'll find |
 |---|---|
-| **Installed** | Everything currently pulled — Ollama, MLX, and GGUF models, with sizes and a **Remove** button each. Default view. |
-| **Ollama** | Full `ollama.com/library` view: per-model description, colored capability chips (vision / tools / thinking / audio / cloud / embedding), pull counts and relative-updated metadata. Filter chips and a Popular/Newest/Updated sort. Falls back to a curated catalog with a banner if the live page can't be scraped. |
-| **HuggingFace** | Live `huggingface.co/models` view with a collapsible filter sidebar (tasks, parameter range, libraries, apps, inference providers), live total count, name filter, and sort. The action button auto-routes: MLX repos → **Pull**, GGUF repos → **View files**, others → **Open on HF ↗**. |
+| **Installed** | Everything currently downloaded, with sizes and a **Remove** button each. Default view. |
+| **HuggingFace** | Live `huggingface.co/models` view with a collapsible filter sidebar (tasks, parameter range, libraries, apps, inference providers), live total count, name filter, and sort. The action button auto-routes: GGUF repos → **View files**, others → **Open on HF ↗**. |
 | **RP / Kobold** | Curated roleplay finetunes from HF (TheDrummer, Sao10K, anthracite, ReadyArt, etc.). |
 | **Civitai** | Live search of `civitai.com`. Mostly diffusion (image gen) — direct loading not supported, but useful for browsing. Shows ratings, SHA256, file format, license, scan status. |
 
 ### Removing models
 
 - **Installed view:** trash button next to each model. Confirms before deleting (two-click confirm).
-- **Inline:** on the Ollama / HuggingFace / RP views, any model that's already pulled shows a red **Remove** button instead of *Pull*.
+- **Inline:** on the HuggingFace / RP views, any model that's already downloaded shows a red **Remove** button instead of *Pull*.
 
 Removing frees up the actual disk space — there is no undo.
 
@@ -98,7 +70,7 @@ Froglips remembers things across conversations. There are four modes (set via th
 
 ### How recall works
 
-Before each turn, Froglips embeds your message using `nomic-embed-text` (via Ollama), looks for memories with cosine similarity > 0.55, and injects up to 5 into the system prompt as a `<memory>…</memory>` block.
+Before each turn, Froglips embeds your message using `nomic-embed-text`, looks for memories with cosine similarity > 0.55, and injects up to 5 into the system prompt as a `<memory>…</memory>` block.
 
 If vector search returns nothing, it falls back to keyword search.
 
@@ -119,9 +91,9 @@ You can delete, promote pending → active, or add manually.
 
 ## 6. Agent mode
 
-Toggle the **Agent** button next to the chat input. **Agent mode works on all
-three backends — Ollama, MLX, and Native.** (Earlier versions limited it to
-Ollama and MLX; the Native backend now supports tool-calling too.)
+Toggle the **Agent** button next to the chat input. Agent mode runs on
+Froglips's built-in native backend — any model you load supports the
+tool-calling loop.
 
 The agent has direct access via these tools. Grouped:
 
@@ -231,7 +203,7 @@ panel (the sliders/⚙-style control by the composer) to set any of:
 - A conversation-specific **system prompt**
 
 Every field is optional — leave one blank and that conversation uses the
-backend default, exactly as before. Parameters apply on all three backends.
+backend default, exactly as before.
 
 A small **context-usage meter** sits by the composer, showing how much of the
 model's context window the current conversation is using so you can see when
@@ -309,14 +281,11 @@ Updates are minisign-signed; the public key is embedded in the app. A tampered b
 
 ## 15. Troubleshooting
 
-**"Ollama: ollama not found on PATH"**
-The app prepends common bin dirs (`/usr/local/bin`, `/opt/homebrew/bin`, `~/.local/bin`, `~/.cargo/bin`, `~/.venvs/mlx/bin`) at startup. If Ollama lives elsewhere, symlink it into one of those.
-
 **Model picker shows nothing**
-Make sure Ollama is actually running (menu bar icon). For MLX, ensure `~/.venvs/mlx/bin/mlx_lm.server` exists.
+Load a model first: model dropdown → **⚡ Load a HuggingFace model natively…** and enter a repo id. Until a model has finished loading, the picker has nothing to show.
 
-**Cloud model 500s**
-Ollama cloud has occasional outages. Check `curl -s http://localhost:11434/api/chat -d '{"model":"<name>","messages":[{"role":"user","content":"hi"}],"stream":false}'` to confirm it's an upstream issue.
+**Model fails to load**
+First loads download weights from HuggingFace into `~/.cache/huggingface/hub`; a slow or interrupted download is the usual cause. Retry the load — completed shards are reused. Very large models may exceed available memory; try a smaller repo.
 
 **"Workspace root is outside" errors**
 Run an agent tool whose path falls outside the configured workspace. Either widen the workspace (settings ⚙) or move the file in.
