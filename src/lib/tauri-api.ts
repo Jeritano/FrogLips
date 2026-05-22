@@ -42,10 +42,12 @@ import type {
   ReadResult,
   ScreenshotResult,
   SearchResult,
+  RawWorkflow,
   ServerStatus,
   ShellOpts,
   ShellResult,
   TaskInfo,
+  WorkflowRun,
   WatchHandle,
   WatchInfo,
   WatchPoll,
@@ -466,4 +468,19 @@ export const api = {
   nativeListGgufFiles: () => invoke<GgufFile[]>("native_list_gguf_files"),
   nativeDeleteGguf: (repoId: string, filename: string) =>
     invoke<void>("native_delete_gguf", { repo: repoId, filename }),
+
+  // Workflows (agent orchestration). The backend stores the canvas graph as a
+  // JSON string (`graph_json`); callers convert via `parseWorkflow` /
+  // `serializeWorkflowGraph` from `../types`. `workflowSave` upserts — pass
+  // `null` for `id` to create — and returns the row id. `workflowRunRecord`
+  // persists one execution summary and returns its run id.
+  workflowList: () => invoke<RawWorkflow[]>("workflow_list"),
+  workflowGet: (id: number) => invoke<RawWorkflow | null>("workflow_get", { id }),
+  workflowSave: (id: number | null, name: string, graphJson: string) =>
+    invoke<number>("workflow_save", { id, name, graphJson }),
+  workflowDelete: (id: number) => invoke<void>("workflow_delete", { id }),
+  workflowRunRecord: (workflowId: number, status: string, resultsJson: string) =>
+    invoke<number>("workflow_run_record", { workflowId, status, resultsJson }),
+  workflowRunsList: (workflowId: number) =>
+    invoke<WorkflowRun[]>("workflow_runs_list", { workflowId }),
 };

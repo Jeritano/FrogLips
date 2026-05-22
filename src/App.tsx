@@ -37,6 +37,11 @@ const ForkTreeModal = lazy(() =>
 const SetupWizard = lazy(() =>
   import("./components/SetupWizard").then((m) => ({ default: m.SetupWizard })),
 );
+// Workflows canvas — React Flow + its CSS are heavy, so this stays in its own
+// chunk that only fetches when the user opens the Workflows view.
+const WorkflowsPage = lazy(() =>
+  import("./components/workflows/WorkflowsPage").then((m) => ({ default: m.WorkflowsPage })),
+);
 
 function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -67,6 +72,8 @@ function App() {
   const [memoriesOpen, setMemoriesOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Main-pane view: the chat surface or the Workflows orchestration canvas.
+  const [view, setView] = useState<"chat" | "workflows">("chat");
   // First-run setup wizard. `undefined` = haven't checked the flag yet, so we
   // render nothing for the wizard region until the IPC call returns. This
   // avoids a flash of the wizard on returning users whose setup is already
@@ -286,6 +293,7 @@ function App() {
 
   function newChat() {
     setCurrent(null);
+    setView("chat");
   }
 
   function toggleTheme() {
@@ -623,6 +631,15 @@ function App() {
           </button>
         </div>
         <div className="sidebar-spacer-top" aria-hidden="true" />
+        <button
+          type="button"
+          className="workflows-entry"
+          onClick={() => setView("workflows")}
+          aria-pressed={view === "workflows"}
+          data-testid="workflows-entry-btn"
+        >
+          <span aria-hidden="true">🧩</span> Workflows
+        </button>
         <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
         <input
           className="conv-search"
@@ -663,7 +680,11 @@ function App() {
               data-depth={depth}
               data-pinned={c.pinned ? "true" : undefined}
               className={`conv-row-anim${current?.id === c.id ? " active" : ""}`}
-              onClick={() => editingId !== c.id && tagEditingId !== c.id && setCurrent(c)}
+              onClick={() => {
+                if (editingId === c.id || tagEditingId === c.id) return;
+                setCurrent(c);
+                setView("chat");
+              }}
               onDoubleClick={(e) => startEdit(c, e)}
               title={depth > 0 ? "Branch — forked from another conversation" : "Double-click to rename"}
               style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 14 } : undefined}
@@ -780,11 +801,13 @@ function App() {
       </aside>
       <main className="main">
         <header>
-          <ModelPicker
-            status={status}
-            onStatusChange={setStatus}
-            desiredModel={current?.model ?? null}
-          />
+          {view === "chat" && (
+            <ModelPicker
+              status={status}
+              onStatusChange={setStatus}
+              desiredModel={current?.model ?? null}
+            />
+          )}
           <button
             className="theme-toggle topbar-theme"
             onClick={toggleTheme}
@@ -794,13 +817,19 @@ function App() {
             {theme === "dark" ? "☀" : "☾"}
           </button>
         </header>
-        <ChatWindow
-          status={status}
-          conversation={current}
-          onConversationCreated={onConvCreated}
-          onMemoriesChanged={onMemoriesChanged}
-          onForked={onForked}
-        />
+        {view === "workflows" ? (
+          <Suspense fallback={null}>
+            <WorkflowsPage status={status} />
+          </Suspense>
+        ) : (
+          <ChatWindow
+            status={status}
+            conversation={current}
+            onConversationCreated={onConvCreated}
+            onMemoriesChanged={onMemoriesChanged}
+            onForked={onForked}
+          />
+        )}
       </main>
       {/*
        * Mount lazy panels only while open so their chunks don't fetch on

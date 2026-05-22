@@ -23,6 +23,7 @@
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@types/dompurify": "^3.0.5",
+    "@xyflow/react": "^12.10.2",
     "dompurify": "^3.4.5",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.4",

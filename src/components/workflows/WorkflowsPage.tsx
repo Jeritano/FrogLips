@@ -1,0 +1,374 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ReactFlowProvider } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import { api } from "../../lib/tauri-api";
+import { runWorkflow, validateGraph, handleWorkflowTrigger } from "../../lib/workflow";
+import type { WorkflowHooks, RunWorkflowOptions } from "../../lib/workflow";
+import { logDiag } from "../../lib/diagnostics";
+import { announce } from "../../lib/announce";
+import { useTauriEvent } from "../../hooks/useTauriEvent";
+import { BUILTIN_PRESETS } from "../../lib/agent-presets";
+import { EmptyState } from "../EmptyState";
+import {
+  parseWorkflow,
+  serializeWorkflowGraph,
+  type ServerStatus,
+  type Workflow,
+  type WorkflowCard,
+  type WorkflowEdge,
+  type WorkflowGraph,
+} from "../../types";
+import { WorkflowCanvas } from "./WorkflowCanvas";
+import { CardConfigDrawer } from "./CardConfigDrawer";
+import { RunPanel, type CardRunInfo } from "./RunPanel";
+import type { CardRunState } from "./AgentCardNode";
+
+interface Props {
+  /** Current backend status — supplies the model the runner needs. */
+  status: ServerStatus | null;
+}
+
+let cardSeq = 0;
+function newCardId() {
+  return `card-${Date.now().toString(36)}-${(cardSeq++).toString(36)}`;
+}
+
+export function WorkflowsPage({ status }: Props) {
+  const [list, setList] = useState<Workflow[]>([]);
+  const [selected, setSelected] = useState<Workflow | null>(null);
+  const [cards, setCards] = useState<WorkflowCard[]>([]);
+  const [edges, setEdges] = useState<WorkflowEdge[]>([]);
+  const [configId, setConfigId] = useState<string | null>(null);
+  const [cardStates, setCardStates] = useState<Record<string, CardRunState>>({});
+  const [outputs, setOutputs] = useState<Record<string, { output: string; error?: string }>>({});
+  const [running, setRunning] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshList = useCallback(async () => {
+    try {
+      setList((await api.workflowList()).map(parseWorkflow));
+    } catch (e) {
+      logDiag({ level: "warn", source: "workflows", message: "workflowList failed", detail: e });
+    }
+  }, []);
+
+  useEffect(() => { void refreshList(); }, [refreshList]);
+
+  // Non-throwing graph validation drives both the inline warning and the
+  // run-button gate.
+  const validation = useMemo(() => validateGraph({ cards, edges }), [cards, edges]);
+  const warning = validation.ok ? null : validation.error;
+
+  // Debounced persistence of card positions + edges back into the workflow.
+  useEffect(() => {
+    if (!selected) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      const graph: WorkflowGraph = { cards, edges };
+      api.workflowSave(selected.id, selected.name, serializeWorkflowGraph(graph))
+        .then(() => {
+          setSelected((s) => (s ? { ...s, graph, updated_at: Date.now() } : s));
+          setList((l) =>
+            l.map((w) => (w.id === selected.id ? { ...w, name: selected.name, graph } : w)),
+          );
+        })
+        .catch((e) =>
+          logDiag({ level: "warn", source: "workflows", message: "workflowSave failed", detail: e }),
+        );
+    }, 600);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [cards, edges, selected]);
+
+  function openWorkflow(w: Workflow) {
+    setSelected(w);
+    setCards(w.graph.cards);
+    setEdges(w.graph.edges);
+    setCardStates({});
+    setOutputs({});
+  }
+
+  async function createWorkflow() {
+    try {
+      const name = "Untitled workflow";
+      const graph: WorkflowGraph = { cards: [], edges: [] };
+      const id = await api.workflowSave(null, name, serializeWorkflowGraph(graph));
+      const now = Date.now();
+      const wf: Workflow = { id, name, graph, created_at: now, updated_at: now };
+      await refreshList();
+      openWorkflow(wf);
+    } catch (e) {
+      setErr(`Failed to create workflow: ${e}`);
+    }
+  }
+
+  async function deleteWorkflow(id: number) {
+    try {
+      await api.workflowDelete(id);
+      if (selected?.id === id) setSelected(null);
+      await refreshList();
+    } catch (e) {
+      setErr(`Failed to delete workflow: ${e}`);
+    }
+  }
+
+  function addCard() {
+    const preset = BUILTIN_PRESETS[0];
+    const card: WorkflowCard = {
+      id: newCardId(),
+      name: `Agent ${cards.length + 1}`,
+      preset: preset.id,
+      prompt: "",
+      tools: [],
+      schedule: null,
+      backend: null,
+      x: 80 + (cards.length % 4) * 240,
+      y: 80 + Math.floor(cards.length / 4) * 180,
+    };
+    setCards((c) => [...c, card]);
+  }
+
+  const deleteCard = useCallback((id: string) => {
+    setCards((c) => c.filter((x) => x.id !== id));
+    setEdges((e) => e.filter((x) => x.from !== id && x.to !== id));
+  }, []);
+
+  function saveCard(card: WorkflowCard) {
+    setCards((c) => c.map((x) => (x.id === card.id ? card : x)));
+    setConfigId(null);
+  }
+
+  const setState = useCallback((id: string, state: CardRunState) => {
+    setCardStates((s) => ({ ...s, [id]: state }));
+  }, []);
+
+  // Lifecycle hooks shared by full-workflow and single-card runs.
+  const makeHooks = useCallback(
+    (onDone: () => void): WorkflowHooks => ({
+      onCardStart: (id) => setState(id, "running"),
+      onCardOutput: (id, text) =>
+        setOutputs((o) => ({
+          ...o,
+          [id]: { output: (o[id]?.output ?? "") + text, error: o[id]?.error },
+        })),
+      onCardDone: (id, result) => {
+        if (result.status === "ok") setState(id, "done");
+        else if (result.status === "skipped") setState(id, "idle");
+      },
+      onCardError: (id, message) => {
+        setState(id, "failed");
+        setOutputs((o) => ({ ...o, [id]: { output: o[id]?.output ?? "", error: message } }));
+      },
+      onWorkflowDone: (results) => {
+        setRunning(false);
+        abortRef.current = null;
+        announce(
+          results.status === "ok" ? "Workflow run finished" : "Workflow run failed",
+        );
+        onDone();
+      },
+    }),
+    [setState],
+  );
+
+  const baseRunOpts = useCallback((): Omit<RunWorkflowOptions, "model"> & { model: string } | null => {
+    if (!status?.model) {
+      setErr("Load a model before running a workflow.");
+      return null;
+    }
+    return {
+      model: status.model,
+      defaultBackend: (status.backend as RunWorkflowOptions["defaultBackend"]) ?? undefined,
+      serverStatus: status,
+    };
+  }, [status]);
+
+  function runWorkflowNow() {
+    if (!selected || !validation.ok) {
+      setErr("Fix the chain warning before running.");
+      return;
+    }
+    const opts = baseRunOpts();
+    if (!opts) return;
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setRunning(true);
+    setOutputs({});
+    setCardStates({});
+    announce("Workflow run started");
+    void runWorkflow({ cards, edges }, makeHooks(() => {}), {
+      ...opts,
+      workflowId: selected.id,
+      signal: ac.signal,
+    }).catch((e) => {
+      setRunning(false);
+      abortRef.current = null;
+      setErr(`Workflow run failed: ${e}`);
+    });
+  }
+
+  function runSingleCard(id: string) {
+    const card = cards.find((c) => c.id === id);
+    if (!card || !selected) return;
+    const opts = baseRunOpts();
+    if (!opts) return;
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setRunning(true);
+    setCardStates((s) => ({ ...s, [id]: "running" }));
+    setOutputs((o) => ({ ...o, [id]: { output: "" } }));
+    void runWorkflow(
+      { cards: [card], edges: [] },
+      makeHooks(() => {}),
+      { ...opts, workflowId: selected.id, signal: ac.signal },
+    ).catch((e) => {
+      setRunning(false);
+      abortRef.current = null;
+      setErr(`Card run failed: ${e}`);
+    });
+  }
+
+  function stopRun() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setRunning(false);
+    announce("Workflow run stopped");
+  }
+
+  // Scheduled cards: the backend emits `workflow-trigger`; the schedule glue
+  // loads the workflow and runs it from the triggered card.
+  useTauriEvent<unknown>(
+    "workflow-trigger",
+    useCallback(
+      (e) => {
+        const opts = baseRunOpts();
+        if (!opts) return;
+        setRunning(true);
+        void handleWorkflowTrigger(e.payload, makeHooks(() => void refreshList()), opts).catch(
+          (err) => {
+            setRunning(false);
+            logDiag({
+              level: "warn",
+              source: "workflows",
+              message: "workflow-trigger handling failed",
+              detail: err,
+            });
+          },
+        );
+      },
+      [baseRunOpts, makeHooks, refreshList],
+    ),
+  );
+
+  const runInfo = useMemo<CardRunInfo[]>(
+    () =>
+      cards.map((c) => ({
+        id: c.id,
+        name: c.name,
+        state: cardStates[c.id] ?? "idle",
+        output: outputs[c.id]?.output ?? "",
+        error: outputs[c.id]?.error,
+      })),
+    [cards, cardStates, outputs],
+  );
+
+  const runningCardId = useMemo(
+    () => cards.find((c) => (cardStates[c.id] ?? "idle") === "running")?.id ?? null,
+    [cards, cardStates],
+  );
+
+  const configCard = configId ? cards.find((c) => c.id === configId) ?? null : null;
+
+  if (!selected) {
+    return (
+      <div className="wf-page wf-picker" data-testid="workflows-page">
+        <div className="wf-picker-head">
+          <h2>Workflows</h2>
+          <button type="button" className="wf-btn wf-btn-primary" onClick={createWorkflow}>
+            + New workflow
+          </button>
+        </div>
+        {err && <div className="wf-error" onClick={() => setErr(null)}>{err}</div>}
+        {list.length === 0 ? (
+          <EmptyState
+            icon="🧩"
+            heading="No workflows yet"
+            sub="Create a workflow to chain agents into an automated pipeline."
+          />
+        ) : (
+          <ul className="wf-list">
+            {list.map((w) => (
+              <li key={w.id} className="wf-list-item">
+                <button type="button" className="wf-list-open" onClick={() => openWorkflow(w)}>
+                  <span className="wf-list-name">{w.name}</span>
+                  <span className="wf-list-meta">{w.graph.cards.length} cards</span>
+                </button>
+                <button
+                  type="button"
+                  className="wf-list-del"
+                  onClick={() => deleteWorkflow(w.id)}
+                  aria-label={`Delete ${w.name}`}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="wf-page wf-editor" data-testid="workflows-page">
+      <div className="wf-editor-bar">
+        <button type="button" className="wf-btn" onClick={() => setSelected(null)}>
+          ← Workflows
+        </button>
+        <input
+          className="wf-name-input"
+          value={selected.name}
+          onChange={(e) => setSelected({ ...selected, name: e.target.value })}
+          aria-label="Workflow name"
+        />
+        <button type="button" className="wf-btn" onClick={addCard}>+ Add card</button>
+        {warning && (
+          <span className="wf-warning" role="status" data-testid="wf-warning">
+            ⚠ {warning}
+          </span>
+        )}
+      </div>
+      {err && <div className="wf-error" onClick={() => setErr(null)}>{err}</div>}
+      <div className="wf-editor-body">
+        <ReactFlowProvider>
+          <WorkflowCanvas
+            cards={cards}
+            edges={edges}
+            cardStates={cardStates}
+            onCardsChange={setCards}
+            onEdgesChange={setEdges}
+            onConfigure={setConfigId}
+            onRunCard={runSingleCard}
+            onDeleteCard={deleteCard}
+            runningCardId={runningCardId}
+          />
+        </ReactFlowProvider>
+        <RunPanel
+          running={running}
+          canRun={cards.length > 0 && validation.ok}
+          cards={runInfo}
+          onRun={runWorkflowNow}
+          onStop={stopRun}
+        />
+      </div>
+      {configCard && (
+        <CardConfigDrawer
+          card={configCard}
+          onSave={saveCard}
+          onClose={() => setConfigId(null)}
+        />
+      )}
+    </div>
+  );
+}

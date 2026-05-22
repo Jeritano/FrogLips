@@ -561,6 +561,92 @@ export interface RagHit {
   end_byte: number;
 }
 
+/* ── Workflows (agent orchestration) ────────────────────────────────── */
+
+/**
+ * One agent card on the workflow canvas — a configured agent run. `preset`
+ * resolves via `loadAllPresets`; `tools` is a tool allowlist (empty = preset
+ * default); `backend` is null to inherit the app default. `x`/`y` are canvas
+ * coordinates and carry no runtime meaning.
+ */
+export interface WorkflowCard {
+  id: string;
+  name: string;
+  preset: string;
+  prompt: string;
+  tools: string[];
+  schedule: string | null;
+  backend: string | null;
+  x: number;
+  y: number;
+}
+
+/** Directed link between two cards (card ids). Linear chains only in v1. */
+export interface WorkflowEdge {
+  from: string;
+  to: string;
+}
+
+/** The canvas graph — the unit persisted as `graph_json`. */
+export interface WorkflowGraph {
+  cards: WorkflowCard[];
+  edges: WorkflowEdge[];
+}
+
+/**
+ * A saved workflow. The backend stores the graph as a JSON string column
+ * (`graph_json`); `parseWorkflow`/`serializeWorkflowGraph` convert to/from the
+ * typed `graph` shape used everywhere in the frontend.
+ */
+export interface Workflow {
+  id: number;
+  name: string;
+  graph: WorkflowGraph;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Raw workflow row as returned by the Tauri commands (graph still a string). */
+export interface RawWorkflow {
+  id: number;
+  name: string;
+  graph_json: string;
+  created_at: number;
+  updated_at: number;
+}
+
+/** One recorded execution of a workflow. `results_json` is a JSON summary. */
+export interface WorkflowRun {
+  id: number;
+  workflow_id: number;
+  status: "ok" | "failed";
+  results_json: string;
+  created_at: number;
+}
+
+/** Parse a backend `RawWorkflow` row into a typed `Workflow`. */
+export function parseWorkflow(raw: RawWorkflow): Workflow {
+  let graph: WorkflowGraph = { cards: [], edges: [] };
+  try {
+    const parsed = JSON.parse(raw.graph_json) as Partial<WorkflowGraph>;
+    if (parsed && Array.isArray(parsed.cards) && Array.isArray(parsed.edges)) {
+      graph = { cards: parsed.cards, edges: parsed.edges };
+    }
+  } catch {/* malformed column → empty graph */}
+  return {
+    id: raw.id,
+    name: raw.name,
+    graph,
+    created_at: raw.created_at,
+    updated_at: raw.updated_at,
+  };
+}
+
+/** Serialize a typed graph back to the `graph_json` string the backend stores. */
+export function serializeWorkflowGraph(graph: WorkflowGraph): string {
+  return JSON.stringify(graph);
+}
+
 /**
  * Single entry scraped from <https://ollama.com/library>. Returned by the
  * `ollama_library_fetch` Tauri command. Mirrors the Rust `OllamaLibraryEntry`

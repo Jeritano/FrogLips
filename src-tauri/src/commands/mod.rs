@@ -14,6 +14,7 @@ pub mod memory;
 pub mod misc;
 pub mod models;
 pub mod server;
+pub mod workflows;
 
 /* ── Shared handle types ── */
 

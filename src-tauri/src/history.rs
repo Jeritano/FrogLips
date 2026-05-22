@@ -235,6 +235,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         apply: ensure_conversation_org_columns,
     },
+    // v8 — Workflows feature: `workflows` + `workflow_runs` tables.
+    Migration {
+        version: 8,
+        apply: crate::workflows::ensure_workflow_tables,
+    },
 ];
 
 /// Target schema version — the highest rung of the ladder.

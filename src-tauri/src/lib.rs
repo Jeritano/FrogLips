@@ -20,6 +20,7 @@ mod rag;
 mod settings;
 mod task_queue;
 mod util;
+mod workflows;
 
 use std::sync::Arc;
 use tauri::{
@@ -139,6 +140,11 @@ pub fn run() {
                 // `app-diagnostics` events without threading a handle
                 // through every call site.
                 diagnostics::set_app_handle(app.handle().clone());
+
+                // App-lifetime workflow scheduler: scans workflows every ~30s
+                // and emits `workflow-trigger` for due agent cards.
+                workflows::start_scheduler(app.handle().clone());
+
                 let s = state.clone();
                 tauri::async_runtime::spawn(async move {
                     use backend_process::{
@@ -382,6 +388,12 @@ pub fn run() {
             commands::data::backup_database,
             commands::data::export_data,
             commands::data::import_data,
+            commands::workflows::workflow_list,
+            commands::workflows::workflow_get,
+            commands::workflows::workflow_save,
+            commands::workflows::workflow_delete,
+            commands::workflows::workflow_run_record,
+            commands::workflows::workflow_runs_list,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
