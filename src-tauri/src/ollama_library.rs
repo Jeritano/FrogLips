@@ -48,6 +48,9 @@ pub struct OllamaLibraryEntry {
 }
 
 const LIBRARY_URL: &str = "https://ollama.com/library";
+/// Cloud model catalogue. Ollama's newest cloud-hosted models live on a
+/// separate search page, not the main `/library` listing.
+const CLOUD_URL: &str = "https://ollama.com/search?c=cloud";
 /// Hard cap on entries returned to the frontend. The page typically lists
 /// 30-100 models — 200 is a generous upper bound that still keeps the IPC
 /// payload small.
@@ -65,12 +68,14 @@ type CacheCell = Option<(Instant, Vec<OllamaLibraryEntry>)>;
 
 static CACHE: Lazy<Mutex<CacheCell>> = Lazy::new(|| Mutex::new(None));
 
-/// Fetch + parse the public library page. Cached for 10 min per-process.
+/// Fetch + parse the public library and cloud catalogues. Cached for 10 min
+/// per-process.
 ///
-/// Returns `Err` on network failure, non-2xx status, or zero parsed entries
-/// (so the frontend can fall back to its curated list). Never panics on
-/// malformed HTML — a parser miss just yields an empty Vec, which we then
-/// promote to an `Err` so the caller treats it as a fetch failure.
+/// Fetches both `/library` and the cloud search page, merging the results.
+/// If one page fails we still return the other; only when both fail (or yield
+/// zero entries) do we return `Err` so the frontend can fall back to its
+/// curated list. Never panics on malformed HTML — a parser miss just yields
+/// an empty Vec.
 pub async fn fetch() -> Result<Vec<OllamaLibraryEntry>, String> {
     // Cache hit path — copy out and drop the lock before any awaits.
     if let Some(cached) = {
@@ -86,19 +91,63 @@ pub async fn fetch() -> Result<Vec<OllamaLibraryEntry>, String> {
         return Ok(cached);
     }
 
-    let html = fetch_html().await?;
-    let entries = parse_library(&html);
-    if entries.is_empty() {
-        return Err("ollama.com/library returned no parseable entries".into());
+    // Fetch both pages. Either may fail independently; we only give up if
+    // both yield nothing.
+    let library = match fetch_html(LIBRARY_URL).await {
+        Ok(html) => parse_library(&html),
+        Err(_) => Vec::new(),
+    };
+    let cloud = match fetch_html(CLOUD_URL).await {
+        Ok(html) => parse_library(&html),
+        Err(_) => Vec::new(),
+    };
+
+    let merged = merge_catalogues(cloud, library);
+    if merged.is_empty() {
+        return Err("ollama.com returned no parseable entries".into());
     }
-    let capped: Vec<OllamaLibraryEntry> = entries.into_iter().take(MAX_ENTRIES).collect();
+    let capped: Vec<OllamaLibraryEntry> = merged.into_iter().take(MAX_ENTRIES).collect();
     *CACHE.lock() = Some((Instant::now(), capped.clone()));
     Ok(capped)
 }
 
+/// Merge cloud-page and library-page entries into one de-duplicated list.
+///
+/// Cloud entries are force-tagged `cloud` (so the Cloud filter works even if
+/// the page markup omits the capability chip) and placed first. De-dup is by
+/// model `name`: a model on both pages keeps one entry with the union of its
+/// capability tags.
+fn merge_catalogues(
+    cloud: Vec<OllamaLibraryEntry>,
+    library: Vec<OllamaLibraryEntry>,
+) -> Vec<OllamaLibraryEntry> {
+    let mut out: Vec<OllamaLibraryEntry> = Vec::with_capacity(cloud.len() + library.len());
+
+    for mut entry in cloud {
+        if !entry.capabilities.iter().any(|c| c == "cloud") {
+            entry.capabilities.push("cloud".to_string());
+        }
+        out.push(entry);
+    }
+
+    for entry in library {
+        if let Some(existing) = out.iter_mut().find(|e| e.name == entry.name) {
+            for cap in entry.capabilities {
+                if !existing.capabilities.contains(&cap) {
+                    existing.capabilities.push(cap);
+                }
+            }
+        } else {
+            out.push(entry);
+        }
+    }
+
+    out
+}
+
 /// Network fetch with the same SSRF guards as `agent::web::web_fetch`.
-async fn fetch_html() -> Result<String, String> {
-    let url = url::Url::parse(LIBRARY_URL).map_err(|e| format!("bad library url: {e}"))?;
+async fn fetch_html(target: &str) -> Result<String, String> {
+    let url = url::Url::parse(target).map_err(|e| format!("bad ollama url: {e}"))?;
     let host = url.host_str().unwrap_or("").to_string();
     if !is_safe_public_host(&host) {
         return Err(format!("host '{host}' rejected by SSRF guard"));
@@ -483,5 +532,98 @@ mod tests {
         assert_eq!(parse_first_u32("  12  "), 12);
         assert_eq!(parse_first_u32("v3 release"), 3);
         assert_eq!(parse_first_u32("none"), 0);
+    }
+
+    /// Cloud search page fixture. Same `x-test-*` card markup as `/library`.
+    /// One model (`llama4`) overlaps with FIXTURE to exercise de-dup.
+    const CLOUD_FIXTURE: &str = r##"
+<!doctype html><html><head><title>Cloud models · Ollama</title></head><body>
+<ul role="list">
+  <li x-test-model>
+    <a href="/library/deepseek-v4-pro">
+      <h2 x-test-search-response-title>deepseek-v4-pro</h2>
+      <p>DeepSeek V4 Pro is a frontier reasoning model served from Ollama's
+      cloud with a 256K context window.</p>
+      <div>
+        <span x-test-capability>thinking</span>
+        <span x-test-capability>tools</span>
+        <span x-test-size>670b</span>
+      </div>
+      <p class="meta">
+        <span x-test-pull-count>92.1K</span> Pulls
+        <span x-test-tag-count>2</span> Tags
+        <span x-test-updated>4 days ago</span>
+      </p>
+    </a>
+  </li>
+  <li x-test-model>
+    <a href="/library/llama4">
+      <h2 x-test-search-response-title>llama4</h2>
+      <p>Meta's flagship open model, also available cloud-hosted.</p>
+      <div>
+        <span x-test-capability>cloud</span>
+        <span x-test-size>405b</span>
+      </div>
+      <p class="meta">
+        <span x-test-pull-count>1.2M</span> Pulls
+        <span x-test-tag-count>12</span> Tags
+        <span x-test-updated>5 days ago</span>
+      </p>
+    </a>
+  </li>
+</ul>
+</body></html>
+"##;
+
+    #[test]
+    fn parses_cloud_page_with_same_selectors() {
+        let entries = parse_library(CLOUD_FIXTURE);
+        assert_eq!(entries.len(), 2, "expected 2 cloud cards, got {:?}", entries);
+        assert_eq!(entries[0].name, "deepseek-v4-pro");
+        assert_eq!(entries[0].capabilities, vec!["thinking", "tools"]);
+    }
+
+    #[test]
+    fn merge_force_tags_cloud_and_unions_overlap() {
+        let cloud = parse_library(CLOUD_FIXTURE);
+        let library = parse_library(FIXTURE);
+        let merged = merge_catalogues(cloud, library);
+
+        // 2 cloud + 3 library, with llama4 overlapping → 4 unique entries.
+        assert_eq!(merged.len(), 4, "llama4 should de-dup, got {:?}", merged);
+
+        // Cloud entries come first and every one is tagged `cloud`.
+        let deepseek = &merged[0];
+        assert_eq!(deepseek.name, "deepseek-v4-pro");
+        assert!(
+            deepseek.capabilities.contains(&"cloud".to_string()),
+            "cloud entry force-tagged cloud: {:?}",
+            deepseek.capabilities
+        );
+
+        // llama4 appears once, with the union of cloud + library tags.
+        let llama: Vec<_> = merged.iter().filter(|e| e.name == "llama4").collect();
+        assert_eq!(llama.len(), 1, "llama4 must be de-duplicated");
+        let caps = &llama[0].capabilities;
+        assert!(caps.contains(&"cloud".to_string()), "keeps cloud tag");
+        assert!(caps.contains(&"vision".to_string()), "unions library vision");
+        assert!(caps.contains(&"tools".to_string()), "unions library tools");
+    }
+
+    #[test]
+    fn merge_one_page_empty_still_returns_other() {
+        // Cloud fetch failed → empty; library still returns its entries.
+        let only_library = merge_catalogues(Vec::new(), parse_library(FIXTURE));
+        assert_eq!(only_library.len(), 3);
+
+        // Library fetch failed → empty; cloud still returns, force-tagged.
+        let only_cloud = merge_catalogues(parse_library(CLOUD_FIXTURE), Vec::new());
+        assert_eq!(only_cloud.len(), 2);
+        assert!(only_cloud
+            .iter()
+            .all(|e| e.capabilities.contains(&"cloud".to_string())));
+
+        // Both empty → empty (fetch() promotes this to Err).
+        assert!(merge_catalogues(Vec::new(), Vec::new()).is_empty());
     }
 }
