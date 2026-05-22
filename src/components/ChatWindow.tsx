@@ -6,11 +6,19 @@ import { runAgentLoop, cancelActiveShell } from "../lib/agent-loop";
 import type { AgentMetrics, AgentStatus, ConfirmDecision } from "../lib/agent-loop";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { ChatImage, Conversation, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
+import type { ChatImage, Conversation, ConversationParams, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { McpSettings } from "./McpSettings";
 import { ToolHistory } from "./ToolHistory";
+import { ParamsPanel } from "./ParamsPanel";
+import { ContextMeter } from "./ContextMeter";
+import {
+  emptyParams,
+  parseConversationParams,
+  paramsAreEmpty,
+  serializeConversationParams,
+} from "../lib/conversation-params";
 
 // RagPanel and AuditLog only render inside the agent-settings disclosure
 // (gear icon while agent mode is on). Lazy-load so first paint of the chat
@@ -136,6 +144,10 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(null);
   // Edit-and-retry: holds the user message being edited plus its draft text.
   const [editState, setEditState] = useState<{ msg: Message; text: string } | null>(null);
+  // Per-conversation model parameters (temperature / top-p / max tokens /
+  // system prompt). Decoded from `conversation.params`; all-null = defaults.
+  const [convParams, setConvParams] = useState<ConversationParams>(emptyParams);
+  const [showParamsPanel, setShowParamsPanel] = useState(false);
 
   const agent = useAgentSettings();
   const askUser = useAskUserModal(setErr);
@@ -188,6 +200,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       setMessages([]);
     }
     setRecalled([]);
+    setConvParams(parseConversationParams(conversation?.params));
+    setShowParamsPanel(false);
   }, [conversation?.id]);
 
   async function ensureConversation(): Promise<Conversation> {
@@ -390,10 +404,29 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     const systemPreamble: Message[] = [
       { _tmpKey: tmpKey(), conversation_id: conv.id, role: "system", content: identityPrompt },
     ];
+    // Per-conversation system prompt — prepended as its own system message so
+    // it composes with (rather than replaces) the identity preamble. Unset =
+    // no extra message, exactly as before.
+    if (convParams.system_prompt) {
+      systemPreamble.push({
+        _tmpKey: tmpKey(),
+        conversation_id: conv.id,
+        role: "system",
+        content: convParams.system_prompt,
+      });
+    }
     if (recallBlock) {
       systemPreamble.push({ _tmpKey: tmpKey(), conversation_id: conv.id, role: "system", content: recallBlock });
     }
     const historyForApi: Message[] = [...systemPreamble, ...baseHistory];
+
+    // Numeric params threaded into the backend request. The system prompt is
+    // already injected above, so only the numeric fields go to the clients.
+    const chatParams = {
+      temperature: convParams.temperature,
+      top_p: convParams.top_p,
+      max_tokens: convParams.max_tokens,
+    };
 
     /* ── Agent mode ── */
     if (agentMode && agentAvailable) {
@@ -428,6 +461,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           backend: status.backend === "mlx" ? "mlx" : "ollama",
           serverStatus: status,
           projectPolicy,
+          params: chatParams,
           systemPromptOverride: agent.activePreset?.systemPromptOverride,
           toolAllowlist: effectiveAllowlist,
           approveAllShell: agent.approveAllShell,
@@ -517,8 +551,18 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     };
     try {
       const stream = status.backend === "native"
-        ? streamNativeChat(historyForApi, { signal: ctrl.signal })
-        : streamChat(status, historyForApi, { signal: ctrl.signal });
+        ? streamNativeChat(historyForApi, {
+            signal: ctrl.signal,
+            temperature: chatParams.temperature ?? undefined,
+            top_p: chatParams.top_p ?? undefined,
+            maxTokens: chatParams.max_tokens ?? undefined,
+          })
+        : streamChat(status, historyForApi, {
+            signal: ctrl.signal,
+            temperature: chatParams.temperature ?? undefined,
+            topP: chatParams.top_p ?? undefined,
+            maxTokens: chatParams.max_tokens ?? undefined,
+          });
       for await (const chunk of stream) {
         if (chunk.done) break;
         acc += chunk.delta;
@@ -600,12 +644,29 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const send = useCallback((text: string, images?: ChatImage[]) => {
     return runSend(text, images);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, agentMode, projectPolicy, workspaceRoot, messages, agent]);
+  }, [status, agentMode, projectPolicy, workspaceRoot, messages, agent, convParams]);
 
   /** Regenerate / edit-and-retry resend with an explicit truncated history. */
   function resend(text: string, priorHistory: Message[]) {
     return runSend(text, undefined, priorHistory);
   }
+
+  /**
+   * Persist per-conversation params. Optimistically updates local state so
+   * the panel + context meter react immediately; a failed write surfaces in
+   * the error bar but leaves the optimistic value in place (the user can
+   * retry by editing again).
+   */
+  const saveConvParams = useCallback(async (next: ConversationParams) => {
+    setConvParams(next);
+    const conv = convRef.current;
+    if (!conv) return; // no conversation yet — keep the draft in state only.
+    try {
+      await api.updateConversationParams(conv.id, serializeConversationParams(next));
+    } catch (e) {
+      setErr(`Failed to save conversation parameters: ${e}`);
+    }
+  }, []);
 
   function abort() {
     cancelActiveShell();
@@ -802,6 +863,15 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             ⌖ Tools
           </button>
           <button
+            data-testid="params-toggle"
+            className={`agent-toggle ${showParamsPanel ? "active" : ""}`}
+            onClick={() => setShowParamsPanel((v) => !v)}
+            title="Per-conversation model parameters"
+            aria-expanded={showParamsPanel}
+          >
+            ⚙ Params{!paramsAreEmpty(convParams) ? " •" : ""}
+          </button>
+          <button
             data-testid="agent-toggle"
             className={`agent-toggle ${agentMode ? "active" : ""}`}
             onClick={() => setAgentMode((v) => !v)}
@@ -871,6 +941,15 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             </span>
           )}
         </div>
+
+        {showParamsPanel && (
+          <ParamsPanel
+            params={convParams}
+            onSave={saveConvParams}
+            onClose={() => setShowParamsPanel(false)}
+            disabled={isWorking}
+          />
+        )}
 
         {agentMode && showAgentSettings && (
           <div className="agent-settings" data-testid="agent-settings-panel">
@@ -958,13 +1037,19 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           </div>
         )}
 
-        <ChatInput
-          disabled={!status?.running}
-          onSend={send}
-          onAbort={abort}
-          streaming={isWorking}
-          currentModel={status?.running ? status.model : null}
-        />
+        <div className="composer-row">
+          <ChatInput
+            disabled={!status?.running}
+            onSend={send}
+            onAbort={abort}
+            streaming={isWorking}
+            currentModel={status?.running ? status.model : null}
+          />
+          <ContextMeter
+            messages={messages}
+            model={status?.running ? status.model : null}
+          />
+        </div>
       </div>
 
       {showToolHistory && (

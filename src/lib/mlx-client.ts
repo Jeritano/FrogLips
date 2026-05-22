@@ -1,6 +1,7 @@
 import type { Message, ServerStatus, ToolCall } from "../types";
 import { finalizeToolCalls, mergeToolCallChunk } from "./agent-loop/tool-call-merge";
 import type { PartialToolCall, StreamChatResult } from "./agent-loop/stream-types";
+import type { ChatParams } from "./agent-loop/types";
 import { withTimeout } from "./signal-utils";
 import { readLines } from "./stream-lines";
 
@@ -50,16 +51,17 @@ const STREAM_CONNECT_TIMEOUT_MS = 300_000;
 export async function* streamChat(
   status: ServerStatus,
   messages: Message[],
-  opts: { temperature?: number; maxTokens?: number; signal?: AbortSignal } = {},
+  opts: { temperature?: number; topP?: number; maxTokens?: number; signal?: AbortSignal } = {},
 ): AsyncGenerator<ChatChunk> {
   const url = `http://${status.host}:${status.port}/v1/chat/completions`;
-  const body = {
+  const body: Record<string, unknown> = {
     model: status.model,
     stream: true,
     temperature: opts.temperature ?? 0.7,
     max_tokens: opts.maxTokens ?? 2048,
     messages: toOpenAiMessages(messages),
   };
+  if (opts.topP != null) body.top_p = opts.topP;
 
   const to = withTimeout(opts.signal, STREAM_CONNECT_TIMEOUT_MS, "stream connect timed out");
   const res = await fetch(url, {
@@ -130,15 +132,18 @@ export async function streamMlxAgentChat(
   tools: readonly unknown[],
   signal: AbortSignal,
   onContentChunk: (delta: string) => void,
+  params?: ChatParams | null,
 ): Promise<StreamChatResult> {
   const url = `http://${status.host}:${status.port}/v1/chat/completions`;
   const body: Record<string, unknown> = {
     model: status.model,
     stream: true,
-    temperature: 0.4,
-    max_tokens: 2048,
+    // Per-conversation params override the agent defaults; null = default.
+    temperature: params?.temperature ?? 0.4,
+    max_tokens: params?.max_tokens ?? 2048,
     messages: toOpenAiMessages(messages),
   };
+  if (params?.top_p != null) body.top_p = params.top_p;
   if (tools.length > 0) body.tools = tools;
 
   const to = withTimeout(signal, STREAM_CONNECT_TIMEOUT_MS, "stream connect timed out");

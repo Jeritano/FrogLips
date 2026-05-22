@@ -2,6 +2,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "./tauri-api";
 import type { Message, ToolCall } from "../types";
 import type { StreamChatResult } from "./agent-loop/stream-types";
+import type { ChatParams } from "./agent-loop/types";
 
 export interface NativeChunk {
   delta: string;
@@ -135,6 +136,7 @@ export async function streamNativeAgentChat(
   tools: readonly unknown[],
   signal: AbortSignal,
   onContentChunk: (delta: string) => void,
+  params?: ChatParams | null,
 ): Promise<StreamChatResult> {
   const opId = `native-${crypto.randomUUID()}`;
   let content = "";
@@ -155,6 +157,10 @@ export async function streamNativeAgentChat(
       op_id: opId,
       messages: toNativeMessages(messages),
       tools: tools as Record<string, unknown>[],
+      // Per-conversation params; unset fields fall back to backend defaults.
+      temperature: params?.temperature ?? undefined,
+      top_p: params?.top_p ?? undefined,
+      max_tokens: params?.max_tokens ?? undefined,
     });
   } finally {
     offChunk();

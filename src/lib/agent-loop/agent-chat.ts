@@ -13,6 +13,7 @@
 
 import type { Message } from "../../types";
 import type { AgentBackend, AgentRunOptions } from "./types";
+export type { ChatParams } from "./types";
 import {
   OLLAMA_BASE,
   RETRY_BACKOFF_MS,
@@ -45,6 +46,7 @@ export async function streamAgentChat(
   onRetry: () => void,
 ): Promise<StreamChatResult> {
   const backend: AgentBackend = opts.backend ?? "ollama";
+  const params = opts.params ?? null;
 
   let lastErr: unknown = null;
   for (let attempt = 0; attempt <= RETRY_MAX; attempt++) {
@@ -60,17 +62,24 @@ export async function streamAgentChat(
           tools,
           signal,
           onContentChunk,
+          params,
         );
       }
       if (backend === "native") {
-        return await streamNativeAgentChat(msgs, tools, signal, onContentChunk);
+        return await streamNativeAgentChat(msgs, tools, signal, onContentChunk, params);
       }
-      // Default: Ollama.
+      // Default: Ollama. Per-conversation params override the defaults;
+      // unset (null) fields keep today's behaviour.
+      const ollamaOptions: Record<string, unknown> = {
+        temperature: params?.temperature ?? 0.4,
+      };
+      if (params?.top_p != null) ollamaOptions.top_p = params.top_p;
+      if (params?.max_tokens != null) ollamaOptions.num_predict = params.max_tokens;
       return await streamOllamaChat(
         `${OLLAMA_BASE}/api/chat`,
         {
           model: opts.model,
-          options: { temperature: 0.4 },
+          options: ollamaOptions,
           messages: toOllamaMessages(msgs),
           tools,
         },

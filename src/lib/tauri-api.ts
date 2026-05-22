@@ -79,6 +79,10 @@ export const api = {
     invoke<void>("delete_conversation", { id }),
   renameConversation: (id: number, title: string) =>
     invoke<void>("rename_conversation", { id, title }),
+  // Per-conversation model parameter overrides. `params` is a JSON string
+  // (`{temperature,top_p,max_tokens,system_prompt}`) or null to clear.
+  updateConversationParams: (id: number, params: string | null) =>
+    invoke<void>("update_conversation_params", { id, params }),
   listMessages: async (conversationId: number) => {
     // Backend returns `images` as a JSON-encoded string (the literal SQLite
     // column). Parse here so callers see the typed `ChatImage[]` shape

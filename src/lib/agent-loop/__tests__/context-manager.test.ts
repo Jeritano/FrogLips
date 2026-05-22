@@ -1,0 +1,127 @@
+import { describe, expect, it } from "vitest";
+import type { Message } from "../../../types";
+import {
+  applyContextBudget,
+  estimateMessagesTokens,
+  estimateTokens,
+  modelContextTokens,
+  DEFAULT_CONTEXT_TOKENS,
+} from "../context-manager";
+
+const CONV = 1;
+
+function sys(content: string): Message {
+  return { conversation_id: CONV, role: "system", content };
+}
+function user(content: string): Message {
+  return { conversation_id: CONV, role: "user", content };
+}
+function asst(content: string): Message {
+  return { conversation_id: CONV, role: "assistant", content };
+}
+function tool(content: string): Message {
+  return { conversation_id: CONV, role: "tool", content, tool_call_id: "t1", tool_name: "read_file" };
+}
+
+/** Build a string of roughly `tokens` estimated tokens (chars/4). */
+function blob(tokens: number): string {
+  return "x".repeat(tokens * 4);
+}
+
+describe("estimation", () => {
+  it("estimateTokens uses chars/4", () => {
+    expect(estimateTokens("")).toBe(0);
+    expect(estimateTokens("abcd")).toBe(1);
+    expect(estimateTokens("abcde")).toBe(2);
+  });
+
+  it("estimateMessagesTokens sums bodies plus framing", () => {
+    const msgs = [user("abcd"), asst("abcd")];
+    // 1 + 1 token of body + 4 framing each = 10
+    expect(estimateMessagesTokens(msgs)).toBe(10);
+  });
+});
+
+describe("modelContextTokens", () => {
+  it("falls back to the conservative default for unknown models", () => {
+    expect(modelContextTokens(null)).toBe(DEFAULT_CONTEXT_TOKENS);
+    expect(modelContextTokens("some-weird-model")).toBe(DEFAULT_CONTEXT_TOKENS);
+  });
+
+  it("applies per-model overrides", () => {
+    expect(modelContextTokens("tinyllama")).toBe(2048);
+    expect(modelContextTokens("mistral-7b")).toBe(32768);
+  });
+});
+
+describe("applyContextBudget", () => {
+  it("under budget — returns the array unchanged", () => {
+    const msgs = [sys("rules"), user("hi"), asst("hello")];
+    const r = applyContextBudget(msgs, { contextTokens: 8192 });
+    expect(r.trimmed).toBe(false);
+    expect(r.messages).toHaveLength(3);
+    expect(r.messages.map((m) => m.content)).toEqual(["rules", "hi", "hello"]);
+    expect(r.toolResultsTruncated).toBe(0);
+    expect(r.turnsCollapsed).toBe(0);
+  });
+
+  it("never mutates the input array or its messages", () => {
+    const original = [sys("rules"), tool(blob(5000)), user("q")];
+    const snapshot = original.map((m) => m.content);
+    applyContextBudget(original, { contextTokens: 2048 });
+    expect(original.map((m) => m.content)).toEqual(snapshot);
+  });
+
+  it("over budget — truncates large tool-result bodies", () => {
+    // Budget = 8192 * 0.75 = 6144 tokens; a 9000-token tool body overflows it
+    // and truncation alone (1024-byte head ≈ 256 tokens) brings it back under.
+    const msgs = [sys("rules"), tool(blob(9000)), user("q")];
+    const r = applyContextBudget(msgs, {
+      contextTokens: 8192,
+      replyReserveFraction: 0.25,
+      toolResultHeadBytes: 1024,
+    });
+    expect(r.trimmed).toBe(true);
+    expect(r.toolResultsTruncated).toBe(1);
+    expect(r.turnsCollapsed).toBe(0);
+    expect(r.messages[1].content).toContain("[… elided");
+    expect(r.messages[1].content.length).toBeLessThan(blob(9000).length);
+    // system prompt intact
+    expect(r.messages[0].content).toBe("rules");
+  });
+
+  it("way over budget — collapses old turns into a synthetic summary", () => {
+    const msgs = [
+      sys("rules"),
+      user(blob(3000)),
+      asst(blob(3000)),
+      user(blob(3000)),
+      asst(blob(3000)),
+      user("latest question"),
+    ];
+    const r = applyContextBudget(msgs, { contextTokens: 4096 });
+    expect(r.trimmed).toBe(true);
+    expect(r.turnsCollapsed).toBeGreaterThan(0);
+    // A synthetic summary system message sits right after the real prompt.
+    expect(r.messages[0].content).toBe("rules");
+    expect(r.messages[1].role).toBe("system");
+    expect(r.messages[1].content).toContain("Conversation summary");
+    expect(r.messages[1].content).toContain("NOT model-generated");
+    // The most recent message is always kept verbatim.
+    expect(r.messages[r.messages.length - 1].content).toBe("latest question");
+  });
+
+  it("system prompt is always preserved and never truncated", () => {
+    const bigSys = sys(blob(10000));
+    const msgs = [bigSys, tool(blob(8000)), user(blob(8000)), asst("a"), user("b")];
+    const r = applyContextBudget(msgs, { contextTokens: 4096 });
+    expect(r.messages[0]).toBe(bigSys);
+    expect(r.messages[0].content).toBe(bigSys.content);
+  });
+
+  it("estimatedAfter never exceeds estimatedBefore when trimmed", () => {
+    const msgs = [sys("rules"), tool(blob(9000)), user(blob(9000)), asst("a"), user("b")];
+    const r = applyContextBudget(msgs, { contextTokens: 4096 });
+    expect(r.estimatedAfter).toBeLessThanOrEqual(r.estimatedBefore);
+  });
+});

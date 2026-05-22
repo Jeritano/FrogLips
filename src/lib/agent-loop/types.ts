@@ -108,4 +108,25 @@ export interface AgentRunOptions {
    * that by passing the policy directly (used in tests).
    */
   projectPolicy?: ProjectPolicy | null;
+  /**
+   * Explicit context-window size in tokens. When omitted the context
+   * manager resolves it from `model`. Used to budget the sent message
+   * array so a small-context model can't evict the system prompt.
+   */
+  contextTokens?: number;
+  /**
+   * Per-conversation model parameter overrides. When provided, the agent
+   * chat clients thread these into the backend request. Null fields fall
+   * back to backend defaults.
+   */
+  params?: ChatParams | null;
+}
+
+/** Resolved per-conversation model parameters threaded into chat requests. */
+export interface ChatParams {
+  temperature?: number | null;
+  top_p?: number | null;
+  max_tokens?: number | null;
+  /** Replaces the system-prompt; the runner prepends it as a system message. */
+  system_prompt?: string | null;
 }

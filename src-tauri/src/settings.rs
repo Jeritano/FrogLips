@@ -148,6 +148,12 @@ fn settings_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("Froglips/settings.json"))
 }
 
+/// Public accessor for the settings.json path — used by the diagnostics
+/// bundle exporter to include a (redacted) copy of the file.
+pub fn settings_path_for_diagnostics() -> Option<PathBuf> {
+    settings_path()
+}
+
 /// Load settings with API keys resolved from the Keychain. Performs a
 /// one-time migration: any plaintext key still present in settings.json is
 /// moved into the Keychain and blanked on disk.
@@ -208,7 +214,32 @@ pub fn save(s: &Settings) -> std::io::Result<()> {
         }
     }
     let text = serde_json::to_string_pretty(&on_disk).unwrap_or_else(|_| "{}".to_string());
-    std::fs::write(p, text)
+    atomic_write(&p, text.as_bytes())
+}
+
+/// Write `bytes` to `path` atomically: write to a temp file in the same
+/// directory, then rename over the target. A crash mid-write leaves the
+/// original file intact rather than truncated — rename is atomic on the
+/// same filesystem. Falls back to the temp file's cleanup on rename failure.
+fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp = dir.join(format!(
+        ".settings.json.tmp-{}",
+        std::process::id()
+    ));
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }
 
 /// Redact API keys for transport to the webview — replaces any present key
@@ -281,6 +312,64 @@ mod tests {
             save(&s).expect("save 2");
             let s2 = load();
             assert_eq!(s2.setup_complete, Some(false));
+        });
+    }
+
+    /// `atomic_write` must replace the target's contents and must never
+    /// leave a `.tmp-` file behind on success.
+    #[test]
+    fn atomic_write_replaces_contents_cleanly() {
+        let dir = std::env::temp_dir().join(format!(
+            "froglips-atomic-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("settings.json");
+
+        // Seed an existing file, then atomically overwrite it.
+        std::fs::write(&target, b"OLD CONTENTS").unwrap();
+        atomic_write(&target, b"NEW CONTENTS").expect("atomic write");
+        assert_eq!(std::fs::read(&target).unwrap(), b"NEW CONTENTS");
+
+        // No leftover temp file in the directory.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file leaked: {leftovers:?}");
+
+        // Writing to a brand-new path also works.
+        let fresh = dir.join("fresh.json");
+        atomic_write(&fresh, b"FRESH").expect("atomic write fresh");
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"FRESH");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `save → load` round-trip through the atomic path must preserve data.
+    #[test]
+    fn save_is_atomic_and_roundtrips() {
+        with_tempdir(|_dir| {
+            let mut s = Settings {
+                theme: Some("dark".into()),
+                last_model: Some("test-model".into()),
+                ..Default::default()
+            };
+            save(&s).expect("save");
+            let loaded = load();
+            assert_eq!(loaded.theme.as_deref(), Some("dark"));
+            assert_eq!(loaded.last_model.as_deref(), Some("test-model"));
+
+            // Overwrite — the atomic rename must not corrupt the file.
+            s.theme = Some("light".into());
+            save(&s).expect("save 2");
+            assert_eq!(load().theme.as_deref(), Some("light"));
         });
     }
 

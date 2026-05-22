@@ -41,6 +41,105 @@ pub fn read_crash_log() -> String {
     crate::crash_log::read_log()
 }
 
+/// If the SQLite DB was found corrupt on startup and quarantined, returns the
+/// path of the renamed corrupt file so the UI can surface it. `None` otherwise.
+#[tauri::command]
+pub fn db_recovery_notice() -> Option<String> {
+    crate::history::recovery_notice()
+}
+
+/// Best-effort host OS description for the diagnostics bundle.
+fn os_description() -> String {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let detail = std::process::Command::new("sw_vers")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    format!("{os} {arch} {detail}").trim().to_string()
+}
+
+/// Recursively mask values whose key looks secret-bearing. Keeps the JSON
+/// shape so the bundle is still readable, but no plaintext key/token leaks.
+fn redact_secrets(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                let kl = k.to_ascii_lowercase();
+                let secretish = kl.contains("key")
+                    || kl.contains("token")
+                    || kl.contains("secret")
+                    || kl.contains("password");
+                if secretish && v.is_string() {
+                    *v = serde_json::Value::String("__redacted__".into());
+                } else {
+                    redact_secrets(v);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                redact_secrets(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Write a single diagnostics bundle to `dest_path`: a concatenated text file
+/// containing the rolling app.log tail, the crash.log, the app version, the
+/// host OS, and settings.json with secret-like values redacted. Turns "the app
+/// misbehaved" into a single actionable artifact the user can share.
+#[tauri::command]
+pub fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> {
+    if dest_path.trim().is_empty() {
+        return Err("destination path must not be empty".into());
+    }
+
+    let app_log = crate::logging::read_tail(256 * 1024);
+    let crash_log = crate::crash_log::read_log();
+
+    let settings_section = match crate::settings::settings_path_for_diagnostics() {
+        Some(p) => match std::fs::read_to_string(&p) {
+            Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(mut v) => {
+                    redact_secrets(&mut v);
+                    serde_json::to_string_pretty(&v)
+                        .unwrap_or_else(|_| "<settings serialize failed>".into())
+                }
+                Err(_) => "<settings.json is not valid JSON>".into(),
+            },
+            Err(_) => "<settings.json not found>".into(),
+        },
+        None => "<settings path unavailable>".into(),
+    };
+
+    let bundle = format!(
+        "===== Froglips Diagnostics Bundle =====\n\
+         app version: {version}\n\
+         os: {os}\n\
+         generated: {ts}\n\
+         \n===== app.log (tail) =====\n{app_log}\n\
+         \n===== crash.log =====\n{crash_log}\n\
+         \n===== settings.json (secrets redacted) =====\n{settings}\n",
+        version = env!("CARGO_PKG_VERSION"),
+        os = os_description(),
+        ts = crate::crash_log::now_rfc3339(),
+        app_log = if app_log.is_empty() { "<empty>" } else { &app_log },
+        crash_log = if crash_log.is_empty() { "<empty>" } else { &crash_log },
+        settings = settings_section,
+    );
+
+    std::fs::write(&dest_path, bundle).map_err(|e| format!("failed to write bundle: {e}"))
+}
+
 /* ── Settings ────────────────────────────────────────────────────────────── */
 
 #[tauri::command]

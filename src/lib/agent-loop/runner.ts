@@ -13,6 +13,7 @@ import {
   toolCallSig,
 } from "./dispatch";
 import { buildSystemPrompt } from "./system-prompt";
+import { applyContextBudget } from "./context-manager";
 import { agentBackendUnsupportedReason, streamAgentChat } from "./agent-chat";
 import { awaitSubagents, listSubagents, runSubagent, spawnSubagentAsync } from "./subagent";
 import { fetchMcpTools } from "./mcp-tools";
@@ -385,11 +386,33 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     msgs.push(streamingMsg);
     let streamPushed = true;
 
+    // Budget the SENT copy against the model's context window. Operates on a
+    // copy — the persisted/displayed `msgs` array is never mutated. Keeps the
+    // system prompt (first message) intact; truncates oversized tool results
+    // and collapses old turns when the array would overflow the window.
+    const budgeted = applyContextBudget(
+      msgs.filter((m) => m._tmpKey !== streamingKey),
+      { model: opts.model, contextTokens: opts.contextTokens },
+    );
+    if (budgeted.trimmed) {
+      logDiag({
+        level: "info",
+        source: "agent-context",
+        message:
+          `Context budget applied: ${budgeted.estimatedBefore} → ` +
+          `${budgeted.estimatedAfter} est. tokens (budget ${budgeted.budget})`,
+        detail: {
+          toolResultsTruncated: budgeted.toolResultsTruncated,
+          turnsCollapsed: budgeted.turnsCollapsed,
+        },
+      });
+    }
+
     let result: { content: string; tool_calls: ToolCall[]; prompt_eval_count?: number; eval_count?: number };
     try {
       result = await streamAgentChat(
         opts,
-        msgs.filter((m) => m._tmpKey !== streamingKey),
+        budgeted.messages,
         tools,
         signal,
         (delta) => {

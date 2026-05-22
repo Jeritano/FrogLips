@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
+use parking_lot::RwLock;
 use r2d2::{ManageConnection, Pool, PooledConnection};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /* ── Connection pool ── */
 
@@ -38,12 +39,95 @@ impl ManageConnection for SqliteManager {
 
 static DB: Lazy<Pool<SqliteManager>> = Lazy::new(|| build_pool().expect("build db pool"));
 
+/// Set when a corrupt DB was detected and quarantined on startup. Holds the
+/// path the corrupt file was renamed to so a command can surface it.
+static DB_RECOVERY: RwLock<Option<String>> = RwLock::new(None);
+
+/// If a corrupt DB was quarantined this run, returns the path of the renamed
+/// corrupt file. `None` means the DB opened cleanly.
+pub fn recovery_notice() -> Option<String> {
+    DB_RECOVERY.read().clone()
+}
+
 fn db_path() -> Result<PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
     let base = home.join(".local-llm-app");
     std::fs::create_dir_all(&base).context("failed to create ~/.local-llm-app")?;
     Ok(base.join("db.sqlite"))
+}
+
+/// RFC3339-ish UTC timestamp safe for use in a filename (no colons).
+fn quarantine_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Reuse the colon-free convention: YYYYMMDDTHHMMSSZ.
+    let days = (secs / 86_400) as i64;
+    let sod = secs % 86_400;
+    let (hh, mm, ss) = (sod / 3600, (sod % 3600) / 60, sod % 60);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{year:04}{m:02}{d:02}T{hh:02}{mm:02}{ss:02}Z")
+}
+
+/// Run `PRAGMA integrity_check` on the DB at `path`. Returns `true` when the
+/// DB is healthy ("ok"), `false` when corruption is detected. A DB that cannot
+/// even be opened is treated as corrupt so it gets quarantined.
+fn integrity_ok(path: &Path) -> bool {
+    if !path.exists() {
+        // A non-existent DB is fine — schema setup will create a fresh one.
+        return true;
+    }
+    let conn = match Connection::open(path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    match conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0)) {
+        Ok(s) => s == "ok",
+        Err(_) => false,
+    }
+}
+
+/// Rename a corrupt DB (and its `-wal`/`-shm` siblings) out of the way so
+/// schema setup can build a fresh DB in its place. Records the quarantine
+/// location in `DB_RECOVERY`. Best-effort on the siblings — they may not exist.
+fn quarantine_corrupt_db(path: &Path) -> Result<()> {
+    let stamp = quarantine_stamp();
+    let corrupt = {
+        let mut s = path.as_os_str().to_owned();
+        s.push(format!(".corrupt-{stamp}"));
+        PathBuf::from(s)
+    };
+    std::fs::rename(path, &corrupt)
+        .with_context(|| format!("failed to quarantine corrupt db to {}", corrupt.display()))?;
+    for suffix in ["-wal", "-shm"] {
+        let mut sib = path.as_os_str().to_owned();
+        sib.push(suffix);
+        let sib = PathBuf::from(sib);
+        if sib.exists() {
+            let mut dst = corrupt.as_os_str().to_owned();
+            dst.push(suffix);
+            let _ = std::fs::rename(&sib, PathBuf::from(dst));
+        }
+    }
+    let notice = corrupt.display().to_string();
+    crate::diagnostics::error_with(
+        "db",
+        "corrupt database detected on startup — quarantined and recreated",
+        serde_json::json!({ "quarantined_to": notice }),
+    );
+    *DB_RECOVERY.write() = Some(notice);
+    Ok(())
 }
 
 fn setup_schema(conn: &Connection) -> Result<()> {
@@ -104,6 +188,10 @@ fn setup_schema(conn: &Connection) -> Result<()> {
     // Adds: parent_conv_id, parent_message_id — refs the source conversation
     // and the cutoff message id used to seed the fork (deep-copy boundary).
     ensure_conversation_fork_columns(conn)?;
+    // ── Per-conversation model params migration (idempotent) ─────────────
+    // Adds: params — a nullable TEXT column holding a JSON object of the
+    // shape { temperature, top_p, max_tokens, system_prompt }.
+    ensure_conversation_params_column(conn)?;
 
     // Install audit table (idempotent — CREATE TABLE IF NOT EXISTS).
     crate::agent_audit::ensure_schema(conn)?;
@@ -193,8 +281,32 @@ pub(crate) fn ensure_conversation_fork_columns(conn: &Connection) -> Result<()> 
     Ok(())
 }
 
+/// Idempotently add the `params` JSON column to the `conversations` table.
+/// Detects via `pragma_table_info` so re-runs on an upgraded schema are no-ops.
+pub(crate) fn ensure_conversation_params_column(conn: &Connection) -> Result<()> {
+    let has: bool = match conn.query_row(
+        "SELECT 1 FROM pragma_table_info('conversations') WHERE name = 'params'",
+        [],
+        |_| Ok(true),
+    ) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => false,
+        Err(e) => return Err(anyhow::anyhow!("pragma_table_info(params) failed: {e}")),
+    };
+    if !has {
+        conn.execute("ALTER TABLE conversations ADD COLUMN params TEXT", [])?;
+    }
+    Ok(())
+}
+
 fn build_pool() -> Result<Pool<SqliteManager>> {
     let path = db_path()?;
+    // Corruption recovery: probe the existing DB before any pooled connection
+    // touches it. A failed integrity check quarantines the file so schema
+    // setup recreates a fresh DB instead of panicking the whole app.
+    if !integrity_ok(&path) {
+        quarantine_corrupt_db(&path)?;
+    }
     {
         let conn = Connection::open(&path).context("schema setup connection")?;
         setup_schema(&conn)?;
@@ -230,6 +342,10 @@ pub struct Conversation {
     /// deep-copied into this fork at creation time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_message_id: Option<i64>,
+    /// Raw JSON string of per-conversation model params, or `None` when unset.
+    /// Shape: `{ temperature, top_p, max_tokens, system_prompt }` — the
+    /// frontend `JSON.parse`s this and applies the values at inference time.
+    pub params: Option<String>,
 }
 
 /// Direct-child branch summary, returned by `list_branches`.
@@ -279,7 +395,7 @@ pub fn create_conversation(title: &str, model: Option<&str>) -> Result<i64> {
 pub fn list_conversations() -> Result<Vec<Conversation>> {
     let conn = get_db()?;
     let mut stmt = conn.prepare(
-        "SELECT id, title, model, created_at, parent_conv_id, parent_message_id
+        "SELECT id, title, model, created_at, parent_conv_id, parent_message_id, params
          FROM conversations ORDER BY created_at DESC",
     )?;
     let rows = stmt
@@ -291,6 +407,7 @@ pub fn list_conversations() -> Result<Vec<Conversation>> {
                 created_at: r.get(3)?,
                 parent_conv_id: r.get(4)?,
                 parent_message_id: r.get(5)?,
+                params: r.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -320,6 +437,47 @@ pub fn rename_conversation(id: i64, title: &str) -> Result<()> {
     conn.execute(
         "UPDATE conversations SET title = ?1 WHERE id = ?2",
         params![title, id],
+    )?;
+    Ok(())
+}
+
+/// Fetch a single conversation row by id, including its `params` JSON.
+pub fn get_conversation(id: i64) -> Result<Conversation> {
+    let conn = get_db()?;
+    conn.query_row(
+        "SELECT id, title, model, created_at, parent_conv_id, parent_message_id, params
+         FROM conversations WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(Conversation {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                model: r.get(2)?,
+                created_at: r.get(3)?,
+                parent_conv_id: r.get(4)?,
+                parent_message_id: r.get(5)?,
+                params: r.get(6)?,
+            })
+        },
+    )
+    .context("conversation not found")
+}
+
+/// Persist per-conversation model params. `params` must be either `None`
+/// (clears the column) or a string containing a parseable JSON object —
+/// malformed JSON is rejected so the column never holds garbage.
+pub fn update_conversation_params(id: i64, params: Option<&str>) -> Result<()> {
+    if let Some(raw) = params {
+        let value: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|e| anyhow::anyhow!("params is not valid JSON: {e}"))?;
+        if !value.is_object() {
+            return Err(anyhow::anyhow!("params must be a JSON object"));
+        }
+    }
+    let conn = get_db()?;
+    conn.execute(
+        "UPDATE conversations SET params = ?1 WHERE id = ?2",
+        params![params, id],
     )?;
     Ok(())
 }
@@ -636,6 +794,8 @@ mod tests {
         // Run the migration twice to confirm idempotence under realistic boot.
         ensure_conversation_fork_columns(&conn).expect("fork migration 1");
         ensure_conversation_fork_columns(&conn).expect("fork migration 2 must not error");
+        ensure_conversation_params_column(&conn).expect("params migration 1");
+        ensure_conversation_params_column(&conn).expect("params migration 2 must not error");
 
         conn.execute(
             "INSERT INTO conversations (title, model, created_at) VALUES (?1, ?2, ?3)",
@@ -840,6 +1000,149 @@ mod tests {
         let long = "数".repeat(60);
         let got = derive_title(&long).unwrap();
         assert!(got.ends_with('…'));
+    }
+
+    #[test]
+    fn params_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                model TEXT,
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        ensure_conversation_params_column(&conn).expect("first");
+        ensure_conversation_params_column(&conn).expect("second");
+        ensure_conversation_params_column(&conn).expect("third");
+        let has: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('conversations') WHERE name = 'params'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap();
+        assert!(has);
+    }
+
+    /// `update_conversation_params` only accepts `None` or a parseable JSON
+    /// object. Everything else (malformed JSON, non-object JSON) is rejected.
+    #[test]
+    fn params_json_validation() {
+        // The validation logic, exercised directly without the global pool.
+        fn validate(p: Option<&str>) -> Result<()> {
+            if let Some(raw) = p {
+                let value: serde_json::Value = serde_json::from_str(raw)
+                    .map_err(|e| anyhow::anyhow!("params is not valid JSON: {e}"))?;
+                if !value.is_object() {
+                    return Err(anyhow::anyhow!("params must be a JSON object"));
+                }
+            }
+            Ok(())
+        }
+
+        // Valid: null.
+        assert!(validate(None).is_ok());
+        // Valid: a well-formed params object.
+        assert!(validate(Some(
+            r#"{"temperature":0.7,"top_p":null,"max_tokens":2048,"system_prompt":"hi"}"#
+        ))
+        .is_ok());
+        // Valid: empty object.
+        assert!(validate(Some("{}")).is_ok());
+        // Invalid: malformed JSON.
+        assert!(validate(Some("{not json")).is_err());
+        assert!(validate(Some(r#"{"temperature": }"#)).is_err());
+        // Invalid: valid JSON but not an object.
+        assert!(validate(Some("[1,2,3]")).is_err());
+        assert!(validate(Some("42")).is_err());
+        assert!(validate(Some("\"a string\"")).is_err());
+    }
+
+    /// Feed a deliberately-corrupt SQLite file: the integrity probe must flag
+    /// it, quarantine must rename it aside (with siblings), and schema setup
+    /// must then produce a usable fresh DB at the original path.
+    #[test]
+    fn corrupt_db_is_quarantined_and_recreated() {
+        let dir = std::env::temp_dir()
+            .join(format!("froglips-db-corrupt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("db.sqlite");
+
+        // Garbage bytes — not a valid SQLite header.
+        std::fs::write(&db, b"this is definitely not a sqlite database file").unwrap();
+
+        // Probe flags it as corrupt.
+        assert!(!integrity_ok(&db), "garbage file must fail integrity check");
+
+        // Plausible WAL/SHM siblings that must also be moved aside. Written
+        // after the probe — SQLite may clean up sidecar files when it closes
+        // a connection it opened during the integrity check.
+        std::fs::write(dir.join("db.sqlite-wal"), b"junk-wal").unwrap();
+        std::fs::write(dir.join("db.sqlite-shm"), b"junk-shm").unwrap();
+
+        // Quarantine renames the file aside.
+        quarantine_corrupt_db(&db).expect("quarantine should succeed");
+        assert!(!db.exists(), "corrupt file must be moved off the live path");
+        let quarantined: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            quarantined.iter().any(|n| n.contains("db.sqlite.corrupt-")),
+            "expected a quarantined db file, got {quarantined:?}"
+        );
+        assert!(
+            quarantined.iter().any(|n| n.ends_with("-wal")),
+            "wal sibling should be quarantined too"
+        );
+        assert!(
+            quarantined.iter().any(|n| n.ends_with("-shm")),
+            "shm sibling should be quarantined too"
+        );
+
+        // A fresh DB built at the original path is healthy and usable.
+        {
+            let conn = Connection::open(&db).expect("open fresh db");
+            setup_schema(&conn).expect("schema setup on fresh db");
+            let ok: String = conn
+                .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(ok, "ok", "fresh db must pass integrity check");
+            conn.execute(
+                "INSERT INTO conversations (title, model, created_at) VALUES ('t', NULL, 1)",
+                [],
+            )
+            .expect("fresh db must accept writes");
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A healthy DB must pass the integrity probe untouched.
+    #[test]
+    fn healthy_db_passes_integrity_check() {
+        let dir = std::env::temp_dir()
+            .join(format!("froglips-db-healthy-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("db.sqlite");
+        {
+            let conn = Connection::open(&db).unwrap();
+            setup_schema(&conn).unwrap();
+        }
+        assert!(integrity_ok(&db), "a real db must pass integrity check");
+        // A non-existent path is treated as fine — schema setup will create it.
+        assert!(integrity_ok(&dir.join("does-not-exist.sqlite")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

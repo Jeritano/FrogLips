@@ -47,7 +47,9 @@ fn rfc3339_utc(unix_secs: u64) -> String {
     )
 }
 
-fn now_rfc3339() -> String {
+/// Current time as an RFC3339 UTC string. Best-effort; falls back to
+/// `"unknown"` if the system clock is before the epoch.
+pub fn now_rfc3339() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| rfc3339_utc(d.as_secs()))

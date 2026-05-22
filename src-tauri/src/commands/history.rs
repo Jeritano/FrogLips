@@ -94,6 +94,29 @@ pub async fn delete_message(id: i64, app: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
+/// Persist per-conversation model params. `params` is either `null` (clears
+/// the stored params) or a JSON-object string of the shape
+/// `{ temperature, top_p, max_tokens, system_prompt }`. Malformed JSON is
+/// rejected — the column never holds unparseable garbage.
+#[tauri::command]
+pub async fn update_conversation_params(
+    id: i64,
+    params: Option<String>,
+) -> Result<(), String> {
+    if let Some(p) = params.as_deref() {
+        if p.len() > MAX_MESSAGE_BYTES {
+            return Err("params payload too large".into());
+        }
+    }
+    blocking(move || history::update_conversation_params(id, params.as_deref())).await
+}
+
+/// Fetch a single conversation by id, including its stored `params` JSON.
+#[tauri::command]
+pub async fn get_conversation(id: i64) -> Result<history::Conversation, String> {
+    blocking(move || history::get_conversation(id)).await
+}
+
 /* ── Conversation branching ── */
 
 #[tauri::command]

@@ -24,6 +24,9 @@ pub enum DiagLevel {
 }
 
 impl DiagLevel {
+    /// String form of the level. Retained for the serde-parity unit test and
+    /// any future stderr-style formatting.
+    #[allow(dead_code)]
     fn as_str(self) -> &'static str {
         match self {
             DiagLevel::Info => "info",
@@ -60,10 +63,24 @@ pub fn set_app_handle(handle: AppHandle) {
 }
 
 fn emit(level: DiagLevel, source: &str, message: &str, detail: Option<Value>) {
-    // Always mirror to stderr so the existing `cargo run` / log-tailing
-    // workflows still see the event. Keep the format consistent with the
-    // legacy `[mcp:name] …` prefix so muscle-memory log greps still work.
-    eprintln!("[{src}] {lvl}: {msg}", src = source, lvl = level.as_str(), msg = message);
+    // Route through `tracing` so the event lands in the persistent rolling
+    // log at ~/.local-llm-app/app.log (and stderr, via the fmt subscriber).
+    // Non-panic failures are now durable across restarts.
+    let detail_str = detail
+        .as_ref()
+        .map(|d| d.to_string())
+        .unwrap_or_default();
+    match level {
+        DiagLevel::Info => {
+            tracing::info!(target: "diagnostics", source, detail = %detail_str, "{message}")
+        }
+        DiagLevel::Warn => {
+            tracing::warn!(target: "diagnostics", source, detail = %detail_str, "{message}")
+        }
+        DiagLevel::Error => {
+            tracing::error!(target: "diagnostics", source, detail = %detail_str, "{message}")
+        }
+    }
 
     let handle = APP_HANDLE.read().clone();
     if let Some(h) = handle {

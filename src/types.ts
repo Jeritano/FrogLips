@@ -58,6 +58,23 @@ export interface Conversation {
   parent_conv_id?: number | null;
   /** Cutoff message id from the parent — messages with id ≤ this were copied. */
   parent_message_id?: number | null;
+  /**
+   * Per-conversation model parameter overrides, stored as a raw JSON string
+   * (the literal SQLite column). Parse with `parseConversationParams`.
+   * Shape: `{ temperature, top_p, max_tokens, system_prompt }`.
+   */
+  params?: string | null;
+}
+
+/**
+ * Decoded per-conversation model parameters. Every field is nullable —
+ * `null` means "use the backend default", matching today's behaviour.
+ */
+export interface ConversationParams {
+  temperature: number | null;
+  top_p: number | null;
+  max_tokens: number | null;
+  system_prompt: string | null;
 }
 
 /** Direct-child branch summary, returned by `conversationListBranches`. */

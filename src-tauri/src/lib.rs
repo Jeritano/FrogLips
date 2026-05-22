@@ -7,6 +7,7 @@ mod crash_log;
 mod diagnostics;
 mod gguf;
 mod history;
+mod logging;
 mod mcp;
 mod memory;
 mod models;
@@ -61,6 +62,11 @@ pub fn run() {
     // Install the process-global panic hook before anything else so panics
     // during startup are captured. Covers all threads, including Tokio workers.
     crash_log::install();
+
+    // Bring up the persistent rolling log next so every diagnostics emission
+    // from here on is durably recorded at ~/.local-llm-app/app.log.
+    logging::init();
+    tracing::info!(target: "diagnostics", "Froglips backend starting");
 
     ensure_path_for_gui();
 
@@ -200,6 +206,8 @@ pub fn run() {
             commands::history::conversation_fork,
             commands::history::conversation_list_branches,
             commands::history::conversation_fork_tree,
+            commands::history::update_conversation_params,
+            commands::history::get_conversation,
             commands::memory::add_memory,
             commands::memory::list_memories,
             commands::memory::delete_memory,
@@ -304,6 +312,8 @@ pub fn run() {
             commands::misc::quick_prompt_open,
             commands::misc::quick_prompt_hide,
             commands::misc::read_crash_log,
+            commands::misc::db_recovery_notice,
+            commands::misc::export_diagnostics_bundle,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
