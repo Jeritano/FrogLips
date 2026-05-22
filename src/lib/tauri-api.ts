@@ -219,21 +219,33 @@ export const api = {
       convId: convId ?? null,
     }),
 
+  // Dangerous-tool capability gate. `mintToolApproval` mints a single-use,
+  // 60s token bound to a Rust command name; the four dangerous commands below
+  // require it. The wrappers mint immediately before invoking, so they must
+  // only be called on the agent loop's post-confirmation path.
+  mintToolApproval: (tool: string) =>
+    invoke<string>("mint_tool_approval", { tool }),
+
   // Agent tools
   agentReadFile: (path: string, offset?: number, limit?: number) =>
     invoke<ReadResult>("agent_read_file", { path, offset: offset ?? null, limit: limit ?? null }),
   agentListDir: (path: string) =>
     invoke<DirListing>("agent_list_dir", { path }),
-  agentRunShell: (command: string, opts?: ShellOpts, opId?: string) =>
+  agentRunShell: async (command: string, opts?: ShellOpts, opId?: string) =>
     invoke<ShellResult>("agent_run_shell", {
       command,
       opts: opts ?? null,
       opId: opId ?? null,
+      approval: await invoke<string>("mint_tool_approval", { tool: "agent_run_shell" }),
     }),
   agentCancelShell: (opId: string) =>
     invoke<void>("agent_cancel_shell", { opId }),
-  agentWriteFile: (path: string, content: string) =>
-    invoke<void>("agent_write_file", { path, content }),
+  agentWriteFile: async (path: string, content: string) =>
+    invoke<void>("agent_write_file", {
+      path,
+      content,
+      approval: await invoke<string>("mint_tool_approval", { tool: "agent_write_file" }),
+    }),
   agentEditFile: (path: string, oldString: string, newString: string, replaceAll?: boolean) =>
     invoke<EditResult>("agent_edit_file", {
       path,
@@ -281,10 +293,16 @@ export const api = {
     invoke<void>("agent_show_notification", { title, body }),
   agentOpenPathInEditor: (path: string, line?: number) =>
     invoke<string>("agent_open_path_in_editor", { path, line: line ?? null }),
-  agentApplescriptRun: (script: string) =>
-    invoke<ShellResult>("agent_applescript_run", { script }),
-  agentHttpRequest: (input: HttpReqInput) =>
-    invoke<HttpResp>("agent_http_request", { input }),
+  agentApplescriptRun: async (script: string) =>
+    invoke<ShellResult>("agent_applescript_run", {
+      script,
+      approval: await invoke<string>("mint_tool_approval", { tool: "agent_applescript_run" }),
+    }),
+  agentHttpRequest: async (input: HttpReqInput) =>
+    invoke<HttpResp>("agent_http_request", {
+      input,
+      approval: await invoke<string>("mint_tool_approval", { tool: "agent_http_request" }),
+    }),
   agentFindDefinition: (symbol: string, path?: string) =>
     invoke<SearchResult>("agent_find_definition", { symbol, path: path ?? null }),
   agentFindReferences: (symbol: string, path?: string) =>

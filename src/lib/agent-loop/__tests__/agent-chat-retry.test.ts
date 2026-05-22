@@ -136,6 +136,67 @@ describe("streamAgentChat — retry / backoff predicate", () => {
     expect(retries).toBe(RETRY_MAX);
   });
 
+  it("does NOT retry a generic thrown Error — propagates immediately", async () => {
+    // A non-network, non-5xx failure (e.g. a parse/logic error) must not be
+    // re-streamed: the turn may not be idempotent.
+    const fetchMock = vi.fn(async () => {
+      throw new Error("unexpected token in JSON");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    let retries = 0;
+    await expect(
+      runWithTimers(
+        streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
+          retries++;
+        }),
+      ),
+    ).rejects.toThrow(/unexpected token/);
+    expect(retries).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT retry an AbortError thrown mid-stream", async () => {
+    // An abort that is not yet reflected on `signal.aborted` still must not
+    // trigger a retry — the user/timeout cancelled this turn deliberately.
+    const fetchMock = vi.fn(async () => {
+      const err = new Error("The operation was aborted");
+      err.name = "AbortError";
+      throw err;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    let retries = 0;
+    await expect(
+      runWithTimers(
+        streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
+          retries++;
+        }),
+      ),
+    ).rejects.toThrow(/aborted/i);
+    expect(retries).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a request-timeout error (transient transport fault)", async () => {
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call++;
+      if (call === 1) throw new Error("Ollama request timed out");
+      return ndjsonResponse("recovered");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    let retries = 0;
+    const result = await runWithTimers(
+      streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
+        retries++;
+      }),
+    );
+    expect(result.content).toBe("recovered");
+    expect(retries).toBe(1);
+  });
+
   it("does not retry once the signal is already aborted", async () => {
     const ac = new AbortController();
     ac.abort();

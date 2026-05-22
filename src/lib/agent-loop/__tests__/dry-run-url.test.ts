@@ -70,6 +70,23 @@ describe("dryRunValidateUrl — data: URL MIME gating", () => {
   it("rejects data:application/javascript", () => {
     expect(dryRunValidateUrl("data:application/javascript,alert(1)").ok).toBe(false);
   });
+
+  it("rejects data:image/svg+xml — SVG can execute script", () => {
+    const r = dryRunValidateUrl(
+      "data:image/svg+xml,<svg onload=alert(1) xmlns='http://www.w3.org/2000/svg'/>",
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/xml/i);
+  });
+
+  it("rejects base64 data:image/svg+xml", () => {
+    expect(dryRunValidateUrl("data:image/svg+xml;base64,PHN2Zy8+").ok).toBe(false);
+  });
+
+  it("still allows raster data:image/jpeg and image/webp", () => {
+    expect(dryRunValidateUrl("data:image/jpeg;base64,/9j/4AAQ").ok).toBe(true);
+    expect(dryRunValidateUrl("data:image/webp;base64,UklGRg==").ok).toBe(true);
+  });
 });
 
 describe("dryRunValidateUrl — scheme + host basics", () => {

@@ -149,11 +149,130 @@ pub fn settings_get() -> settings::Settings {
     settings::redacted(settings::load())
 }
 
+/// Top-level keys `settings_set` will accept. Anything else in the patch is
+/// rejected so a malformed/hostile IPC call can't smuggle unknown fields into
+/// settings.json (which then flow into `serde(default)` deserialization).
+const ALLOWED_SETTINGS_KEYS: &[&str] = &[
+    "workspace_root",
+    "last_model",
+    "last_backend",
+    "memory_mode",
+    "active_preset_id",
+    "embedding_model",
+    "recall_threshold",
+    "window",
+    "theme",
+    "custom_backends",
+    "mcp_servers",
+    "setup_complete",
+];
+
+/// Validate a `settings_set` patch before it is merged + persisted. Rejects
+/// unknown top-level keys, bounds `mcp_servers` entries (name shape, args/env
+/// sizes), and rejects obviously malformed `custom_backends`.
+fn validate_settings_patch(patch: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    for k in patch.keys() {
+        if !ALLOWED_SETTINGS_KEYS.contains(&k.as_str()) {
+            return Err(format!("unknown settings key: {k}"));
+        }
+    }
+
+    if let Some(mcp) = patch.get("mcp_servers") {
+        if !mcp.is_null() {
+            let arr = mcp
+                .as_array()
+                .ok_or("mcp_servers must be an array")?;
+            if arr.len() > 64 {
+                return Err("too many mcp_servers (max 64)".into());
+            }
+            for (i, srv) in arr.iter().enumerate() {
+                let o = srv
+                    .as_object()
+                    .ok_or_else(|| format!("mcp_servers[{i}] must be an object"))?;
+                let name = o
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| format!("mcp_servers[{i}] missing string 'name'"))?;
+                crate::mcp::validate_name(name)
+                    .map_err(|e| format!("mcp_servers[{i}] name: {e}"))?;
+                match o.get("command").and_then(|v| v.as_str()) {
+                    Some(c) if !c.trim().is_empty() && c.len() <= 1024 => {}
+                    _ => return Err(format!("mcp_servers[{i}] 'command' invalid")),
+                }
+                if let Some(args) = o.get("args") {
+                    let args = args
+                        .as_array()
+                        .ok_or_else(|| format!("mcp_servers[{i}] 'args' must be an array"))?;
+                    if args.len() > 128 {
+                        return Err(format!("mcp_servers[{i}] too many args (max 128)"));
+                    }
+                    for a in args {
+                        match a.as_str() {
+                            Some(s) if s.len() <= 4096 => {}
+                            Some(_) => return Err(format!("mcp_servers[{i}] arg exceeds 4096 bytes")),
+                            None => return Err(format!("mcp_servers[{i}] args must be strings")),
+                        }
+                    }
+                }
+                if let Some(env) = o.get("env") {
+                    let env = env
+                        .as_object()
+                        .ok_or_else(|| format!("mcp_servers[{i}] 'env' must be an object"))?;
+                    if env.len() > 128 {
+                        return Err(format!("mcp_servers[{i}] too many env vars (max 128)"));
+                    }
+                    for (ek, ev) in env {
+                        if ek.is_empty() || ek.len() > 256 {
+                            return Err(format!("mcp_servers[{i}] env key length out of range"));
+                        }
+                        match ev.as_str() {
+                            Some(s) if s.len() <= 16_384 => {}
+                            Some(_) => return Err(format!("mcp_servers[{i}] env value too large")),
+                            None => return Err(format!("mcp_servers[{i}] env values must be strings")),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(cb) = patch.get("custom_backends") {
+        if !cb.is_null() {
+            let arr = cb
+                .as_array()
+                .ok_or("custom_backends must be an array")?;
+            if arr.len() > 64 {
+                return Err("too many custom_backends (max 64)".into());
+            }
+            for (i, b) in arr.iter().enumerate() {
+                let o = b
+                    .as_object()
+                    .ok_or_else(|| format!("custom_backends[{i}] must be an object"))?;
+                for key in ["id", "name", "base_url", "model"] {
+                    match o.get(key).and_then(|v| v.as_str()) {
+                        Some(s) if !s.trim().is_empty() && s.len() <= 2048 => {}
+                        _ => return Err(format!("custom_backends[{i}] '{key}' invalid")),
+                    }
+                }
+                let base = o.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
+                if !(base.starts_with("http://") || base.starts_with("https://")) {
+                    return Err(format!("custom_backends[{i}] base_url must be http(s)"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn settings_set(patch: serde_json::Value) -> Result<settings::Settings, String> {
+    let patch_obj = patch
+        .as_object()
+        .ok_or("settings patch must be a JSON object")?;
+    validate_settings_patch(patch_obj)?;
     let mut current = serde_json::to_value(settings::load()).map_err(|e| e.to_string())?;
-    if let (Some(c), Some(p)) = (current.as_object_mut(), patch.as_object()) {
-        for (k, v) in p {
+    if let Some(c) = current.as_object_mut() {
+        for (k, v) in patch_obj {
             c.insert(k.clone(), v.clone());
         }
     }
@@ -280,6 +399,70 @@ fn list_open_conversation_windows_impl<R: tauri::Runtime>(app: &tauri::AppHandle
         .filter(|l| l.starts_with("conv-"))
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod settings_validation_tests {
+    use super::validate_settings_patch;
+
+    fn obj(s: &str) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn accepts_known_keys() {
+        assert!(validate_settings_patch(&obj(r#"{"theme":"dark"}"#)).is_ok());
+        assert!(validate_settings_patch(&obj(r#"{"setup_complete":true}"#)).is_ok());
+        assert!(validate_settings_patch(&obj("{}")).is_ok());
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_key() {
+        let err = validate_settings_patch(&obj(r#"{"evil":1}"#)).unwrap_err();
+        assert!(err.contains("unknown settings key"), "got: {err}");
+    }
+
+    #[test]
+    fn validates_mcp_server_entries() {
+        // Good entry passes.
+        assert!(validate_settings_patch(&obj(
+            r#"{"mcp_servers":[{"name":"fs-1","command":"node","args":["x"],"env":{"K":"v"}}]}"#
+        ))
+        .is_ok());
+        // Bad server name shape is rejected.
+        assert!(validate_settings_patch(&obj(
+            r#"{"mcp_servers":[{"name":"bad name","command":"node"}]}"#
+        ))
+        .is_err());
+        // Empty command is rejected.
+        assert!(validate_settings_patch(&obj(
+            r#"{"mcp_servers":[{"name":"ok","command":""}]}"#
+        ))
+        .is_err());
+        // Oversized arg is rejected.
+        let big = "a".repeat(5000);
+        let patch = format!(r#"{{"mcp_servers":[{{"name":"ok","command":"node","args":["{big}"]}}]}}"#);
+        assert!(validate_settings_patch(&obj(&patch)).is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_custom_backends() {
+        // Missing required field.
+        assert!(validate_settings_patch(&obj(
+            r#"{"custom_backends":[{"id":"a","name":"n","model":"m"}]}"#
+        ))
+        .is_err());
+        // Non-http base_url.
+        assert!(validate_settings_patch(&obj(
+            r#"{"custom_backends":[{"id":"a","name":"n","base_url":"ftp://x","model":"m"}]}"#
+        ))
+        .is_err());
+        // Well-formed entry passes.
+        assert!(validate_settings_patch(&obj(
+            r#"{"custom_backends":[{"id":"a","name":"n","base_url":"https://x","model":"m"}]}"#
+        ))
+        .is_ok());
+    }
 }
 
 #[cfg(test)]

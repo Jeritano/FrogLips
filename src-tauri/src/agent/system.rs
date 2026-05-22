@@ -326,12 +326,39 @@ pub struct ScreenshotResult {
     pub bytes: u64,
 }
 
+/// Delete `froglips-screenshot-*.png` files in `dir` older than one hour so
+/// repeated default-destination screenshots don't accumulate in the temp dir
+/// indefinitely. Best-effort: any IO error is ignored.
+async fn gc_old_screenshots(dir: &std::path::Path) {
+    let max_age = std::time::Duration::from_secs(3600);
+    let now = std::time::SystemTime::now();
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("froglips-screenshot-") && name.ends_with(".png")) {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata().await {
+            if let Ok(modified) = meta.modified() {
+                if now.duration_since(modified).map(|a| a > max_age).unwrap_or(false) {
+                    let _ = tokio::fs::remove_file(entry.path()).await;
+                }
+            }
+        }
+    }
+}
+
 pub async fn screenshot(out_path: Option<String>) -> Result<ScreenshotResult, String> {
     // Default destination: app temp dir under the workspace, or /tmp.
     let target = match out_path {
         Some(p) => validate_for_write(&p).map_err(err_string)?,
         None => {
             let dir = std::env::temp_dir();
+            // GC stale screenshots before writing a fresh one.
+            gc_old_screenshots(&dir).await;
             let stamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())

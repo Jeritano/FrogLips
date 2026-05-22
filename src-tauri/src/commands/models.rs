@@ -40,25 +40,66 @@ pub async fn delete_mlx_model(repo_id: String) -> Result<(), String> {
     blocking(move || models::delete_mlx_model(&repo_id)).await
 }
 
+/// Cap on stdout/stderr buffered from a model-pull child. The CLIs emit
+/// progress to stderr for up to 30 minutes — `.output()` would buffer all of
+/// it in memory unbounded; this caps it.
+const PULL_OUTPUT_CAP: usize = 64 * 1024;
+
+/// Run `cmd` to completion, draining stdout+stderr each capped at
+/// `PULL_OUTPUT_CAP` bytes so a chatty/long-running pull cannot OOM the app.
+/// Returns `(success, stderr_text)`.
+async fn run_capped_pull(mut cmd: tokio::process::Command) -> Result<(bool, String), String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+
+    async fn drain<R: tokio::io::AsyncRead + Unpin>(mut r: R, cap: usize) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = r.read(&mut chunk).await {
+            if n == 0 || buf.len() >= cap {
+                break;
+            }
+            let take = n.min(cap - buf.len());
+            buf.extend_from_slice(&chunk[..take]);
+        }
+        buf
+    }
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let out_fut = async {
+        match stdout {
+            Some(s) => drain(s, PULL_OUTPUT_CAP).await,
+            None => Vec::new(),
+        }
+    };
+    let err_fut = async {
+        match stderr {
+            Some(s) => drain(s, PULL_OUTPUT_CAP).await,
+            None => Vec::new(),
+        }
+    };
+    let (_out, err) = tokio::join!(out_fut, err_fut);
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    Ok((status.success(), String::from_utf8_lossy(&err).into_owned()))
+}
+
 #[tauri::command]
 pub async fn pull_ollama_model(name: String) -> Result<String, String> {
     validate_ollama_name(&name)?;
     const PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
-    let fut = tokio::process::Command::new("ollama")
-        .arg("pull")
-        .arg("--")
-        .arg(&name)
-        .kill_on_drop(true)
-        .output();
-    let output = match tokio::time::timeout(PULL_TIMEOUT, fut).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return Err(e.to_string()),
-        Err(_) => return Err(format!("pull timed out after {}s", PULL_TIMEOUT.as_secs())),
-    };
-    if output.status.success() {
-        Ok(format!("Pulled {name}"))
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+    let mut cmd = tokio::process::Command::new("ollama");
+    cmd.arg("pull").arg("--").arg(&name);
+    match tokio::time::timeout(PULL_TIMEOUT, run_capped_pull(cmd)).await {
+        Ok(Ok((true, _))) => Ok(format!("Pulled {name}")),
+        Ok(Ok((false, stderr))) => Err(stderr),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(format!("pull timed out after {}s", PULL_TIMEOUT.as_secs())),
     }
 }
 
@@ -82,23 +123,20 @@ pub async fn pull_hf_model(repo_id: String) -> Result<String, String> {
             continue;
         }
         // kill_on_drop: if the timeout fires and we drop the future, the
-        // child download is also killed instead of leaking and burning bandwidth.
-        let fut = tokio::process::Command::new(&bin)
-            .arg(sub)
-            .arg("--")
-            .arg(&repo_id)
-            .kill_on_drop(true)
-            .output();
-        match tokio::time::timeout(PULL_TIMEOUT, fut).await {
-            Ok(Ok(output)) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if output.status.success() && !stderr.contains("deprecated and no longer works") {
+        // child download is also killed instead of leaking and burning
+        // bandwidth. Output is drained capped (the CLI streams MBs of
+        // progress to stderr) so a long pull cannot buffer unbounded.
+        let mut cmd = tokio::process::Command::new(&bin);
+        cmd.arg(sub).arg("--").arg(&repo_id);
+        match tokio::time::timeout(PULL_TIMEOUT, run_capped_pull(cmd)).await {
+            Ok(Ok((success, stderr))) => {
+                if success && !stderr.contains("deprecated and no longer works") {
                     return Ok(format!("Downloaded {repo_id}"));
                 }
-                last_err = stderr.into_owned();
+                last_err = stderr;
             }
             Ok(Err(e)) => {
-                last_err = e.to_string();
+                last_err = e;
             }
             Err(_) => {
                 return Err(format!("pull timed out after {}s", PULL_TIMEOUT.as_secs()));

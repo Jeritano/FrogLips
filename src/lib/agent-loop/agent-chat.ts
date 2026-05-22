@@ -94,11 +94,20 @@ export async function streamAgentChat(
       lastErr = e;
       if (signal.aborted) throw e;
       const msg = e instanceof Error ? e.message : String(e);
-      // Retry transient failures only: explicit 5xx and bare network errors.
-      // A definite 4xx (bad request) or auth failure is not retried.
+      // Retry only known-transient failures: an explicit 5xx response, or a
+      // genuine network/connection error. Everything else — 4xx, aborts,
+      // parse errors, and generic thrown errors — propagates immediately so a
+      // non-idempotent turn is never silently re-streamed.
       const is5xx = /\b5\d\d:/.test(msg);
-      const isHttpStatus = /\b\d{3}:/.test(msg);
-      const isRetriable = is5xx || !isHttpStatus;
+      const isAbort =
+        (e instanceof Error && e.name === "AbortError") || /\baborted\b/i.test(msg);
+      // A `fetch` connection failure surfaces as a TypeError; the request
+      // timeout helper throws "... timed out". Both are transient transport
+      // faults, not response errors.
+      const isNetwork =
+        !isAbort &&
+        ((e instanceof TypeError && !/\b\d{3}:/.test(msg)) || /timed out/i.test(msg));
+      const isRetriable = is5xx || isNetwork;
       if (isRetriable && attempt < RETRY_MAX) {
         onRetry();
         await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));

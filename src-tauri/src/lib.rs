@@ -1,5 +1,6 @@
 mod agent;
 mod agent_audit;
+mod approval;
 mod ask_user;
 mod backend_process;
 mod commands;
@@ -287,6 +288,7 @@ pub fn run() {
             commands::memory::memory_set_context,
             commands::agent::agent_read_file,
             commands::agent::agent_list_dir,
+            commands::agent::mint_tool_approval,
             commands::agent::agent_run_shell,
             commands::agent::agent_write_file,
             commands::agent::agent_edit_file,

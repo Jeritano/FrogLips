@@ -284,26 +284,20 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
     let n = n.unwrap_or(5).min(20);
 
     // DuckDuckGo HTML endpoint — no API key needed. Brittle but adequate.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS))
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605 Froglips")
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .build()
-        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
-
-    let url = format!(
+    // Route through the same hardened path web_fetch/http_request use: each
+    // redirect hop is SSRF-validated and the connection DNS-pinned to a
+    // pre-resolved safe address set, closing the rebinding TOCTOU that a
+    // plain `redirect::Policy::limited` client leaves open.
+    let url_str = format!(
         "https://html.duckduckgo.com/html/?q={}",
         urlencoding(&query)
     );
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    let url = url::Url::parse(&url_str)
+        .map_err(|e| err_string(ToolError::invalid(format!("bad url: {e}"))))?;
+    let timeout = std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS);
+    let resp = send_following_redirects(url, timeout, |client, u| client.get(u.clone())).await?;
+    let (bytes, _total, _truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
 
     // Parse <a class="result__a" href="..."> + <a class="result__snippet">
     static RESULT_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
