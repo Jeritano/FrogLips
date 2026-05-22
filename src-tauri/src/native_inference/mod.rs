@@ -1,20 +1,16 @@
 //! Native in-process LLM inference.
 //!
-//! Cross-platform Native backend (see `docs/research/llamacpp-backend.md`).
-//! Phase 1 split the monolithic implementation into a trait + per-platform
-//! backend; Phase 2 added the llama.cpp (`llama-cpp-2`) backend behind its
-//! own feature flag. Backends are mutually exclusive — see the
-//! `compile_error!` below.
+//! Froglips is a native macOS app — the backend is mistralrs + candle +
+//! Metal, behind the `native-mistralrs` feature. The implementation is split
+//! into a trait (`NativeBackend`) and a backend impl.
 //!
 //! Feature scheme:
 //! * `native-inference` — umbrella, no-op base (kept for back-compat).
 //! * `native-mistralrs` — mistralrs + candle + Metal (macOS aarch64 only).
-//! * `native-llamacpp`  — llama.cpp via `llama-cpp-2` (cross-platform GGUF).
 //!
-//! When no backend feature is active — or `native-mistralrs` is set on a
-//! non-mac-aarch64 target — dispatch falls through to `stub`, which returns
-//! "Native backend not available on this platform" so the Ollama + MLX
-//! paths keep working.
+//! When the feature is off — or set on a non-mac-aarch64 target — dispatch
+//! falls through to `stub`, which returns "Native backend not available on
+//! this platform" so the Ollama + MLX paths keep working.
 
 #![allow(dead_code)]
 
@@ -117,18 +113,9 @@ pub trait NativeBackend: Clone + Send + Sync {
 
 /* ── Backend dispatch ─────────────────────────────────────────────────── */
 
-// Two backends cannot coexist: they pull in incompatible native libraries
-// (Candle/Metal vs llama.cpp) and would also collide on `NativeRuntime`
-// re-exports below. Pick exactly one at build time.
-#[cfg(all(feature = "native-mistralrs", feature = "native-llamacpp"))]
-compile_error!(
-    "features `native-mistralrs` and `native-llamacpp` are mutually exclusive; \
-     enable exactly one (see docs/research/llamacpp-backend.md)."
-);
-
 // mistralrs is gated on macOS aarch64 — it depends on candle-metal and only
-// builds usefully on Apple Silicon. On other platforms with the feature on,
-// fall through to the stub so the build still succeeds.
+// builds usefully on Apple Silicon. Off the feature, or on another target,
+// dispatch falls through to the stub so the build still succeeds.
 #[cfg(all(
     feature = "native-mistralrs",
     target_os = "macos",
@@ -136,16 +123,10 @@ compile_error!(
 ))]
 mod mistralrs_backend;
 
-#[cfg(feature = "native-llamacpp")]
-mod llamacpp_backend;
-
-#[cfg(not(any(
-    all(
-        feature = "native-mistralrs",
-        target_os = "macos",
-        target_arch = "aarch64"
-    ),
-    feature = "native-llamacpp",
+#[cfg(not(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
 )))]
 mod stub;
 
@@ -156,38 +137,20 @@ mod stub;
 ))]
 pub use mistralrs_backend::{new_shared, NativeRuntime, SharedRuntime};
 
-#[cfg(all(
-    feature = "native-llamacpp",
-    not(all(
-        feature = "native-mistralrs",
-        target_os = "macos",
-        target_arch = "aarch64"
-    )),
-))]
-pub use llamacpp_backend::{new_shared, NativeRuntime, SharedRuntime};
-
-#[cfg(not(any(
-    all(
-        feature = "native-mistralrs",
-        target_os = "macos",
-        target_arch = "aarch64"
-    ),
-    feature = "native-llamacpp",
+#[cfg(not(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
 )))]
 pub use stub::{new_shared, NativeRuntime, SharedRuntime};
 
-/// Convenience: human label for the current build.
-///
-/// `true` whenever a real backend is compiled in (mistralrs on macOS aarch64,
-/// or llama.cpp on any platform with `native-llamacpp`). Returns `false` when
-/// the stub is active so the frontend can hide the Native backend toggle.
+/// `true` when the real mistralrs backend is compiled in (macOS aarch64 with
+/// `native-mistralrs`). Returns `false` when the stub is active so the
+/// frontend can hide the Native backend toggle.
 pub fn native_enabled() -> bool {
-    cfg!(any(
-        all(
-            feature = "native-mistralrs",
-            target_os = "macos",
-            target_arch = "aarch64"
-        ),
-        feature = "native-llamacpp",
+    cfg!(all(
+        feature = "native-mistralrs",
+        target_os = "macos",
+        target_arch = "aarch64"
     ))
 }

@@ -1,10 +1,9 @@
-//! GGUF file picker / downloader plumbing for the cross-platform Native
-//! backend (Phase 3 — see `docs/research/llamacpp-backend.md`).
+//! GGUF file picker / downloader plumbing.
 //!
-//! Today the HuggingFace tab in `ModelBrowser` is pinned to `mlx-community/*`
-//! and pulls *entire repos* via the `huggingface-cli` shell-out. The native
-//! llama.cpp backend instead wants a *single* `.gguf` file from any repo. The
-//! commands here let the frontend:
+//! The HuggingFace tab in `ModelBrowser` is pinned to `mlx-community/*` and
+//! pulls *entire repos* via the `huggingface-cli` shell-out. These commands
+//! instead fetch a *single* `.gguf` file from any repo. The commands here let
+//! the frontend:
 //!
 //!   * stream a one-off file download with resumable Range requests +
 //!     per-byte progress events,

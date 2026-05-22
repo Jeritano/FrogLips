@@ -49,19 +49,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
-# Native inference (alpha) — fast in-process LLM. Two backends:
-#   * mistralrs + candle + Metal — macOS aarch64 only (`native-mistralrs`).
-#   * llama.cpp via llama-cpp-2 — cross-platform GGUF (`native-llamacpp`).
-# Mutually exclusive — `native_inference/mod.rs` has a compile_error! guard.
-# Build with --features native-mistralrs (or native-llamacpp).
+# Native inference — fast in-process LLM on Apple Silicon: mistralrs +
+# candle + Metal. Build with --features native-mistralrs.
 mistralrs-core = { version = "0.8.1", default-features = false, features = ["metal", "accelerate"], optional = true }
 candle-core = { version = "0.10", default-features = false, features = ["metal", "accelerate"], optional = true }
 indexmap = { version = "2", optional = true }
 either = { version = "1", optional = true }
 serde_yaml = { version = "0.9", optional = true }
-# llama-cpp-2: bundles llama.cpp via cmake. `metal` feature flag enables
-# Apple GPU offload on macOS. Pin minor; upstream API churns.
-llama-cpp-2 = { version = "0.1", default-features = false, features = ["metal"], optional = true }
 
 # Browser automation (alpha) — agent-controlled headless Chrome via CDP.
 # Enabled via the "browser-automation" feature; requires a Chrome/Chromium
@@ -74,5 +68,4 @@ default = []
 # Umbrella flag — no-op base. Real backends opt in below.
 native-inference = []
 native-mistralrs = ["native-inference", "dep:mistralrs-core", "dep:candle-core", "dep:indexmap", "dep:either", "dep:serde_yaml"]
-native-llamacpp  = ["native-inference", "dep:llama-cpp-2"]
 browser-automation = ["dep:chromiumoxide", "dep:futures-util"]

@@ -1,10 +1,7 @@
-//! Stub backend for every platform/feature combo where no real native
-//! engine is wired up yet.
+//! Stub backend for any build where the real native engine is not active.
 //!
-//! Active when NOT (feature = "native-inference" && macOS aarch64). Every
+//! Active when NOT (feature = "native-mistralrs" && macOS aarch64). Every
 //! method returns an error so the frontend can fall back to Ollama / MLX.
-//! Phase 2 will replace this with the llama.cpp (`llama-cpp-2`) backend
-//! on the remaining platforms.
 
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
