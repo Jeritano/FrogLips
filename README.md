@@ -1,5 +1,7 @@
 # Froglips
 
+![Froglips](assets/banner.png)
+
 **Froglips — the local-LLM power workstation.** A cross-platform desktop app that turns a model running entirely on your own machine into a real working environment. Plain chat is the substrate; the product is built on three pillars:
 
 - **Agent** — a tool-calling loop with filesystem/shell/web/code/task tools, MCP servers, an optional workspace sandbox, dry-run mode, and risk-classified confirmation. Runs on Froglips's built-in native engine.
