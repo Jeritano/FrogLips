@@ -94,9 +94,10 @@ through 10 survive termination.
 ## 9. Governing Law
 
 This Agreement is governed by and construed in accordance with the laws of
-[STATE / JURISDICTION — to be completed by the Licensor], without regard to
-its conflict-of-laws principles. The exclusive venue for any dispute arising
-under this Agreement shall be the courts located in that jurisdiction.
+the State of Ohio, United States of America, without regard to its conflict-
+of-laws principles. The exclusive venue for any dispute arising under this
+Agreement shall be the state and federal courts located in the State of
+Ohio, and You consent to the personal jurisdiction of those courts.
 
 ## 10. Entire Agreement; Severability
 
