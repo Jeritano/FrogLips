@@ -68,6 +68,15 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
   const clearConfirm = useTwoClickConfirm();
   const clearArmed = clearConfirm.armed === "clear";
 
+  // Data section — backup / export / import. `dataStatus` carries the inline
+  // success/failure line; `dataBusy` flags the in-flight op so buttons lock.
+  const [dataStatus, setDataStatus] = useState<
+    { kind: "ok" | "err"; text: string } | null
+  >(null);
+  const [dataBusy, setDataBusy] = useState(false);
+  // Import adds data — give it a two-click confirm before the file picker.
+  const importConfirm = useTwoClickConfirm();
+
   // Subscribe to live updates while the panel is open. We always render off
   // the latest snapshot so a warning that fires while the modal is showing
   // appears without a manual refresh.
@@ -79,11 +88,15 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     };
   }, [open]);
 
-  // Disarm the two-click-confirm when the panel closes so it doesn't carry
+  // Disarm the two-click-confirms when the panel closes so they don't carry
   // over to the next open.
   useEffect(() => {
-    if (!open) clearConfirm.reset();
-  }, [open, clearConfirm]);
+    if (!open) {
+      clearConfirm.reset();
+      importConfirm.reset();
+      setDataStatus(null);
+    }
+  }, [open, clearConfirm, importConfirm]);
 
   // Pull the crash log on open. A non-Tauri host (e.g. plain test/browser)
   // will reject the invoke — treat that as "no crashes" rather than surfacing
@@ -157,6 +170,111 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     // click within the window actually clears.
     clearConfirm.request("clear", () => clearDiag());
   }, [clearConfirm]);
+
+  // Run a write-side data op: prompt for a save path, invoke `run(path)`, and
+  // report inline. A null pick (dialog cancelled) is a silent no-op.
+  const runSave = useCallback(
+    async (
+      label: string,
+      defaultName: string,
+      filters: { name: string; extensions: string[] }[],
+      run: (path: string) => Promise<void>,
+    ) => {
+      setDataStatus(null);
+      let dest: string | null = null;
+      try {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        dest = await save({ defaultPath: defaultName, filters, title: label });
+      } catch (err) {
+        setDataStatus({
+          kind: "err",
+          text: `${label} failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+      if (!dest) return;
+      setDataBusy(true);
+      try {
+        await run(dest);
+        setDataStatus({ kind: "ok", text: `${label} written to ${dest}` });
+      } catch (err) {
+        setDataStatus({
+          kind: "err",
+          text: `${label} failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      } finally {
+        setDataBusy(false);
+      }
+    },
+    [],
+  );
+
+  const handleBackup = useCallback(() => {
+    void runSave(
+      "Database backup",
+      "froglips-backup.db",
+      [{ name: "SQLite database", extensions: ["db"] }],
+      (path) => api.backupDatabase(path),
+    );
+  }, [runSave]);
+
+  const handleExport = useCallback(() => {
+    void runSave(
+      "Data export",
+      "froglips-export.json",
+      [{ name: "JSON", extensions: ["json"] }],
+      (path) => api.exportData(path),
+    );
+  }, [runSave]);
+
+  const handleExportBundle = useCallback(() => {
+    void runSave(
+      "Diagnostics bundle",
+      "froglips-diagnostics.zip",
+      [{ name: "Zip archive", extensions: ["zip"] }],
+      (path) => api.exportDiagnosticsBundle(path),
+    );
+  }, [runSave]);
+
+  // Import is destructive-adjacent (adds rows) — gate it behind a two-click
+  // confirm, then open a file picker and merge the chosen JSON export.
+  const handleImport = useCallback(() => {
+    importConfirm.request("import", () => {
+      void (async () => {
+        setDataStatus(null);
+        let src: string | null = null;
+        try {
+          const { open } = await import("@tauri-apps/plugin-dialog");
+          const res = await open({
+            multiple: false,
+            directory: false,
+            filters: [{ name: "JSON", extensions: ["json"] }],
+            title: "Import data",
+          });
+          src = Array.isArray(res) ? (res[0] ?? null) : res;
+        } catch (err) {
+          setDataStatus({
+            kind: "err",
+            text: `Import failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
+          return;
+        }
+        if (!src) return;
+        setDataBusy(true);
+        try {
+          await api.importData(src);
+          setDataStatus({ kind: "ok", text: `Imported data from ${src}` });
+        } catch (err) {
+          setDataStatus({
+            kind: "err",
+            text: `Import failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        } finally {
+          setDataBusy(false);
+        }
+      })();
+    });
+  }, [importConfirm]);
 
   if (!open) return null;
 
@@ -282,6 +400,62 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
             </table>
           )}
         </div>
+
+        <section className="dashboard-card diag-data" data-testid="diag-data">
+          <div className="diag-data-head">
+            <h3>Data</h3>
+          </div>
+          <div className="diag-data-actions">
+            <button
+              type="button"
+              data-testid="diag-data-backup"
+              onClick={handleBackup}
+              disabled={dataBusy}
+              title="Write a single-file copy of the local database"
+            >
+              Back up database
+            </button>
+            <button
+              type="button"
+              data-testid="diag-data-export"
+              onClick={handleExport}
+              disabled={dataBusy}
+              title="Export conversations, messages and memory as JSON"
+            >
+              Export data (JSON)
+            </button>
+            <button
+              type="button"
+              data-testid="diag-data-import"
+              onClick={handleImport}
+              disabled={dataBusy}
+              title="Additively import a JSON data export (two-click confirm)"
+              className={importConfirm.armed === "import" ? "diag-clear-armed" : undefined}
+            >
+              {importConfirm.labelFor("import", "Import data")}
+            </button>
+            <button
+              type="button"
+              data-testid="diag-data-bundle"
+              onClick={handleExportBundle}
+              disabled={dataBusy}
+              title="Export a diagnostics bundle for bug reports"
+            >
+              Export diagnostics bundle
+            </button>
+          </div>
+          {dataStatus && (
+            <div
+              className={
+                dataStatus.kind === "err" ? "dashboard-error diag-data-status" : "diag-data-status"
+              }
+              data-testid="diag-data-status"
+              role="status"
+            >
+              {dataStatus.text}
+            </div>
+          )}
+        </section>
 
         <section className="dashboard-card diag-crash" data-testid="diag-crash">
           <div className="diag-crash-head">

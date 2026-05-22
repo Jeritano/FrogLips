@@ -49,7 +49,7 @@ pub fn recovery_notice() -> Option<String> {
     DB_RECOVERY.read().clone()
 }
 
-fn db_path() -> Result<PathBuf> {
+pub(crate) fn db_path() -> Result<PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
     let base = home.join(".local-llm-app");

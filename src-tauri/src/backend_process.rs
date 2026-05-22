@@ -22,6 +22,31 @@ pub const OLLAMA_PORT: u16 = 11434;
 
 const STDERR_RING_LINES: usize = 64;
 
+/// Max consecutive auto-restart attempts before the watcher gives up. A model
+/// that crashes immediately on every launch must not loop forever.
+pub const MAX_RESTART_ATTEMPTS: u32 = 3;
+
+/// Backoff (seconds) before restart attempt `attempt` (1-indexed). Linear:
+/// 2s, 4s, 6s. Pure helper so the capping logic is unit-testable.
+pub fn restart_backoff_secs(attempt: u32) -> u64 {
+    (attempt as u64) * 2
+}
+
+/// Should the watcher attempt another restart given how many have been tried?
+/// `attempts_done` is the count of restarts already attempted this crash run.
+/// Pure helper — unit-tested in isolation from the process machinery.
+pub fn should_attempt_restart(attempts_done: u32) -> bool {
+    attempts_done < MAX_RESTART_ATTEMPTS
+}
+
+/// Outcome of polling the server: what the watcher should do next.
+pub enum WatchOutcome {
+    /// Nothing changed, or the server is intentionally stopped.
+    Idle,
+    /// The running MLX child died unexpectedly — try to restart this model.
+    Crashed { model: String, backend: String },
+}
+
 #[derive(Default)]
 pub struct ServerState {
     inner: Mutex<Option<RunningServer>>,
@@ -36,6 +61,10 @@ pub struct ServerState {
     /// prevents stale probes from reporting ready=true for a server that has
     /// since been stopped or replaced.
     generation: Arc<AtomicU64>,
+    /// Set true by stop(), cleared by start(). Lets the watcher tell an
+    /// intentional shutdown apart from an unexpected crash so a user-initiated
+    /// stop never triggers auto-restart.
+    intentional_stop: Arc<AtomicBool>,
 }
 
 struct RunningServer {
@@ -113,6 +142,9 @@ impl ServerState {
         }
         self.clear_stderr();
         self.ready.store(false, Ordering::Release);
+        // A fresh start clears any pending intentional-stop flag — the watcher
+        // should treat a future death of this new server as a crash.
+        self.intentional_stop.store(false, Ordering::Release);
         // Invalidate any in-flight probe from a prior start
         let my_generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
 
@@ -233,6 +265,9 @@ impl ServerState {
     }
 
     pub async fn stop(&self) {
+        // Mark intentional BEFORE killing so a watcher poll racing this stop
+        // sees the flag and never misclassifies the kill as a crash.
+        self.intentional_stop.store(true, Ordering::Release);
         let mut guard = self.inner.lock().await;
         if let Some(mut s) = guard.take() {
             if let Some(child) = s.child.as_mut() {
@@ -244,6 +279,76 @@ impl ServerState {
         // Invalidate any in-flight probe so it can't emit ready=true after stop
         self.generation.fetch_add(1, Ordering::AcqRel);
         let s = self.dead_status();
+        self.emit(&s);
+    }
+
+    /// Poll the running server for the watcher loop. Unlike `status()`, this
+    /// reports whether a death was an unexpected crash (eligible for
+    /// auto-restart) versus an intentional stop, and returns the dead server's
+    /// model/backend so the watcher can relaunch it.
+    pub async fn poll(&self) -> WatchOutcome {
+        let mut guard = self.inner.lock().await;
+        let dead = match guard.as_mut() {
+            Some(s) => match s.child.as_mut() {
+                None => None,
+                Some(child) => match child.try_wait() {
+                    Ok(None) => None,
+                    _ => Some((s.model.clone(), s.backend.clone())),
+                },
+            },
+            None => None,
+        };
+        match dead {
+            None => {
+                // Mirror status()'s emit for the no-death path.
+                let s = match guard.as_ref() {
+                    Some(s) => self.live_status(&s.model, &s.backend),
+                    None => self.dead_status(),
+                };
+                drop(guard);
+                self.emit(&s);
+                WatchOutcome::Idle
+            }
+            Some((model, backend)) => {
+                *guard = None;
+                drop(guard);
+                self.ready.store(false, Ordering::Release);
+                // Bump generation so stale probes from the dead process bail.
+                self.generation.fetch_add(1, Ordering::AcqRel);
+                if self.intentional_stop.load(Ordering::Acquire) {
+                    let s = self.dead_status();
+                    self.emit(&s);
+                    WatchOutcome::Idle
+                } else {
+                    WatchOutcome::Crashed { model, backend }
+                }
+            }
+        }
+    }
+
+    /// Emit a transient "restarting" status so the UI can show progress while
+    /// the watcher backs off and relaunches a crashed model server.
+    pub fn emit_restarting(&self, model: &str, backend: &str, attempt: u32) {
+        let mut s = self.dead_status();
+        s.model = Some(model.into());
+        s.backend = Some(backend.into());
+        s.last_error = Some(format!(
+            "model server crashed — restarting (attempt {attempt}/{MAX_RESTART_ATTEMPTS})"
+        ));
+        self.emit(&s);
+    }
+
+    /// Emit a terminal "gave up" status after exhausting restart attempts.
+    pub fn emit_gave_up(&self, attempts: u32) {
+        let mut s = self.dead_status();
+        let detail = s
+            .last_error
+            .take()
+            .map(|e| format!(" — check the model / logs:\n{e}"))
+            .unwrap_or_else(|| " — check the model / logs".into());
+        s.last_error = Some(format!(
+            "model server crashed {attempts} times, giving up{detail}"
+        ));
         self.emit(&s);
     }
 
@@ -322,4 +427,40 @@ fn which(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&path)
         .map(|p| p.join(name))
         .find(|p| p.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restart_attempts_are_capped() {
+        // First MAX_RESTART_ATTEMPTS tries are allowed...
+        for done in 0..MAX_RESTART_ATTEMPTS {
+            assert!(should_attempt_restart(done), "attempt {done} should proceed");
+        }
+        // ...then the watcher must give up.
+        assert!(!should_attempt_restart(MAX_RESTART_ATTEMPTS));
+        assert!(!should_attempt_restart(MAX_RESTART_ATTEMPTS + 5));
+    }
+
+    #[test]
+    fn restart_loop_terminates() {
+        // Simulate a model that crashes on every launch: the attempt counter
+        // must reach the cap and stop, never looping unbounded.
+        let mut attempts = 0u32;
+        while should_attempt_restart(attempts) {
+            attempts += 1;
+            assert!(attempts <= MAX_RESTART_ATTEMPTS, "loop exceeded cap");
+        }
+        assert_eq!(attempts, MAX_RESTART_ATTEMPTS);
+    }
+
+    #[test]
+    fn backoff_increases_per_attempt() {
+        assert_eq!(restart_backoff_secs(1), 2);
+        assert_eq!(restart_backoff_secs(2), 4);
+        assert_eq!(restart_backoff_secs(3), 6);
+        assert!(restart_backoff_secs(2) > restart_backoff_secs(1));
+    }
 }

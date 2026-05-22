@@ -72,6 +72,19 @@ export const api = {
   // or an empty string when no crashes have been recorded.
   readCrashLog: () => invoke<string>("read_crash_log"),
 
+  // Data backup / export / import. `backupDatabase` writes a single-file copy
+  // of the SQLite DB; `exportData` serialises conversations + messages +
+  // memory to JSON; `importData` additively merges such a JSON export back in
+  // and throws on a schema mismatch.
+  backupDatabase: (destPath: string) =>
+    invoke<void>("backup_database", { destPath }),
+  exportData: (destPath: string) =>
+    invoke<void>("export_data", { destPath }),
+  importData: (srcPath: string) =>
+    invoke<void>("import_data", { srcPath }),
+  exportDiagnosticsBundle: (destPath: string) =>
+    invoke<void>("export_diagnostics_bundle", { destPath }),
+
   listConversations: () => invoke<Conversation[]>("list_conversations"),
   createConversation: (title: string, model: string | null) =>
     invoke<number>("create_conversation", { title, model }),

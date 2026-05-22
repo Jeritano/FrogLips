@@ -4,6 +4,7 @@ mod ask_user;
 mod backend_process;
 mod commands;
 mod crash_log;
+mod data_backup;
 mod diagnostics;
 mod gguf;
 mod history;
@@ -140,9 +141,70 @@ pub fn run() {
                 diagnostics::set_app_handle(app.handle().clone());
                 let s = state.clone();
                 tauri::async_runtime::spawn(async move {
+                    use backend_process::{
+                        restart_backoff_secs, should_attempt_restart, WatchOutcome,
+                    };
+                    // Consecutive auto-restart attempts for the current crash
+                    // run. Reset to 0 whenever the server is seen healthy so a
+                    // long-lived server that crashes much later gets a fresh
+                    // budget rather than inheriting an exhausted one.
+                    let mut attempts: u32 = 0;
                     loop {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        let _ = s.status().await; // emits if child died
+                        match s.poll().await {
+                            WatchOutcome::Idle => {
+                                attempts = 0;
+                            }
+                            WatchOutcome::Crashed { model, backend } => {
+                                // Ollama is externally managed — never relaunch
+                                // it; just surface the dead status.
+                                if backend != "mlx" {
+                                    attempts = 0;
+                                    continue;
+                                }
+                                if !should_attempt_restart(attempts) {
+                                    s.emit_gave_up(attempts);
+                                    diagnostics::error_with(
+                                        "backend",
+                                        "model server crashed repeatedly — auto-restart gave up",
+                                        serde_json::json!({
+                                            "model": model,
+                                            "attempts": attempts,
+                                        }),
+                                    );
+                                    attempts = 0;
+                                    continue;
+                                }
+                                attempts += 1;
+                                s.emit_restarting(&model, &backend, attempts);
+                                let backoff = restart_backoff_secs(attempts);
+                                diagnostics::warn_with(
+                                    "backend",
+                                    "model server died unexpectedly — auto-restarting",
+                                    serde_json::json!({
+                                        "model": model,
+                                        "attempt": attempts,
+                                        "backoff_secs": backoff,
+                                    }),
+                                );
+                                tokio::time::sleep(std::time::Duration::from_secs(
+                                    backoff,
+                                ))
+                                .await;
+                                if let Err(e) =
+                                    s.start(model.clone(), backend.clone()).await
+                                {
+                                    diagnostics::error_with(
+                                        "backend",
+                                        "auto-restart launch failed",
+                                        serde_json::json!({
+                                            "model": model,
+                                            "error": e.to_string(),
+                                        }),
+                                    );
+                                }
+                            }
+                        }
                     }
                 });
 
@@ -314,6 +376,9 @@ pub fn run() {
             commands::misc::read_crash_log,
             commands::misc::db_recovery_notice,
             commands::misc::export_diagnostics_bundle,
+            commands::data::backup_database,
+            commands::data::export_data,
+            commands::data::import_data,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

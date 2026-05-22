@@ -7,6 +7,7 @@ use regex::Regex;
 use std::sync::Arc;
 
 pub mod agent;
+pub mod data;
 pub mod history;
 pub mod mcp;
 pub mod memory;

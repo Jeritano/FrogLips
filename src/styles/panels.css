@@ -200,6 +200,28 @@
   color: var(--text-muted);
 }
 
+/* ── Diagnostics: data backup / export / import section ── */
+
+.diag-data {
+  margin-top: var(--space-3);
+}
+
+.diag-data-head {
+  margin-bottom: var(--space-2);
+}
+
+.diag-data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.diag-data-status {
+  margin-top: var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
 /* ── Pull UI ── */
 
 .pull-row {
@@ -1002,6 +1024,76 @@ button.cancel {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.agent-status-pill.agent-preset-chip,
+.agent-status-pill.agent-workspace-chip {
+  background: var(--accent-bg);
+  color: var(--accent);
+  cursor: help;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-status-pill.agent-workspace-chip {
+  background: var(--surface-2, var(--accent-bg));
+  color: var(--text-2);
+}
+
+.agent-coach-hint {
+  font-size: 11px;
+  color: var(--text-2);
+  font-style: italic;
+  animation: fadeIn 0.2s;
+  align-self: center;
+}
+
+.empty-chat-landing {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px 24px;
+  text-align: center;
+}
+.empty-chat-heading {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+.empty-chat-sub {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.empty-chat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  max-width: 480px;
+  margin-top: 4px;
+}
+.empty-chat-chip {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.empty-chat-chip:hover {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.empty-chat-pointer {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 8px;
 }
 
 .agent-thinking-row {
