@@ -103,14 +103,13 @@
 }
 .theme-toggle:hover { background: var(--surface-hover); color: var(--text); }
 
-/* Small fixed gap above the search/list block. The conv list itself now
-   grows to fill the column and scrolls internally, so the old centering
-   spacers (flex:1) would have starved it of height. */
-.sidebar-spacer-top {
-  flex: 0 0 4px;
-}
+/* Flex spacers above + below the conv search/list block sandwich it at
+   the vertical midpoint of the sidebar column. Both grow equally so the
+   block sits in the middle regardless of how tall the conv list is. */
+.sidebar-spacer-top,
 .sidebar-spacer-bottom {
-  flex: 0 0 0;
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .conv-search {
@@ -459,10 +458,7 @@ body {
   /* Bottom 12 keeps room for the memory panel; top 0 lets .sidebar-top
      control the exact gap below the macOS traffic lights. */
   padding: 0 8px 12px 8px;
-  /* Sidebar itself doesn't scroll — .conv-list owns the scroll region so
-     the search input + New chat button stay pinned. */
-  overflow: hidden;
-  min-width: 0;
+  overflow-y: auto;
 }
 
 .new-chat {
@@ -499,34 +495,16 @@ body {
 
 .conv-list {
   list-style: none;
-  display: block;
-  /* Owns the sidebar's scroll region: search input + New chat above stay
-     pinned while a long thread list scrolls independently. */
-  flex: 1 1 0;
-  min-height: 0;
-  overflow-y: auto;
-  margin-right: -4px;
-  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
-/* Spacer rows for fixed-height virtualization — they reserve the scroll
-   geometry of the off-screen conversation rows without rendering them. */
-.conv-virtual-spacer {
-  flex-shrink: 0;
-}
-
-/* Fixed-height rows: virtualization windows the list and relies on a
-   uniform 40px stride (38px row + 2px margin). Keep these in sync with
-   CONV_ROW_HEIGHT in App.tsx. */
 .conv-list li {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 4px;
-  box-sizing: border-box;
-  height: 38px;
-  margin-bottom: 2px;
-  padding: 0 10px;
+  padding: 7px 10px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
