@@ -333,16 +333,36 @@ const StreamingMessage = memo(function StreamingMessage({ text }: { text: string
 });
 
 export function MessageList({ messages, streaming, conversationId, workspaceRoot, currentModel, agentStatus, onRegenerate, onEditUser, onFork }: Props) {
-  const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef<number | null>(null);
+  // Autoscroll "sticks" to the bottom only while the user is already there.
+  // Scrolling up to read pauses it; scrolling back near the bottom resumes.
+  const stickRef = useRef(true);
   const [pinned, setPinned] = useState<Set<string>>(new Set());
   const [pinning, setPinning] = useState<string | null>(null);
 
+  // Distance from the bottom under which autoscroll stays engaged.
+  const STICK_THRESHOLD_PX = 64;
+
+  const onScroll = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    stickRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+  }, []);
+
+  // New conversation → always start pinned to the bottom.
   useEffect(() => {
+    stickRef.current = true;
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!stickRef.current) return;
     if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
     const behavior: ScrollBehavior = streaming !== undefined || agentStatus === "thinking" || agentStatus === "tool" ? "auto" : "smooth";
     scrollRafRef.current = requestAnimationFrame(() => {
-      endRef.current?.scrollIntoView({ behavior });
+      const el = listRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior });
     });
     return () => {
       if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
@@ -421,7 +441,7 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
   const modelMatches = currentModel && lastAsstModel && currentModel === lastAsstModel;
 
   return (
-    <div className="message-list">
+    <div className="message-list" ref={listRef} onScroll={onScroll}>
       {rows.map(({ msg: m, key: k, divider }, idx) => (
         <div key={k}>
           <MessageRow
@@ -474,8 +494,6 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
               : <>Last response from <code>{lastAsstModel}</code></>}
         </div>
       )}
-
-      <div ref={endRef} />
     </div>
   );
 }
