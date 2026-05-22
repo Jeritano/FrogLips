@@ -114,14 +114,22 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
 
   useEffect(() => {
     convRef.current = conversation;
+    // Guard the async listMessages resolution so an A→B→A rapid switch can't
+    // paint stale messages from an older fetch over the current view. The
+    // closure-captured `ignore` is flipped to true by the cleanup; any
+    // resolution after that is dropped.
+    let ignore = false;
     if (conversation) {
-      api.listMessages(conversation.id).then(setMessages).catch((e) => setErr(String(e)));
+      api.listMessages(conversation.id)
+        .then((msgs) => { if (!ignore) setMessages(msgs); })
+        .catch((e) => { if (!ignore) setErr(String(e)); });
     } else {
       setMessages([]);
     }
     setRecalled([]);
     setConvParams(parseConversationParams(conversation?.params));
     setShowParamsPanel(false);
+    return () => { ignore = true; };
   }, [conversation?.id]);
 
   const ensureConversation = useEvent(async (): Promise<Conversation> => {
@@ -348,6 +356,20 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     await resend(newText, truncated);
   }
 
+  // Stable handler for MessageList → MessageRow (React.memo). An inline arrow
+  // here would bust the row memo on every parent render (one per streaming
+  // rAF frame) and undo the windowing perf work. `useEvent` keeps the
+  // reference fixed while the body always observes the latest props.
+  const onForkMsg = useEvent(async (msg: Message) => {
+    if (!conversation?.id || msg.id == null) return;
+    try {
+      const newId = await api.conversationFork(conversation.id, msg.id);
+      onForked?.(newId);
+    } catch (e) {
+      setErr(`Fork failed: ${e}`);
+    }
+  });
+
   const showLanding = !!conversation && messages.length === 0 && !isWorking;
 
   return (
@@ -369,19 +391,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           agentStatus={agentStatus}
           onRegenerate={onRegenerate}
           onEditUser={onEditUser}
-          onFork={async (msg) => {
-            // Fork-from-here. The button already confirmed with the user; we
-            // just need the persisted message id + current conv id. Missing
-            // either is a no-op (the row's `canFork` gate prevents this in
-            // practice — kept as a belt-and-suspenders check).
-            if (!conversation?.id || msg.id == null) return;
-            try {
-              const newId = await api.conversationFork(conversation.id, msg.id);
-              onForked?.(newId);
-            } catch (e) {
-              setErr(`Fork failed: ${e}`);
-            }
-          }}
+          onFork={onForkMsg}
         />
       )}
       <div className="chat-input-wrap">

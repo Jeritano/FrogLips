@@ -76,7 +76,13 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   const [models, setModels] = useState<ModelEntry[]>([]);
 
   useModalA11y({ open: true, onClose, containerRef: ref });
-  useEffect(() => setDraft(card), [card]);
+  // Re-seed the draft only when the form opens on a DIFFERENT card. Without
+  // this guard, the parent re-emitting the same `card` (a new object identity
+  // after any sibling state change) wipes in-flight edits the user has typed
+  // into the form. Comparing by id is enough: the form is keyed to one card.
+  useEffect(() => {
+    setDraft((d) => (d.id === card.id ? d : card));
+  }, [card]);
 
   useEffect(() => {
     api

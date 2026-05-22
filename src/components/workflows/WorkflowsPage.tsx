@@ -40,6 +40,11 @@ export function WorkflowsPage({ status }: Props) {
   const [selected, setSelected] = useState<Workflow | null>(null);
   const [cards, setCards] = useState<WorkflowCard[]>([]);
   const [edges, setEdges] = useState<WorkflowEdge[]>([]);
+  // Local workflow-name state — the input writes here, and the debounced save
+  // threads this into `pendingSave`. Keeping the name separate from
+  // `selected.name` prevents `refreshList()` from racing the input and
+  // clobbering an in-flight rename.
+  const [name, setName] = useState<string>("");
   // The card currently open in the centered form. `formIsNew` distinguishes a
   // freshly created (not-yet-saved) draft from editing an existing card.
   const [formCard, setFormCard] = useState<WorkflowCard | null>(null);
@@ -100,7 +105,13 @@ export function WorkflowsPage({ status }: Props) {
     pendingSave.current = null;
     api.workflowSave(p.id, p.name, serializeWorkflowGraph(p.graph))
       .then(() => {
-        setSelected((s) => (s && s.id === p.id ? { ...s, graph: p.graph, updated_at: Date.now() } : s));
+        // Reconcile against the saved name AND graph. Use the functional form
+        // so a name the user kept typing AFTER this save was queued isn't
+        // clobbered — only update fields if the persisted name still matches
+        // the user's current intent (selected.name was set at queue time).
+        setSelected((s) =>
+          s && s.id === p.id ? { ...s, name: p.name, graph: p.graph, updated_at: Date.now() } : s,
+        );
         setList((l) => l.map((w) => (w.id === p.id ? { ...w, name: p.name, graph: p.graph } : w)));
       })
       .catch((e) =>
@@ -109,19 +120,35 @@ export function WorkflowsPage({ status }: Props) {
   }, []);
 
   // Debounced persistence of card positions, edges and name into the workflow.
+  // `name` is the local-state input mirror so a rename survives an interleaved
+  // refreshList() — previously, setSelected({...selected, name}) was overwritten
+  // when refreshList() rehydrated `selected` from the DB.
   useEffect(() => {
     if (!selected) return;
-    pendingSave.current = { id: selected.id, name: selected.name, graph: { cards, edges } };
+    pendingSave.current = { id: selected.id, name, graph: { cards, edges } };
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 600);
-    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [cards, edges, selected, flushSave]);
+    // Flush on cleanup too — rapid "← Workflows" → switch transitions hit the
+    // effect cleanup before unmount, and just clearing the timer here would
+    // drop a pending rename. flushSave() is idempotent + no-ops when nothing
+    // is pending, so flushing twice (cleanup + unmount) is safe.
+    return () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      flushSave();
+    };
+  }, [cards, edges, selected, name, flushSave]);
 
-  // Flush any pending save on unmount so a rename is never lost.
+  // Flush any pending save on unmount so a rename is never lost. (Belt-and-
+  // suspenders: the per-effect cleanup above already flushes; this catches
+  // the case where the component unmounts without re-running the effect.)
   useEffect(() => () => flushSave(), [flushSave]);
 
   function openWorkflow(w: Workflow) {
     setSelected(w);
+    setName(w.name);
     setCards(w.graph.cards);
     setEdges(w.graph.edges);
     setCardStates({});
@@ -316,9 +343,13 @@ export function WorkflowsPage({ status }: Props) {
   }
 
   function stopRun() {
+    // Don't clear `running` here — the in-flight run hasn't actually resolved
+    // yet, so a `workflow-trigger` arriving in the window between abort() and
+    // the runner's onWorkflowDone could spawn a parallel run. Leave `running`
+    // true; the runner's onWorkflowDone (always invoked, even on abort) flips
+    // it back to false.
     abortRef.current?.abort();
     abortRef.current = null;
-    setRunning(false);
     announce("Workflow run stopped");
   }
 
@@ -437,8 +468,8 @@ export function WorkflowsPage({ status }: Props) {
         </button>
         <input
           className="wf-name-input"
-          value={selected.name}
-          onChange={(e) => setSelected({ ...selected, name: e.target.value })}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
           aria-label="Workflow name"
         />
         {warning && (

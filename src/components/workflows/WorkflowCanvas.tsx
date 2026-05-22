@@ -160,6 +160,19 @@ export function WorkflowCanvas({
   // re-attach them so created cards actually paint on the canvas.
   const measuredRef = useRef<Map<string, { width: number; height: number }>>(new Map());
 
+  // When a card is deleted via the AgentCardNode "×" button (state-side
+  // delete from WorkflowsPage), React Flow doesn't emit a `remove` change —
+  // the node simply disappears from `cards`. The `dimensions` cache would
+  // then leak entries forever. Prune entries whose ids no longer exist so the
+  // map stays bounded by the live card count.
+  useEffect(() => {
+    const live = new Set(cards.map((c) => c.id));
+    const m = measuredRef.current;
+    for (const id of m.keys()) {
+      if (!live.has(id)) m.delete(id);
+    }
+  }, [cards]);
+
   const nodes = useMemo<Node<AgentCardNodeData>[]>(
     () =>
       placedCards.map((c) => ({

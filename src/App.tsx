@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./lib/tauri-api";
 import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
@@ -207,6 +207,20 @@ function App() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
+      // Don't hijack Cmd+N/L/K while the user is typing in a field — Cmd+N
+      // inside the conv rename input or the workflow name input would
+      // otherwise discard their edit by spawning a new chat. `select` is
+      // intentionally NOT included (Cmd+K inside a model picker dropdown is
+      // expected to do nothing — its focus shortcut is moot there anyway).
+      const t = e.target as (Element | null);
+      if (
+        t instanceof HTMLInputElement ||
+        t instanceof HTMLTextAreaElement ||
+        (t && typeof (t as HTMLElement).matches === "function" &&
+          (t as HTMLElement).matches('[contenteditable="true"], [contenteditable=""]'))
+      ) {
+        return;
+      }
       const key = e.key.toLowerCase();
       if (key === "n") { e.preventDefault(); newChat(); return; }
       if (key === "l") {
@@ -314,18 +328,26 @@ function App() {
     );
   }
 
-  const filteredConversations = conversations.filter((c) => {
-    // Hide a conversation that is mid soft-delete so the row vanishes while
-    // the undo toast is up; undo re-inserts it.
-    if (pendingDelete && pendingDelete.conv.id === c.id) return false;
-    const q = convSearch.trim().toLowerCase();
-    if (!q) return true;
-    // Title match OR message-content match (when content search resolved).
-    return (
-      c.title.toLowerCase().includes(q) ||
-      (contentMatchIds !== null && contentMatchIds.has(c.id))
-    );
-  });
+  // Memoized so the downstream forest builder (orderedConversations) doesn't
+  // rebuild on every unrelated state change. Recomputes only when the inputs
+  // — the conversation list, the soft-delete target, the search query, or the
+  // resolved content-match ids — actually change.
+  const filteredConversations = useMemo(
+    () =>
+      conversations.filter((c) => {
+        // Hide a conversation that is mid soft-delete so the row vanishes
+        // while the undo toast is up; undo re-inserts it.
+        if (pendingDelete && pendingDelete.conv.id === c.id) return false;
+        const q = convSearch.trim().toLowerCase();
+        if (!q) return true;
+        // Title match OR message-content match (when content search resolved).
+        return (
+          c.title.toLowerCase().includes(q) ||
+          (contentMatchIds !== null && contentMatchIds.has(c.id))
+        );
+      }),
+    [conversations, pendingDelete, convSearch, contentMatchIds],
+  );
 
   /**
    * Order conversations as a forest: each root is followed immediately by its
@@ -334,7 +356,9 @@ function App() {
    * prefix children with `↳`. Cycle-safe via a visited set (paranoid — a
    * conversation cannot legally fork itself but bad data shouldn't lock the UI).
    */
-  const orderedConversations = (() => {
+  // Memoized — the forest walk is O(n) but was running on every render. Now
+  // it only rebuilds when the filtered list actually changes.
+  const orderedConversations = useMemo(() => {
     const byParent = new Map<number | null, Conversation[]>();
     for (const c of filteredConversations) {
       const parent = c.parent_conv_id ?? null;
@@ -364,7 +388,7 @@ function App() {
       if (!visited.has(c.id)) out.push({ conv: c, depth: 0 });
     }
     return out;
-  })();
+  }, [filteredConversations]);
 
   // Soft-delete: hide the row immediately and schedule the destructive IPC
   // call 5s out. The undo toast cancels the timer, which restores the

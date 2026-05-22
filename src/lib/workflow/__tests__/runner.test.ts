@@ -137,8 +137,10 @@ describe("runWorkflow — abort", () => {
     });
 
     expect(result.status).toBe("failed");
-    // Card a's run was aborted right after returning → marked error.
-    expect(result.cards[0].status).toBe("error");
+    // Card a's run was aborted right after returning → marked aborted (not
+    // error). The run still rolls up as `failed` at the workflow level and
+    // card b is skipped, but per-card tagging distinguishes user abort.
+    expect(result.cards[0].status).toBe("aborted");
     expect(result.cards[1].status).toBe("skipped");
     // Card b's agent loop never ran.
     expect(runAgentLoopMock).toHaveBeenCalledTimes(1);

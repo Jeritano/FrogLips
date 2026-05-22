@@ -687,7 +687,11 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
     backend: typeof c.backend === "string" ? c.backend : null,
     unattended: c.unattended === true,
     model: typeof c.model === "string" ? c.model : null,
-    placed: c.placed === true,
+    // Legacy workflows pre-date the deck/canvas split — every card was on the
+    // canvas. Missing `placed` therefore defaults to `true` so old workflows
+    // don't load with their cards stranded in the deck. Only an explicit
+    // `placed: false` puts a card in the deck.
+    placed: c.placed === false ? false : true,
     x: typeof c.x === "number" ? c.x : 0,
     y: typeof c.y === "number" ? c.y : 0,
   };

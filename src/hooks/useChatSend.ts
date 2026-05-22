@@ -335,20 +335,37 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         }
 
         if (finalText != null) {
-          // Persist final assistant response to DB and assign id to message in state
-          try {
-            const id = await api.addMessage(conv.id, "assistant", finalText, status.model);
-            if (isStreamConvActive()) {
-              setMessages((prev) => {
-                const last = prev[prev.length - 1];
-                if (last && !last.id && last._tmpKey) {
-                  return [...prev.slice(0, -1), { ...last, id }];
-                }
-                return prev;
-              });
+          // Persist final assistant response to DB and assign id to message in
+          // state. Strictly gate BOTH the persistence-driven setMessages AND
+          // the addMessage-result handling on isStreamConvActive(): if the
+          // user navigated to a different conversation mid-run, the message
+          // must still be saved to the DB under the original conversation_id
+          // but must NOT appear in the now-active conversation's UI buffer.
+          if (!isStreamConvActive()) {
+            // Fire-and-forget DB persistence under the original conv id.
+            api.addMessage(conv.id, "assistant", finalText, status.model).catch((err) =>
+              logDiag({
+                level: "warn",
+                source: "agent-loop",
+                message: "background addMessage (stale conv) failed",
+                detail: err,
+              }),
+            );
+          } else {
+            try {
+              const id = await api.addMessage(conv.id, "assistant", finalText, status.model);
+              if (isStreamConvActive()) {
+                setMessages((prev) => {
+                  const last = prev[prev.length - 1];
+                  if (last && !last.id && last._tmpKey) {
+                    return [...prev.slice(0, -1), { ...last, id }];
+                  }
+                  return prev;
+                });
+              }
+            } catch (e) {
+              if (isStreamConvActive()) setErr(`Failed to save response: ${e}`);
             }
-          } catch (e) {
-            if (isStreamConvActive()) setErr(`Failed to save response: ${e}`);
           }
 
           if (mode === "queue" || mode === "direct") {
@@ -441,13 +458,28 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         content: aborted ? acc + "\n\n[stopped]" : acc,
         model: status.model,
       };
-      try {
-        const id = await api.addMessage(conv.id, "assistant", asst.content, status.model);
-        asst.id = id;
-      } catch (e) {
-        if (sameConv()) setErr(`Failed to save response: ${e}`);
+      // Strict same-conv gate: if the user switched conversations mid-stream
+      // the assistant turn STILL gets persisted under its original
+      // conversation_id, but it must not be appended to the now-active
+      // conversation's UI buffer. We persist fire-and-forget in that case.
+      if (!sameConv()) {
+        api.addMessage(conv.id, "assistant", asst.content, status.model).catch((err) =>
+          logDiag({
+            level: "warn",
+            source: "chat-stream",
+            message: "background addMessage (stale conv) failed",
+            detail: err,
+          }),
+        );
+      } else {
+        try {
+          const id = await api.addMessage(conv.id, "assistant", asst.content, status.model);
+          asst.id = id;
+        } catch (e) {
+          if (sameConv()) setErr(`Failed to save response: ${e}`);
+        }
+        if (sameConv()) setMessages((m) => [...m, asst]);
       }
-      if (sameConv()) setMessages((m) => [...m, asst]);
 
       if (mode === "queue" || mode === "direct") {
         void extractAndSaveFacts(text, acc, conv.id, mode, "chat", () =>
@@ -462,18 +494,29 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         content: "[stopped before response]",
         model: status.model,
       };
-      try {
-        const id = await api.addMessage(conv.id, "assistant", tombstone.content, status.model);
-        tombstone.id = id;
-      } catch (err) {
-        logDiag({
-          level: "warn",
-          source: "chat-window",
-          message: "failed to persist abort tombstone — message stays unsaved",
-          detail: err,
-        });
+      if (!sameConv()) {
+        api.addMessage(conv.id, "assistant", tombstone.content, status.model).catch((err) =>
+          logDiag({
+            level: "warn",
+            source: "chat-window",
+            message: "background addMessage tombstone (stale conv) failed",
+            detail: err,
+          }),
+        );
+      } else {
+        try {
+          const id = await api.addMessage(conv.id, "assistant", tombstone.content, status.model);
+          tombstone.id = id;
+        } catch (err) {
+          logDiag({
+            level: "warn",
+            source: "chat-window",
+            message: "failed to persist abort tombstone — message stays unsaved",
+            detail: err,
+          });
+        }
+        if (sameConv()) setMessages((m) => [...m, tombstone]);
       }
-      if (sameConv()) setMessages((m) => [...m, tombstone]);
     }
   });
 
