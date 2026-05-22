@@ -176,6 +176,30 @@
 .agent-settings-btn.danger { color: var(--danger); }
 .agent-settings-btn.primary { background: var(--accent); color: #fff; }
 
+/* ── Diagnostics: crash log section ── */
+
+.diag-crash {
+  margin-top: var(--space-3);
+}
+
+.diag-crash-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.diag-crash-log {
+  max-height: 280px;
+}
+
+.diag-crash-note {
+  margin-top: var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
 /* ── Pull UI ── */
 
 .pull-row {

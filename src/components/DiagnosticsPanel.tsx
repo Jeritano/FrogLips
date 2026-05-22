@@ -8,6 +8,8 @@ import {
 } from "../lib/diagnostics";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
+import { api } from "../lib/tauri-api";
+import { EmptyState } from "./EmptyState";
 
 /* ── Diagnostics modal ────────────────────────────────────────────────────
  *
@@ -57,6 +59,10 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
   const [source, setSource] = useState<string>("");
   const [sortNewestFirst, setSortNewestFirst] = useState(true);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  // Crash log — fetched from the Rust `read_crash_log` command on open.
+  // `null` while loading, "" when no crashes recorded.
+  const [crashLog, setCrashLog] = useState<string | null>(null);
+  const [crashLogError, setCrashLogError] = useState<string | null>(null);
   // Two-click confirm for the destructive Clear action (window.confirm is
   // disabled in Tauri 2's webview).
   const clearConfirm = useTwoClickConfirm();
@@ -78,6 +84,26 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
   useEffect(() => {
     if (!open) clearConfirm.reset();
   }, [open, clearConfirm]);
+
+  // Pull the crash log on open. A non-Tauri host (e.g. plain test/browser)
+  // will reject the invoke — treat that as "no crashes" rather than surfacing
+  // a noisy error.
+  const refreshCrashLog = useCallback(async () => {
+    setCrashLogError(null);
+    setCrashLog(null);
+    try {
+      const text = await api.readCrashLog();
+      setCrashLog(typeof text === "string" ? text : "");
+    } catch (err) {
+      setCrashLog("");
+      setCrashLogError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    void refreshCrashLog();
+  }, [open, refreshCrashLog]);
 
   const sourceOptions = useMemo(() => {
     const set = new Set<string>();
@@ -256,6 +282,38 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
             </table>
           )}
         </div>
+
+        <section className="dashboard-card diag-crash" data-testid="diag-crash">
+          <div className="diag-crash-head">
+            <h3>Crash log</h3>
+            <button
+              type="button"
+              data-testid="diag-crash-refresh"
+              onClick={() => void refreshCrashLog()}
+              title="Re-read the local crash log"
+            >
+              Refresh
+            </button>
+          </div>
+          {crashLog === null ? (
+            <div className="dashboard-empty">Loading crash log…</div>
+          ) : crashLog.length === 0 ? (
+            <EmptyState
+              heading="No crashes recorded"
+              sub="The local crash log is empty — nothing has crashed."
+              data-testid="diag-crash-empty"
+            />
+          ) : (
+            <pre className="diag-detail diag-crash-log" data-testid="diag-crash-log">
+              {crashLog}
+            </pre>
+          )}
+          {crashLogError && crashLog?.length === 0 && (
+            <div className="diag-crash-note" data-testid="diag-crash-note">
+              Crash log unavailable: {crashLogError}
+            </div>
+          )}
+        </section>
 
         <footer className="dashboard-empty diag-footer">
           {entries.length} entr{entries.length === 1 ? "y" : "ies"} held in ring buffer (cap 500).

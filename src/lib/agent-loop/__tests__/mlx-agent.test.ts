@@ -173,27 +173,6 @@ describe("runAgentLoop — backend:'mlx'", () => {
     expect(final).toBe("All done.");
   });
 
-  it("rejects the native backend up front with a clear error", async () => {
-    const fetchMock = vi.fn(async () => sseResponse(["data: [DONE]\n\n"]));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const opts: AgentRunOptions = {
-      model: "native-model",
-      messages: [{ conversation_id: 1, role: "user", content: "do something" }],
-      conversationId: 1,
-      workspaceRoot: null,
-      backend: "native",
-      onUpdate: () => {},
-      onStatusChange: () => {},
-      requestConfirmation: async () => ({ approve: true }),
-      signal: new AbortController().signal,
-    };
-
-    await expect(runAgentLoop(opts)).rejects.toThrow(/native backend/i);
-    // No streaming request should ever have been issued.
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("terminates with the iteration-cap message when the model never stops calling tools", async () => {
     // Every turn emits a list_dir call against a UNIQUE path so the
     // duplicate-call / stall guards never trip — the loop can only end

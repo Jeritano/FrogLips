@@ -6,9 +6,9 @@
  *
  *  - ollama: NDJSON /api/chat (existing path, unchanged).
  *  - mlx:    OpenAI-compatible /v1/chat/completions with `tools`.
- *  - native: mistralrs in-process — NO tool-call support (the Rust request
- *            hardcodes `tools: None`). Agent mode is rejected up-front by the
- *            runner, so this module never receives a native call.
+ *  - native: mistralrs in-process — `tools` are passed through the Rust
+ *            request and tool calls come back via the `native-toolcalls`
+ *            event (see `native-client.ts`).
  */
 
 import type { Message } from "../../types";
@@ -22,14 +22,12 @@ import {
 } from "./ollama-client";
 import type { StreamChatResult } from "./stream-types";
 import { streamMlxAgentChat } from "../mlx-client";
+import { streamNativeAgentChat } from "../native-client";
 
 /** Human-readable reason agent mode can't run on a given backend, or null. */
 export function agentBackendUnsupportedReason(
-  backend: AgentBackend,
+  _backend: AgentBackend,
 ): string | null {
-  if (backend === "native") {
-    return "Agent mode is not supported on the native backend. Switch to the Ollama or MLX backend to use tools.";
-  }
   return null;
 }
 
@@ -63,6 +61,9 @@ export async function streamAgentChat(
           signal,
           onContentChunk,
         );
+      }
+      if (backend === "native") {
+        return await streamNativeAgentChat(msgs, tools, signal, onContentChunk);
       }
       // Default: Ollama.
       return await streamOllamaChat(

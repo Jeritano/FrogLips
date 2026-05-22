@@ -46,6 +46,24 @@ pub struct SamplingOpts {
 /// working unchanged.
 pub type ChatMsg = (String, String);
 
+/// A function tool call emitted by a backend during agent mode. Mirrors the
+/// OpenAI `tool_calls[]` entry shape the frontend agent loop consumes.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct NativeToolCall {
+    pub id: String,
+    pub name: String,
+    /// Arguments as a raw JSON string (the agent loop parses it).
+    pub arguments: String,
+}
+
+/// Outcome of one tool-calling chat turn: the assistant text plus any tool
+/// calls the model requested.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ChatTurn {
+    pub content: String,
+    pub tool_calls: Vec<NativeToolCall>,
+}
+
 /// Abstraction every backend implements. Named `NativeBackend` rather
 /// than `NativeRuntime` because the concrete type at the call sites in
 /// `lib.rs` is still `NativeRuntime`, and Rust doesn't allow a trait and
@@ -71,6 +89,30 @@ pub trait NativeBackend: Clone + Send + Sync {
         sampling: SamplingOpts,
         on_chunk: Box<dyn FnMut(String) + Send + 'static>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + '_>>;
+
+    /// Stream a tool-calling chat turn. `messages` and `tools` are
+    /// OpenAI-style JSON values (messages carry `role`/`content` plus
+    /// optional `tool_calls`/`tool_call_id`); `on_chunk` fires per assistant
+    /// text delta. Returns the final text plus any tool calls the model
+    /// requested.
+    ///
+    /// Backends without tool-call support return an error from the default
+    /// impl; only the mistralrs backend overrides it.
+    #[allow(clippy::type_complexity)]
+    fn chat_stream_tools(
+        &self,
+        _messages: Vec<serde_json::Value>,
+        _tools: Vec<serde_json::Value>,
+        _sampling: SamplingOpts,
+        _on_chunk: Box<dyn FnMut(String) + Send + 'static>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<ChatTurn>> + Send + '_>>
+    {
+        Box::pin(async move {
+            Err(anyhow::anyhow!(
+                "this native backend does not support tool calling"
+            ))
+        })
+    }
 }
 
 /* ── Backend dispatch ─────────────────────────────────────────────────── */

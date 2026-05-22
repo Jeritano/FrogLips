@@ -33,15 +33,10 @@ function baseOpts(): AgentRunOptions {
 const MSGS: Message[] = [{ conversation_id: 1, role: "user", content: "hi" }];
 
 describe("agentBackendUnsupportedReason", () => {
-  it("returns a clear reason for the native backend", () => {
-    const reason = agentBackendUnsupportedReason("native");
-    expect(reason).toBeTruthy();
-    expect(reason).toMatch(/native backend/i);
-  });
-
-  it("returns null for ollama and mlx", () => {
+  it("returns null for every backend — all support agent mode", () => {
     expect(agentBackendUnsupportedReason("ollama")).toBeNull();
     expect(agentBackendUnsupportedReason("mlx")).toBeNull();
+    expect(agentBackendUnsupportedReason("native")).toBeNull();
   });
 });
 

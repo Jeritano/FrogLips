@@ -68,6 +68,10 @@ export const api = {
   deleteMlxModel: (repoId: string) => invoke<void>("delete_mlx_model", { repoId }),
   openExternal: (url: string) => invoke<void>("open_external", { url }),
 
+  // Local crash log — returns the last ~64 KB of `~/.local-llm-app/crash.log`,
+  // or an empty string when no crashes have been recorded.
+  readCrashLog: () => invoke<string>("read_crash_log"),
+
   listConversations: () => invoke<Conversation[]>("list_conversations"),
   createConversation: (title: string, model: string | null) =>
     invoke<number>("create_conversation", { title, model }),
@@ -413,10 +417,17 @@ export const api = {
   nativeCurrentModel: () => invoke<string | null>("native_current_model"),
   nativeChatStream: (args: {
     op_id: string;
-    messages: { role: string; content: string }[];
+    messages: {
+      role: string;
+      content: string;
+      tool_calls?: unknown;
+      tool_call_id?: string;
+      name?: string;
+    }[];
     temperature?: number;
     top_p?: number;
     max_tokens?: number;
+    tools?: Record<string, unknown>[];
   }) => invoke<string>("native_chat_stream", { args }),
 
   // GGUF file picker (Phase 3 — see docs/research/llamacpp-backend.md).

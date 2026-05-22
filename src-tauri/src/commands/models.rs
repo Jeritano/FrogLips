@@ -165,12 +165,26 @@ pub struct NativeChatArgs {
     temperature: Option<f64>,
     top_p: Option<f64>,
     max_tokens: Option<usize>,
+    /// OpenAI-style tool definitions for agent mode. When non-empty the
+    /// tool-calling path runs and any calls are emitted via `native-toolcalls`.
+    #[serde(default)]
+    tools: Vec<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize)]
 struct NativeMsg {
     role: String,
     content: String,
+    /// Tool calls on an assistant turn (agent mode); forwarded verbatim so
+    /// the model sees its own prior calls.
+    #[serde(default)]
+    tool_calls: Option<serde_json::Value>,
+    /// Id linking a `tool` result back to its request (agent mode).
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    /// Display name of a `tool` result's tool (agent mode).
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[tauri::command]
@@ -179,6 +193,8 @@ pub async fn native_chat_stream(
     state: tauri::State<'_, NativeHandle>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
+    use native_inference::NativeBackend;
+
     let rt_opt = state.lock().await.clone();
     let rt = rt_opt.ok_or("no model loaded — call native_load_model first")?;
     let op_id = args.op_id.clone();
@@ -191,17 +207,48 @@ pub async fn native_chat_stream(
         top_p: args.top_p,
         max_tokens: args.max_tokens,
     };
-    let msgs: Vec<(String, String)> = args
+    if args.tools.is_empty() {
+        let msgs: Vec<(String, String)> = args
+            .messages
+            .into_iter()
+            .map(|m| (m.role, m.content))
+            .collect();
+        let final_text = rt
+            .chat_stream(msgs, opts, Box::new(on_chunk))
+            .await
+            .map_err(|e| e.to_string())?;
+        let _ = app.emit(&format!("native-done:{}", args.op_id), &final_text);
+        return Ok(final_text);
+    }
+
+    // Agent mode: forward OpenAI-style messages so tool_calls / tool results
+    // round-trip through the model's chat template.
+    let json_msgs: Vec<serde_json::Value> = args
         .messages
         .into_iter()
-        .map(|m| (m.role, m.content))
+        .map(|m| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("role".into(), serde_json::Value::String(m.role));
+            obj.insert("content".into(), serde_json::Value::String(m.content));
+            if let Some(tc) = m.tool_calls {
+                obj.insert("tool_calls".into(), tc);
+            }
+            if let Some(id) = m.tool_call_id {
+                obj.insert("tool_call_id".into(), serde_json::Value::String(id));
+            }
+            if let Some(name) = m.name {
+                obj.insert("name".into(), serde_json::Value::String(name));
+            }
+            serde_json::Value::Object(obj)
+        })
         .collect();
-    let final_text = rt
-        .chat_stream(msgs, opts, on_chunk)
-        .await
-        .map_err(|e| e.to_string())?;
-    let _ = app.emit(&format!("native-done:{}", args.op_id), &final_text);
-    Ok(final_text)
+    let turn =
+        NativeBackend::chat_stream_tools(&rt, json_msgs, args.tools, opts, Box::new(on_chunk))
+            .await
+            .map_err(|e| e.to_string())?;
+    let _ = app.emit(&format!("native-toolcalls:{}", args.op_id), &turn.tool_calls);
+    let _ = app.emit(&format!("native-done:{}", args.op_id), &turn.content);
+    Ok(turn.content)
 }
 
 /* ── GGUF file picker (Phase 3 of cross-platform Native rollout) ───────── */
