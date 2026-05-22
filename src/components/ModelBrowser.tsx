@@ -298,6 +298,10 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   const [ggufInstalledErr, setGgufInstalledErr] = useState<string | null>(null);
   /** Set of `${repo}/${filename}` currently being downloaded. */
   const [ggufDownloading, setGgufDownloading] = useState<Set<string>>(new Set());
+  /** True once the user clicks "View files" on a GGUF repo in the HF tab —
+   *  flips the HF library view into GGUF mode (inline per-file expanders).
+   *  Reset when the source selector changes. */
+  const [hfGgufMode, setHfGgufMode] = useState(false);
 
   // Wire up the per-download progress event ONCE per browser open. Stays
   // mounted across tab switches so a download started on the GGUF tab keeps
@@ -461,6 +465,7 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               const next = e.target.value as Backend;
               setTab(next);
               setQuery("");
+              setHfGgufMode(false);
               if (next === "installed") refreshInstalled();
             }}
           >
@@ -525,10 +530,12 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
           {tab === "hf" && (
             <Suspense fallback={<div className="mb-empty"><span className="mb-spinner mb-spinner-lg" /> Loading library view…</div>}>
               <HuggingFaceLibraryView
+                key={hfGgufMode ? "hfl-gguf" : "hfl"}
+                ggufMode={hfGgufMode}
                 installedMlxIds={installedMlxIds}
                 onPull={(id) => void pull(id, "hf")}
                 onRequestRemove={(id) => requestRemove(id, "mlx")}
-                onViewGguf={() => {}}
+                onViewGguf={(id) => { setHfGgufMode(true); void loadGgufTree(id); }}
                 onOpenHf={(id) => { api.openExternal(`https://huggingface.co/${id}`).catch(() => { window.open(`https://huggingface.co/${id}`, "_blank", "noreferrer"); }); }}
                 pulling={pulling}
                 done={done}
