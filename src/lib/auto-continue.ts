@@ -2,7 +2,8 @@ import { api } from "./tauri-api";
 import { streamChat } from "./mlx-client";
 import { streamNativeChat } from "./native-client";
 import { logDiag } from "./diagnostics";
-import { estimateMessagesTokens, modelContextTokens } from "./agent-loop/context-manager";
+import { estimateMessagesTokens } from "./agent-loop/context-manager";
+import { resolveContextTokens } from "./model-context-lookup";
 import type { Conversation, Message, ServerStatus } from "../types";
 
 /**
@@ -26,8 +27,12 @@ import type { Conversation, Message, ServerStatus } from "../types";
 export const AUTO_CONTINUE_THRESHOLD = 0.85;
 
 /** Fraction of context used by `messages` against the model's window (0..1+). */
-export function usageFraction(messages: Message[], model: string | null): number {
-  const total = modelContextTokens(model);
+export function usageFraction(
+  messages: Message[],
+  model: string | null,
+  status: ServerStatus | null = null,
+): number {
+  const total = resolveContextTokens(model, status);
   if (total <= 0) return 0;
   return estimateMessagesTokens(messages) / total;
 }
@@ -36,12 +41,13 @@ export function usageFraction(messages: Message[], model: string | null): number
 export function shouldAutoContinue(
   messages: Message[],
   model: string | null,
+  status: ServerStatus | null = null,
   threshold = AUTO_CONTINUE_THRESHOLD,
 ): boolean {
   // Need real content to summarize; a one-or-two-turn conv shouldn't roll
   // even if it somehow tripped the threshold via a giant single message.
   if (messages.length < 4) return false;
-  return usageFraction(messages, model) >= threshold;
+  return usageFraction(messages, model, status) >= threshold;
 }
 
 const SUMMARY_SYSTEM_PROMPT =

@@ -1,12 +1,19 @@
-import { useMemo } from "react";
-import type { Message } from "../types";
-import { estimateMessagesTokens, modelContextTokens } from "../lib/agent-loop/context-manager";
+import { useEffect, useMemo, useState } from "react";
+import type { Message, ServerStatus } from "../types";
+import { estimateMessagesTokens } from "../lib/agent-loop/context-manager";
+import {
+  prefetchContextLength,
+  resolveContextTokens,
+} from "../lib/model-context-lookup";
 
 interface Props {
   /** Current conversation messages. */
   messages: Message[];
   /** Active model id — resolves the context-window size. */
   model: string | null;
+  /** Active backend / host:port — used to query the backend for the
+   *  authoritative context length (Ollama /api/show today). */
+  status: ServerStatus | null;
 }
 
 /** Render a token count as a compact "3.2K" / "850" string. */
@@ -20,12 +27,27 @@ function fmt(n: number): string {
  * chars/4 estimator and per-model window the agent context-manager uses, so
  * the number tracks what the loop will actually budget against.
  */
-export function ContextMeter({ messages, model }: Props) {
+export function ContextMeter({ messages, model, status }: Props) {
+  // Bump on a successful backend lookup so the memo below re-resolves and we
+  // swap the heuristic total for the authoritative one without remount.
+  const [, setLookupTick] = useState(0);
+
+  useEffect(() => {
+    if (!model || !status?.running) return;
+    let cancelled = false;
+    prefetchContextLength(model, status).then((v) => {
+      if (!cancelled && v != null) setLookupTick((t) => t + 1);
+    });
+    return () => { cancelled = true; };
+  }, [model, status]);
+
   const { used, total, pct } = useMemo(() => {
-    const t = modelContextTokens(model);
+    const t = resolveContextTokens(model, status);
     const u = estimateMessagesTokens(messages);
     return { used: u, total: t, pct: Math.min(100, Math.round((u / t) * 100)) };
-  }, [messages, model]);
+    // setLookupTick triggers a re-render and re-runs resolveContextTokens via
+    // the dep on status (cached value is in module state, not React state).
+  }, [messages, model, status]);
 
   if (messages.length === 0) return null;
 

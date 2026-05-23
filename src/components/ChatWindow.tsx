@@ -499,6 +499,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           <ContextMeter
             messages={messages}
             model={status?.running ? status.model : null}
+            status={status}
           />
         </div>
       </div>

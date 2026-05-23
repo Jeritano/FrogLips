@@ -35,8 +35,8 @@ const AUTO_FIRE_DELAY_S = 5;
  */
 export function ContextRolloverBanner({ messages, status, conversation, onContinued }: Props) {
   const due = useMemo(
-    () => shouldAutoContinue(messages, status?.model ?? null),
-    [messages, status?.model],
+    () => shouldAutoContinue(messages, status?.model ?? null, status),
+    [messages, status],
   );
 
   const [rolling, setRolling] = useState(false);
