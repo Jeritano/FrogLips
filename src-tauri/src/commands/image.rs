@@ -168,7 +168,16 @@ pub async fn image_generate(
     let png_bytes = match result {
         Ok(bytes) => bytes,
         Err(e) => {
-            let message = e.to_string();
+            // `{:#}` walks the anyhow chain ("outer: inner: root cause"); the
+            // bare `{}` Display we had before only showed the outermost
+            // `with_context` wrap, so the user saw "failed to load diffusion
+            // model … from HF" with the real reason (401 gated repo, network
+            // refused, disk full, etc) hidden one frame down.
+            let mut message = format!("{e:#}");
+            if let Some(hint) = hf_load_hint(&message) {
+                message.push_str("\n\nHint: ");
+                message.push_str(hint);
+            }
             let _ = app.emit(
                 "image-error",
                 serde_json::json!({ "op_id": op_id, "message": message }),
@@ -386,6 +395,50 @@ fn build_request(
         seed,
         offload,
     })
+}
+
+/// Surface an actionable hint from a HuggingFace load failure. Most common
+/// gotcha is a gated repo (FLUX.1-dev requires a license-accept token) — the
+/// raw "401 Unauthorized" / "403 Forbidden" / "Repository not found" strings
+/// are useless to a non-engineer; tell them what to do instead.
+fn hf_load_hint(message: &str) -> Option<&'static str> {
+    let m = message.to_ascii_lowercase();
+    if m.contains("401")
+        || m.contains("403")
+        || m.contains("unauthorized")
+        || m.contains("forbidden")
+        || m.contains("gated")
+        || m.contains("access to model")
+    {
+        return Some(
+            "FLUX.1-dev is a gated repo on HuggingFace. Either accept the license on \
+             https://huggingface.co/black-forest-labs/FLUX.1-dev and run \
+             `huggingface-cli login` (Apache-2.0 alternative: pick FLUX.1-schnell — \
+             same dropdown), or stick to schnell which has no gate.",
+        );
+    }
+    if m.contains("repository not found")
+        || m.contains("not found")
+        || m.contains("could not find")
+    {
+        return Some(
+            "HuggingFace says that repo id doesn't exist. Double-check the model selector — \
+             only black-forest-labs/FLUX.1-{schnell,dev} are wired in today.",
+        );
+    }
+    if m.contains("network") || m.contains("dns") || m.contains("connection") || m.contains("timed out") {
+        return Some(
+            "Could not reach huggingface.co. Check your network; the HF API needs to be \
+             reachable on first model load (cached afterwards).",
+        );
+    }
+    if m.contains("no space") || m.contains("disk") {
+        return Some(
+            "Out of disk space — FLUX.1-schnell needs ~14 GiB free under \
+             ~/.cache/huggingface/, dev needs ~28 GiB.",
+        );
+    }
+    None
 }
 
 /// Map the UI's friendly Flux model shorthand to the canonical HuggingFace
