@@ -154,10 +154,7 @@ const LOADING_EVENT_DELAY: Duration = Duration::from_millis(50);
 /// Canonical FLUX.1-dev repo ids. Used by [`is_dev_repo`] for an exact-match
 /// check (replacing the old `contains("dev")` substring match that would
 /// false-positive on names like `developer-edition` or `lewdev`).
-const FLUX_DEV_REPOS: &[&str] = &[
-    "black-forest-labs/FLUX.1-dev",
-    "city96/FLUX.1-dev-gguf",
-];
+const FLUX_DEV_REPOS: &[&str] = &["black-forest-labs/FLUX.1-dev", "city96/FLUX.1-dev-gguf"];
 
 impl ImageEngine {
     /// Memory-guard probe — fails fast when free RAM is below the estimated
@@ -449,7 +446,15 @@ impl ImageEngine {
                 next = rx.recv() => match next {
                     Some(Response::ImageGeneration(payload)) => break Ok(payload),
                     Some(Response::ModelError(e, _)) => {
-                        break Err(anyhow!("diffusion model error: {e}"));
+                        break Err(anyhow!("{}", humanize_diffusion_error(&e)));
+                    }
+                    // mistralrs's `handle_pipeline_forward_error!` macro routes
+                    // non-chat (incl. image-gen) failures through CompletionModelError,
+                    // not ModelError. Without this arm a T5-length / OOM / model
+                    // failure looked like a channel close and the user got the
+                    // generic "engine crash?" toast.
+                    Some(Response::CompletionModelError(e, _)) => {
+                        break Err(anyhow!("{}", humanize_diffusion_error(&e)));
                     }
                     Some(Response::InternalError(e)) => {
                         break Err(anyhow!("diffusion internal error: {e}"));
@@ -518,6 +523,35 @@ impl ImageEngine {
 /// Decode the `data:image/png;base64,<…>` string the mistralrs response
 /// format produces back into raw PNG bytes. Tolerates the prefix being
 /// absent (defensive — the spec might tighten over time).
+/// Translate the raw error string mistralrs emits into something a non-engine
+/// user can act on. Falls back to the original message untouched when no rule
+/// matches so we never accidentally hide a useful trace.
+fn humanize_diffusion_error(raw: &str) -> String {
+    if raw.contains("T5 embedding length greater than 256") {
+        return format!(
+            "Prompt is too long for FLUX.1-schnell (its T5 tokenizer caps at 256 tokens). \
+             Either shorten the prompt or switch the model to FLUX.1-dev — dev uses guidance \
+             distillation and handles longer prompts. (engine: {raw})"
+        );
+    }
+    if raw.to_ascii_lowercase().contains("out of memory")
+        || raw.contains("cannot allocate")
+        || raw.contains("MTLBuffer")
+    {
+        return format!(
+            "Out of memory while generating. Try a smaller size, enable \"Use CPU offload\", \
+             or unload the model + switch to a quantized variant (schnell-fp8 / schnell-gguf-q4). \
+             (engine: {raw})"
+        );
+    }
+    if raw.contains("seed") && raw.contains("range") {
+        return format!(
+            "Seed value out of range — leave Seed blank to let the engine pick. (engine: {raw})"
+        );
+    }
+    format!("Diffusion model error: {raw}")
+}
+
 fn decode_b64_png(s: &str) -> Result<Vec<u8>> {
     let payload = match s.find(',') {
         Some(idx) if s.starts_with("data:") => &s[idx + 1..],
