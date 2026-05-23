@@ -86,7 +86,55 @@ async fn run_capped_pull(mut cmd: tokio::process::Command) -> Result<(bool, Stri
     };
     let (_out, err) = tokio::join!(out_fut, err_fut);
     let status = child.wait().await.map_err(|e| e.to_string())?;
-    Ok((status.success(), String::from_utf8_lossy(&err).into_owned()))
+    let cleaned = strip_ansi_and_progress(&String::from_utf8_lossy(&err));
+    Ok((status.success(), cleaned))
+}
+
+/// Strip ANSI/VT100 escape sequences and carriage-return-driven in-place
+/// redraws out of a CLI's captured output. The Ollama and HuggingFace pull
+/// CLIs render progress bars with cursor hide/show (`ESC [ ? 25 l`), DEC
+/// private-mode toggles (`ESC [ ? 2026 l`), and `\r`-based row rewrites; if
+/// they reach the frontend untouched the user sees a wall of mojibake like
+/// `[?25l[?2026l pulling manifest [?25h`. Keep only the last `\r`-delimited
+/// segment per line so we surface the "final" progress state and trim out
+/// the noise.
+fn strip_ansi_and_progress(input: &str) -> String {
+    // Drop everything from CSI introducer to a final byte in 0x40-0x7E.
+    let csi = regex::Regex::new(
+        r"\x1b\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]",
+    )
+    .expect("static CSI regex compiles");
+    // Lone ESC, OSC sequences (BEL- or ST-terminated), and other C1 controls.
+    let osc = regex::Regex::new(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)").expect("static OSC regex compiles");
+    let stripped = csi.replace_all(input, "");
+    let stripped = osc.replace_all(&stripped, "").to_string();
+    // Collapse \r-driven in-place line rewrites to just the final segment.
+    let mut out = String::with_capacity(stripped.len());
+    for line in stripped.split('\n') {
+        let last = line.rsplit('\r').next().unwrap_or(line);
+        out.push_str(last);
+        out.push('\n');
+    }
+    while out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+#[cfg(test)]
+mod strip_tests {
+    use super::strip_ansi_and_progress;
+
+    #[test]
+    fn strips_ollama_progress_garbage() {
+        let raw = "\x1b[?25l\x1b[?2026l\x1b[2026hpulling manifest \r\x1b[K\
+                   \x1b[2026hpulling abc: 50%\r\x1b[K\
+                   \x1b[2026hpulling abc: 100%\n\x1b[?25h";
+        let clean = strip_ansi_and_progress(raw);
+        assert!(!clean.contains('\x1b'), "still has ESC: {clean:?}");
+        assert!(clean.contains("pulling abc: 100%"), "lost final line: {clean:?}");
+        assert!(!clean.contains("pulling abc: 50%"), "kept superseded line: {clean:?}");
+    }
 }
 
 #[tauri::command]
