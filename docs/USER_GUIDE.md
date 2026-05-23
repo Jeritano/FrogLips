@@ -244,6 +244,24 @@ A small **context-usage meter** sits by the composer, showing how much of the
 model's context window the current conversation is using so you can see when
 you're approaching the limit.
 
+### Auto-continue
+
+When the meter crosses **~85%** of the model's context window, a banner
+appears above the composer:
+
+> *Conversation is 85%+ full — auto-continuing in 5s.*  **[Continue now]**  **[Not yet]**
+
+- After the 5-second countdown (or **Continue now**) Froglips asks the same
+  model you are chatting with to summarize the prior turns, creates a fresh
+  conversation titled **"Continued: <previous title>"**, seeds it with the
+  summary as both a system message and the conversation's `system_prompt`
+  parameter, and switches you to the new thread. Your next message lands in
+  the new conversation with a clean context budget.
+- **Not yet** dismisses the banner for the current conversation; it will
+  re-arm the next time you open it fresh.
+- The original conversation is untouched — older history stays in the
+  previous thread and the sidebar shows both.
+
 ## 10. Organizing conversations
 
 - **Auto-titling**: a new conversation is automatically titled from your first

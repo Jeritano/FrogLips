@@ -27,6 +27,7 @@ Froglips ships its own **native backend** — an in-process engine (`mistralrs` 
 - **Workflows**: an agent-orchestration canvas — a corner card deck and a table-top where you create agent cards, wire them into a left→right chain, hand each card's output to the next as input, run the whole pipeline or a single card, and schedule unattended runs
 - **About You**: a local user profile (name, occupation, preferences, response style) injected into every chat and workflow agent so the model knows who it is talking to — stored on-device, never auto-populated
 - **Per-conversation model parameters**: temperature / top-p / max-tokens / system-prompt overrides, with a live context-usage meter by the composer
+- **Auto-continue**: when a conversation crosses ~85% of the active model's context window, a banner above the composer summarizes the prior turns via the same backend and forks the chat into a fresh "Continued: …" conversation seeded with that summary — the original thread stays intact
 - **Tool-history slide-out panel** for debugging agent runs (⌖ Tools button)
 - **Data backup**: online SQLite backup, versioned JSON export (conversations + messages + memory), and additive import
 - **Diagnostics**: local crash logging (`~/.local-llm-app/crash.log`), a rolling `app.log`, a crash-log viewer, and an export-diagnostics-bundle command — all on-disk, no telemetry
