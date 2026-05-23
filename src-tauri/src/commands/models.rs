@@ -100,12 +100,11 @@ async fn run_capped_pull(mut cmd: tokio::process::Command) -> Result<(bool, Stri
 /// the noise.
 fn strip_ansi_and_progress(input: &str) -> String {
     // Drop everything from CSI introducer to a final byte in 0x40-0x7E.
-    let csi = regex::Regex::new(
-        r"\x1b\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]",
-    )
-    .expect("static CSI regex compiles");
+    let csi = regex::Regex::new(r"\x1b\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]")
+        .expect("static CSI regex compiles");
     // Lone ESC, OSC sequences (BEL- or ST-terminated), and other C1 controls.
-    let osc = regex::Regex::new(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)").expect("static OSC regex compiles");
+    let osc =
+        regex::Regex::new(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)").expect("static OSC regex compiles");
     let stripped = csi.replace_all(input, "");
     let stripped = osc.replace_all(&stripped, "").to_string();
     // Collapse \r-driven in-place line rewrites to just the final segment.
@@ -132,8 +131,14 @@ mod strip_tests {
                    \x1b[2026hpulling abc: 100%\n\x1b[?25h";
         let clean = strip_ansi_and_progress(raw);
         assert!(!clean.contains('\x1b'), "still has ESC: {clean:?}");
-        assert!(clean.contains("pulling abc: 100%"), "lost final line: {clean:?}");
-        assert!(!clean.contains("pulling abc: 50%"), "kept superseded line: {clean:?}");
+        assert!(
+            clean.contains("pulling abc: 100%"),
+            "lost final line: {clean:?}"
+        );
+        assert!(
+            !clean.contains("pulling abc: 50%"),
+            "kept superseded line: {clean:?}"
+        );
     }
 }
 

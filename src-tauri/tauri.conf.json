@@ -21,7 +21,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* https://huggingface.co https://civitai.com; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.civitai.com https://civitai.com"
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* https://huggingface.co https://civitai.com ipc: http://ipc.localhost asset: http://asset.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https://*.civitai.com https://civitai.com",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/.local-llm-app/images/**"]
+      }
     }
   },
   "bundle": {
