@@ -11,6 +11,8 @@ interface Props {
   onDeleted: (id: number) => void;
   /** Send this image as a fresh user message in the active chat conversation. */
   onSendToChat: (meta: ImageMeta) => void;
+  /** Right-click on the big canvas opens the in-app context menu. */
+  onContextMenu?: (image: ImageMeta, x: number, y: number) => void;
 }
 
 /**
@@ -23,7 +25,7 @@ interface Props {
  * hidden until C1 lands; Steps and CFG only render when non-default so a
  * future engine update can show real values without code change.
  */
-export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
+export function ImageDetail({ image, onDeleted, onSendToChat, onContextMenu }: Props) {
   const [copied, setCopied] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "delete" | "send" | null>(null);
@@ -160,6 +162,13 @@ export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
           alt={image.prompt}
           className="image-detail-img"
           draggable={false}
+          onContextMenu={(e) => {
+            if (!onContextMenu) return;
+            // Native "Open image in new window" / "Save image as…" don't
+            // work on asset:// URLs; route through in-app menu instead.
+            e.preventDefault();
+            onContextMenu(image, e.clientX, e.clientY);
+          }}
         />
       </div>
       <div className="image-detail-meta">

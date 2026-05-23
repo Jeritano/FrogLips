@@ -6,6 +6,9 @@ interface Props {
   images: ImageMeta[];
   selectedId: number | null;
   onSelect: (image: ImageMeta) => void;
+  /** Right-click on a thumbnail opens the in-app menu (parent wires the
+   *  actions so it can route to imageSaveTo / imageOpenExternal / etc). */
+  onContextMenu?: (image: ImageMeta, x: number, y: number) => void;
 }
 
 /**
@@ -14,7 +17,7 @@ interface Props {
  * disk without round-tripping bytes through IPC. Each tile is a real
  * `<button>` for keyboard accessibility.
  */
-export function ImageGallery({ images, selectedId, onSelect }: Props) {
+export function ImageGallery({ images, selectedId, onSelect, onContextMenu }: Props) {
   if (images.length === 0) {
     return (
       <div className="image-gallery-empty">
@@ -36,6 +39,14 @@ export function ImageGallery({ images, selectedId, onSelect }: Props) {
               type="button"
               className={`image-gallery-tile${active ? " active" : ""}`}
               onClick={() => onSelect(img)}
+              onContextMenu={(e) => {
+                if (!onContextMenu) return;
+                // Prevent WebKit's default "Open image in new window" / "Save
+                // image as…" entries — neither works on asset:// URLs.
+                e.preventDefault();
+                onSelect(img);
+                onContextMenu(img, e.clientX, e.clientY);
+              }}
               aria-label={`Open image: ${img.prompt.slice(0, 80)}`}
               aria-pressed={active}
               data-testid="image-gallery-tile"

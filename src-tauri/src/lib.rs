@@ -455,6 +455,8 @@ pub fn run() {
             commands::image::image_cancel,
             commands::image::image_unload,
             commands::image::image_save_to,
+            commands::image::image_open_external,
+            commands::image::image_reveal_in_finder,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

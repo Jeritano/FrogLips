@@ -581,4 +581,18 @@ export const api = {
    */
   imageSaveTo: (id: number, dest: string) =>
     invoke<string>("image_save_to", { id, dest }),
+  /**
+   * Open the on-disk PNG in the user's default image viewer (Preview on
+   * macOS) via `/usr/bin/open <path>`. Provided because WebKit's native
+   * "Open image in new window" context-menu action fails on `asset://`
+   * URLs (Tauri 2 blocks new-window creation by default).
+   */
+  imageOpenExternal: (id: number) =>
+    invoke<void>("image_open_external", { id }),
+  /**
+   * Reveal the on-disk PNG in Finder via `/usr/bin/open -R <path>`.
+   * Equivalent to right-click → Show in Finder; no WebKit equivalent.
+   */
+  imageRevealInFinder: (id: number) =>
+    invoke<void>("image_reveal_in_finder", { id }),
 };

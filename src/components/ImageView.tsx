@@ -8,6 +8,8 @@ import { useImageGeneration } from "../hooks/useImageGeneration";
 import { ImagePromptPanel } from "./image/ImagePromptPanel";
 import { ImageGallery } from "./image/ImageGallery";
 import { ImageDetail } from "./image/ImageDetail";
+import { ImageContextMenu, type ImageContextMenuAction } from "./image/ImageContextMenu";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 interface Props {
   /**
@@ -174,6 +176,102 @@ export function ImageView({ conversationId, onSendToChat }: Props) {
     [refresh],
   );
 
+  // In-app right-click menu for image surfaces. WebKit's default
+  // context-menu entries fail on `asset://` URLs (Tauri 2 blocks
+  // new-window creation; WKWebView doesn't support downloads from
+  // custom schemes), so every gallery tile + the big detail canvas
+  // route through this menu and Rust IPCs operating on the on-disk
+  // path instead.
+  const [ctxMenu, setCtxMenu] = useState<{
+    image: ImageMeta;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const openContextMenu = useCallback((image: ImageMeta, x: number, y: number) => {
+    setCtxMenu({ image, x, y });
+  }, []);
+
+  const closeContextMenu = useCallback(() => setCtxMenu(null), []);
+
+  const ctxActions = useMemo<ImageContextMenuAction[]>(() => {
+    if (!ctxMenu) return [];
+    const img = ctxMenu.image;
+    return [
+      {
+        id: "open-preview",
+        label: "Open in Preview",
+        icon: "🖼",
+        onClick: () => {
+          api.imageOpenExternal(img.id).catch((e) =>
+            logDiag({
+              level: "warn",
+              source: "image-view",
+              message: "imageOpenExternal failed",
+              detail: e,
+            }),
+          );
+        },
+      },
+      {
+        id: "save-as",
+        label: "Save image as…",
+        icon: "💾",
+        onClick: () => {
+          void (async () => {
+            try {
+              const dest = await saveDialog({
+                title: "Save image as",
+                defaultPath: `froglips-image-${img.id}.png`,
+                filters: [{ name: "PNG", extensions: ["png"] }],
+              });
+              if (!dest) return;
+              await api.imageSaveTo(img.id, dest);
+              announce("Saved.");
+            } catch (e) {
+              logDiag({
+                level: "warn",
+                source: "image-view",
+                message: "save dialog / imageSaveTo failed",
+                detail: e,
+              });
+            }
+          })();
+        },
+      },
+      {
+        id: "reveal",
+        label: "Reveal in Finder",
+        icon: "📂",
+        onClick: () => {
+          api.imageRevealInFinder(img.id).catch((e) =>
+            logDiag({
+              level: "warn",
+              source: "image-view",
+              message: "imageRevealInFinder failed",
+              detail: e,
+            }),
+          );
+        },
+      },
+      {
+        id: "copy-path",
+        label: "Copy file path",
+        icon: "📋",
+        onClick: () => {
+          void navigator.clipboard.writeText(img.path).catch(() => {});
+          announce("Path copied to clipboard.");
+        },
+      },
+      {
+        id: "send-to-chat",
+        label: "Send to current chat",
+        icon: "💬",
+        onClick: () => onSendToChat(img),
+      },
+    ];
+  }, [ctxMenu, onSendToChat]);
+
   const maybeLoadMore = useCallback(async () => {
     setLoadingMore(true);
     try {
@@ -236,6 +334,7 @@ export function ImageView({ conversationId, onSendToChat }: Props) {
               image={selected}
               onDeleted={onDeleted}
               onSendToChat={onSendToChat}
+              onContextMenu={openContextMenu}
             />
           ) : (
             <div className="image-view-detail-empty">
@@ -252,6 +351,7 @@ export function ImageView({ conversationId, onSendToChat }: Props) {
           images={images}
           selectedId={selected?.id ?? null}
           onSelect={setSelected}
+          onContextMenu={openContextMenu}
         />
         {hasMore && (
           <button
@@ -274,6 +374,15 @@ export function ImageView({ conversationId, onSendToChat }: Props) {
           error={error}
         />
       </section>
+
+      {ctxMenu && (
+        <ImageContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          actions={ctxActions}
+          onClose={closeContextMenu}
+        />
+      )}
     </div>
   );
 }

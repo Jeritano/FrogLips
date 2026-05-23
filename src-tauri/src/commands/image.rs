@@ -408,13 +408,74 @@ pub async fn image_save_to(id: i64, dest: String) -> Result<String, String> {
     super::blocking(move || {
         let bytes = std::fs::read(&src_path)
             .map_err(|e| anyhow::anyhow!("failed to read source image: {e}"))?;
-        write_atomic(&dest_for_blocking, &bytes)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        write_atomic(&dest_for_blocking, &bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(())
     })
     .await?;
 
     Ok(validated_dest_str)
+}
+
+/// Open a previously-generated PNG in the user's default macOS image viewer
+/// (Preview by default). Shells to `/usr/bin/open <path>` after validating
+/// the row exists and the on-disk path sits beneath the images root.
+///
+/// Why a separate IPC: WebKit's right-click "Open image in new window" fails
+/// on `asset://` URLs because Tauri 2 blocks new-window creation by default
+/// and the asset scheme is not a real http URL the OS can route to. This
+/// gives the frontend a working "Open in Preview" affordance.
+#[tauri::command]
+pub async fn image_open_external(id: i64) -> Result<(), String> {
+    if id < 0 {
+        return Err("id must be non-negative".into());
+    }
+    let row = super::blocking(move || history::get_image(id))
+        .await?
+        .ok_or_else(|| format!("image id {id} not found"))?;
+    let src = path_safety::validate_read_src(&row.path)?;
+    assert_under_images_root(&src)?;
+    let path_str = src.to_string_lossy().to_string();
+    super::blocking(move || {
+        let status = std::process::Command::new("/usr/bin/open")
+            .arg(&path_str)
+            .status()
+            .map_err(|e| anyhow::anyhow!("failed to spawn /usr/bin/open: {e}"))?;
+        if !status.success() {
+            return Err(anyhow::anyhow!("/usr/bin/open exited with status {status}"));
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Reveal a previously-generated PNG in Finder (selects the file). Shells to
+/// `/usr/bin/open -R <path>` after the same validation as
+/// `image_open_external`. WebKit has no equivalent context-menu action.
+#[tauri::command]
+pub async fn image_reveal_in_finder(id: i64) -> Result<(), String> {
+    if id < 0 {
+        return Err("id must be non-negative".into());
+    }
+    let row = super::blocking(move || history::get_image(id))
+        .await?
+        .ok_or_else(|| format!("image id {id} not found"))?;
+    let src = path_safety::validate_read_src(&row.path)?;
+    assert_under_images_root(&src)?;
+    let path_str = src.to_string_lossy().to_string();
+    super::blocking(move || {
+        let status = std::process::Command::new("/usr/bin/open")
+            .arg("-R")
+            .arg(&path_str)
+            .status()
+            .map_err(|e| anyhow::anyhow!("failed to spawn /usr/bin/open -R: {e}"))?;
+        if !status.success() {
+            return Err(anyhow::anyhow!(
+                "/usr/bin/open -R exited with status {status}"
+            ));
+        }
+        Ok(())
+    })
+    .await
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
@@ -651,16 +712,18 @@ fn hf_load_hint(message: &str) -> Option<&'static str> {
              same dropdown), or stick to schnell which has no gate.",
         );
     }
-    if m.contains("repository not found")
-        || m.contains("not found")
-        || m.contains("could not find")
+    if m.contains("repository not found") || m.contains("not found") || m.contains("could not find")
     {
         return Some(
             "HuggingFace says that repo id doesn't exist. Double-check the model selector — \
              only black-forest-labs/FLUX.1-{schnell,dev} are wired in today.",
         );
     }
-    if m.contains("network") || m.contains("dns") || m.contains("connection") || m.contains("timed out") {
+    if m.contains("network")
+        || m.contains("dns")
+        || m.contains("connection")
+        || m.contains("timed out")
+    {
         return Some(
             "Could not reach huggingface.co. Check your network; the HF API needs to be \
              reachable on first model load (cached afterwards).",
@@ -769,8 +832,8 @@ fn canonical_images_root() -> Result<&'static std::path::Path, String> {
         return Ok(p.as_path());
     }
     let root = image_gen::images_root()?;
-    let canon = std::fs::canonicalize(&root)
-        .map_err(|e| format!("images root not accessible: {e}"))?;
+    let canon =
+        std::fs::canonicalize(&root).map_err(|e| format!("images root not accessible: {e}"))?;
     // Race: two concurrent callers may both compute the canonical path; the
     // first wins, the second's result is dropped. Either way the stored
     // value is correct.
@@ -920,9 +983,15 @@ mod tests {
 
     #[test]
     fn canonicalize_flux_repo_maps_quantized_shorthand() {
-        assert_eq!(canonicalize_flux_repo("schnell-fp8"), "city96/FLUX.1-schnell-gguf");
+        assert_eq!(
+            canonicalize_flux_repo("schnell-fp8"),
+            "city96/FLUX.1-schnell-gguf"
+        );
         assert_eq!(canonicalize_flux_repo("dev-fp8"), "city96/FLUX.1-dev-gguf");
-        assert_eq!(canonicalize_flux_repo("flux-dev-fp8"), "city96/FLUX.1-dev-gguf");
+        assert_eq!(
+            canonicalize_flux_repo("flux-dev-fp8"),
+            "city96/FLUX.1-dev-gguf"
+        );
         // Bare shorthands still resolve to the upstream repos.
         assert_eq!(
             canonicalize_flux_repo("schnell"),
@@ -959,8 +1028,7 @@ mod tests {
     /// from userspace), but the rename + write are observable here.
     #[test]
     fn write_atomic_lands_bytes_at_dest() {
-        let tmp = std::env::temp_dir()
-            .join(format!("froglips-img-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("froglips-img-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let dest = tmp.join("out.png");
