@@ -11,6 +11,17 @@ use super::fs::{err_string, validate_for_read, workspace_root_clone, ToolError, 
 
 const SHELL_TIMEOUT_SECS: u64 = 30;
 
+/// Whether an env var name belongs to the dynamic-linker family used to
+/// inject code into the child process at exec time (`LD_PRELOAD`,
+/// `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, …). Case-insensitive — the
+/// macOS and glibc loaders themselves are case-sensitive, but the user-facing
+/// approval modal shows the command not the env, so we err loud and refuse
+/// any close-match.
+pub(crate) fn is_dynlinker_env_key(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    upper.starts_with("LD_") || upper.starts_with("DYLD_")
+}
+
 /// Largest char-boundary index <= `max` so `String::truncate` never panics mid-codepoint.
 fn safe_truncate_idx(s: &str, max: usize) -> usize {
     let mut idx = max.min(s.len());
@@ -68,9 +79,25 @@ pub async fn run_shell(
         None => workspace_root_clone(),
     };
     if let Some(env) = &opts.env {
-        for (k, _) in env {
+        for (k, v) in env {
             if k.contains(['\0', '=']) {
                 return Err(err_string(ToolError::invalid("invalid env var name")));
+            }
+            // NUL terminates a C string — the kernel would silently truncate
+            // an env value at the first NUL. Reject so the model can't smuggle
+            // a hidden suffix past the approval modal.
+            if v.contains('\0') {
+                return Err(err_string(ToolError::invalid("invalid env var value")));
+            }
+            // Block dynamic-linker hijacking keys. The approval modal shows the
+            // command but NOT the env map, so without this a model can sneak
+            // an `LD_PRELOAD` / `DYLD_INSERT_LIBRARIES` into an otherwise
+            // benign-looking command. No opt-in surface exists today, so a
+            // hard deny is the only safe default.
+            if is_dynlinker_env_key(k) {
+                return Err(err_string(ToolError::invalid(
+                    "dynamic-linker env vars are not permitted",
+                )));
             }
         }
     }
@@ -283,6 +310,30 @@ mod tests {
             classify_shell_risk("sudo brew install ollama"),
             "privileged"
         );
+    }
+
+    #[test]
+    fn dynlinker_env_keys_are_rejected() {
+        // All of these prefixes inject code at child-exec time.
+        for k in [
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FRAMEWORK_PATH",
+            // Case-insensitive: a lowercase variant still flags. The platform
+            // loader is case-sensitive but our modal hides env from the user,
+            // so we deny near-matches loudly.
+            "ld_preload",
+            "Dyld_Insert_Libraries",
+        ] {
+            assert!(is_dynlinker_env_key(k), "should reject: {k}");
+        }
+        // Unrelated keys still pass.
+        for k in ["PATH", "HOME", "RUST_LOG", "MY_LD", "PRELOAD", "DYLDFOO"] {
+            assert!(!is_dynlinker_env_key(k), "should permit: {k}");
+        }
     }
 
     #[test]

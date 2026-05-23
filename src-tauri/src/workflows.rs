@@ -63,6 +63,68 @@ pub(crate) fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Idempotently add `workflow_id` to `workflow_card_fired` and backfill it.
+///
+/// Why: the original delete path used `card_key LIKE '<id>:%'`, which matched
+/// any key starting with that digit run plus a colon — for `id=1`, a row keyed
+/// `10:foo` would not match (`1:%` requires a literal `:` immediately after
+/// `1`), but for `id=10` the pattern `10:%` correctly matches only `10:…` —
+/// the *real* danger lived in any future use that dropped the colon, and in
+/// the general fragility of pattern-matching identifiers. Storing an integer
+/// column lets `delete_workflow` use equality, which can never over-match.
+///
+/// Backfill: parse the leading run of digits before the first `:` out of each
+/// existing card_key (the historical format is `"<workflow_id>:<card_id>"`).
+/// Rows whose key doesn't fit the pattern are left with `workflow_id = NULL`
+/// and will be cleaned up by the next scheduler scan via `prune_card_last_fired`.
+pub(crate) fn ensure_card_fired_workflow_id_column(conn: &Connection) -> Result<()> {
+    let has: bool = match conn.query_row(
+        "SELECT 1 FROM pragma_table_info('workflow_card_fired') WHERE name = 'workflow_id'",
+        [],
+        |_| Ok(true),
+    ) {
+        Ok(v) => v,
+        Err(rusqlite::Error::QueryReturnedNoRows) => false,
+        Err(e) => return Err(anyhow::anyhow!("pragma_table_info failed: {e}")),
+    };
+    if !has {
+        conn.execute(
+            "ALTER TABLE workflow_card_fired ADD COLUMN workflow_id INTEGER",
+            [],
+        )?;
+    }
+    // Backfill any rows still missing a workflow_id. Re-running this step is
+    // a cheap no-op on a populated table because the WHERE filters them out.
+    let mut select =
+        conn.prepare("SELECT card_key FROM workflow_card_fired WHERE workflow_id IS NULL")?;
+    let keys: Vec<String> = select
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(select);
+    for k in keys {
+        if let Some(wid) = parse_workflow_id_prefix(&k) {
+            conn.execute(
+                "UPDATE workflow_card_fired SET workflow_id = ?1 WHERE card_key = ?2",
+                params![wid, k],
+            )?;
+        }
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workflow_card_fired_wf
+         ON workflow_card_fired(workflow_id)",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Parse the leading run of digits before the first `:` out of a card_key.
+/// Returns `None` if the key has no `:` or the prefix is not a positive
+/// integer. Used by the v9 migration backfill.
+fn parse_workflow_id_prefix(key: &str) -> Option<i64> {
+    let (head, _) = key.split_once(':')?;
+    head.parse::<i64>().ok()
+}
+
 /// Load the persisted last-fired map: `"<workflow_id>:<card_id>"` → unix secs.
 /// Survives app restarts so a `daily HH:MM` card fires at most once per day
 /// even across relaunches (an in-memory-only map re-fires every cold start).
@@ -75,13 +137,18 @@ pub fn load_card_last_fired() -> Result<std::collections::HashMap<String, i64>> 
     Ok(rows)
 }
 
-/// Persist a single card's last-fired unix time (upsert).
-pub fn persist_card_last_fired(card_key: &str, ts: i64) -> Result<()> {
+/// Persist a single card's last-fired unix time (upsert). `workflow_id` is
+/// stored in a dedicated integer column so `delete_workflow` can delete by
+/// equality — see `ensure_card_fired_workflow_id_column` for the rationale.
+pub fn persist_card_last_fired(card_key: &str, workflow_id: i64, ts: i64) -> Result<()> {
     let conn = get_db()?;
     conn.execute(
-        "INSERT INTO workflow_card_fired (card_key, last_fired) VALUES (?1, ?2)
-         ON CONFLICT(card_key) DO UPDATE SET last_fired = excluded.last_fired",
-        params![card_key, ts],
+        "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(card_key) DO UPDATE SET
+            workflow_id = excluded.workflow_id,
+            last_fired = excluded.last_fired",
+        params![card_key, workflow_id, ts],
     )?;
     Ok(())
 }
@@ -275,18 +342,19 @@ pub fn delete_workflow(id: i64) -> Result<()> {
     let mut conn = get_db()?;
     // All three deletes go in a single transaction so a crash mid-delete can
     // never leave orphan run rows or fire-tracking rows pointing at a
-    // workflow that no longer exists. The `workflow_card_fired` rows are
-    // keyed `"<workflow_id>:<card_id>"`, so we delete by `card_key LIKE
-    // 'id:%'`. The escape clause is here as belt-and-suspenders even though
-    // numeric ids cannot contain `%`/`_`/`\`.
+    // workflow that no longer exists. `workflow_card_fired` carries a
+    // dedicated `workflow_id` integer column (v9 migration) so we delete by
+    // equality — the prior `card_key LIKE '<id>:%'` approach was fragile
+    // against any future prefix-collision and over-matched once GLOB-style
+    // patterns were considered.
     let tx = conn.transaction()?;
     tx.execute(
         "DELETE FROM workflow_runs WHERE workflow_id = ?1",
         params![id],
     )?;
     tx.execute(
-        "DELETE FROM workflow_card_fired WHERE card_key LIKE ?1 ESCAPE '\\'",
-        params![format!("{id}:%")],
+        "DELETE FROM workflow_card_fired WHERE workflow_id = ?1",
+        params![id],
     )?;
     tx.execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
     tx.commit()?;
@@ -479,7 +547,7 @@ fn scheduler_scan(
             // does not reset the window.
             if matches!(sched, Schedule::Every(_)) && !last_fired.contains_key(&key) {
                 last_fired.insert(key.clone(), now);
-                let _ = persist_card_last_fired(&key, now);
+                let _ = persist_card_last_fired(&key, wf.id, now);
                 continue;
             }
 
@@ -487,7 +555,7 @@ fn scheduler_scan(
                 last_fired.insert(key.clone(), now);
                 // Persist the fire time so a `daily HH:MM` card cannot
                 // multi-fire across app restarts within the same day.
-                let _ = persist_card_last_fired(&key, now);
+                let _ = persist_card_last_fired(&key, wf.id, now);
                 let _ = app.emit(
                     TRIGGER_EVENT,
                     serde_json::json!({ "workflow_id": wf.id, "card_id": card_id }),
@@ -516,9 +584,22 @@ pub fn start_scheduler(app: tauri::AppHandle, shutdown: std::sync::Arc<tokio::sy
         let mut last_fired: std::collections::HashMap<String, i64> =
             load_card_last_fired().unwrap_or_default();
         loop {
+            // Sticky shutdown-flag check, in addition to `.notified()`.
+            // `notify_waiters()` only wakes parked waiters; if the exit
+            // handler fires while this task is inside `scheduler_scan`
+            // (synchronous, holds the runtime for the scan duration) the
+            // notify would land with no waiter parked. Checking the flag at
+            // the top of each iteration AND after the select! covers both
+            // orderings without leaking the loop past shutdown.
+            if crate::is_shutting_down() {
+                break;
+            }
             tokio::select! {
                 _ = shutdown.notified() => break,
                 _ = tokio::time::sleep(std::time::Duration::from_secs(SCAN_INTERVAL_SECS)) => {}
+            }
+            if crate::is_shutting_down() {
+                break;
             }
             scheduler_scan(&app, &mut last_fired, now_unix());
         }
@@ -625,6 +706,10 @@ mod tests {
     fn fresh_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         ensure_workflow_tables(&conn).unwrap();
+        // Bring the in-memory DB up to the same schema the migration ladder
+        // produces in production — the v9 column the delete-by-equality path
+        // depends on is not part of the base CREATE TABLE.
+        ensure_card_fired_workflow_id_column(&conn).unwrap();
         conn
     }
 
@@ -711,18 +796,21 @@ mod tests {
     fn card_last_fired_table_persists_and_prunes() {
         let conn = fresh_db();
         // Upsert mirrors persist_card_last_fired (the public fn uses the pool).
-        let upsert = |k: &str, ts: i64| {
+        let upsert = |k: &str, wid: i64, ts: i64| {
             conn.execute(
-                "INSERT INTO workflow_card_fired (card_key, last_fired) VALUES (?1, ?2)
-                 ON CONFLICT(card_key) DO UPDATE SET last_fired = excluded.last_fired",
-                params![k, ts],
+                "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(card_key) DO UPDATE SET
+                    workflow_id = excluded.workflow_id,
+                    last_fired = excluded.last_fired",
+                params![k, wid, ts],
             )
             .unwrap();
         };
-        upsert("1:a", 100);
-        upsert("1:b", 200);
+        upsert("1:a", 1, 100);
+        upsert("1:b", 1, 200);
         // Upsert overwrites.
-        upsert("1:a", 999);
+        upsert("1:a", 1, 999);
         let got: i64 = conn
             .query_row(
                 "SELECT last_fired FROM workflow_card_fired WHERE card_key='1:a'",
@@ -742,6 +830,125 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM workflow_card_fired", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "prune must drop stale card keys");
+    }
+
+    /// The original `delete_workflow` used `card_key LIKE '<id>:%'` which would
+    /// over-match if any future scheme produced colliding prefixes. The v9
+    /// migration adds a real INTEGER column so equality-deletes are precise.
+    /// This test seeds rows for two workflows whose ids share a digit-prefix
+    /// (1 vs 10) and asserts deleting one does not nuke the other.
+    #[test]
+    fn delete_workflow_removes_only_matching_card_fired_rows() {
+        let conn = fresh_db();
+        let upsert = |k: &str, wid: i64, ts: i64| {
+            conn.execute(
+                "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(card_key) DO UPDATE SET
+                    workflow_id = excluded.workflow_id,
+                    last_fired = excluded.last_fired",
+                params![k, wid, ts],
+            )
+            .unwrap();
+        };
+        // Two workflows with prefix-colliding ids: 1 and 10.
+        upsert("1:a", 1, 100);
+        upsert("1:b", 1, 200);
+        upsert("10:x", 10, 300);
+        upsert("10:y", 10, 400);
+
+        // Delete-by-equality (the new shape of `delete_workflow`).
+        conn.execute(
+            "DELETE FROM workflow_card_fired WHERE workflow_id = ?1",
+            params![1_i64],
+        )
+        .unwrap();
+
+        let rows: Vec<(String, i64)> = {
+            let mut s = conn
+                .prepare("SELECT card_key, workflow_id FROM workflow_card_fired ORDER BY card_key")
+                .unwrap();
+            s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        // Workflow 10's rows must survive — they share the digit prefix `1`
+        // but not the workflow_id, which is what the old LIKE pattern got
+        // wrong in spirit (and would mishandle under a future scheme).
+        assert_eq!(
+            rows,
+            vec![("10:x".to_string(), 10), ("10:y".to_string(), 10)],
+            "workflow 10 rows must be untouched when workflow 1 is deleted"
+        );
+    }
+
+    #[test]
+    fn parse_workflow_id_prefix_extracts_integer_head() {
+        assert_eq!(parse_workflow_id_prefix("1:a"), Some(1));
+        assert_eq!(parse_workflow_id_prefix("42:card-7"), Some(42));
+        // No colon → no parse.
+        assert_eq!(parse_workflow_id_prefix("not-a-key"), None);
+        // Non-integer head → no parse (used by backfill, which leaves these
+        // rows with workflow_id = NULL for later prune).
+        assert_eq!(parse_workflow_id_prefix("abc:x"), None);
+    }
+
+    #[test]
+    fn card_fired_workflow_id_migration_is_idempotent_and_backfills() {
+        // Seed the pre-migration shape (no workflow_id column).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workflow_card_fired (
+                card_key TEXT PRIMARY KEY,
+                last_fired INTEGER NOT NULL
+             );
+             INSERT INTO workflow_card_fired (card_key, last_fired) VALUES
+                ('1:a', 100), ('1:b', 200), ('10:x', 300),
+                ('bogus-no-colon', 400);",
+        )
+        .unwrap();
+
+        // Apply twice — must not error second time.
+        ensure_card_fired_workflow_id_column(&conn).unwrap();
+        ensure_card_fired_workflow_id_column(&conn).unwrap();
+
+        // Column exists.
+        let has: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('workflow_card_fired')
+                 WHERE name = 'workflow_id'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap();
+        assert!(has);
+
+        // Parseable keys are backfilled; unparseable ones stay NULL and will be
+        // pruned on the next scheduler scan.
+        let rows: Vec<(String, Option<i64>)> = {
+            let mut s = conn
+                .prepare("SELECT card_key, workflow_id FROM workflow_card_fired ORDER BY card_key")
+                .unwrap();
+            s.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+        };
+        // SQLite ORDER BY on TEXT is lexicographic, so "10:x" sorts before
+        // "1:a". The order is incidental — the assertion below is about
+        // backfill correctness, not ordering.
+        assert_eq!(
+            rows,
+            vec![
+                ("10:x".to_string(), Some(10)),
+                ("1:a".to_string(), Some(1)),
+                ("1:b".to_string(), Some(1)),
+                ("bogus-no-colon".to_string(), None),
+            ]
+        );
     }
 
     #[test]

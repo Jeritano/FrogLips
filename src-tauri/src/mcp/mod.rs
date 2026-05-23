@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, Notify};
 use tokio::time::timeout;
 
 /// Capped per-request wait. MCP tool calls can be long-running (web search,
@@ -71,6 +71,12 @@ struct ServerHandle {
     stderr_buf: Arc<Mutex<String>>,
     status: RwLock<String>,
     last_error: RwLock<Option<String>>,
+    /// Per-server stop signal. Released by `shutdown` / `stop_server` so the
+    /// stderr drain task tied to THIS server exits when only THIS server is
+    /// stopped — without it the drainer would keep parked on `next_line()`
+    /// until either the kernel finally tears down the pipe or the global
+    /// shutdown fires, which leaks a task per server churn.
+    stop: Arc<Notify>,
 }
 
 impl ServerHandle {
@@ -153,6 +159,10 @@ impl ServerHandle {
     }
 
     async fn shutdown(&self) {
+        // Release the per-server stderr drainer before killing the child so it
+        // exits even if the child's stderr stays open long enough that
+        // `next_line()` would still block. Cheap and idempotent.
+        self.stop.notify_waiters();
         // Drop stdin first to give the server a clean EOF signal.
         {
             let mut g = self.stdin.lock().await;
@@ -245,6 +255,7 @@ pub async fn start_server(
 
     let stderr_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let waiters: Waiters = Arc::new(Mutex::new(HashMap::new()));
+    let stop = Arc::new(Notify::new());
 
     let handle = Arc::new(ServerHandle {
         name: name.clone(),
@@ -258,21 +269,33 @@ pub async fn start_server(
         stderr_buf: stderr_buf.clone(),
         status: RwLock::new("starting".into()),
         last_error: RwLock::new(None),
+        stop: stop.clone(),
     });
 
     // Stderr drain — keep the last STDERR_CAP bytes for diagnostics. The task
-    // is tied to the shared shutdown Notify so it exits cleanly on app exit
-    // even if the child has not yet been killed (otherwise it would block on
-    // `next_line().await` after the registry entry is dropped and only
-    // unblock when the kernel finally tears down the pipe).
+    // races BOTH a per-server `stop` Notify (released by this server's
+    // `shutdown`) and the global app-shutdown Notify so it exits cleanly
+    // whether ONE server is stopped or the whole app exits. Without the
+    // per-server signal, stopping one server would leave its drainer parked
+    // on `next_line().await` until either the kernel finally tears down the
+    // pipe or global shutdown fires — a per-server-churn task leak.
     {
         let buf = stderr_buf.clone();
         let shutdown = crate::shutdown_signal();
+        let stop = stop.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             loop {
+                // Sticky-flag check covers the race where global shutdown
+                // fired while we were inside `next_line().await` — the
+                // `notify_waiters()` would have landed with no parked waiter
+                // and been lost without this guard.
+                if crate::is_shutting_down() {
+                    break;
+                }
                 tokio::select! {
                     _ = shutdown.notified() => break,
+                    _ = stop.notified() => break,
                     line = reader.next_line() => {
                         match line {
                             Ok(Some(line)) => {

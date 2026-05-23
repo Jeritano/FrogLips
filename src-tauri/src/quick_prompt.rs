@@ -218,8 +218,13 @@ async fn stream_mlx(
         "max_tokens": 1024,
         "messages": [{ "role": "user", "content": prompt }],
     });
+    // Disable redirect-following: a misconfigured local MLX server returning a
+    // 30x to an attacker-controlled URL would otherwise have its body streamed
+    // back to the UI as if it were the LLM reply. Local backends never need
+    // redirect-following for their streaming endpoint.
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(180))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build http client")?;
     let resp = client
@@ -303,8 +308,10 @@ async fn stream_ollama(
         "stream": true,
         "messages": [{ "role": "user", "content": prompt }],
     });
+    // Disable redirect-following — see `stream_mlx` for rationale.
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(180))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build http client")?;
     let resp = client

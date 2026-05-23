@@ -267,6 +267,15 @@ const MIGRATIONS: &[Migration] = &[
         version: 8,
         apply: crate::workflows::ensure_workflow_tables,
     },
+    // v9 — `workflow_card_fired.workflow_id`: an INTEGER column so
+    // `delete_workflow` can delete by equality rather than a `card_key LIKE
+    // '<id>:%'` pattern that would over-match (e.g. for id=1 a row keyed
+    // `10:foo` was a false positive). Backfills the column by parsing the
+    // integer prefix out of each existing card_key.
+    Migration {
+        version: 9,
+        apply: crate::workflows::ensure_card_fired_workflow_id_column,
+    },
 ];
 
 /// Target schema version — the highest rung of the ladder.

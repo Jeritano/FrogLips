@@ -90,6 +90,12 @@ pub fn backup_database(dest: &Path) -> Result<()> {
         .context("set source busy_timeout")?;
     let mut dst = Connection::open(dest)
         .with_context(|| format!("open backup destination {}", dest.display()))?;
+    // Same 5s busy_timeout on the destination — `Backup::run_to_completion`
+    // writes to it under SQLite's internal lock; an unrelated handle (e.g.
+    // an antivirus scanner that briefly opened the file) racing the open
+    // would otherwise surface as SQLITE_BUSY instead of waiting it out.
+    dst.busy_timeout(std::time::Duration::from_millis(5000))
+        .context("set destination busy_timeout")?;
     let backup =
         rusqlite::backup::Backup::new(&src, &mut dst).context("initialize online backup")?;
     backup

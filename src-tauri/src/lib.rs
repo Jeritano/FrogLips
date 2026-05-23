@@ -23,6 +23,7 @@ mod task_queue;
 mod util;
 mod workflows;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -39,10 +40,24 @@ use tokio::sync::Notify;
 static SHUTDOWN: once_cell::sync::Lazy<Arc<Notify>> =
     once_cell::sync::Lazy::new(|| Arc::new(Notify::new()));
 
+/// Sticky shutdown flag. `Notify::notify_waiters` *only* wakes already-parked
+/// waiters: a task that arrives at `.notified()` after the signal would block
+/// forever. The flag is set BEFORE `notify_waiters()` on exit so any loop that
+/// checks it at the top of each iteration (and any `select!` branch racing
+/// `notified()`) cooperatively bails even if it missed the wake.
+static SHUTDOWN_FLAG: AtomicBool = AtomicBool::new(false);
+
 /// Shared accessor so other modules (workflows, mcp) can subscribe without
 /// holding a back-reference to this crate's internals.
 pub fn shutdown_signal() -> Arc<Notify> {
     SHUTDOWN.clone()
+}
+
+/// True once shutdown has been requested. Background loops should check this
+/// at the top of every iteration AND inside `tokio::select!` branches that
+/// would otherwise immediately re-park on `.notified()`.
+pub fn is_shutting_down() -> bool {
+    SHUTDOWN_FLAG.load(Ordering::SeqCst)
 }
 
 use backend_process::ServerState;
@@ -175,12 +190,23 @@ pub fn run() {
                     // budget rather than inheriting an exhausted one.
                     let mut attempts: u32 = 0;
                     loop {
+                        // Sticky flag check first — covers the race where the
+                        // exit handler flipped the flag and called
+                        // `notify_waiters()` while this task was running
+                        // `s.poll().await` (so it was not parked on the
+                        // `.notified()` future and missed the wake).
+                        if is_shutting_down() {
+                            break;
+                        }
                         // Race the sleep against the shutdown notify so the
                         // watcher exits promptly on app exit instead of
                         // sleeping for up to its full poll interval.
                         tokio::select! {
                             _ = shutdown.notified() => break,
                             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+                        }
+                        if is_shutting_down() {
+                            break;
                         }
                         match s.poll().await {
                             WatchOutcome::Idle => {
@@ -221,6 +247,9 @@ pub fn run() {
                                 tokio::select! {
                                     _ = shutdown.notified() => break,
                                     _ = tokio::time::sleep(std::time::Duration::from_secs(backoff)) => {}
+                                }
+                                if is_shutting_down() {
+                                    break;
                                 }
                                 if let Err(e) = s.start(model.clone(), backend.clone()).await {
                                     diagnostics::error_with(
@@ -431,9 +460,11 @@ pub fn run() {
         ) {
             // Wake every subscribed background loop (restart watcher, workflow
             // scheduler, MCP stderr drainers) so they exit before teardown
-            // proper begins. `notify_waiters()` wakes all current waiters;
-            // there is no need to retain pending notifications because all
-            // subscribers loop on `.notified()`.
+            // proper begins. Flip the sticky flag FIRST so a task that arrives
+            // at `.notified()` after this point still bails — `notify_waiters`
+            // alone wakes only currently-parked waiters and would otherwise
+            // lose the signal for a task that races the exit.
+            SHUTDOWN_FLAG.store(true, Ordering::SeqCst);
             SHUTDOWN.notify_waiters();
         }
         if matches!(event, tauri::RunEvent::Exit) {
