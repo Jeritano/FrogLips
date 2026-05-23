@@ -23,7 +23,7 @@ pub(crate) fn is_dynlinker_env_key(key: &str) -> bool {
 }
 
 /// Largest char-boundary index <= `max` so `String::truncate` never panics mid-codepoint.
-fn safe_truncate_idx(s: &str, max: usize) -> usize {
+pub(crate) fn safe_truncate_idx(s: &str, max: usize) -> usize {
     let mut idx = max.min(s.len());
     while idx > 0 && !s.is_char_boundary(idx) {
         idx -= 1;

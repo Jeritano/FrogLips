@@ -1,23 +1,23 @@
 //! Database backup / export / import commands.
-
-use std::path::PathBuf;
+//!
+//! Every path that crosses the IPC boundary here is validated by the shared
+//! `path_safety` helpers — accepting an arbitrary user-supplied path with
+//! only a trim/empty check would let a renderer-side bypass (XSS, hostile
+//! MCP server driving the agent loop) write the SQLite DB or conversation
+//! export anywhere the process can write, including `~/.ssh/`, `~/.aws/`,
+//! the keychain, or `~/.env`. The helpers enforce absolute-only paths,
+//! reject `..` traversal and symlinked leaves, and apply the same
+//! denylist + credential-basename rules as `agent::fs::validate_for_write`.
 
 use super::blocking;
+use super::path_safety::{validate_read_src, validate_write_dest};
 use crate::data_backup::{self, ImportSummary};
-
-fn checked_path(raw: &str, what: &str) -> Result<PathBuf, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(format!("{what} path must not be empty"));
-    }
-    Ok(PathBuf::from(trimmed))
-}
 
 /// Write a consistent single-file backup of the live SQLite DB to `dest_path`.
 /// Safe to invoke while the app is running.
 #[tauri::command]
 pub async fn backup_database(dest_path: String) -> Result<(), String> {
-    let dest = checked_path(&dest_path, "backup")?;
+    let dest = validate_write_dest(&dest_path)?;
     blocking(move || data_backup::backup_database(&dest)).await
 }
 
@@ -25,7 +25,7 @@ pub async fn backup_database(dest_path: String) -> Result<(), String> {
 /// document at `dest_path`.
 #[tauri::command]
 pub async fn export_data(dest_path: String) -> Result<(), String> {
-    let dest = checked_path(&dest_path, "export")?;
+    let dest = validate_write_dest(&dest_path)?;
     blocking(move || data_backup::export_data(&dest)).await
 }
 
@@ -33,6 +33,6 @@ pub async fn export_data(dest_path: String) -> Result<(), String> {
 /// existing data is preserved; imported rows get fresh ids.
 #[tauri::command]
 pub async fn import_data(src_path: String) -> Result<ImportSummary, String> {
-    let src = checked_path(&src_path, "import")?;
+    let src = validate_read_src(&src_path)?;
     blocking(move || data_backup::import_data(&src)).await
 }

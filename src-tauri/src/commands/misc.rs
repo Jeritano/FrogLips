@@ -99,86 +99,12 @@ fn redact_secrets(value: &mut serde_json::Value) {
 /// the same shape constraints as the agent's `validate_for_write`: absolute
 /// path, no `..` traversal, and not pointing into the system/credential
 /// directories the agent fs layer denylists.
+///
+/// Thin wrapper over `commands::path_safety::validate_write_dest` so the
+/// diagnostics bundle, the DB backup, the export JSON, and the import JSON
+/// share one canonical denylist + symlink-refusal pass.
 fn validate_diagnostics_dest(dest: &str) -> Result<std::path::PathBuf, String> {
-    if dest.trim().is_empty() {
-        return Err("destination path must not be empty".into());
-    }
-    let raw = std::path::PathBuf::from(dest);
-    // Absolute-only: relative paths resolve against the app's cwd, which the
-    // caller cannot reliably reason about (and can land in app-bundle dirs).
-    if !raw.is_absolute() {
-        return Err("destination path must be absolute".into());
-    }
-    // Explicit `..` segment blocked outright — same as `resolve_path` in the
-    // agent fs layer. Prevents `/Users/joe/Downloads/../../../etc/foo` shapes.
-    if raw
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err("destination path may not contain '..'".into());
-    }
-    // Canonicalize the parent (which must exist for the write to succeed
-    // anyway) so symlinked dirs are resolved before the denylist check.
-    let parent = raw
-        .parent()
-        .ok_or_else(|| "destination path has no parent".to_string())?;
-    let canon_parent = std::fs::canonicalize(parent)
-        .map_err(|e| format!("destination parent not accessible: {e}"))?;
-    let file_name = raw
-        .file_name()
-        .ok_or_else(|| "destination path has no file name".to_string())?;
-    let resolved = canon_parent.join(file_name);
-
-    // Reject writes through an existing symlink leaf — would let the resolved
-    // path escape to a denylisted target.
-    if let Ok(md) = std::fs::symlink_metadata(&resolved) {
-        if md.file_type().is_symlink() {
-            return Err("refusing to write through a symlink".into());
-        }
-    }
-
-    // Denylist mirrored from `agent::fs::is_protected_for_write`: system dirs,
-    // sudo state, keychains, TCC db, plus per-user credential locations.
-    let mut deny: Vec<std::path::PathBuf> = [
-        "/System",
-        "/private/etc",
-        "/etc",
-        "/private/var/db/sudo",
-        "/var/db/sudo",
-        "/Library/Keychains",
-        "/Library/Application Support/com.apple.TCC",
-        "/Applications/Froglips.app",
-    ]
-    .iter()
-    .map(std::path::PathBuf::from)
-    .collect();
-    if let Some(home) = dirs::home_dir() {
-        for sub in [
-            ".ssh",
-            ".aws",
-            ".config/gh",
-            ".gnupg",
-            "Library/Keychains",
-            "Library/Cookies",
-            "Library/Application Support/com.apple.TCC",
-            "Library/Mail",
-            "Library/Messages",
-        ] {
-            deny.push(home.join(sub));
-        }
-    }
-    if deny.iter().any(|pre| resolved.starts_with(pre)) {
-        return Err("destination path is in a protected directory".into());
-    }
-    // Block credential-style basenames so a stray click can't overwrite
-    // ~/.env or ~/credentials.json with a diag bundle (would still be inside
-    // home and outside the explicit denylist above).
-    if let Some(name) = resolved.file_name().and_then(|n| n.to_str()) {
-        if name.starts_with(".env") || name == "credentials" || name == "credentials.json" {
-            return Err("destination filename is reserved".into());
-        }
-    }
-    Ok(resolved)
+    super::path_safety::validate_write_dest(dest)
 }
 
 /// Write a single diagnostics bundle to `dest_path`: a concatenated text file
@@ -296,7 +222,9 @@ fn validate_settings_patch(
                 crate::mcp::validate_name(name)
                     .map_err(|e| format!("mcp_servers[{i}] name: {e}"))?;
                 match o.get("command").and_then(|v| v.as_str()) {
-                    Some(c) if !c.trim().is_empty() && c.len() <= 1024 => {}
+                    // NUL would silently truncate the C string the kernel
+                    // sees on exec, smuggling a hidden suffix past the UI.
+                    Some(c) if !c.trim().is_empty() && c.len() <= 1024 && !c.contains('\0') => {}
                     _ => return Err(format!("mcp_servers[{i}] 'command' invalid")),
                 }
                 if let Some(args) = o.get("args") {
@@ -308,7 +236,10 @@ fn validate_settings_patch(
                     }
                     for a in args {
                         match a.as_str() {
-                            Some(s) if s.len() <= 4096 => {}
+                            Some(s) if s.len() <= 4096 && !s.contains('\0') => {}
+                            Some(s) if s.contains('\0') => {
+                                return Err(format!("mcp_servers[{i}] arg contains NUL byte"))
+                            }
                             Some(_) => {
                                 return Err(format!("mcp_servers[{i}] arg exceeds 4096 bytes"))
                             }
@@ -327,8 +258,16 @@ fn validate_settings_patch(
                         if ek.is_empty() || ek.len() > 256 {
                             return Err(format!("mcp_servers[{i}] env key length out of range"));
                         }
+                        // NUL or '=' in an env key would corrupt the
+                        // child's environment block; reject both.
+                        if ek.contains('\0') || ek.contains('=') {
+                            return Err(format!("mcp_servers[{i}] env key has invalid byte"));
+                        }
                         match ev.as_str() {
-                            Some(s) if s.len() <= 16_384 => {}
+                            Some(s) if s.len() <= 16_384 && !s.contains('\0') => {}
+                            Some(s) if s.contains('\0') => {
+                                return Err(format!("mcp_servers[{i}] env value contains NUL byte"))
+                            }
                             Some(_) => return Err(format!("mcp_servers[{i}] env value too large")),
                             None => {
                                 return Err(format!("mcp_servers[{i}] env values must be strings"))
@@ -591,6 +530,25 @@ mod settings_validation_tests {
         let patch =
             format!(r#"{{"mcp_servers":[{{"name":"ok","command":"node","args":["{big}"]}}]}}"#);
         assert!(validate_settings_patch(&obj(&patch)).is_err());
+    }
+
+    #[test]
+    fn rejects_nul_in_mcp_command_args_env() {
+        // JSON ` ` escape parses to a string containing an embedded NUL.
+        let cmd_nul = "{\"mcp_servers\":[{\"name\":\"ok\",\"command\":\"node\\u0000evil\"}]}";
+        assert!(validate_settings_patch(&obj(cmd_nul)).is_err());
+        let arg_nul =
+            "{\"mcp_servers\":[{\"name\":\"ok\",\"command\":\"node\",\"args\":[\"a\\u0000b\"]}]}";
+        assert!(validate_settings_patch(&obj(arg_nul)).is_err());
+        let ekey_nul =
+            "{\"mcp_servers\":[{\"name\":\"ok\",\"command\":\"node\",\"env\":{\"K\\u0000X\":\"v\"}}]}";
+        assert!(validate_settings_patch(&obj(ekey_nul)).is_err());
+        // '=' in env key (would corrupt the environment block).
+        let ekey_eq = r#"{"mcp_servers":[{"name":"ok","command":"node","env":{"K=X":"v"}}]}"#;
+        assert!(validate_settings_patch(&obj(ekey_eq)).is_err());
+        let eval_nul =
+            "{\"mcp_servers\":[{\"name\":\"ok\",\"command\":\"node\",\"env\":{\"K\":\"a\\u0000b\"}}]}";
+        assert!(validate_settings_patch(&obj(eval_nul)).is_err());
     }
 
     #[test]

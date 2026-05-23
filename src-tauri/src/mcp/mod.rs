@@ -232,6 +232,24 @@ pub async fn start_server(
         .kill_on_drop(true);
     if let Some(env_map) = env.as_ref() {
         for (k, v) in env_map {
+            // Reject dynamic-linker hijacking keys (LD_*, DYLD_*) — same family
+            // the shell tool already refuses. The MCP env path runs at app
+            // boot via auto-start (lib.rs:118-136) BEFORE the user sees any
+            // UI, so a malicious settings.json entry here would otherwise
+            // achieve code injection on every launch without any prompt.
+            if crate::agent::shell::is_dynlinker_env_key(k) {
+                bail!("MCP env key '{k}' is not permitted (dynamic-linker family)");
+            }
+            // NUL in keys or values would silently truncate the C string the
+            // kernel exposes to the child; reject so a value can't smuggle a
+            // hidden suffix past whatever validation ran upstream. Also
+            // reject '=' in the key — that would split the env entry.
+            if k.contains('\0') || k.contains('=') {
+                bail!("MCP env key contains invalid byte (NUL or '=')");
+            }
+            if v.contains('\0') {
+                bail!("MCP env value for '{k}' contains NUL byte");
+            }
             cmd.env(k, v);
         }
     }
@@ -303,7 +321,17 @@ pub async fn start_server(
                                 g.push_str(&line);
                                 g.push('\n');
                                 if g.len() > STDERR_CAP {
-                                    let cut = g.len() - STDERR_CAP;
+                                    // Walk forward to the next char boundary
+                                    // before slicing — `g.len() - STDERR_CAP`
+                                    // is a raw byte index, and if it lands in
+                                    // the middle of a multi-byte UTF-8
+                                    // codepoint (any non-ASCII payload),
+                                    // `g[cut..]` would panic the drainer task
+                                    // for the lifetime of the server.
+                                    let mut cut = g.len() - STDERR_CAP;
+                                    while cut < g.len() && !g.is_char_boundary(cut) {
+                                        cut += 1;
+                                    }
                                     *g = g[cut..].to_string();
                                 }
                                 // Do NOT echo raw stderr content to host stderr

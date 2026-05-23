@@ -35,6 +35,22 @@ use std::time::SystemTime;
 use tauri::Emitter;
 use tokio::io::AsyncWriteExt;
 
+/// `O_NOFOLLOW` open flag, kept in sync with `agent::fs`. We avoid a
+/// direct `libc` dep — the values match the platforms' `<fcntl.h>`:
+///   - macOS / BSDs: 0x0100
+///   - Linux:        0o400000 (0x20000)
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+const O_NOFOLLOW: i32 = 0x0100;
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW: i32 = 0o400000;
+
 /// Maximum length of an HF repo id ("org/name"). Mirrors what HF itself
 /// accepts in their URL routing; anything longer is almost certainly a
 /// crafted input.
@@ -361,11 +377,25 @@ pub async fn download<R: tauri::Runtime>(
 
     // Stream the body to disk. Open in append mode when resuming so we
     // don't truncate the head we already have.
-    let mut file = tokio::fs::OpenOptions::new()
+    //
+    // `O_NOFOLLOW` closes the TOCTOU at the leaf: `resolve_target` already
+    // canonicalized the cache root and verified containment, and the
+    // inflight guard prevents two of OUR tasks from racing — but a
+    // *separate* process (or a hostile workflow on the same cache) could
+    // still swap the cache file for a symlink after the guard acquires.
+    // With `O_NOFOLLOW`, the kernel refuses to open through a symlink at
+    // the final path component, so the write can never escape the cache.
+    let mut open_opts = tokio::fs::OpenOptions::new();
+    open_opts
         .create(true)
         .write(true)
         .truncate(!resuming)
-        .append(resuming)
+        .append(resuming);
+    #[cfg(unix)]
+    {
+        open_opts.custom_flags(O_NOFOLLOW);
+    }
+    let mut file = open_opts
         .open(&target)
         .await
         .with_context(|| format!("open {} for write", target.display()))?;

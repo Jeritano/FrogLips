@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -21,6 +21,13 @@ pub const OLLAMA_HOST: &str = "127.0.0.1";
 pub const OLLAMA_PORT: u16 = 11434;
 
 const STDERR_RING_LINES: usize = 64;
+/// Hard per-line cap when draining the MLX child's stderr. A model server
+/// that prints one giant unterminated line would otherwise let tokio's
+/// `next_line()` allocate without bound. The custom drainer below assembles
+/// logical lines from a fixed-size scratch buffer and refuses to grow the
+/// per-line carry Vec past this cap (overflow bytes are dropped until the
+/// next `\n` arrives). 64 KiB is roomy vs typical MLX stderr (~1 KiB/line).
+const STDERR_LINE_CAP: usize = 64 * 1024;
 
 /// Max consecutive auto-restart attempts before the watcher gives up. A model
 /// that crashes immediately on every launch must not loop forever.
@@ -188,18 +195,78 @@ impl ServerState {
             let ring = self.stderr_ring.clone();
             let generation = self.generation.clone();
             tokio::spawn(async move {
-                let mut reader = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = reader.next_line().await {
-                    // Drop lines once the server has been stopped/replaced so a
-                    // stale process can't pollute the new server's stderr_ring.
-                    if generation.load(Ordering::Acquire) != my_generation {
-                        return;
+                // Tokio's `next_line()` reads a logical line with no per-line
+                // cap — a model server that prints one massive line without
+                // `\n` would let the buffer grow unbounded. We instead read
+                // into a fixed-size stack buffer and assemble logical lines
+                // by hand: when a single line exceeds STDERR_LINE_CAP we
+                // truncate at the cap and discard until the next `\n`, then
+                // resume normally. The `carry` Vec is bounded by the cap.
+                let mut reader = BufReader::new(stderr);
+                let cap = STDERR_LINE_CAP;
+                let mut scratch = [0u8; 4096];
+                let mut carry: Vec<u8> = Vec::with_capacity(1024);
+                let mut discarding = false; // true once this line has hit the cap
+                loop {
+                    let n: usize = reader.read(&mut scratch).await.unwrap_or_default();
+                    if n == 0 {
+                        // EOF — emit any partial line we still have, then exit.
+                        if !carry.is_empty() {
+                            let line = String::from_utf8_lossy(&carry).into_owned();
+                            if generation.load(Ordering::Acquire) == my_generation {
+                                let mut r = ring.lock();
+                                if r.len() >= STDERR_RING_LINES {
+                                    r.pop_front();
+                                }
+                                r.push_back(line);
+                            }
+                        }
+                        break;
                     }
-                    let mut r = ring.lock();
-                    if r.len() >= STDERR_RING_LINES {
-                        r.pop_front();
+                    let mut i = 0;
+                    while i < n {
+                        match scratch[..n].iter().skip(i).position(|&b| b == b'\n') {
+                            Some(rel) => {
+                                let nl = i + rel;
+                                if !discarding {
+                                    let room = cap.saturating_sub(carry.len());
+                                    let take = (nl - i).min(room);
+                                    carry.extend_from_slice(&scratch[i..i + take]);
+                                    if take < nl - i {
+                                        // Overflow within this line — mark
+                                        // truncated but don't grow further.
+                                        discarding = true;
+                                    }
+                                }
+                                let mut line = String::from_utf8_lossy(&carry).into_owned();
+                                if discarding {
+                                    line.push_str(" [line truncated]");
+                                }
+                                carry.clear();
+                                discarding = false;
+                                if generation.load(Ordering::Acquire) != my_generation {
+                                    return;
+                                }
+                                let mut r = ring.lock();
+                                if r.len() >= STDERR_RING_LINES {
+                                    r.pop_front();
+                                }
+                                r.push_back(line);
+                                i = nl + 1;
+                            }
+                            None => {
+                                if !discarding {
+                                    let room = cap.saturating_sub(carry.len());
+                                    let take = (n - i).min(room);
+                                    carry.extend_from_slice(&scratch[i..i + take]);
+                                    if take < n - i {
+                                        discarding = true;
+                                    }
+                                }
+                                break;
+                            }
+                        }
                     }
-                    r.push_back(line);
                 }
             });
         }

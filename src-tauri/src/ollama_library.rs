@@ -158,7 +158,14 @@ async fn fetch_html(target: &str) -> Result<String, String> {
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent(USER_AGENT)
-        .redirect(reqwest::redirect::Policy::limited(3));
+        // No redirects: the SSRF guard above (resolve_to_safe_addrs + the
+        // resolve_to_addrs pinning on the client below) only protect the
+        // INITIAL request. A 30x to a different host would bypass both —
+        // reqwest by default resolves the redirect target via the system
+        // resolver, ignoring our pinned addresses. ollama.com/library and
+        // /search?c=cloud don't redirect, so denying redirects outright is
+        // strictly tighter than the previous `limited(3)`.
+        .redirect(reqwest::redirect::Policy::none());
     for a in &safe_addrs {
         builder = builder.resolve_to_addrs(&host, &[*a]);
     }
