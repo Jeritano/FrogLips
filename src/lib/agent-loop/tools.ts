@@ -666,16 +666,9 @@ export const TOOLS = [
           },
           model: {
             type: "string",
-            enum: [
-              "schnell",
-              "dev",
-              "schnell-fp8",
-              "dev-fp8",
-              "schnell-gguf-q4",
-              "dev-gguf-q4",
-            ],
+            enum: ["schnell", "dev"],
             description:
-              "'schnell' (fast, 4 steps, default) or 'dev' (higher quality, 28 steps). On low-RAM Macs prefer the quantized variants: '-fp8' (~8-12 GB) or '-gguf-q4' (~6 GB). Same FluxLoader, smaller memory footprint.",
+              "'schnell' (fast, 4 steps, default) or 'dev' (higher quality, 28 steps). 'dev' is gated on HuggingFace — the user must accept the license. Quantized variants are not yet wired (upstream loader can't read GGUF/single-file fp8).",
           },
           size: {
             type: "string",

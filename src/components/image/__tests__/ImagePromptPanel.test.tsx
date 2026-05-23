@@ -120,18 +120,15 @@ describe("ImagePromptPanel", () => {
     expect(hint?.textContent ?? "").toContain("Dev uses 28");
   });
 
-  it("offers all FLUX variants in the model dropdown (F1)", async () => {
+  it("offers only the loadable upstream FLUX repos in the model dropdown", async () => {
+    // F1 quantized variants were reverted — community GGUF / single-file
+    // fp8 repos don't ship the multi-file safetensors layout mistralrs's
+    // FluxLoader requires. Keep this assertion narrow so a future re-add
+    // (once an upstream loader supports it) trips the test loudly.
     h = await mount();
     const select = h.container.querySelector<HTMLSelectElement>('[data-testid="image-model-select"]')!;
     const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual([
-      "schnell",
-      "dev",
-      "schnell-fp8",
-      "dev-fp8",
-      "schnell-gguf-q4",
-      "dev-gguf-q4",
-    ]);
+    expect(values).toEqual(["schnell", "dev"]);
   });
 
   it("does not render a Cancel button (H4)", async () => {

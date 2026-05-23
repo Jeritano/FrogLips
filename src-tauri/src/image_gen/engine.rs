@@ -154,7 +154,7 @@ const LOADING_EVENT_DELAY: Duration = Duration::from_millis(50);
 /// Canonical FLUX.1-dev repo ids. Used by [`is_dev_repo`] for an exact-match
 /// check (replacing the old `contains("dev")` substring match that would
 /// false-positive on names like `developer-edition` or `lewdev`).
-const FLUX_DEV_REPOS: &[&str] = &["black-forest-labs/FLUX.1-dev", "city96/FLUX.1-dev-gguf"];
+const FLUX_DEV_REPOS: &[&str] = &["black-forest-labs/FLUX.1-dev"];
 
 impl ImageEngine {
     /// Memory-guard probe — fails fast when free RAM is below the estimated
@@ -611,7 +611,6 @@ mod tests {
     fn is_dev_repo_is_exact_match() {
         assert!(is_dev_repo("black-forest-labs/FLUX.1-dev"));
         assert!(is_dev_repo("BLACK-FOREST-LABS/FLUX.1-DEV"));
-        assert!(is_dev_repo("city96/FLUX.1-dev-gguf"));
         // Substring matches that the old `contains("dev")` would have
         // incorrectly treated as dev — must NOT match anymore.
         assert!(!is_dev_repo("developer-edition"));

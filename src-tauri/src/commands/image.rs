@@ -600,10 +600,7 @@ fn is_dev_model(model: &str) -> bool {
     target_arch = "aarch64"
 )))]
 fn is_dev_model(model: &str) -> bool {
-    matches!(
-        model.trim(),
-        "black-forest-labs/FLUX.1-dev" | "city96/FLUX.1-dev-gguf"
-    )
+    matches!(model.trim(), "black-forest-labs/FLUX.1-dev")
 }
 
 /// Build the deterministic params JSON blob mirrored between the PNG ZTXt
@@ -742,14 +739,15 @@ fn hf_load_hint(message: &str) -> Option<&'static str> {
 /// repo id. Anything already in `org/name` form passes through untouched so
 /// power users can point at a community fork.
 ///
-/// F1: quantized variants — `schnell-fp8` / `dev-fp8` map to the city96
-/// GGUF-quantized repos. mistralrs 0.8.1's `FluxLoader` autodetects the
-/// quant layout from the safetensors / gguf shards present in the repo, so
-/// no per-variant loader changes are needed. NOTE on licensing: `city96`'s
-/// GGUFs inherit the upstream FLUX.1-dev license (gated, non-commercial) /
-/// FLUX.1-schnell license (Apache-2.0). The `dev-fp8` repo therefore still
-/// requires a HuggingFace token + license-accept on the upstream dev repo;
-/// the existing `hf_load_hint` covers the gated-403 case.
+/// F1 (quantized variants) reverted: mistralrs 0.8.1's `FluxLoader` requires
+/// the BFL multi-file safetensors layout (separate `transformer/`,
+/// `text_encoder/`, `text_encoder_2/`, `vae/` directories). Community
+/// GGUF / single-file fp8 repos (`city96/FLUX.1-*-gguf`, `Kijai/flux-fp8`)
+/// only ship the transformer weights and fail with `"Expected at least 1
+/// .safetensors file matching the FLUX regex"`. Upstream has no GGUF Flux
+/// loader yet — restoring the variants needs either a richer mistralrs
+/// release or our own vendored loader. Until then we only expose the two
+/// repos that actually load.
 fn canonicalize_flux_repo(model: &str) -> String {
     let trimmed = model.trim();
     match trimmed {
@@ -760,13 +758,6 @@ fn canonicalize_flux_repo(model: &str) -> String {
         "dev" | "FLUX.1-dev" | "flux-dev" | "flux.1-dev" => {
             "black-forest-labs/FLUX.1-dev".to_string()
         }
-        // F1: quantized variants. `city96` is the canonical community
-        // publisher of GGUF-quantized FLUX shards (Q4_K_M, fp8) that fit on
-        // 8-12 GiB Macs. Both repos load cleanly via `DiffusionLoaderType::Flux`
-        // /`FluxOffloaded` on mistralrs 0.8.1 because the loader probes the
-        // safetensors layout (not the repo name).
-        "schnell-fp8" | "flux-schnell-fp8" => "city96/FLUX.1-schnell-gguf".to_string(),
-        "dev-fp8" | "flux-dev-fp8" => "city96/FLUX.1-dev-gguf".to_string(),
         // Already canonical (or a custom repo) — pass through.
         other => other.to_string(),
     }
@@ -982,20 +973,20 @@ mod tests {
     }
 
     #[test]
-    fn canonicalize_flux_repo_maps_quantized_shorthand() {
-        assert_eq!(
-            canonicalize_flux_repo("schnell-fp8"),
-            "city96/FLUX.1-schnell-gguf"
-        );
-        assert_eq!(canonicalize_flux_repo("dev-fp8"), "city96/FLUX.1-dev-gguf");
-        assert_eq!(
-            canonicalize_flux_repo("flux-dev-fp8"),
-            "city96/FLUX.1-dev-gguf"
-        );
-        // Bare shorthands still resolve to the upstream repos.
+    fn canonicalize_flux_repo_maps_known_shorthand() {
         assert_eq!(
             canonicalize_flux_repo("schnell"),
             "black-forest-labs/FLUX.1-schnell"
+        );
+        assert_eq!(
+            canonicalize_flux_repo("dev"),
+            "black-forest-labs/FLUX.1-dev"
+        );
+        // Unknown ids pass through verbatim so power users can point at
+        // a custom fork without needing a new shorthand.
+        assert_eq!(
+            canonicalize_flux_repo("MyOrg/my-flux-fork"),
+            "MyOrg/my-flux-fork"
         );
     }
 

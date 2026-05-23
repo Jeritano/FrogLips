@@ -25,18 +25,17 @@ const SIZE_OPTIONS: ReadonlyArray<string> = [
 
 /**
  * Model options shown in the dropdown. The string `value` is sent verbatim to
- * the Rust side, which maps friendly shorthands (`schnell`, `dev-fp8`, etc.)
- * to canonical HuggingFace repo ids. fp8 / GGUF variants share the same
- * `FluxLoader` in mistralrs 0.8.1 but use ~6 GiB instead of 14-28 GiB —
- * suitable for 8 GiB Macs.
+ * the Rust side, which maps friendly shorthands to canonical HuggingFace
+ * repo ids. Only the two upstream BFL repos are wired today — community
+ * GGUF / single-file fp8 quants don't ship the multi-file safetensors
+ * layout mistralrs 0.8.1's `FluxLoader` requires, so they fail with
+ * "Expected at least 1 .safetensors file matching the FLUX regex".
+ * Restoring them needs either a richer upstream loader or our own vendored
+ * sampler.
  */
 const MODEL_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "schnell", label: "FLUX.1 schnell (fast, 4 steps)" },
   { value: "dev", label: "FLUX.1 dev (higher quality, 28 steps)" },
-  { value: "schnell-fp8", label: "FLUX.1 schnell — fp8 (~8 GB)" },
-  { value: "dev-fp8", label: "FLUX.1 dev — fp8 (~12 GB)" },
-  { value: "schnell-gguf-q4", label: "FLUX.1 schnell — GGUF Q4_K (~6 GB)" },
-  { value: "dev-gguf-q4", label: "FLUX.1 dev — GGUF Q4_K (~6 GB)" },
 ];
 
 /**

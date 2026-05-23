@@ -782,14 +782,11 @@ export interface ImageGenOpts {
 
 /**
  * Friendly model identifiers the IPC's `canonicalize_flux_repo` accepts in
- * addition to full HF repo ids. `*-fp8` map to community GGUF-quantized
- * mirrors (`city96/FLUX.1-*-gguf`).
+ * addition to full HF repo ids. Quantized variants were dropped — community
+ * GGUF / single-file fp8 repos lack the multi-file safetensors layout
+ * mistralrs 0.8.1's `FluxLoader` requires.
  */
-export type ImageGenModel =
-  | "schnell"
-  | "dev"
-  | "schnell-fp8"
-  | "dev-fp8";
+export type ImageGenModel = "schnell" | "dev";
 
 /**
  * A persisted generated image row, returned by `image_list` / `image_get`.
