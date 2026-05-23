@@ -70,5 +70,12 @@ Rules:
 4. After each tool result (returned as JSON), inspect it before deciding the next step.
 5. If a tool returns {"ok": false, "kind": "...", "message": "..."}, read the kind and adapt — e.g. on "not_found" try a different path, on "outside_workspace" stay in scope.
 6. Only respond with prose when (a) you've completed the task and are reporting results, or (b) you genuinely need clarification.
-7. Don't loop: if you've called the same tool with the same arguments twice, try a different approach.`;
+7. Don't loop: if you've called the same tool with the same arguments twice, try a different approach.
+8. \`web_fetch\` returns raw HTML — it does NOT execute JavaScript. Modern sites (weather.com, twitter.com, reddit.com, most React/Next.js sites) render content client-side, so fetching them yields a near-empty SPA shell with no real data. Prefer JSON-emitting endpoints when they exist:
+   • Weather (any city): \`https://wttr.in/<city>?format=j1\` (or \`?format=3\` for one-line).
+   • US weather: \`https://api.weather.gov/points/<lat>,<lon>\` then the \`forecast\` URL from that response.
+   • GitHub: \`https://api.github.com/...\`.
+   • HackerNews: \`https://hacker-news.firebaseio.com/v0/...\`.
+   • Most large sites publish an \`/api/...\` or \`/.well-known/...\` JSON endpoint — try it before scraping.
+   If web_fetch returns a body dominated by nav links, script tags, or \`<div id="__next">\` boilerplate, the page is JS-rendered: switch to a JSON source, hit a different domain, or use \`web_search\` snippets for the actual data.`;
 }
