@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { announce } from "../lib/announce";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { ImageGenOpts, ImageMeta } from "../types";
 import { useImageGeneration } from "../hooks/useImageGeneration";
 import { ImagePromptPanel } from "./image/ImagePromptPanel";
@@ -11,62 +12,132 @@ import { ImageDetail } from "./image/ImageDetail";
 interface Props {
   /**
    * Active chat conversation id. New images get tagged with this so the
-   * gallery can scope by conv when we add that filter later. `null` = global
-   * (no chat selected).
+   * gallery can scope by conv. `null` = global (no chat selected).
    */
   conversationId: number | null;
   /**
    * Called when the user clicks "Send to current chat" on the detail pane.
    * Parent (App) routes the image into the active chat via `api.addMessage`
-   * with a populated `images` array. We don't do the routing here because the
-   * Image view is a sibling of the chat — it doesn't own the conversation.
+   * with a populated `images` array.
    */
   onSendToChat: (meta: ImageMeta) => void;
 }
 
+/** Three-state gallery scope chip. Stored as a string for stable test selectors. */
+type FilterMode = "all" | "this-chat" | "standalone";
+
 /**
- * Top-level Image view. Three columns at desktop sizes: prompt panel on the
- * left, gallery in the middle, detail pane on the right. Mobile-friendly
- * fallback (one column, gallery scrolls) handled via CSS.
+ * Generic page-size cap for `imageList`. Until BACK ships paginated metadata
+ * (item count + cursor) we fetch up to PAGE_LIMIT rows and show a "Load more"
+ * button when the server returns exactly that many — indicating there might
+ * be additional rows we haven't fetched.
+ *
+ * TODO(image-gen-back-ready): swap to the paginated `imageList` shape and
+ * surface a real `total` count when the BACK agent ships it.
+ */
+const PAGE_LIMIT = 200;
+
+/**
+ * Top-level Image view. Canvas-left + vertical thumb strip on the right; the
+ * prompt composer sits in a sticky bar at the bottom of the surface. Under
+ * 1100 px wide the strip collapses into a horizontal scroller below the
+ * composer — see images.css. Detail metadata lives behind an "ℹ" disclosure
+ * inside the canvas pane (own column eliminated in the 2026-05-23 rework).
  */
 export function ImageView({ conversationId, onSendToChat }: Props) {
   const [images, setImages] = useState<ImageMeta[]>([]);
   const [selected, setSelected] = useState<ImageMeta | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
-  const { running, progress, error, generate, cancel } = useImageGeneration();
+  const [filter, setFilter] = useState<FilterMode>(() =>
+    conversationId != null ? "this-chat" : "all",
+  );
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pageLimit, setPageLimit] = useState(PAGE_LIMIT);
+  const [totalCount, setTotalCount] = useState<number>(0);
+  const { running, progress, error, generate } = useImageGeneration();
 
-  const refresh = useCallback(async (selectId?: number) => {
-    try {
-      // `null` conv id pulls the cross-conversation list. Once the gallery
-      // grows beyond a few hundred rows we'll add pagination + a per-conv
-      // toggle; for now the unfiltered view is the right default because
-      // images are a creative workspace separate from any single chat.
-      const list = await api.imageList(null, 200);
-      setImages(list);
-      if (selectId != null) {
-        const found = list.find((i) => i.id === selectId) ?? null;
-        if (found) setSelected(found);
-      } else if (list.length > 0) {
-        setSelected((cur) => cur ?? list[0]);
-      } else {
-        setSelected(null);
+  // Whenever the parent's selected conversation changes, switch the default
+  // scope back to "This chat" if a real conv is active. The user can still
+  // flip the chip manually after that.
+  useEffect(() => {
+    setFilter(conversationId != null ? "this-chat" : "all");
+  }, [conversationId]);
+
+  // What we pass to the IPC depends on the chip. "this-chat" scopes server-
+  // side; "all" and "standalone" both fetch the unscoped list and filter
+  // client-side for now.
+  // TODO(image-gen-back-ready): when BACK ships a "standalone-only" arg,
+  // switch the standalone branch over so we don't pull all rows just to
+  // discard the chat-tagged ones.
+  // `imageList` returns either a paginated `{ rows, total }` page (current
+  // BACK contract) or a bare `ImageMeta[]` (legacy/mocked tests). Normalize
+  // here so the rest of the component sees a single shape.
+  const refresh = useCallback(
+    async (selectId?: number) => {
+      try {
+        const convArg =
+          filter === "this-chat" && conversationId != null ? conversationId : null;
+        const raw = await api.imageList(convArg, pageLimit);
+        let rows: import("../types").ImageMeta[];
+        let total: number;
+        if (Array.isArray(raw)) {
+          rows = raw;
+          total = raw.length;
+        } else if (raw && typeof raw === "object" && Array.isArray((raw as { rows?: unknown }).rows)) {
+          const page = raw as { rows: import("../types").ImageMeta[]; total?: number };
+          rows = page.rows;
+          total = typeof page.total === "number" ? page.total : page.rows.length;
+        } else {
+          rows = [];
+          total = 0;
+        }
+        const filtered =
+          filter === "standalone" ? rows.filter((i) => i.conv_id == null) : rows;
+        setImages(filtered);
+        setTotalCount(filter === "standalone" ? filtered.length : total);
+        if (selectId != null) {
+          const found = filtered.find((i) => i.id === selectId) ?? null;
+          if (found) setSelected(found);
+        } else if (filtered.length > 0) {
+          setSelected((cur) => {
+            if (cur && filtered.find((i) => i.id === cur.id)) return cur;
+            return filtered[0];
+          });
+        } else {
+          setSelected(null);
+        }
+        setListErr(null);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setListErr(msg);
+        logDiag({
+          level: "warn",
+          source: "image-view",
+          message: "imageList failed",
+          detail: err,
+        });
       }
-      setListErr(null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setListErr(msg);
-      logDiag({
-        level: "warn",
-        source: "image-view",
-        message: "imageList failed",
-        detail: err,
-      });
-    }
-  }, []);
+    },
+    [conversationId, filter, pageLimit],
+  );
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Global subscription: any `image-done` event refreshes the gallery, so an
+  // agent-driven `generate_image` tool call shows up immediately instead of
+  // requiring a view swap. `useImageGeneration` already handles the local UI
+  // op state; this listener fires for ALL ops (including loop-issued ones
+  // that don't run through this hook).
+  useTauriEvent<{ op_id?: string; image_id?: number }>(
+    "image-done",
+    (e) => {
+      const id = typeof e.payload?.image_id === "number" ? e.payload.image_id : undefined;
+      void refresh(id);
+    },
+    [refresh],
+  );
 
   const onGenerate = useCallback(
     async (args: { prompt: string; model: string; opts: ImageGenOpts }) => {
@@ -103,42 +174,105 @@ export function ImageView({ conversationId, onSendToChat }: Props) {
     [refresh],
   );
 
+  const maybeLoadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      // TODO(image-gen-back-ready): use the paginated IPC. For now we bump
+      // the limit by another PAGE_LIMIT and re-fetch.
+      setPageLimit((n) => n + PAGE_LIMIT);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, []);
+
+  // BACK now ships `total`; compare it against what we've actually got to
+  // decide whether a Load more button should appear. The fallback (no total)
+  // is "show when we hit the limit", same as before.
+  const hasMore = totalCount > images.length || images.length >= pageLimit;
+
+  const filterButtons = useMemo<Array<{ id: FilterMode; label: string }>>(
+    () => [
+      { id: "all", label: "All" },
+      { id: "this-chat", label: "This chat" },
+      { id: "standalone", label: "Standalone" },
+    ],
+    [],
+  );
+
   return (
     <div className="image-view" data-testid="image-view">
-      <section className="image-view-composer">
-        <h2 className="image-view-heading">Image generation</h2>
-        <ImagePromptPanel
-          onGenerate={onGenerate}
-          onCancel={() => void cancel()}
-          running={running}
-          progress={progress}
-          error={error}
-        />
-      </section>
-      <section className="image-view-gallery" aria-label="Generated images">
+      <section className="image-view-canvas-pane" aria-label="Image canvas">
+        <header className="image-view-canvas-header">
+          <h2 className="image-view-heading">Image generation</h2>
+          <div className="image-filter-chip" role="group" aria-label="Gallery scope">
+            {filterButtons.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                className={`image-filter-btn${filter === b.id ? " active" : ""}`}
+                onClick={() => setFilter(b.id)}
+                aria-pressed={filter === b.id}
+                data-testid={`image-filter-${b.id}`}
+                disabled={b.id === "this-chat" && conversationId == null}
+                title={
+                  b.id === "this-chat" && conversationId == null
+                    ? "Select a conversation to scope by chat"
+                    : undefined
+                }
+              >
+                {b.label}
+              </button>
+            ))}
+          </div>
+        </header>
         {listErr && (
           <div className="image-view-error" role="alert">
             Failed to load images: {listErr}
           </div>
         )}
+        <div className="image-view-canvas-body">
+          {selected ? (
+            <ImageDetail
+              image={selected}
+              onDeleted={onDeleted}
+              onSendToChat={onSendToChat}
+            />
+          ) : (
+            <div className="image-view-detail-empty">
+              {images.length === 0
+                ? "Type a prompt below — your images will appear here."
+                : "Select an image from the strip to see its details."}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <aside className="image-view-strip" aria-label="Generated images">
         <ImageGallery
           images={images}
           selectedId={selected?.id ?? null}
           onSelect={setSelected}
         />
-      </section>
-      <section className="image-view-detail" aria-label="Image detail">
-        {selected ? (
-          <ImageDetail
-            image={selected}
-            onDeleted={onDeleted}
-            onSendToChat={onSendToChat}
-          />
-        ) : (
-          <div className="image-view-detail-empty">
-            Select an image to see its details.
-          </div>
+        {hasMore && (
+          <button
+            type="button"
+            className="image-load-more-btn"
+            onClick={() => void maybeLoadMore()}
+            disabled={loadingMore}
+            data-testid="image-load-more-btn"
+          >
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
         )}
+      </aside>
+
+      <section className="image-view-composer" aria-label="Image composer">
+        <ImagePromptPanel
+          onGenerate={onGenerate}
+          running={running}
+          progress={progress}
+          error={error}
+        />
       </section>
     </div>
   );

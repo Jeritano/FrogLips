@@ -71,7 +71,7 @@ Rules:
 5. If a tool returns {"ok": false, "kind": "...", "message": "..."}, read the kind and adapt — e.g. on "not_found" try a different path, on "outside_workspace" stay in scope.
 6. Only respond with prose when (a) you've completed the task and are reporting results, or (b) you genuinely need clarification.
 7. Don't loop: if you've called the same tool with the same arguments twice, try a different approach.
-8. If \`generate_image\` is in the available tools, you may call it when the user asks for an image — pass a concise descriptive prompt and a model ("schnell" for fast, "dev" for higher quality); the PNG is saved to the gallery and the result includes its row id + path.
+8. If \`generate_image\` is in the available tools, you may call it when the user asks for an image — pass a concise descriptive prompt and a model ("schnell" for fast, "dev" for higher quality). On low-RAM machines (or when the user mentions an 8 GB Mac, memory pressure, OOMs, etc.) pick the smaller quantized variant: "schnell-fp8" / "dev-fp8" (~8-12 GB) or "schnell-gguf-q4" / "dev-gguf-q4" (~6 GB). The PNG is saved to the gallery and the result includes its row id + path.
 9. \`web_fetch\` returns raw HTML — it does NOT execute JavaScript. Modern sites (weather.com, twitter.com, reddit.com, most React/Next.js sites) render content client-side, so fetching them yields a near-empty SPA shell with no real data. Prefer JSON-emitting endpoints when they exist:
    • Weather (any city): \`https://wttr.in/<city>?format=j1\` (or \`?format=3\` for one-line).
    • US weather: \`https://api.weather.gov/points/<lat>,<lon>\` then the \`forecast\` URL from that response.

@@ -248,27 +248,63 @@ If you skip any of these steps the first **Generate** fails with `HTTP 401`
 (missing/invalid token) or `HTTP 403` (license not yet accepted on that repo).
 The error pill includes an actionable hint for each case.
 
+### Layout
+
+The Images surface uses three regions:
+
+- **Canvas pane** (left) — the currently-selected image at full size. A small
+  **ℹ** button toggles the parameter readout (model, dimensions, created-at,
+  and any non-default steps/CFG).
+- **Thumb strip** (right) — vertical list of every generated image. Click to
+  open. Below 1100 px the strip collapses into a horizontal scroller under the
+  composer.
+- **Composer** (sticky bottom) — prompt textarea, model + size dropdowns, and
+  the **Generate** button.
+
+A three-state chip in the canvas header — **All / This chat / Standalone** —
+scopes the strip. When a chat is selected the chip defaults to **This chat**;
+otherwise to **All**. **Standalone** filters to images not tied to any
+conversation.
+
 ### Generating
 
-- **Prompt** — type a description, hit **Generate**. The first run cold-loads the
-  FLUX weights (can take minutes if they aren't yet cached); subsequent runs
-  jump straight to sampling.
-- **Model** — `schnell` (4-step fast preview) or `dev` (28-step higher quality).
+- **Prompt** — type a description, hit **Generate**. The first run cold-loads
+  the FLUX weights (can take minutes if they aren't yet cached); subsequent
+  runs jump straight to sampling. During cold-load you'll see rotating hints
+  ("Loading FLUX weights…", "First run downloads ~14 GB from HuggingFace") so
+  you know the app is alive.
+- **Model** — six options:
+  - `schnell` (4-step fast preview, ~14 GB)
+  - `dev` (28-step higher quality, ~28 GB)
+  - `schnell-fp8` (~8 GB)
+  - `dev-fp8` (~12 GB)
+  - `schnell-gguf-q4` (~6 GB)
+  - `dev-gguf-q4` (~6 GB)
+
+  The quantized variants share the same FLUX loader and run on 8 GB Macs.
 - **Size** — 512–1536 square or rectangular options.
-- **Use CPU offload** — tick on low-RAM Macs (8 GB) to trade speed for VRAM headroom.
-- **Advanced** — steps / cfg / seed are exposed but currently informational only:
-  mistralrs 0.8.1 honors the baked-in defaults regardless of what you enter.
-- **Cancel** is best-effort — mid-diffusion cancel isn't supported by the
-  current backend; the button short-circuits the pre/post phases.
-- **Gallery** — every successful run appears as a thumbnail; click to open the
-  detail pane.
+- **CPU offload** — tick on low-RAM Macs to trade speed for VRAM headroom.
+- **Hint line** — under Generate, a single line reminds you that Schnell uses
+  4 steps, Dev uses 28, and seed/CFG are model-defined in the current engine.
+  (Earlier builds exposed seed/steps/CFG inputs that the engine ignored — those
+  controls have been removed.)
+- **Gallery refresh** — when an agent calls `generate_image` while you're on
+  another tab, the strip refreshes automatically the next time you open the
+  Images surface.
 - **Detail actions** — copy prompt, save to disk, delete (two-click confirm),
   and **Send to current chat** — attaches the PNG to a fresh user message in
   the active conversation (mints one if none is selected).
 
+> **Note on FLUX Pro / 1.1 Pro.** Black Forest Labs ships these only through
+> their hosted API; the weights are closed and cannot run locally. The model
+> dropdown deliberately omits them. If you need Pro-quality output use the
+> upstream API directly; Froglips only generates with the open `schnell` /
+> `dev` variants (plus their quantized siblings).
+
 Agents can also create images: enable the `generate_image` tool in agent
 settings. Each call is approval-gated (it costs disk + GPU) and the output
-lands in the same gallery.
+lands in the same gallery. The agent picks the smaller quantized variant
+automatically when you mention memory pressure or an 8 GB Mac.
 
 ## 8. About You
 

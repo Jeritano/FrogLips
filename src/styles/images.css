@@ -1,51 +1,124 @@
 /* ── Image generation view ─────────────────────────────────────────────────
  *
- * Three-column layout at desktop sizes: prompt panel, gallery grid, detail
- * pane. Collapses to a single scrolling column under 900px so the surface
- * stays usable in narrow detached windows. Every color token is the same
- * theme-aware variable used by the chat surface — light/dark just work.
+ * Layout (2026-05-23 rework):
+ *   canvas pane (left, fills available height)  | vertical thumb strip (right)
+ *   ─────────────────────────────────────────────────────────────────────────
+ *   composer (sticky bottom, spans full width)
+ *
+ * Detail metadata now lives behind an "ℹ" disclosure inside the canvas
+ * pane — the previous three-column layout crowded the detail column at
+ * 1440 px. Under 1100 px the strip collapses into a horizontal scroller
+ * below the composer.
  */
 
 .image-view {
   display: grid;
-  grid-template-columns: 320px 1fr 380px;
-  gap: var(--space-4);
-  padding: var(--space-4);
+  grid-template-columns: 1fr 140px;
+  grid-template-rows: 1fr auto;
+  grid-template-areas:
+    "canvas strip"
+    "composer composer";
+  gap: var(--space-3);
+  padding: var(--space-3);
   height: 100%;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
 }
 
-@media (max-width: 1200px) {
-  .image-view {
-    grid-template-columns: 280px 1fr 320px;
-  }
-}
-
-@media (max-width: 900px) {
-  .image-view {
-    grid-template-columns: 1fr;
-    overflow: auto;
-    height: auto;
-  }
-}
-
-.image-view-composer,
-.image-view-gallery,
-.image-view-detail {
+.image-view-canvas-pane {
+  grid-area: canvas;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: var(--space-4);
-  overflow: auto;
+  padding: var(--space-3);
+  overflow: hidden;
   min-height: 0;
+}
+
+.image-view-canvas-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.image-view-canvas-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.image-view-strip {
+  grid-area: strip;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.image-view-composer {
+  grid-area: composer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  position: sticky;
+  bottom: 0;
 }
 
 .image-view-heading {
   font-size: var(--fs-lg);
-  margin: 0 0 var(--space-3);
+  margin: 0;
   color: var(--text);
+}
+
+/* ── Filter chip (All / This chat / Standalone) ─────────────────────── */
+
+.image-filter-chip {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px;
+}
+
+.image-filter-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  padding: 4px var(--space-2);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.image-filter-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.image-filter-btn.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.image-filter-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ── Prompt panel ─────────────────────────────────────────────────────── */
@@ -53,7 +126,7 @@
 .image-prompt-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .image-prompt-label {
@@ -71,7 +144,7 @@
   font-family: inherit;
   font-size: var(--fs-base);
   resize: vertical;
-  min-height: 72px;
+  min-height: 56px;
 }
 
 .image-prompt-textarea:focus-visible {
@@ -86,8 +159,9 @@
 
 .image-prompt-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: var(--space-2);
+  align-items: end;
 }
 
 .image-prompt-field {
@@ -96,6 +170,7 @@
   gap: 4px;
   font-size: var(--fs-sm);
   color: var(--text-muted);
+  min-width: 0;
 }
 
 .image-prompt-field select,
@@ -114,49 +189,36 @@
   gap: 6px;
   font-size: var(--fs-sm);
   color: var(--text);
-  grid-column: 1 / -1;
-}
-
-.image-advanced-toggle {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  text-align: left;
-  padding: 0;
-}
-
-.image-advanced-toggle:hover {
-  color: var(--text);
-}
-
-.image-advanced-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: var(--space-2);
-  background: var(--surface-2);
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
-}
-
-.image-advanced-note {
-  grid-column: 1 / -1;
-  margin: 0;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .image-prompt-actions {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.image-hint {
+  margin: 4px 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.image-loading-note {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.image-prompt-unload {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 4px;
 }
 
 .image-generate-btn,
-.image-cancel-btn,
 .image-action-btn {
   background: var(--accent-bg);
   color: var(--accent);
@@ -169,7 +231,6 @@
 }
 
 .image-generate-btn:hover:not(:disabled),
-.image-cancel-btn:hover,
 .image-action-btn:hover:not(:disabled) {
   background: var(--accent-strong);
 }
@@ -178,16 +239,6 @@
 .image-action-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
-}
-
-.image-cancel-btn {
-  background: var(--danger-bg);
-  color: var(--danger-fg);
-  border-color: var(--danger-border);
-}
-
-.image-cancel-btn:hover {
-  background: var(--danger-bg-strong);
 }
 
 .image-status-line {
@@ -224,12 +275,7 @@
   border-radius: var(--radius-sm);
 }
 
-/* ── Gallery ──────────────────────────────────────────────────────────── */
-
-.image-view-gallery {
-  display: flex;
-  flex-direction: column;
-}
+/* ── Gallery (thumb strip) ───────────────────────────────────────────── */
 
 .image-view-error {
   font-size: var(--fs-sm);
@@ -238,7 +284,6 @@
   border: 1px solid var(--danger-border);
   padding: var(--space-2);
   border-radius: var(--radius-sm);
-  margin-bottom: var(--space-2);
 }
 
 .image-gallery-empty {
@@ -246,16 +291,19 @@
   align-items: center;
   justify-content: center;
   flex: 1;
-  padding: var(--space-6);
+  padding: var(--space-4);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-align: center;
 }
 
 .image-gallery-grid {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .image-gallery-tile {
@@ -293,19 +341,33 @@
 .image-gallery-caption {
   font-size: var(--fs-xs);
   color: var(--text-muted);
-  padding: 6px var(--space-2);
+  padding: 4px var(--space-2);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-/* ── Detail pane ──────────────────────────────────────────────────────── */
-
-.image-view-detail {
-  display: flex;
-  flex-direction: column;
+.image-load-more-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  font-size: var(--fs-xs);
+  cursor: pointer;
 }
+
+.image-load-more-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.image-load-more-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Detail pane (now inside the canvas pane) ────────────────────────── */
 
 .image-view-detail-empty {
   display: flex;
@@ -320,7 +382,10 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  width: 100%;
   height: 100%;
+  max-width: 1024px;
+  margin: 0 auto;
 }
 
 .image-detail-canvas {
@@ -331,19 +396,21 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  max-height: 50%;
+  flex: 1;
+  min-height: 0;
 }
 
 .image-detail-img {
   max-width: 100%;
   max-height: 100%;
   display: block;
+  object-fit: contain;
 }
 
 .image-detail-meta {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
   font-size: var(--fs-sm);
 }
 
@@ -366,6 +433,10 @@
   grid-template-columns: auto 1fr;
   gap: 4px var(--space-3);
   margin: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
 }
 
 .image-detail-params div {
@@ -386,6 +457,31 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+  align-items: center;
+}
+
+.image-info-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.image-info-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.image-info-toggle[aria-expanded="true"] {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-strong);
 }
 
 .image-delete-btn {
@@ -408,6 +504,34 @@
   color: var(--text-muted);
   border-top: 1px solid var(--border-subtle);
   padding-top: var(--space-2);
+}
+
+/* ── Narrow-window stacking (<1100px) ────────────────────────────────── */
+
+@media (max-width: 1100px) {
+  .image-view {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto auto;
+    grid-template-areas:
+      "canvas"
+      "strip"
+      "composer";
+    overflow: auto;
+  }
+
+  .image-view-strip {
+    max-height: 160px;
+  }
+
+  .image-gallery-grid {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .image-gallery-tile {
+    width: 120px;
+    flex: 0 0 120px;
+  }
 }
 
 /* ── Sidebar entry chip — same styling pattern as Workflows ─────────── */

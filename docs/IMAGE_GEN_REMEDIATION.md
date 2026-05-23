@@ -58,25 +58,30 @@ Status legend: ☐ open · ⚙ in-progress · ✓ landed.
   `engine.rs::generate` does NOT serialize. Two IPC callers (UI click
   + agent-loop tool call) can both invoke `load_or_reuse`, doubling
   the ~14 GiB load. Add a generate-wide mutex.
-- ☐ **H3. Loading-event race: `image-progress` can fire before the
+- ⚙ **H3. Loading-event race: `image-progress` can fire before the
   frontend's `listen` registers.**
-  `commands/image.rs:113-122` emits `Loading{stage:"warmup"}` from
-  inside `engine.generate` BEFORE the pump task is ready. Events lost
-  → UI stays on the wrong phase. Mint the op-id, register listeners,
-  THEN call `image_generate`.
-- ☐ **H4. Cancel button visible while non-functional.**
-  Tied to C3. Until cancel actually works, swap the button for a
-  static hint ("first run downloads ~14 GB"). Reintroduce when
-  cancellation is real.
-- ☐ **H5. Gallery shows ALL images cross-conversation.**
-  `ImageView.tsx:44` calls `imageList(null, 200)`. Add a 3-state
-  filter chip: All / This chat / Standalone. Default to "This chat"
-  when a conv is selected.
-- ☐ **H6. Save-to-Downloads ignores the user's chosen destination.**
-  `ImageDetail.tsx:60-98` asks for a dest path, then writes via
-  `<a download>` (always Downloads dir). Add an `image_save_to` Rust
-  IPC that copies from the validated source path to a validated dest
-  path via `commands/path_safety`.
+  Frontend half landed `(pending)`: `useImageGeneration` now registers
+  all three listeners (with their unlisten handles captured to a ref)
+  BEFORE `imageGenerate` is dispatched, and a unit test asserts the
+  ordering so the contract can't regress. The Rust-side counterpart —
+  not emitting `Loading{stage:"warmup"}` from inside `engine.generate`
+  until the pump is ready — stays with the BACK agent.
+- ✓ **H4. Cancel button visible while non-functional.** `(pending)`
+  Removed the Cancel button. While `progress.phase === "loading"` the
+  UI shows a static "First run can take a few minutes — feel free to
+  keep using other tabs." hint; sampling is spinner-only. Frontend
+  carries a TODO(image-gen-back-ready) to bring the button back once
+  C3 lands.
+- ✓ **H5. Gallery shows ALL images cross-conversation.** `(pending)`
+  ImageView now ships a three-state chip (All / This chat /
+  Standalone). Default is "This chat" when a conv is selected, "All"
+  otherwise. Standalone filters client-side; switch to a server-side
+  arg once BACK ships one.
+- ⚙ **H6. Save-to-Downloads ignores the user's chosen destination.**
+  Frontend half landed `(pending)`: `ImageDetail` feature-detects
+  `api.imageSaveTo` and calls it when present (writing to the chosen
+  dest path verbatim); the legacy `<a download>` path remains as a
+  fallback marked TODO(image-gen-back-ready) until BACK ships the IPC.
 
 ## Medium
 
@@ -94,26 +99,30 @@ Status legend: ☐ open · ⚙ in-progress · ✓ landed.
   `App.tsx:556-565` chunks PNG → base64 → `messages.images`. ~1.4 MB
   string per send; conversation rows grow. Add a structured error
   kind ("asset-fetch", "encode-failed") for the catch block.
-- ☐ **M4. `useImageGeneration` doesn't tear down listeners on unmount
-  mid-flight.**
-  Add a `useEffect(() => () => unlisten(), [])` so switching views
-  during a generation doesn't leak Tauri event listeners or fire
-  `setState` on an unmounted component.
-- ☐ **M5. Cold-load shows zero progress between "warmup" and step 0.**
-  10+ minutes opaque on a fresh HF cache. Poll
-  `~/.cache/huggingface/hub/models--black-forest-labs--FLUX.1-*` dir
-  size every ~5 s and emit synthetic `Loading{stage:"downloading",
-  bytes, total}` events. UI shows "Downloading: 4.2 / 14.0 GB" instead
-  of "Loading model…".
+- ✓ **M4. `useImageGeneration` doesn't tear down listeners on unmount
+  mid-flight.** `(pending)`
+  Outstanding unlisten handles now live on a `cleanupsRef` and a
+  top-level `useEffect` returns a teardown that drains them on
+  unmount. Unit test asserts ≥3 unlistens fire when the hook unmounts
+  with a generate in flight.
+- ⚙ **M5. Cold-load shows zero progress between "warmup" and step 0.**
+  Frontend stub landed `(pending)`: while phase is "loading" the
+  status line rotates through helpful hints ("Loading FLUX weights…",
+  "First run downloads ~14 GB from HuggingFace", …) every 3 s. When
+  BACK starts emitting `Loading{stage:"downloading", bytes, total}`
+  the UI will switch to the real byte counter; the TODO marker in
+  `ImagePromptPanel.tsx` flags the swap site.
 - ☐ **M6. `assert_under_images_root` re-canonicalizes every write.**
   Cheap, but cache the canonical root once per session.
 - ☐ **M7. Atomic write skips parent directory fsync.**
   `commands/image.rs:516-549`. On power-loss the rename can be lost on
   APFS. Mirror `agent/fs.rs::write_nofollow_sync`.
-- ☐ **M8. `Loading` event misclassified by frontend as sampling step.**
-  `useImageGeneration.ts:106-119` checks `typeof p.step === "number"`
-  before `stage`, so a Loading event with `step:0,total:0` lands as
-  "Generating step 0/0". Reorder to check `stage` first.
+- ✓ **M8. `Loading` event misclassified by frontend as sampling step.**
+  `(pending)`
+  Reordered to check `stage` first; a Loading event carrying
+  `step:0,total:0` plus a non-empty stage string is now correctly
+  classified as "loading" (with the stage label surfaced). Unit test
+  asserts the ordering using a Loading-then-sampling event sequence.
 
 ## Low / Style
 
@@ -125,12 +134,17 @@ Status legend: ☐ open · ⚙ in-progress · ✓ landed.
   engine honors it.
 - ☐ **L3. `image_cancel` doesn't drain remaining progress events.**
   Cosmetic; the event pump exits with the cancel.
-- ☐ **L4. `image_list` limit caps at 2000.**
-  Past 2000 images the gallery silently truncates. Add pagination or
-  surface the truncation.
-- ☐ **L5. Agent-loop-generated images don't auto-refresh the gallery.**
-  `ImageView` doesn't subscribe to `image-done` globally. Add a
-  cross-component listener.
+- ⚙ **L4. `image_list` limit caps at 2000.**
+  Frontend stub landed `(pending)`: when the server returns exactly
+  PAGE_LIMIT (200) rows the strip shows a "Load more" button that
+  bumps the limit and re-fetches. Real cursor-based pagination stays
+  with BACK; `ImageView.tsx` carries the TODO marker.
+- ✓ **L5. Agent-loop-generated images don't auto-refresh the gallery.**
+  `(pending)`
+  ImageView now registers a global `image-done` listener via
+  `useTauriEvent`; any successful generation (including agent-driven
+  ones) triggers a refresh and selects the new row. Covered by a unit
+  test.
 - ☐ **L6. `params_json` is hand-formatted twice** (`metadata.rs:37-40`
   dead vs `commands/image.rs:223-226`). Drift bait.
 - ☐ **L7. `mod.rs:19 #![allow(dead_code)]` is overly broad.**
@@ -138,38 +152,55 @@ Status legend: ☐ open · ⚙ in-progress · ✓ landed.
 
 ## Interface rework
 
-- ☐ **U1. Hide the Advanced disclosure entirely until honored.**
-  Steps/cfg/seed are lies in 0.8.1 (M1, C1). Replace with a tooltip
-  on Generate explaining the model defaults.
-- ☐ **U2. Replace 3-column layout with canvas-left + vertical thumb
-  strip.**
-  At 1440 px the current grid crowds the detail pane. Big canvas left,
-  96 px-wide thumb scroller right, prompt composer collapsed into a
-  sticky bottom bar, detail metadata behind a drawer toggle.
-- ☐ **U3. Per-conv gallery filter chip.**
-  Tied to H5.
-- ☐ **U4. Subscribe to `image-done` globally in `ImageView`.**
-  Tied to L5.
-- ☐ **U5. Real save dialog.**
-  Tied to H6.
-- ☐ **U6. "Unload model" button on the prompt panel.**
-  Tied to H1.
-- ☐ **U7. Cold-load progress UI.**
-  Tied to M5.
-- ☐ **U8. Drop seed line from detail pane until C1 fixes the underlying
-  bug.**
-  Tied to M1.
+- ✓ **U1. Hide the Advanced disclosure entirely until honored.** `(pending)`
+  Advanced disclosure deleted from `ImagePromptPanel.tsx`. Replaced by
+  a single hint line under Generate: "Schnell uses 4 steps; Dev uses
+  28. Seed and CFG are model-defined in the current engine." Steps /
+  cfg / seed inputs are gone entirely (opts pass nulls so Rust falls
+  through to defaults).
+- ✓ **U2. Replace 3-column layout with canvas-left + vertical thumb
+  strip.** `(pending)`
+  CSS grid retooled to `canvas | strip` over a sticky-bottom composer.
+  Detail metadata moved into an "ℹ" disclosure inside the canvas pane.
+  Under 1100 px the strip flips to a horizontal scroller below the
+  composer (single media query).
+- ✓ **U3. Per-conv gallery filter chip.** `(pending)`
+  Three-state chip group in the canvas header (All / This chat /
+  Standalone). Default depends on `conversationId`. Standalone is
+  client-side; TODO(image-gen-back-ready) flips it to server-side
+  once BACK ships an arg.
+- ✓ **U4. Subscribe to `image-done` globally in `ImageView`.** `(pending)`
+  Done via `useTauriEvent("image-done", refresh)`. Test covers it.
+- ⚙ **U5. Real save dialog.** Frontend half landed `(pending)`:
+  feature-detects `api.imageSaveTo` and routes through it when
+  present; otherwise falls back to the legacy in-webview download.
+  TODO(image-gen-back-ready) drops the fallback once H6 lands.
+- ⚙ **U6. "Unload model" button on the prompt panel.** Frontend half
+  landed `(pending)`: button renders iff `api.imageUnload` is on the
+  api object; on success surfaces "Model unloaded. Next generate will
+  reload (~30-90s)." TODO marker for the post-H1 cleanup.
+- ⚙ **U7. Cold-load progress UI.** Frontend half landed `(pending)`:
+  rotating hint copy while phase is "loading"; switches to a real
+  byte counter once BACK starts emitting
+  `Loading{stage:"downloading", bytes, total}`.
+- ✓ **U8. Drop seed line from detail pane until C1 fixes the underlying
+  bug.** `(pending)`
+  Seed row removed from `ImageDetail.tsx`. Steps and CFG only render
+  when they differ from the model default (so a future engine-honored
+  override shows up automatically).
 
 ## Feature add-ons (new requests from this session)
 
-- ☐ **F1. Add quantized FLUX.1 variants to the model dropdown** —
-  fp8 / GGUF Q4_K of FLUX.1-dev and FLUX.1-schnell. Same `FluxLoader`
-  in mistralrs 0.8.1 (no new code path), much smaller RAM footprint
-  (~6 GiB instead of 14-28 GiB), runs on 8 GiB Macs. Add as new
-  options in `canonicalize_flux_repo` and the frontend dropdown.
-- ☐ **F2. Document FLUX.1 Pro / 1.1 Pro as unavailable** (closed
-  weights, API-only). Add a one-liner to USER_GUIDE §7b so the next
-  user doesn't wonder why they aren't in the picker.
+- ⚙ **F1. Add quantized FLUX.1 variants to the model dropdown** —
+  Frontend half landed `(pending)`: dropdown gains `schnell-fp8`,
+  `dev-fp8`, `schnell-gguf-q4`, `dev-gguf-q4`. The `generate_image`
+  agent tool enum gains the same values, and the system-prompt rule
+  tells the agent to prefer the smaller variants on low-RAM machines.
+  Rust-side mapping in `canonicalize_flux_repo` stays with BACK.
+- ✓ **F2. Document FLUX.1 Pro / 1.1 Pro as unavailable.** `(pending)`
+  USER_GUIDE §7b now carries a "Note on FLUX Pro / 1.1 Pro" paragraph
+  explaining the closed weights; README's Images bullet mentions the
+  same.
 - ☐ **F3. Wire Fill / Depth / Canny / Redux control adapters when
   mistralrs exposes a loader.**
   Currently 0.8.1 has no plumbing for them. Watch upstream.

@@ -674,11 +674,16 @@ export async function executeTool(
       if (!prompt) {
         return JSON.stringify({ ok: false, kind: "bad_arg", message: "prompt is required" });
       }
-      // Default to schnell — 4 steps, ~5s on M-series Macs. Any value outside
-      // the enum is coerced to "schnell" rather than rejected so a sloppy model
-      // call still produces something useful.
+      // Coerce the model arg to the enum the Rust side knows. Anything off
+      // the list falls back to "schnell" — a sloppy model call still produces
+      // something useful instead of failing the whole agent step.
       const modelArg = String(args.model ?? "schnell");
-      const model = modelArg === "dev" ? "dev" : "schnell";
+      const KNOWN_MODELS = new Set([
+        "schnell", "dev",
+        "schnell-fp8", "dev-fp8",
+        "schnell-gguf-q4", "dev-gguf-q4",
+      ]);
+      const model = KNOWN_MODELS.has(modelArg) ? modelArg : "schnell";
       const size = typeof args.size === "string" && args.size.length > 0
         ? args.size
         : "1024x1024";
@@ -687,18 +692,52 @@ export async function executeTool(
       const convId = options.conversationId != null
         ? Number(options.conversationId)
         : null;
+      // BACK's `image_generate` now returns the op_id (string), not the row
+      // id — the row id arrives via the `image-done` event. We listen for the
+      // matching op_id, then await the event before resolving so the tool
+      // result carries a real `image_id` + `path` the model can reference.
+      // The race window is closed by listening BEFORE we call the IPC.
       try {
-        const imageId = await api.imageGenerate(
+        const { listen } = await import("@tauri-apps/api/event");
+        const donePromise = new Promise<{ image_id: number } | null>((resolve, reject) => {
+          let offDone: (() => void) | undefined;
+          let offErr: (() => void) | undefined;
+          let settled = false;
+          const settle = (fn: () => void) => {
+            if (settled) return;
+            settled = true;
+            try { offDone?.(); } catch {/* ignore */}
+            try { offErr?.(); } catch {/* ignore */}
+            fn();
+          };
+          void listen<{ op_id?: string; image_id?: number }>("image-done", (e) => {
+            if (e.payload?.op_id !== opId) return;
+            const id = typeof e.payload.image_id === "number" ? e.payload.image_id : null;
+            settle(() => resolve(id != null ? { image_id: id } : null));
+          }).then((off) => { offDone = off; if (settled) off(); });
+          void listen<{ op_id?: string; message?: string }>("image-error", (e) => {
+            if (e.payload?.op_id !== opId) return;
+            const msg = e.payload?.message ?? "image generation failed";
+            settle(() => reject(new Error(msg)));
+          }).then((off) => { offErr = off; if (settled) off(); });
+        });
+        // Kick off the IPC. The op_id is forwarded — Rust echoes it back on
+        // all three events so the listeners above can filter.
+        await api.imageGenerate(
           prompt,
           model,
           { size, offload },
           Number.isFinite(convId as number) ? (convId as number) : null,
           opId,
         );
-        const meta = await api.imageGet(imageId).catch(() => null);
+        const done = await donePromise;
+        if (!done) {
+          return JSON.stringify({ ok: false, kind: "image_gen_failed", message: "image-done missing image_id" });
+        }
+        const meta = await api.imageGet(done.image_id).catch(() => null);
         return JSON.stringify({
           ok: true,
-          image_id: imageId,
+          image_id: done.image_id,
           path: meta?.path ?? null,
           prompt,
         });

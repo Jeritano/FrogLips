@@ -14,15 +14,20 @@ interface Props {
 }
 
 /**
- * Large-format viewer for a single generated image. Surfaces the prompt, the
- * params, and four primary actions: copy prompt, save to Downloads, delete
- * (two-click confirm), send-to-chat. The image itself loads via the Tauri
+ * Large-format viewer for a single generated image. Surfaces the prompt and a
+ * compact "ℹ" disclosure for the params. The image itself loads via the Tauri
  * asset protocol — never embedded as base64.
+ *
+ * Note on Seed / Steps / CFG: mistralrs 0.8.1 ignores the user-supplied
+ * versions of these (C1 / M1 in the remediation tracker). The Seed row is
+ * hidden until C1 lands; Steps and CFG only render when non-default so a
+ * future engine update can show real values without code change.
  */
 export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
   const [copied, setCopied] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "delete" | "send" | null>(null);
+  const [paramsOpen, setParamsOpen] = useState(false);
   const deleteConfirm = useTwoClickConfirm();
 
   const params = (() => {
@@ -49,12 +54,12 @@ export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
     }
   }
 
-  async function saveToDownloads() {
+  async function saveImage() {
     setSaveStatus(null);
     setBusy("save");
     try {
-      // Lazy-import the dialog plugin (same pattern as DiagnosticsPanel) so
-      // the chunk only loads when this surface is opened.
+      // Lazy-import the dialog plugin so the chunk only loads when this surface
+      // is opened.
       const { save } = await import("@tauri-apps/plugin-dialog");
       const fileName = `froglips-image-${image.id}.png`;
       const dest = await save({
@@ -66,27 +71,30 @@ export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
         setBusy(null);
         return;
       }
-      // Read the PNG through the asset protocol then write via a Blob URL
-      // download path. We can't shell out to `cp` (no Rust write) so we read
-      // the bytes into the webview and let the dialog plugin handle the
-      // destination handle. Falls back to a synthetic <a download> on the
-      // unlikely event the asset fetch fails (e.g. scope misconfig).
+      // Feature-detect the BACK-side `imageSaveTo` IPC. When BACK ships it we
+      // get an honest "copy from validated source to validated dest" — until
+      // then we fall back to the <a download> path that always lands in
+      // Downloads (the dest path the user picked is at least informational).
+      // TODO(image-gen-back-ready): drop the fallback branch once
+      // `api.imageSaveTo` is stable.
+      if ("imageSaveTo" in api) {
+        const saveTo = (api as { imageSaveTo: (id: number, dest: string) => Promise<unknown> })
+          .imageSaveTo;
+        const result = await saveTo(image.id, dest);
+        // BACK currently returns the canonical destination path as a string.
+        // Treat any truthy string as authoritative; fall back to the original
+        // `dest` when the wrapper is older / returns void.
+        const written = typeof result === "string" && result.length > 0 ? result : dest;
+        setSaveStatus(`Saved to ${written}`);
+        return;
+      }
+      // Legacy fallback. Read the PNG through the asset protocol then trigger
+      // an in-webview download. The chosen dest path is reported to the user
+      // as info; the file itself always lands in Downloads.
       const url = convertFileSrc(image.path);
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`asset fetch failed: ${resp.status}`);
       const blob = await resp.blob();
-      // Tauri's `save` returns a path string but doesn't actually write the
-      // file — that's the caller's job. Without `plugin-fs` in this project
-      // we use the writable stream API the webview ships natively.
-      // happy-dom + Tauri 2 webview both implement `Blob` + `URL.createObjectURL`
-      // so this is portable.
-      // NOTE: we can't write to an arbitrary filesystem path from the renderer.
-      // Surface a copy-path-to-clipboard fallback so the user at least gets
-      // the source location they can `cp` from Finder.
-      // Best-effort: copy the source path so the user can drag it from Finder.
-      await navigator.clipboard.writeText(image.path).catch(() => {});
-      // Trigger an in-webview download as a secondary path so the user gets
-      // their bits one way or another.
       const objUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = objUrl;
@@ -95,14 +103,16 @@ export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
       a.click();
       a.remove();
       URL.revokeObjectURL(objUrl);
-      setSaveStatus(`Saved as ${fileName}. Source path copied: ${dest}`);
+      setSaveStatus(
+        `Saved to Downloads/${fileName}. (Backend save-to-path IPC pending; chosen path was ${dest}.)`,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setSaveStatus(`Save failed: ${msg}`);
       logDiag({
         level: "warn",
         source: "image-detail",
-        message: "saveToDownloads failed",
+        message: "saveImage failed",
         detail: err,
       });
     } finally {
@@ -132,6 +142,16 @@ export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
     }
   }
 
+  const stepsNum = typeof params.steps === "number" ? params.steps : null;
+  const cfgNum = typeof params.cfg === "number" ? params.cfg : null;
+  // Show Steps only when it differs from the model default (schnell=4, dev=28).
+  // Same for CFG (model-defined default; only render when non-null + non-zero).
+  const showSteps =
+    stepsNum != null &&
+    !((image.model.includes("schnell") && stepsNum === 4) ||
+      (image.model.includes("dev") && stepsNum === 28));
+  const showCfg = cfgNum != null && cfgNum > 0;
+
   return (
     <div className="image-detail">
       <div className="image-detail-canvas">
@@ -147,20 +167,6 @@ export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
           <span className="image-detail-label">Prompt</span>
           <p>{image.prompt}</p>
         </div>
-        <dl className="image-detail-params">
-          <div><dt>Model</dt><dd>{image.model}</dd></div>
-          <div><dt>Size</dt><dd>{image.width}×{image.height}</dd></div>
-          {image.seed != null && (
-            <div><dt>Seed</dt><dd>{image.seed}</dd></div>
-          )}
-          {typeof params.steps === "number" && (
-            <div><dt>Steps</dt><dd>{params.steps}</dd></div>
-          )}
-          {typeof params.cfg === "number" && (
-            <div><dt>CFG</dt><dd>{params.cfg}</dd></div>
-          )}
-          <div><dt>Created</dt><dd>{new Date(image.created_at * 1000).toLocaleString()}</dd></div>
-        </dl>
         <div className="image-detail-actions">
           <button
             type="button"
@@ -174,7 +180,7 @@ export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
           <button
             type="button"
             className="image-action-btn"
-            onClick={saveToDownloads}
+            onClick={saveImage}
             disabled={busy === "save"}
             aria-label="Save image to disk"
             data-testid="image-save-btn"
@@ -209,7 +215,34 @@ export function ImageDetail({ image, onDeleted, onSendToChat }: Props) {
           >
             {deleteConfirm.labelFor(String(image.id), busy === "delete" ? "Deleting…" : "Delete")}
           </button>
+          <button
+            type="button"
+            className="image-info-toggle"
+            onClick={() => setParamsOpen((v) => !v)}
+            aria-expanded={paramsOpen}
+            aria-label="Toggle image details"
+            data-testid="image-info-toggle"
+            title="Show image details"
+          >
+            ℹ
+          </button>
         </div>
+        {paramsOpen && (
+          <dl className="image-detail-params" data-testid="image-detail-params">
+            <div><dt>Model</dt><dd>{image.model}</dd></div>
+            <div><dt>Size</dt><dd>{image.width}×{image.height}</dd></div>
+            {/* U8: the Seed row is intentionally hidden — the recorded value
+                doesn't correspond to anything the engine consumed (M1). Bring
+                it back when C1 lands. */}
+            {showSteps && (
+              <div><dt>Steps</dt><dd>{stepsNum}</dd></div>
+            )}
+            {showCfg && (
+              <div><dt>CFG</dt><dd>{cfgNum}</dd></div>
+            )}
+            <div><dt>Created</dt><dd>{new Date(image.created_at * 1000).toLocaleString()}</dd></div>
+          </dl>
+        )}
         {saveStatus && (
           <div className="image-detail-status" role="status">{saveStatus}</div>
         )}

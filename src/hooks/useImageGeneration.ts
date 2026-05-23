@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
@@ -9,6 +9,18 @@ import type { ImageGenOpts } from "../types";
  * weight load (HF download + Metal kernel init); `sampling` covers the actual
  * diffusion steps. `loading` can take minutes the first time a model is used;
  * subsequent runs jump straight to `sampling`.
+ *
+ * Event contract (must stay in lock-step with `src-tauri/src/commands/image.rs`):
+ *
+ *   1. Caller mints `op_id` (a UUID).
+ *   2. This hook registers `image-progress` / `image-done` / `image-error`
+ *      listeners that filter on the matching `op_id`. Listeners MUST be armed
+ *      BEFORE `image_generate` is dispatched — Rust can emit a
+ *      `Loading{stage:"warmup"}` event the instant the engine starts, and a
+ *      late-registered listener would drop it (H3 in the remediation tracker).
+ *   3. The IPC call returns the persisted image row id synchronously but the
+ *      real flow gates on the `image-done` event so resolve order matches
+ *      event order.
  */
 export type ImageGenPhase = "idle" | "loading" | "sampling";
 
@@ -56,9 +68,8 @@ interface EventPayload {
 
 /**
  * Owns the generate flow for ImageView. Single in-flight op at a time — calling
- * `generate` while a previous run is still going rejects the prior promise's
- * caller path? No — we just refuse the second call (returns rejected promise);
- * the UI should disable the Generate button while `running`.
+ * `generate` while a previous run is still going rejects the second caller; the
+ * UI should disable the Generate button while `running`.
  */
 export function useImageGeneration(): UseImageGenerationResult {
   const [running, setRunning] = useState(false);
@@ -66,6 +77,26 @@ export function useImageGeneration(): UseImageGenerationResult {
   const [error, setError] = useState<string | null>(null);
   const [lastImageId, setLastImageId] = useState<number | null>(null);
   const opIdRef = useRef<string | null>(null);
+  /**
+   * Active unlisten handles for the in-flight op. We keep this on a ref (not in
+   * the Promise closure) so an unmount-time effect can drain them even when
+   * the consumer never awaits the generate promise. Without this, switching
+   * views mid-generate leaked Tauri listeners and could call setState on an
+   * unmounted hook (M4 in the remediation tracker).
+   */
+  const cleanupsRef = useRef<UnlistenFn[]>([]);
+
+  // Component-unmount safety net — fire any unlisten handles that are still
+  // outstanding when the owner React tree goes away. The normal happy-path
+  // also calls these (and clears the ref) inside `finalize` below.
+  useEffect(() => {
+    return () => {
+      for (const off of cleanupsRef.current) {
+        try { off(); } catch {/* unlisten failures are non-fatal */}
+      }
+      cleanupsRef.current = [];
+    };
+  }, []);
 
   const generate = useCallback<UseImageGenerationResult["generate"]>(
     async ({ prompt, model, opts, convId }) => {
@@ -83,12 +114,12 @@ export function useImageGeneration(): UseImageGenerationResult {
       // lands.
       setProgress({ phase: "loading" });
 
-      const cleanups: UnlistenFn[] = [];
       return await new Promise<number>((resolve, reject) => {
         const finalize = (fn: () => void) => {
-          for (const off of cleanups) {
+          for (const off of cleanupsRef.current) {
             try { off(); } catch {/* unlisten failures are non-fatal */}
           }
+          cleanupsRef.current = [];
           opIdRef.current = null;
           setRunning(false);
           fn();
@@ -96,21 +127,25 @@ export function useImageGeneration(): UseImageGenerationResult {
 
         const subscribe = async () => {
           try {
+            // Step 1: register all three listeners and CAPTURE their unlisten
+            // handles before any IPC is dispatched. If `image_generate` were
+            // to fire `Loading{stage:"warmup"}` before this point the event
+            // would be lost and the UI would freeze on "Loading model…".
             const offProgress = await listen<EventPayload>("image-progress", (e) => {
               const p = e.payload;
               if (!p || p.op_id !== opId) return;
-              // A payload carrying a `stage` is the load/setup phase; one
-              // carrying a `step` is the actual sampler iterating. The
-              // discriminator is intentionally loose because mistralrs may
-              // emit either shape.
-              if (typeof p.step === "number") {
+              // M8: a Loading event carries `step:0, total:0` AND a `stage`
+              // string — checking `stage` first means we don't misclassify it
+              // as a "Generating step 0/0" sampling tick. Sampling events
+              // omit `stage` entirely.
+              if (typeof p.stage === "string" && p.stage.length > 0) {
+                setProgress({ phase: "loading", stage: p.stage });
+              } else if (typeof p.step === "number") {
                 setProgress({
                   phase: "sampling",
                   step: p.step,
                   total: typeof p.total === "number" ? p.total : undefined,
                 });
-              } else if (typeof p.stage === "string") {
-                setProgress({ phase: "loading", stage: p.stage });
               } else {
                 // Bare progress event with no step + no stage — treat as a
                 // ping that the run has moved past "Loading" into sampling
@@ -118,7 +153,7 @@ export function useImageGeneration(): UseImageGenerationResult {
                 setProgress((prev) => prev.phase === "idle" ? { phase: "loading" } : prev);
               }
             });
-            cleanups.push(offProgress);
+            cleanupsRef.current.push(offProgress);
 
             const offDone = await listen<EventPayload>("image-done", (e) => {
               const p = e.payload;
@@ -131,7 +166,7 @@ export function useImageGeneration(): UseImageGenerationResult {
                 else reject(new Error("image-done missing image_id"));
               });
             });
-            cleanups.push(offDone);
+            cleanupsRef.current.push(offDone);
 
             const offErr = await listen<EventPayload>("image-error", (e) => {
               const p = e.payload;
@@ -141,12 +176,12 @@ export function useImageGeneration(): UseImageGenerationResult {
               setProgress({ phase: "idle" });
               finalize(() => reject(new Error(msg)));
             });
-            cleanups.push(offErr);
+            cleanupsRef.current.push(offErr);
 
-            // Listeners are armed — kick off the actual IPC. The Rust side
-            // returns the row id as soon as it's persisted but emits the
-            // events out-of-band; we ignore the synchronous return value
-            // and gate on `image-done` so resolve order matches event order.
+            // Step 2: listeners are armed — kick off the actual IPC. The Rust
+            // side returns the row id as soon as it's persisted but emits the
+            // events out-of-band; we ignore the synchronous return value and
+            // gate on `image-done` so resolve order matches event order.
             try {
               await api.imageGenerate(prompt, model, opts, convId, opId);
             } catch (err) {

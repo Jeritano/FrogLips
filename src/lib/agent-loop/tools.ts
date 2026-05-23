@@ -666,8 +666,16 @@ export const TOOLS = [
           },
           model: {
             type: "string",
-            enum: ["schnell", "dev"],
-            description: "'schnell' (fast, 4 steps, default) or 'dev' (higher quality, 28 steps).",
+            enum: [
+              "schnell",
+              "dev",
+              "schnell-fp8",
+              "dev-fp8",
+              "schnell-gguf-q4",
+              "dev-gguf-q4",
+            ],
+            description:
+              "'schnell' (fast, 4 steps, default) or 'dev' (higher quality, 28 steps). On low-RAM Macs prefer the quantized variants: '-fp8' (~8-12 GB) or '-gguf-q4' (~6 GB). Same FluxLoader, smaller memory footprint.",
           },
           size: {
             type: "string",
