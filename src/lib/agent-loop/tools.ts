@@ -651,4 +651,35 @@ export const TOOLS = [
       parameters: { type: "object", properties: {} },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "generate_image",
+      description:
+        "Generate a PNG image from a text prompt via the local FLUX engine and persist it to the gallery. Requires user approval — costs disk + GPU compute, and the prompt is attacker-influenceable. Returns {ok: true, image_id, path, prompt}. The image also appears in the Images sidebar surface.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: {
+            type: "string",
+            description: "Natural-language image description.",
+          },
+          model: {
+            type: "string",
+            enum: ["schnell", "dev"],
+            description: "'schnell' (fast, 4 steps, default) or 'dev' (higher quality, 28 steps).",
+          },
+          size: {
+            type: "string",
+            description: "Width x height — e.g. '1024x1024' (default), '768x768', '1024x1536'.",
+          },
+          offload: {
+            type: "boolean",
+            description: "Enable CPU offload for low-RAM Macs. Default false.",
+          },
+        },
+        required: ["prompt"],
+      },
+    },
+  },
 ] as const;

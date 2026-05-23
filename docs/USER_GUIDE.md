@@ -216,6 +216,32 @@ sidebar (the 🧩 Workflows entry).
   card must explicitly opt into `unattended` for its declared tools to
   auto-approve on a scheduled run; everything else still hits the deny-all gate.
 
+## 7b. Images
+
+Click **🎨 Images** in the sidebar (below Workflows) to open the image-generation
+surface. It is a sibling of chat — your conversations stay where they are; this
+is a separate workspace for visual output.
+
+- **Prompt** — type a description, hit **Generate**. The first run cold-loads the
+  FLUX weights (can take minutes if they aren't yet cached); subsequent runs
+  jump straight to sampling.
+- **Model** — `schnell` (4-step fast preview) or `dev` (28-step higher quality).
+- **Size** — 512–1536 square or rectangular options.
+- **Use CPU offload** — tick on low-RAM Macs (8 GB) to trade speed for VRAM headroom.
+- **Advanced** — steps / cfg / seed are exposed but currently informational only:
+  mistralrs 0.8.1 honors the baked-in defaults regardless of what you enter.
+- **Cancel** is best-effort — mid-diffusion cancel isn't supported by the
+  current backend; the button short-circuits the pre/post phases.
+- **Gallery** — every successful run appears as a thumbnail; click to open the
+  detail pane.
+- **Detail actions** — copy prompt, save to disk, delete (two-click confirm),
+  and **Send to current chat** — attaches the PNG to a fresh user message in
+  the active conversation (mints one if none is selected).
+
+Agents can also create images: enable the `generate_image` tool in agent
+settings. Each call is approval-gated (it costs disk + GPU) and the output
+lands in the same gallery.
+
 ## 8. About You
 
 The **About You** profile tells the model who you are. Open it from the topbar

@@ -20,6 +20,8 @@ import type {
   ForkTree,
   DirListing,
   GgufFile,
+  ImageGenOpts,
+  ImageMeta,
   EditOp,
   EditResult,
   ExistsResult,
@@ -520,4 +522,33 @@ export const api = {
     invoke<number>("workflow_run_record", { workflowId, status, resultsJson }),
   workflowRunsList: (workflowId: number) =>
     invoke<WorkflowRun[]>("workflow_runs_list", { workflowId }),
+
+  // Image generation (mistralrs FLUX). `imageGenerate` returns the persisted
+  // image row id; the actual diffusion + PNG write runs async on the Rust side
+  // and emits `image-progress` / `image-done` / `image-error` events keyed by
+  // op_id. Callers mint the op_id (e.g. `crypto.randomUUID()`) so they can
+  // correlate progress events back to their own UI state.
+  imageGenerate: (
+    prompt: string,
+    model: string,
+    opts: ImageGenOpts,
+    convId: number | null,
+    opId: string,
+  ) => invoke<number>("image_generate", {
+    prompt,
+    model,
+    opts,
+    convId,
+    opId,
+  }),
+  imageList: (convId: number | null, limit?: number) =>
+    invoke<ImageMeta[]>("image_list", {
+      convId,
+      limit: typeof limit === "number" ? limit : null,
+    }),
+  imageGet: (id: number) => invoke<ImageMeta | null>("image_get", { id }),
+  imageDelete: (id: number) => invoke<void>("image_delete", { id }),
+  // Best-effort cancel — mistralrs 0.8.1 doesn't expose a mid-diffusion abort,
+  // so this only short-circuits pre-sample setup / post-sample save phases.
+  imageCancel: (opId: string) => invoke<void>("image_cancel", { opId }),
 };

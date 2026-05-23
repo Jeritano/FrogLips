@@ -717,7 +717,14 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
           // its AbortSignal. Sibling loops (parent + subagent) get distinct
           // signals and therefore distinct map entries, so a `run_shell` in
           // one loop can't be overwritten or cancelled by the other.
-          result = await executeTool(fnName, args, { dryRun, shellTrackKey: signal });
+          result = await executeTool(fnName, args, {
+            dryRun,
+            shellTrackKey: signal,
+            // Surfaced for tools that tag their output to a conversation
+            // (currently `generate_image`). The runner already carries the
+            // active conversation id in opts; pass it down unmodified.
+            conversationId: opts.conversationId,
+          });
         }
       } catch (e) {
         result = formatToolError(e);

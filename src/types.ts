@@ -747,3 +747,41 @@ export interface OllamaLibraryEntry {
   tag_count: number;
   updated_relative: string;
 }
+
+/* ── Image generation (mistralrs FLUX backend) ──────────────────────────── */
+
+/**
+ * Per-call image generation options. Mirrors `src-tauri/src/image_gen` —
+ * `steps`, `cfg`, `seed` are persisted for reproducibility but the mistralrs
+ * 0.8.1 sampler ignores them today (schnell=4 steps baked in, dev=28).
+ * `size`, `offload`, model, and prompt are honored.
+ */
+export interface ImageGenOpts {
+  /** Sampling steps. mistralrs 0.8.1 currently uses baked-in defaults regardless. */
+  steps?: number | null;
+  /** Classifier-free guidance scale. Currently informational only. */
+  cfg?: number | null;
+  /** PRNG seed for reproducibility. Currently informational only. */
+  seed?: number | null;
+  /** "WxH" — e.g. "1024x1024". Honored by the engine. */
+  size?: string | null;
+  /** Enable CPU offload for low-RAM Macs (slower, less peak VRAM). */
+  offload?: boolean | null;
+}
+
+/**
+ * A persisted generated image row, returned by `image_list` / `image_get`.
+ * `params_json` is the literal `ImageGenOpts` JSON the row was written with.
+ */
+export interface ImageMeta {
+  id: number;
+  conv_id: number | null;
+  model: string;
+  prompt: string;
+  params_json: string;
+  path: string;
+  width: number;
+  height: number;
+  seed: number | null;
+  created_at: number;
+}

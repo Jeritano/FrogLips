@@ -23,6 +23,9 @@ export const DANGEROUS_TOOLS = new Set([
   // confirm dialog so the user sees each action.
   "browser_navigate", "browser_click", "browser_fill",
   "browser_screenshot", "browser_get_text", "browser_close",
+  // Image generation — disk + GPU spend, and the model can be told arbitrary
+  // prompts (which then become user-visible PNGs in the gallery).
+  "generate_image",
 ]);
 export const SHELL_TOOL = "run_shell";
 export const WRITE_TOOLS = new Set([
@@ -379,6 +382,12 @@ export interface ExecuteToolOptions {
    * back to a module-level singleton (legacy behaviour, used by tests).
    */
   shellTrackKey?: ShellTrackKey | null;
+  /**
+   * Active conversation id, forwarded to tools that need to tag their persisted
+   * output back to a chat (today: `generate_image`). `null`/absent =
+   * cross-conversation / global scope.
+   */
+  conversationId?: number | null;
 }
 
 export async function executeTool(
@@ -659,6 +668,44 @@ export async function executeTool(
         typeof args.top_k === "number" ? args.top_k : undefined,
       );
       return JSON.stringify({ ok: true, hits });
+    }
+    case "generate_image": {
+      const prompt = String(args.prompt ?? "").trim();
+      if (!prompt) {
+        return JSON.stringify({ ok: false, kind: "bad_arg", message: "prompt is required" });
+      }
+      // Default to schnell — 4 steps, ~5s on M-series Macs. Any value outside
+      // the enum is coerced to "schnell" rather than rejected so a sloppy model
+      // call still produces something useful.
+      const modelArg = String(args.model ?? "schnell");
+      const model = modelArg === "dev" ? "dev" : "schnell";
+      const size = typeof args.size === "string" && args.size.length > 0
+        ? args.size
+        : "1024x1024";
+      const offload = args.offload === true;
+      const opId = `genimage-${crypto.randomUUID()}`;
+      const convId = options.conversationId != null
+        ? Number(options.conversationId)
+        : null;
+      try {
+        const imageId = await api.imageGenerate(
+          prompt,
+          model,
+          { size, offload },
+          Number.isFinite(convId as number) ? (convId as number) : null,
+          opId,
+        );
+        const meta = await api.imageGet(imageId).catch(() => null);
+        return JSON.stringify({
+          ok: true,
+          image_id: imageId,
+          path: meta?.path ?? null,
+          prompt,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return JSON.stringify({ ok: false, kind: "image_gen_failed", message });
+      }
     }
     default:
       return JSON.stringify({ ok: false, kind: "unknown_tool", message: `Unknown tool: ${name}` });

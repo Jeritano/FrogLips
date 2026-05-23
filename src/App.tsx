@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { api } from "./lib/tauri-api";
 import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
@@ -8,7 +9,7 @@ import { useModalA11y } from "./lib/use-modal-a11y";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 import { usePlatformChrome } from "./hooks/usePlatformChrome";
 import { useWindowGeometry } from "./hooks/useWindowGeometry";
-import type { Conversation, ServerStatus } from "./types";
+import type { ChatImage, Conversation, ImageMeta, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
@@ -45,6 +46,12 @@ const SetupWizard = lazy(() =>
 const WorkflowsPage = lazy(() =>
   import("./components/workflows/WorkflowsPage").then((m) => ({ default: m.WorkflowsPage })),
 );
+// Image-generation surface — same lazy split as Workflows. The chunk only
+// fetches when the user clicks the sidebar "Images" entry, so first paint
+// stays unaffected.
+const ImageView = lazy(() =>
+  import("./components/ImageView").then((m) => ({ default: m.ImageView })),
+);
 
 function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -76,8 +83,8 @@ function App() {
   const [aboutYouOpen, setAboutYouOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  // Main-pane view: the chat surface or the Workflows orchestration canvas.
-  const [view, setView] = useState<"chat" | "workflows">("chat");
+  // Main-pane view: chat / workflow canvas / image-gen surface.
+  const [view, setView] = useState<"chat" | "workflows" | "images">("chat");
   // First-run setup wizard. `undefined` = haven't checked the flag yet, so we
   // render nothing for the wizard region until the IPC call returns. This
   // avoids a flash of the wizard on returning users whose setup is already
@@ -531,6 +538,73 @@ function App() {
     if (err) announce(`Error: ${err}`);
   }, [err]);
 
+  // Send a generated image into the active (or a fresh) chat conversation as
+  // a real user message. ChatImage requires the raw base64 payload — we don't
+  // have a Rust read-file IPC we can use, so we pull the bytes through the
+  // Tauri asset protocol (`convertFileSrc`) and base64-encode them in the
+  // webview. If there's no active conversation we mint one first so the
+  // "Send to chat" button is always meaningful from the Image view.
+  const onSendImageToChat = useCallback(
+    async (meta: ImageMeta) => {
+      try {
+        const url = convertFileSrc(meta.path);
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          throw new Error(`asset fetch ${resp.status}`);
+        }
+        const buf = await resp.arrayBuffer();
+        // Chunked btoa — String.fromCharCode chokes on very large argument
+        // counts (Safari historically capped around ~64k args). 4 MiB PNGs
+        // can land here so we chunk to be safe.
+        const bytes = new Uint8Array(buf);
+        let binary = "";
+        const CHUNK = 0x8000;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+        }
+        const base64 = btoa(binary);
+        const filename = meta.path.split("/").pop() || `image-${meta.id}.png`;
+        const img: ChatImage = {
+          base64,
+          mime: "image/png",
+          filename,
+          size_bytes: bytes.length,
+        };
+        // Mint a conversation if there isn't one selected so the message has
+        // a home. Reuses the same path ChatWindow takes for new chats.
+        let convId = current?.id ?? null;
+        if (convId == null) {
+          convId = await api.createConversation("Image conversation", null);
+          await refreshConversations();
+          const all = await api.listConversations();
+          const created = all.find((c) => c.id === convId) ?? null;
+          if (created) setCurrent(created);
+        }
+        await api.addMessage(
+          convId,
+          "user",
+          meta.prompt
+            ? `Generated image — prompt: ${meta.prompt}`
+            : `Generated image #${meta.id}`,
+          null,
+          [img],
+        );
+        // Drop the user into the chat surface so they see what just landed.
+        setView("chat");
+        announce("Image attached to chat");
+      } catch (err) {
+        logDiag({
+          level: "warn",
+          source: "app",
+          message: "onSendImageToChat failed",
+          detail: err,
+        });
+        setErr(`Could not attach image: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [current],
+  );
+
   const onForked = useCallback(async (newConvId: number) => {
     await refreshConversations();
     try {
@@ -678,6 +752,15 @@ function App() {
           data-testid="workflows-entry-btn"
         >
           <span aria-hidden="true">🧩</span> Workflows
+        </button>
+        <button
+          type="button"
+          className="images-entry"
+          onClick={() => setView("images")}
+          aria-pressed={view === "images"}
+          data-testid="images-entry-btn"
+        >
+          <span aria-hidden="true">🎨</span> Images
         </button>
         <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
         <input
@@ -859,6 +942,13 @@ function App() {
         {view === "workflows" ? (
           <Suspense fallback={null}>
             <WorkflowsPage status={status} />
+          </Suspense>
+        ) : view === "images" ? (
+          <Suspense fallback={null}>
+            <ImageView
+              conversationId={current?.id ?? null}
+              onSendToChat={onSendImageToChat}
+            />
           </Suspense>
         ) : (
           <ChatWindow
