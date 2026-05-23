@@ -108,7 +108,20 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     let cancelled = false;
     api.policyLoad(workspaceRoot)
       .then((p) => { if (!cancelled) setProjectPolicy(p ?? null); })
-      .catch(() => { if (!cancelled) setProjectPolicy(null); });
+      .catch((err) => {
+        if (!cancelled) setProjectPolicy(null);
+        // A malformed .froglips/policy.json or unreadable file used to vanish
+        // silently — log it so the user can debug why their policy isn't
+        // taking effect. Missing-file is a normal case (no policy in the
+        // project) and the Rust side returns null rather than rejecting,
+        // so anything that reaches here is a real read/parse failure.
+        logDiag({
+          level: "warn",
+          source: "chat-window",
+          message: `policyLoad failed for ${workspaceRoot} — falling back to no project policy`,
+          detail: err,
+        });
+      });
     return () => { cancelled = true; };
   }, [workspaceRoot]);
 
@@ -184,15 +197,36 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       });
       picked = Array.isArray(res) ? (res[0] ?? null) : res;
     } catch (e) {
-      // Plugin missing in dev / a permission was denied → fall back to a
-      // typed entry so the user isn't blocked. Empty input clears scope.
+      // Distinguish "plugin not loaded" (legitimate dev fallback) from a real
+      // platform/permission error. The dialog plugin reports missing IPC
+      // commands with messages like "plugin not registered", "command not
+      // found", or "not allowed by the scope". Only those silently fall
+      // through to the prompt; anything else (e.g. a permission denial we
+      // need to debug) surfaces via setErr and the diagnostics ring buffer.
+      const msg = e instanceof Error ? e.message : String(e);
+      const isPluginMissing =
+        /plugin\s*(not\s*registered|missing)/i.test(msg) ||
+        /command\s*(not\s*found|missing)/i.test(msg) ||
+        /not\s*allowed\s*by\s*the\s*scope/i.test(msg);
+      if (!isPluginMissing) {
+        logDiag({
+          level: "warn",
+          source: "chat-window",
+          message: "workspace dialog open() failed — falling back to typed entry",
+          detail: e,
+        });
+        setWorkspaceErr(`Workspace picker unavailable: ${msg}`);
+      }
+      // Plugin missing in dev → fall back to a typed entry so the user isn't
+      // blocked. Empty input clears scope. (Even on a non-plugin error, the
+      // prompt fallback is still better than leaving the user with no way to
+      // set a workspace at all.)
       const typed = window.prompt(
         "Workspace root (agent confined to this dir; blank = full FS):",
         workspaceRoot ?? "",
       );
       if (typed === null) return;
       picked = typed.trim() ? typed.trim() : null;
-      void e;
     }
     try {
       const set = await api.agentSetWorkspace(picked);

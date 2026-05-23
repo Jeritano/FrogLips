@@ -128,16 +128,17 @@ export function WorkflowsPage({ status }: Props) {
     pendingSave.current = { id: selected.id, name, graph: { cards, edges } };
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 600);
-    // Flush on cleanup too — rapid "← Workflows" → switch transitions hit the
-    // effect cleanup before unmount, and just clearing the timer here would
-    // drop a pending rename. flushSave() is idempotent + no-ops when nothing
-    // is pending, so flushing twice (cleanup + unmount) is safe.
+    // Cleanup only cancels the in-flight timer — it MUST NOT flush. This
+    // effect re-runs on every keystroke in `name` (and every card/edge
+    // change), so flushing here would collapse the debounce into a
+    // per-keystroke save. The dedicated unmount-flush effect below handles
+    // the component-unmount case, and the "← Workflows" handler explicitly
+    // flushes before clearing `selected`.
     return () => {
       if (saveTimer.current) {
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
       }
-      flushSave();
     };
   }, [cards, edges, selected, name, flushSave]);
 

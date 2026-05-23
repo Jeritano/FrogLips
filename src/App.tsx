@@ -212,12 +212,14 @@ function App() {
       // otherwise discard their edit by spawning a new chat. `select` is
       // intentionally NOT included (Cmd+K inside a model picker dropdown is
       // expected to do nothing — its focus shortcut is moot there anyway).
+      // `isContentEditable` is the inherited property — a nested child of a
+      // contenteditable root reports true, unlike `matches('[contenteditable]')`
+      // which only catches the element with the attribute itself.
       const t = e.target as (Element | null);
       if (
         t instanceof HTMLInputElement ||
         t instanceof HTMLTextAreaElement ||
-        (t && typeof (t as HTMLElement).matches === "function" &&
-          (t as HTMLElement).matches('[contenteditable="true"], [contenteditable=""]'))
+        (t instanceof HTMLElement && t.isContentEditable)
       ) {
         return;
       }
