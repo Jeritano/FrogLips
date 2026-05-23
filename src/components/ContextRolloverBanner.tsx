@@ -55,8 +55,17 @@ export function ContextRolloverBanner({ messages, status, conversation, onContin
     setRolling(false);
   }, [conversation?.id]);
 
+  // Don't offer to roll over if the backend isn't actually serving a model.
+  // The summary call needs a live model to talk to; without one we'd just
+  // pop "auto-continue: no active model" the moment the countdown fired.
+  const backendReady = !!status?.running && !!status.model;
+
   const visible =
-    due && !rolling && conversation != null && dismissedFor.current !== conversation.id;
+    due &&
+    !rolling &&
+    backendReady &&
+    conversation != null &&
+    dismissedFor.current !== conversation.id;
 
   // Countdown — armed only while the banner is visible. Resets each time the
   // banner re-appears.
