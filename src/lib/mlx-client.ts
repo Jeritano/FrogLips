@@ -162,6 +162,16 @@ export async function streamMlxAgentChat(
     throw new Error(`MLX ${res.status}: ${txt}`);
   }
 
+  // TODO: best-effort server-side cancel on abort. The native runtime mirrors
+  // this pattern in `native-client.ts` (listens for `signal.abort` and calls
+  // `api.nativeCancelChat(opId)` so the backend stops generating). MLX's
+  // OpenAI-compatible `mlx_lm.server` does NOT currently expose a parallel
+  // cancel endpoint — no `mlx_cancel` / `mlxCancelChat` invocation is wired
+  // in `tauri-api.ts`. Aborting the fetch here closes the HTTP connection
+  // but the MLX process keeps generating until the request completes
+  // upstream. If a cancel command is added later (mirroring native), wire it
+  // here via `signal.addEventListener("abort", …)` the same way.
+
   let content = "";
   const toolAcc: PartialToolCall[] = [];
   let promptTok: number | undefined;

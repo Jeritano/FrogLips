@@ -167,11 +167,21 @@ function buildCardOptions(
   // On a scheduled run, a card opted into `unattended` auto-approves tool
   // calls — but only for tool names in its own declared allowlist. Every
   // other case keeps the caller's gate (default deny-all).
+  //
+  // SECURITY: `run_shell` is explicitly EXCLUDED from unattended auto-approve
+  // and always falls through to `baseGate`. The Rust side binds approval
+  // tokens to a SHA-256 of the exact command (see `mintToolApproval` in
+  // tauri-api.ts), and a blanket `{approve:true}` here would bypass that
+  // binding for any shell command the model decides to run on a scheduled
+  // unattended pass. Other tools (clipboard_set, write_file, etc.) keep the
+  // unattended auto-approve so scheduled workflows remain useful for safe
+  // operations — shell stays gated on every run.
+  const UNATTENDED_NEVER_AUTO = new Set(["run_shell"]);
   const baseGate = opts.requestConfirmation ?? denyAll;
   const requestConfirmation: AgentRunOptions["requestConfirmation"] =
     opts.scheduled && card.unattended
       ? async (toolName, args, risk) =>
-          card.tools.includes(toolName)
+          card.tools.includes(toolName) && !UNATTENDED_NEVER_AUTO.has(toolName)
             ? { approve: true }
             : baseGate(toolName, args, risk)
       : baseGate;

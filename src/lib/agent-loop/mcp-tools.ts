@@ -30,7 +30,13 @@ const SEP = "__";
  * abusing `$ref`) that bloats the system-prompt token budget or trips
  * stack/recursion limits inside marked/DOMPurify-like consumers downstream.
  */
-const MCP_SCHEMA_MAX_BYTES = 2048;
+// 16 KB chosen as a realistic ceiling: many production MCP servers ship
+// schemas in the 3-8 KB range (rich enum lists, nested response shapes), so
+// the previous 2 KB cap was rejecting legitimate tools. 16 KB still bounds
+// per-tool system-prompt cost — even with dozens of MCP tools the worst case
+// stays well under the model's context window — while leaving headroom for
+// realistic schemas. Depth cap (below) is unchanged.
+const MCP_SCHEMA_MAX_BYTES = 16384;
 /** Max nesting depth allowed inside an MCP `inputSchema` object/array tree. */
 const MCP_SCHEMA_MAX_DEPTH = 8;
 

@@ -172,8 +172,12 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     // Abort any still-streaming send before starting a new one — otherwise the
     // older controller is orphaned and its stream keeps appending tokens.
     // Created here (before recall) so Stop can also cancel memory recall.
+    // Cancel any in-flight shell tied to the PREVIOUS controller's signal
+    // (each agent loop keys its active-shell entry by its own AbortSignal,
+    // so passing the prior signal targets the correct loop's shell).
+    const prevSignal = abortRef.current?.signal;
     abortRef.current?.abort();
-    cancelActiveShell();
+    if (prevSignal) cancelActiveShell(prevSignal);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
@@ -451,11 +455,17 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     const sameConv = isStreamConvActive;
 
     if (acc) {
+      // Persist `acc` cleanly to the DB — never with a UI-only suffix like
+      // "[stopped]". On reload + regen/edit, history sent to the model must
+      // be the raw assistant text, not editorial markers. The suffix is
+      // applied to the in-memory message we render (displayContent) so the
+      // user still sees that the stream was interrupted.
+      const displayContent = aborted ? acc + "\n\n[stopped]" : acc;
       const asst: Message = {
         _tmpKey: tmpKey(),
         conversation_id: conv.id,
         role: "assistant",
-        content: aborted ? acc + "\n\n[stopped]" : acc,
+        content: displayContent,
         model: status.model,
       };
       // Strict same-conv gate: if the user switched conversations mid-stream
@@ -463,7 +473,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       // conversation_id, but it must not be appended to the now-active
       // conversation's UI buffer. We persist fire-and-forget in that case.
       if (!sameConv()) {
-        api.addMessage(conv.id, "assistant", asst.content, status.model).catch((err) =>
+        api.addMessage(conv.id, "assistant", acc, status.model).catch((err) =>
           logDiag({
             level: "warn",
             source: "chat-stream",
@@ -473,7 +483,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         );
       } else {
         try {
-          const id = await api.addMessage(conv.id, "assistant", asst.content, status.model);
+          const id = await api.addMessage(conv.id, "assistant", acc, status.model);
           asst.id = id;
         } catch (e) {
           if (sameConv()) setErr(`Failed to save response: ${e}`);
@@ -529,7 +539,11 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     [runSend],
   );
   const abort = useCallback(() => {
-    cancelActiveShell();
+    // Key cancelActiveShell by the current loop's AbortSignal so we cancel
+    // THIS loop's shell, not whichever happened to be set last in a
+    // module-singleton (the old race-prone behaviour).
+    const sig = abortRef.current?.signal ?? null;
+    cancelActiveShell(sig);
     abortRef.current?.abort();
   }, []);
 

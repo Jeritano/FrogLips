@@ -55,16 +55,42 @@ describe("policyDecisionFor", () => {
     );
   });
 
-  it("never auto-approves shell, even with a matching allowed prefix", () => {
-    // Shell always requires explicit confirmation: a repo-supplied policy
-    // must not be able to silently run commands.
-    const policy: ProjectPolicy = { allowed_shell_prefixes: ["cargo", "git"] };
+  it("user-level allowed_shell_prefixes auto-approves a matching first token", () => {
+    // A USER-level policy (no `.froglips/` segment in source_path) opts in
+    // to auto-approving the listed shell prefixes — this is the documented
+    // behaviour of the structured `allowed_shell_prefixes` field.
+    const policy: ProjectPolicy = {
+      allowed_shell_prefixes: ["cargo", "git"],
+      source_path: "/home/u/.config/froglips/policy.json",
+    };
     expect(policyDecisionFor(policy, "run_shell", { command: "cargo test" })).toBe(
-      "needs-confirm",
+      "auto",
     );
     expect(policyDecisionFor(policy, "run_shell", { command: "rm -rf /" })).toBe(
       "needs-confirm",
     );
+  });
+
+  it("repo-local allowed_shell_prefixes is downgraded to needs-confirm", () => {
+    // A `.froglips/policy.json` in a workspace is attacker-controllable;
+    // its prefix list must NEVER silently auto-approve a shell command.
+    const repoPolicy: ProjectPolicy = {
+      allowed_shell_prefixes: ["cargo", "git"],
+      source_path: "/home/u/projx/.froglips/policy.json",
+    };
+    expect(
+      policyDecisionFor(repoPolicy, "run_shell", { command: "cargo test" }),
+    ).toBe("needs-confirm");
+  });
+
+  it("compound shell command never auto-approves even with matching prefix", () => {
+    const policy: ProjectPolicy = {
+      allowed_shell_prefixes: ["cargo"],
+      source_path: "/home/u/.config/froglips/policy.json",
+    };
+    expect(
+      policyDecisionFor(policy, "run_shell", { command: "cargo test; rm -rf /" }),
+    ).toBe("needs-confirm");
   });
 
   it("never auto-approves run_shell / applescript_run via auto_approve list", () => {
@@ -141,7 +167,7 @@ describe("runAgentLoop with project policy", () => {
     vi.unstubAllGlobals();
   });
 
-  it("still confirms a shell call even when the policy allows the prefix", async () => {
+  it("user-level allowed_shell_prefixes auto-approves without prompting", async () => {
     const responses: object[] = [
       ollamaShellToolResponse("tc-1", "cargo test"),
       ollamaFinalResponse("done"),
@@ -164,7 +190,12 @@ describe("runAgentLoop with project policy", () => {
       messages: [{ conversation_id: 1, role: "user", content: "run tests" }],
       conversationId: 1,
       workspaceRoot: "/tmp/projx",
-      projectPolicy: { allowed_shell_prefixes: ["cargo"] },
+      // User-level policy (path NOT under .froglips/) — allowed_shell_prefixes
+      // honoured: `cargo test` matches the `cargo` prefix → auto-approve.
+      projectPolicy: {
+        allowed_shell_prefixes: ["cargo"],
+        source_path: "/home/u/.config/froglips/policy.json",
+      },
       onUpdate: (m) => collected.push([...m]),
       onStatusChange: () => {},
       requestConfirmation,
@@ -173,14 +204,49 @@ describe("runAgentLoop with project policy", () => {
 
     await runAgentLoop(opts);
 
-    // Shell always requires explicit confirmation — a policy prefix-allow
-    // can never silently auto-approve a command.
-    expect(requestConfirmation).toHaveBeenCalledTimes(1);
+    expect(requestConfirmation).not.toHaveBeenCalled();
 
-    // The (user-approved) shell tool result is still present in the snapshot.
     const last = collected[collected.length - 1] ?? [];
     const toolMsgs = last.filter((m) => m.role === "tool" && m.tool_name === "run_shell");
     expect(toolMsgs.length).toBe(1);
+  });
+
+  it("repo-local allowed_shell_prefixes still requires confirmation", async () => {
+    const responses: object[] = [
+      ollamaShellToolResponse("tc-1", "cargo test"),
+      ollamaFinalResponse("done"),
+    ];
+    let idx = 0;
+    const fetchMock = vi.fn(async () => {
+      const payload = responses[idx++] ?? ollamaFinalResponse("done");
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const requestConfirmation = vi.fn(async () => ({ approve: true }));
+
+    const opts: AgentRunOptions = {
+      model: "test",
+      messages: [{ conversation_id: 1, role: "user", content: "run tests" }],
+      conversationId: 1,
+      workspaceRoot: "/tmp/projx",
+      // Repo-local policy — prefix-allow downgraded to needs-confirm.
+      projectPolicy: {
+        allowed_shell_prefixes: ["cargo"],
+        source_path: "/tmp/projx/.froglips/policy.json",
+      },
+      onUpdate: () => {},
+      onStatusChange: () => {},
+      requestConfirmation,
+      signal: new AbortController().signal,
+    };
+
+    await runAgentLoop(opts);
+
+    expect(requestConfirmation).toHaveBeenCalledTimes(1);
   });
 
   it("blocks denied writes without prompting", async () => {

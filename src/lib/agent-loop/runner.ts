@@ -98,10 +98,19 @@ function policyWriteVerdict(policy: ProjectPolicy, path: string): PolicyVerdict 
 }
 
 /**
- * Tools whose risk is severe enough that NO policy may auto-approve them —
- * they always require an explicit per-call confirmation. A malicious repo
- * ships its own `.froglips/policy.json`, so policy auto-approve can never be
- * trusted to silently run a shell command or arbitrary AppleScript.
+ * Tools whose risk is severe enough that NO `auto_approve_dangerous_tools`
+ * entry may wave them through — they always require an explicit per-call
+ * confirmation when the user opts in via the bare-tool-name allowlist. A
+ * malicious repo ships its own `.froglips/policy.json`, so the blanket-list
+ * form of auto-approve can never be trusted to silently run a shell command
+ * or arbitrary AppleScript.
+ *
+ * NOTE: this set does NOT block the structured `allowed_shell_prefixes`
+ * field — that field is documented (`src-tauri/src/policy.rs`) as the
+ * intended way for a USER policy to auto-approve a specific shell binary by
+ * its first token (`cargo`, `git`, …). Repo-local policies are still
+ * blocked from honouring that field via `isRepoLocalPolicy` in
+ * `policyDecisionFor` below.
  */
 const NEVER_AUTO_APPROVE = new Set([SHELL_TOOL, "applescript_run"]);
 
@@ -151,10 +160,19 @@ export function policyDecisionFor(
     return "auto";
   }
   if (fnName === SHELL_TOOL) {
-    // policyShellVerdict can return "auto" via allowed_shell_prefixes — but
-    // shell must always confirm, so downgrade any such auto to needs-confirm.
-    const v = policyShellVerdict(policy, String(args.command ?? ""));
-    return v === "auto" ? "needs-confirm" : v;
+    // `allowed_shell_prefixes` is the documented structured opt-in for a
+    // USER-level policy to auto-approve a specific shell binary by its
+    // first token. Honour it here — repo-local policies are filtered out
+    // above via `isRepoLocalPolicy`, so an auto verdict at this point can
+    // only have come from the user's own config.
+    if (isRepoLocalPolicy(policy)) {
+      const v = policyShellVerdict(policy, String(args.command ?? ""));
+      return v === "auto" ? "needs-confirm" : v;
+    }
+    // User-level policy: honour the prefix allowlist (auto/needs-confirm).
+    // safeShellPrefix inside policyShellVerdict already rejects compound
+    // commands containing shell metacharacters.
+    return policyShellVerdict(policy, String(args.command ?? ""));
   }
   if (WRITE_TOOLS.has(fnName)) {
     // Tools that take a `path` field map directly. For other write tools
@@ -695,7 +713,11 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         } else if (fnName === "list_subagents") {
           result = listSubagents();
         } else {
-          result = await executeTool(fnName, args, { dryRun });
+          // `shellTrackKey: signal` keys this loop's active-shell entry by
+          // its AbortSignal. Sibling loops (parent + subagent) get distinct
+          // signals and therefore distinct map entries, so a `run_shell` in
+          // one loop can't be overwritten or cancelled by the other.
+          result = await executeTool(fnName, args, { dryRun, shellTrackKey: signal });
         }
       } catch (e) {
         result = formatToolError(e);

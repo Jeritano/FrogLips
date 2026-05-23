@@ -1,7 +1,19 @@
 import { marked, type Tokens } from "marked";
 import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js/lib/core";
-import DOMPurify from "dompurify";
+import createDOMPurify from "dompurify";
+
+// Use a DEDICATED DOMPurify instance bound to the current window, instead of
+// mutating the library's default singleton. The `addHook` we register below
+// rewrites `<a href>` and gates `<img src>` data URIs — those rules are
+// app-specific and must NOT leak into any other potential DOMPurify consumer
+// (third-party libs, dev tooling) that imports the default. Creating an
+// isolated instance with `createDOMPurify(window)` keeps our hooks scoped to
+// this module's sanitize call only. On non-browser environments (tests under
+// jsdom still expose `window`) the factory works the same; we keep the
+// `typeof document === "undefined"` SSR guard in `renderMarkdown` for safety.
+const DOMPurify =
+  typeof window !== "undefined" ? createDOMPurify(window) : createDOMPurify;
 
 // Register a focused set — keeps bundle small.
 import javascript from "highlight.js/lib/languages/javascript";

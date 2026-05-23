@@ -101,23 +101,63 @@ export async function agentRagSearch(
   return hits;
 }
 
-let currentShellOpId: string | null = null;
+/**
+ * Active-shell tracking. The previous design used a module-level singleton,
+ * which races when a parent loop and a subagent loop both have a `run_shell`
+ * in flight: the second call overwrites the singleton, the first's `finally`
+ * sees a non-matching id and skips clearing, and `cancelActiveShell()` then
+ * cancels whichever happened to be current rather than the caller's own
+ * shell. We key by a stable per-loop identifier instead — the caller's
+ * `AbortSignal`. Each agent loop owns its own `signal`, so two concurrent
+ * shells from different loops land in different map entries. A WeakMap
+ * means we don't leak entries for completed loops whose signals were GC'd.
+ */
+const activeShellByKey = new WeakMap<object, string>();
+// Fallback for callers (older tests / non-loop entry points) that don't
+// supply a key. Module-singleton semantics for that path are kept for
+// backward compatibility — but the main loop now always supplies a key.
+let fallbackShellOpId: string | null = null;
 
-export function cancelActiveShell(): boolean {
-  if (currentShellOpId) {
-    const id = currentShellOpId;
-    currentShellOpId = null;
-    api.agentCancelShell(id).catch((err) =>
-      logDiag({
-        level: "warn",
-        source: "agent-loop",
-        message: `cancelActiveShell: agent_cancel_shell failed for opId ${id}`,
-        detail: redactDiagDetail(err),
-      }),
-    );
-    return true;
+/** Stable key for the active-shell map. Use the AbortSignal when available. */
+export type ShellTrackKey = object;
+
+export function setActiveShell(key: ShellTrackKey | null, opId: string): void {
+  if (key) activeShellByKey.set(key, opId);
+  else fallbackShellOpId = opId;
+}
+
+export function clearActiveShell(key: ShellTrackKey | null, opId: string): void {
+  if (key) {
+    if (activeShellByKey.get(key) === opId) activeShellByKey.delete(key);
+    return;
   }
-  return false;
+  if (fallbackShellOpId === opId) fallbackShellOpId = null;
+}
+
+/**
+ * Cancel the active shell associated with `key`. With no key, falls back to
+ * the (legacy) module-singleton. Returns true iff a cancel was dispatched.
+ */
+export function cancelActiveShell(key?: ShellTrackKey | null): boolean {
+  let id: string | null = null;
+  if (key) {
+    id = activeShellByKey.get(key) ?? null;
+    if (id) activeShellByKey.delete(key);
+  } else {
+    id = fallbackShellOpId;
+    fallbackShellOpId = null;
+  }
+  if (!id) return false;
+  const captured = id;
+  api.agentCancelShell(captured).catch((err) =>
+    logDiag({
+      level: "warn",
+      source: "agent-loop",
+      message: `cancelActiveShell: agent_cancel_shell failed for opId ${captured}`,
+      detail: redactDiagDetail(err),
+    }),
+  );
+  return true;
 }
 
 /* ── Audit helpers ── */
@@ -332,6 +372,13 @@ function redactDiagDetail(detail: unknown): unknown {
 export interface ExecuteToolOptions {
   /** When true, side-effectful tools short-circuit and return a dry-run payload. */
   dryRun?: boolean;
+  /**
+   * Per-loop key used to track active shell op ids so `cancelActiveShell` can
+   * target this loop's shell call without races against a sibling loop
+   * (parent + subagent). Typically the loop's `AbortSignal`. Absent → falls
+   * back to a module-level singleton (legacy behaviour, used by tests).
+   */
+  shellTrackKey?: ShellTrackKey | null;
 }
 
 export async function executeTool(
@@ -344,13 +391,13 @@ export async function executeTool(
   if (options.dryRun && DRY_RUN_TOOLS.has(name)) {
     return dryRunExecute(name, args);
   }
-  // Defense-in-depth: scrub secret-looking values from the args payload that
-  // crosses into Rust IPC. Any `info`-level command trace on the Rust side
-  // (or in a Tauri log file) sees `[REDACTED]` rather than raw credentials
-  // for the tools where leakage is plausible (run_shell command/env,
-  // http_request headers/body). Read-only tools whose args don't carry
-  // secrets are unaffected — the redactor is a no-op on non-matching strings.
-  args = redactArgsForLive(args);
+  // NOTE: do NOT redact `args` here. Earlier we ran `redactArgsForLive(args)`
+  // before dispatch, but that mutated the values forwarded to Rust IPC —
+  // a `grep "api_key=" ./src` shell command became `grep "[REDACTED]" …`,
+  // and `write_file` content carrying a config template got its body
+  // replaced with `[REDACTED]`. Live secret hygiene belongs on the LOG
+  // path: `redactArgsForAudit` runs on the audit-DB row, and `redactDiagDetail`
+  // runs on diag warn/error payloads. The args going to execution stay raw.
   // MCP-routed tools: names prefixed `mcp__server__tool`.
   if (isMcpToolName(name)) {
     return dispatchMcpTool(name, args);
@@ -556,7 +603,8 @@ export async function executeTool(
     case "run_shell": {
       const cwd = args.cwd ? String(args.cwd) : undefined;
       const opId = `shell-${crypto.randomUUID()}`;
-      currentShellOpId = opId;
+      const key = options.shellTrackKey ?? null;
+      setActiveShell(key, opId);
       try {
         const r = await api.agentRunShell(
           String(args.command ?? ""),
@@ -565,7 +613,7 @@ export async function executeTool(
         );
         return JSON.stringify(r);
       } finally {
-        if (currentShellOpId === opId) currentShellOpId = null;
+        clearActiveShell(key, opId);
       }
     }
     case "write_file":
