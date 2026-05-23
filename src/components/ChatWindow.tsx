@@ -7,6 +7,7 @@ import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
 import type { Conversation, ConversationParams, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
+import { ContextRolloverBanner } from "./ContextRolloverBanner";
 import { ToolHistory } from "./ToolHistory";
 import { ParamsPanel } from "./ParamsPanel";
 import { ContextMeter } from "./ContextMeter";
@@ -479,6 +480,13 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             onCheckUpdates={checkUpdates}
           />
         )}
+
+        <ContextRolloverBanner
+          messages={messages}
+          status={status}
+          conversation={conversation}
+          onContinued={(newId) => onForked?.(newId)}
+        />
 
         <div className="composer-row">
           <ChatInput

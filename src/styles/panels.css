@@ -1523,3 +1523,37 @@ button.cancel {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── Auto-continue rollover banner ── */
+.ctx-rollover {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 0;
+  padding: 8px 12px;
+  background: rgba(122, 193, 67, 0.08);
+  border: 1px solid rgba(122, 193, 67, 0.4);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+.ctx-rollover-msg { flex: 1; line-height: 1.4; }
+.ctx-rollover-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.ctx-rollover-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.ctx-rollover-btn:hover { background: var(--surface-hover); }
+.ctx-rollover-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.ctx-rollover-btn-primary:hover { filter: brightness(1.05); }
