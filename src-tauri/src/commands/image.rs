@@ -327,6 +327,11 @@ fn build_request(
     if prompt.len() > MAX_PROMPT_LEN {
         return Err(format!("prompt exceeds {MAX_PROMPT_LEN} bytes"));
     }
+    // Canonicalize the model shorthand the UI sends ("schnell" / "dev")
+    // into the full HF repo id before validation. The frontend's model
+    // dropdown surfaces friendly labels; the engine wants the org/name
+    // form mistralrs's FluxLoader hands to hf_hub.
+    let model = canonicalize_flux_repo(&model);
     validate_hf_repo(&model)?;
 
     let (width, height) = parse_size(opts.size.as_deref())?;
@@ -381,6 +386,24 @@ fn build_request(
         seed,
         offload,
     })
+}
+
+/// Map the UI's friendly Flux model shorthand to the canonical HuggingFace
+/// repo id. Anything already in `org/name` form passes through untouched so
+/// power users can point at a community fork.
+fn canonicalize_flux_repo(model: &str) -> String {
+    let trimmed = model.trim();
+    match trimmed {
+        // Exact shorthand the frontend dropdown emits.
+        "schnell" | "FLUX.1-schnell" | "flux-schnell" | "flux.1-schnell" => {
+            "black-forest-labs/FLUX.1-schnell".to_string()
+        }
+        "dev" | "FLUX.1-dev" | "flux-dev" | "flux.1-dev" => {
+            "black-forest-labs/FLUX.1-dev".to_string()
+        }
+        // Already canonical (or a custom repo) — pass through.
+        other => other.to_string(),
+    }
 }
 
 fn parse_size(s: Option<&str>) -> Result<(u32, u32), String> {
