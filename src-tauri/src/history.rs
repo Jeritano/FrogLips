@@ -276,6 +276,13 @@ const MIGRATIONS: &[Migration] = &[
         version: 9,
         apply: crate::workflows::ensure_card_fired_workflow_id_column,
     },
+    // v10 — native image generation: `images` table tracking every
+    // generated PNG (path on disk, prompt, params blob, optional owning
+    // conversation). Listing is keyed on `(conv_id, created_at DESC)`.
+    Migration {
+        version: 10,
+        apply: ensure_images_table,
+    },
 ];
 
 /// Target schema version — the highest rung of the ladder.
@@ -442,6 +449,155 @@ pub(crate) fn ensure_conversation_org_columns(conn: &Connection) -> Result<()> {
         conn.execute("ALTER TABLE conversations ADD COLUMN tags TEXT", [])?;
     }
     Ok(())
+}
+
+/// Idempotently create the `images` table + composite listing index used by
+/// the native image-generation backend. `conv_id` is nullable so generations
+/// initiated outside any conversation (the dedicated image-gen surface) still
+/// have a home. `params_json` mirrors the same blob embedded in the PNG tEXt
+/// chunk so listing doesn't have to crack the file open.
+pub(crate) fn ensure_images_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conv_id INTEGER NULL REFERENCES conversations(id) ON DELETE SET NULL,
+            model TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            path TEXT NOT NULL,
+            width INTEGER,
+            height INTEGER,
+            seed INTEGER,
+            created_at INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_images_conv_created
+             ON images(conv_id, created_at DESC);",
+    )?;
+    Ok(())
+}
+
+/// Insert a row for a newly-written PNG and return its id. Callers pass the
+/// already-validated absolute path string; the path-safety check happens at
+/// the IPC layer before the bytes hit disk.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_image(
+    conv_id: Option<i64>,
+    model: &str,
+    prompt: &str,
+    params_json: &str,
+    path: &str,
+    width: Option<i64>,
+    height: Option<i64>,
+    seed: Option<i64>,
+) -> Result<i64> {
+    let conn = get_db()?;
+    let created_at = now_unix();
+    conn.execute(
+        "INSERT INTO images
+            (conv_id, model, prompt, params_json, path, width, height, seed, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            conv_id,
+            model,
+            prompt,
+            params_json,
+            path,
+            width,
+            height,
+            seed,
+            created_at
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// One row of the `images` table. The internal mirror used by both
+/// `image_list_rows` and `image_get_row`. The IPC layer converts these to the
+/// `ImageMeta` Serialize shape.
+#[derive(Clone, Debug)]
+pub struct ImageRow {
+    pub id: i64,
+    pub conv_id: Option<i64>,
+    pub model: String,
+    pub prompt: String,
+    pub params_json: String,
+    pub path: String,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub seed: Option<i64>,
+    pub created_at: i64,
+}
+
+fn row_to_image(r: &rusqlite::Row<'_>) -> rusqlite::Result<ImageRow> {
+    Ok(ImageRow {
+        id: r.get(0)?,
+        conv_id: r.get(1)?,
+        model: r.get(2)?,
+        prompt: r.get(3)?,
+        params_json: r.get(4)?,
+        path: r.get(5)?,
+        width: r.get(6)?,
+        height: r.get(7)?,
+        seed: r.get(8)?,
+        created_at: r.get(9)?,
+    })
+}
+
+pub fn list_images(conv_id: Option<i64>, limit: Option<u32>) -> Result<Vec<ImageRow>> {
+    let conn = get_db()?;
+    let limit = limit.unwrap_or(500).min(2000) as i64;
+    let mut stmt;
+    let rows: Vec<ImageRow> = match conv_id {
+        Some(id) => {
+            stmt = conn.prepare(
+                "SELECT id, conv_id, model, prompt, params_json, path, width, height, seed, created_at
+                 FROM images WHERE conv_id = ?1
+                 ORDER BY created_at DESC LIMIT ?2",
+            )?;
+            stmt.query_map(params![id, limit], row_to_image)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        }
+        None => {
+            stmt = conn.prepare(
+                "SELECT id, conv_id, model, prompt, params_json, path, width, height, seed, created_at
+                 FROM images
+                 ORDER BY created_at DESC LIMIT ?1",
+            )?;
+            stmt.query_map(params![limit], row_to_image)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        }
+    };
+    Ok(rows)
+}
+
+pub fn get_image(id: i64) -> Result<Option<ImageRow>> {
+    let conn = get_db()?;
+    let row = conn
+        .query_row(
+            "SELECT id, conv_id, model, prompt, params_json, path, width, height, seed, created_at
+             FROM images WHERE id = ?1",
+            params![id],
+            row_to_image,
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// Delete an image row, returning the stored path so the caller can unlink
+/// the file (which it must do through `path_safety::validate_write_dest` to
+/// keep the unlink scope-limited to `~/.local-llm-app/images/…`). Returns
+/// `None` when no row matched the id.
+pub fn delete_image_row(id: i64) -> Result<Option<String>> {
+    let conn = get_db()?;
+    let path: Option<String> = conn
+        .query_row("SELECT path FROM images WHERE id = ?1", params![id], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?;
+    if path.is_some() {
+        conn.execute("DELETE FROM images WHERE id = ?1", params![id])?;
+    }
+    Ok(path)
 }
 
 fn build_pool() -> Result<Pool<SqliteManager>> {
@@ -1470,6 +1626,20 @@ mod tests {
         for c in ["scope", "project_root"] {
             assert!(cols("memories").contains(&c.to_string()), "memories.{c}");
         }
+        for c in [
+            "id",
+            "conv_id",
+            "model",
+            "prompt",
+            "params_json",
+            "path",
+            "width",
+            "height",
+            "seed",
+            "created_at",
+        ] {
+            assert!(cols("images").contains(&c.to_string()), "images.{c}");
+        }
     }
 
     fn user_version(conn: &Connection) -> i64 {
@@ -1486,6 +1656,47 @@ mod tests {
         run_migrations(&conn).expect("ladder on fresh db");
         assert_eq!(user_version(&conn), latest_version());
         assert_final_schema(&conn);
+    }
+
+    /// Migration v10 (`images`) is safe to apply twice in a row and against a
+    /// DB that already has rows in upstream tables — exercises the CREATE
+    /// TABLE IF NOT EXISTS + index path without trying to re-create columns.
+    #[test]
+    fn images_table_migration_is_idempotent_on_populated_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("ladder on fresh db");
+        // Seed a conversation row + an image row to prove the migration is
+        // safe to re-run against a populated DB.
+        conn.execute(
+            "INSERT INTO conversations (title, created_at) VALUES ('t', 0)",
+            [],
+        )
+        .unwrap();
+        let cid: i64 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO images (conv_id, model, prompt, params_json, path, created_at)
+             VALUES (?1, 'flux', 'p', '{}', '/tmp/x.png', 0)",
+            params![cid],
+        )
+        .unwrap();
+        // Re-running the v10 step directly must not error or duplicate the
+        // index.
+        ensure_images_table(&conn).expect("v10 re-run 1");
+        ensure_images_table(&conn).expect("v10 re-run 2");
+        // Row is still there.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        // Index exists exactly once.
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_images_conv_created'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 1);
     }
 
     /// Running the ladder a second time on an already-migrated DB is a no-op:

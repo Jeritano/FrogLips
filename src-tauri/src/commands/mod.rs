@@ -9,6 +9,7 @@ use std::sync::Arc;
 pub mod agent;
 pub mod data;
 pub mod history;
+pub mod image;
 pub mod mcp;
 pub mod memory;
 pub mod misc;

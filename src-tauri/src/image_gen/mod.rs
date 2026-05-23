@@ -1,0 +1,187 @@
+//! Native in-process Flux image generation.
+//!
+//! Mirrors the [`crate::native_inference`] feature-gating pattern: the real
+//! engine lives in [`engine`] behind
+//! `cfg(all(feature = "native-mistralrs", target_os = "macos",
+//! target_arch = "aarch64"))`, and a stub fallback returns "image gen
+//! unavailable on this build" everywhere else so non-mac builds stay green.
+//!
+//! Public surface (engine-agnostic):
+//!   * [`ImageGenOpts`] — IPC-shaped knobs (steps/cfg/seed/size/offload).
+//!   * [`ImageGenRequest`] — fully-resolved request the engine actually runs.
+//!   * [`ImageEngine`] — opaque facade exposing `generate(...)` + `cancel(op)`.
+//!   * [`ImageProgress`] event payload variants emitted via tokio mpsc.
+//!   * [`new_engine`] — process-wide singleton constructor.
+//!
+//! The engine itself is responsible for memory-guard, atomic PNG writes, and
+//! tEXt-chunk metadata embedding. See [`engine`] and [`metadata`].
+
+#![allow(dead_code)]
+
+use serde::{Deserialize, Serialize};
+
+pub mod metadata;
+
+#[cfg(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+pub mod engine;
+
+#[cfg(not(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+)))]
+mod stub;
+
+#[cfg(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+pub use engine::{new_engine, ImageEngine};
+
+#[cfg(not(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+)))]
+pub use stub::{new_engine, ImageEngine};
+
+/// Symmetry alias mirroring `native_inference::SharedRuntime` — kept here so a
+/// future `.manage(SharedEngine)` State extractor can drop in without forcing
+/// every call site through the `Lazy<ImageEngine>` singleton. Currently
+/// unused by IPC (which uses the `Lazy`), so flagged dead-code-allow.
+#[allow(dead_code)]
+pub type SharedEngine = ImageEngine;
+
+/// IPC-shaped options forwarded from the frontend. All fields optional; the
+/// engine fills in defaults appropriate to the resolved model + offload mode.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ImageGenOpts {
+    /// Sampling steps. Schnell default 4, dev default 28.
+    pub steps: Option<u32>,
+    /// Classifier-free guidance scale. Schnell ignores, dev default 3.5.
+    pub cfg: Option<f32>,
+    /// Seed for deterministic reproducibility. `None` ⇒ engine picks a fresh
+    /// 64-bit random seed and records it in the saved metadata.
+    pub seed: Option<u64>,
+    /// `"WxH"`, e.g. `"1024x1024"`. Engine clamps to the model's supported
+    /// range (Flux: multiples of 16, ≤ 1536 per side).
+    pub size: Option<String>,
+    /// Force CPU-offloaded variant (`FluxOffloaded`) for low-VRAM Macs. When
+    /// absent, the engine picks based on the available-RAM probe.
+    pub offload: Option<bool>,
+}
+
+/// Fully-resolved request the engine actually runs. The IPC layer constructs
+/// one of these from an `ImageGenOpts`, fills in defaults, and hands it to
+/// `ImageEngine::generate`.
+#[derive(Clone, Debug)]
+pub struct ImageGenRequest {
+    /// Operation id — surfaced on every progress event so the frontend can
+    /// match streaming updates to its UI op. Also the cancellation key.
+    pub op_id: String,
+    /// Owning conversation id (`None` ⇒ global / outside any conv).
+    pub conv_id: Option<i64>,
+    /// HF repo id (e.g. `"black-forest-labs/FLUX.1-schnell"`).
+    pub model: String,
+    /// User prompt — embedded verbatim into the PNG tEXt chunk and the DB row.
+    pub prompt: String,
+    pub width: u32,
+    pub height: u32,
+    pub steps: u32,
+    pub cfg: f32,
+    /// Engine resolves `None` to a fresh random seed before the loop starts so
+    /// the value persisted into the PNG + DB is reproducible.
+    pub seed: u64,
+    /// `true` ⇒ use `DiffusionLoaderType::FluxOffloaded` (CPU offload). The
+    /// memory guard sets this when available RAM is below the non-offload
+    /// threshold and the caller didn't pin it explicitly.
+    pub offload: bool,
+}
+
+/// Streaming progress updates surfaced by the engine. The IPC layer fans these
+/// out as Tauri events (`image-progress`, `image-done`, `image-error`).
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImageProgress {
+    /// Pipeline / weights are loading. May fire once per backend boot.
+    Loading { op_id: String, stage: String },
+    /// Sampling step finished (`step` is 1-based, `total` is `request.steps`).
+    Step {
+        op_id: String,
+        step: u32,
+        total: u32,
+    },
+    /// Final image written. `image_id` is the inserted DB row id.
+    Done { op_id: String, image_id: i64 },
+    /// Terminal error — also unblocks the IPC future with `Err(message)`.
+    Error { op_id: String, message: String },
+}
+
+/// Row-shaped record returned by `image_list` / `image_get`. The `params_json`
+/// field is the same blob embedded in the PNG tEXt chunk so callers don't have
+/// to re-parse the file to know how it was generated.
+#[derive(Clone, Debug, Serialize)]
+pub struct ImageMeta {
+    pub id: i64,
+    pub conv_id: Option<i64>,
+    pub model: String,
+    pub prompt: String,
+    pub params_json: String,
+    pub path: String,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub seed: Option<i64>,
+    pub created_at: i64,
+}
+
+/// `~/.local-llm-app/images/{conv_id_or_global}` — the root every generated
+/// PNG lands beneath. The IPC layer asks `path_safety::validate_write_dest` to
+/// confirm the resolved target sits beneath this root before the engine
+/// writes.
+pub fn images_root() -> Result<std::path::PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "cannot determine home directory".to_string())?;
+    let root = home.join(".local-llm-app").join("images");
+    std::fs::create_dir_all(&root).map_err(|e| format!("failed to create images root: {e}"))?;
+    Ok(root)
+}
+
+/// Compute the storage path for a single generated image, creating the bucket
+/// directory if needed. Bucket is the conv id (numeric folder) or
+/// `"global"` for conv-less generations.
+pub fn image_path(
+    conv_id: Option<i64>,
+    ts_ms: i128,
+    seed: u64,
+) -> Result<std::path::PathBuf, String> {
+    let root = images_root()?;
+    let bucket = match conv_id {
+        Some(id) => format!("{id}"),
+        None => "global".to_string(),
+    };
+    let dir = root.join(&bucket);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create images bucket: {e}"))?;
+    Ok(dir.join(format!("{ts_ms}-{seed}.png")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_path_uses_global_bucket_when_no_conv() {
+        let p = image_path(None, 1_700_000_000_000, 42).expect("image_path");
+        assert!(p.to_string_lossy().contains("/images/global/"));
+        assert!(p.to_string_lossy().ends_with("1700000000000-42.png"));
+    }
+
+    #[test]
+    fn image_path_uses_conv_bucket_when_present() {
+        let p = image_path(Some(7), 1, 9).expect("image_path");
+        assert!(p.to_string_lossy().contains("/images/7/"));
+    }
+}

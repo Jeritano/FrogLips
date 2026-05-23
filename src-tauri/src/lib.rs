@@ -9,6 +9,7 @@ mod data_backup;
 mod diagnostics;
 mod gguf;
 mod history;
+mod image_gen;
 mod logging;
 mod mcp;
 mod memory;
@@ -447,6 +448,11 @@ pub fn run() {
             commands::workflows::workflow_delete,
             commands::workflows::workflow_run_record,
             commands::workflows::workflow_runs_list,
+            commands::image::image_generate,
+            commands::image::image_list,
+            commands::image::image_get,
+            commands::image::image_delete,
+            commands::image::image_cancel,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

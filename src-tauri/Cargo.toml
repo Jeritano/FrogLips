@@ -63,6 +63,11 @@ candle-core = { version = "0.10", default-features = false, features = ["metal",
 indexmap = { version = "2", optional = true }
 either = { version = "1", optional = true }
 serde_yaml = { version = "0.9", optional = true }
+# PNG encoder used by the native image-generation backend to embed
+# prompt/params into tEXt chunks for reproducibility. Only pulled in with
+# `native-mistralrs` — the stub fallback returns "image gen unavailable" and
+# never touches the encoder.
+png = { version = "0.17", optional = true }
 
 # Browser automation (alpha) — agent-controlled headless Chrome via CDP.
 # Enabled via the "browser-automation" feature; requires a Chrome/Chromium
@@ -74,5 +79,5 @@ futures-util = { version = "0.3", optional = true }
 default = []
 # Umbrella flag — no-op base. Real backends opt in below.
 native-inference = []
-native-mistralrs = ["native-inference", "dep:mistralrs-core", "dep:candle-core", "dep:indexmap", "dep:either", "dep:serde_yaml"]
+native-mistralrs = ["native-inference", "dep:mistralrs-core", "dep:candle-core", "dep:indexmap", "dep:either", "dep:serde_yaml", "dep:png"]
 browser-automation = ["dep:chromiumoxide", "dep:futures-util"]
