@@ -222,6 +222,34 @@ Click **🎨 Images** in the sidebar (below Workflows) to open the image-generat
 surface. It is a sibling of chat — your conversations stay where they are; this
 is a separate workspace for visual output.
 
+### One-time HuggingFace setup
+
+FLUX weights live on HuggingFace and HuggingFace gates the downloads, so the
+**first time you ever use the Images tab on a new machine** you have to:
+
+1. Create a free account on https://huggingface.co/ (or sign in to your existing one).
+2. Generate a read-only access token:
+   - Go to https://huggingface.co/settings/tokens
+   - Click **Create new token** → select the **Read** preset → name it (e.g. "Froglips") → **Create**.
+   - Copy the long string that starts with `hf_`.
+3. Tell HuggingFace's CLI about the token. In macOS Terminal:
+   ```bash
+   brew install huggingface-cli       # one-time install
+   hf auth login                       # paste the hf_... token when prompted
+   ```
+   This writes the token to `~/.cache/huggingface/token`; mistralrs picks it up
+   on the next Froglips launch via `TokenSource::CacheToken`.
+4. Click **Agree and access repository** on each FLUX repo you want to use:
+   - **Schnell** (Apache 2.0, fast 4-step): https://huggingface.co/black-forest-labs/FLUX.1-schnell
+   - **Dev** (non-commercial license, 28-step higher quality): https://huggingface.co/black-forest-labs/FLUX.1-dev
+5. Quit and reopen Froglips so the new token is loaded.
+
+If you skip any of these steps the first **Generate** fails with `HTTP 401`
+(missing/invalid token) or `HTTP 403` (license not yet accepted on that repo).
+The error pill includes an actionable hint for each case.
+
+### Generating
+
 - **Prompt** — type a description, hit **Generate**. The first run cold-loads the
   FLUX weights (can take minutes if they aren't yet cached); subsequent runs
   jump straight to sampling.
