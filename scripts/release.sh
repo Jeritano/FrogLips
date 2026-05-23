@@ -76,11 +76,14 @@ if [[ -d "$BUILT_APP" ]]; then
 
   # Snapshot the current log size for every existing app.*.log so we only
   # treat *new* output as smoke-test evidence (the log file persists across
-  # runs).
-  declare -A log_before_size=()
+  # runs). Use a tempdir of per-log size files instead of an associative
+  # array — macOS ships bash 3.2 which has no `declare -A`.
+  SNAP_DIR=$(mktemp -d -t froglips-smoke.XXXXXX)
+  trap 'rm -rf "$SNAP_DIR"' EXIT
   shopt -s nullglob
   for lf in "$LOG_DIR"/app.*.log; do
-    log_before_size["$lf"]=$(wc -c < "$lf" 2>/dev/null | tr -d ' ' || echo 0)
+    sz=$(wc -c < "$lf" 2>/dev/null | tr -d ' ')
+    echo "${sz:-0}" > "$SNAP_DIR/$(basename "$lf")"
   done
   shopt -u nullglob
 
@@ -110,7 +113,9 @@ if [[ -d "$BUILT_APP" ]]; then
 
     shopt -s nullglob
     for lf in "$LOG_DIR"/app.*.log; do
-      start_off=${log_before_size["$lf"]:-0}
+      snap_file="$SNAP_DIR/$(basename "$lf")"
+      start_off=0
+      [[ -f "$snap_file" ]] && start_off=$(cat "$snap_file" 2>/dev/null || echo 0)
       cur_size=$(wc -c < "$lf" 2>/dev/null | tr -d ' ' || echo 0)
       if [[ "$cur_size" -gt "$start_off" ]]; then
         # tail just the new bytes since launch and look for the marker
