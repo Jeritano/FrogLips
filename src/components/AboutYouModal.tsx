@@ -62,14 +62,25 @@ export function AboutYouModal({ onClose }: Props) {
         const t = (v ?? "").trim();
         return t.length > 0 ? t : null;
       };
+      const name = norm(profile.name);
+      const occupation = norm(profile.occupation);
+      const location = norm(profile.location);
+      const about = norm(profile.about);
+      const responseStyle = norm(profile.response_style);
+      const hasAnyContent = !!(name || occupation || location || about || responseStyle);
+      // Foot-gun fix: if the user typed anything at all, treat saving as an
+      // intent to use the profile. They can still uncheck the box later.
+      // An entirely blank save leaves enabled at whatever it was so an
+      // explicit disable still sticks.
+      const effectiveEnabled = profile.enabled || hasAnyContent;
       await api.settingsSet({
         user_profile: {
-          enabled: profile.enabled,
-          name: norm(profile.name),
-          occupation: norm(profile.occupation),
-          location: norm(profile.location),
-          about: norm(profile.about),
-          response_style: norm(profile.response_style),
+          enabled: effectiveEnabled,
+          name,
+          occupation,
+          location,
+          about,
+          response_style: responseStyle,
         },
       });
       onClose();
