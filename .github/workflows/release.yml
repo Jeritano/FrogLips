@@ -16,6 +16,15 @@ on:
     tags:
       - 'v*'
 
+# Two simultaneous tag pushes (e.g. an accidental re-push, or a fast retag)
+# would race on `gh release upload --clobber` and could leave the release with
+# a half-updated asset set. Serialize per-ref. We do *not* cancel in-progress
+# runs — finishing the active release safely is more important than the
+# latency win from preemption.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: macos-14
@@ -161,6 +170,53 @@ jobs:
           done
           echo "--- SHA256SUMS ---"
           cat SHA256SUMS
+
+      # Sign the integrity manifest with the same minisign key Tauri uses for
+      # updater signatures. Without this, an attacker with repo-write access
+      # could swap a DMG and rewrite SHA256SUMS undetected — the hash file is
+      # only as trustworthy as its source. The .minisig file ships alongside
+      # SHA256SUMS so downloaders can verify with the published pubkey.
+      #
+      # minisign reads the secret key from a file, not stdin, so we write it
+      # to a tempfile under $RUNNER_TEMP, sign, then shred+delete. The key
+      # never lands on disk in the workspace.
+      - name: Sign SHA256SUMS
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY missing — cannot sign SHA256SUMS"
+            exit 1
+          fi
+          # Install minisign (ubuntu-latest runner)
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+
+          KEYFILE="$(mktemp "${RUNNER_TEMP:-/tmp}/froglips-signing-key.XXXXXX")"
+          # The Tauri secret is the raw minisign secret-key file contents.
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$KEYFILE"
+          chmod 600 "$KEYFILE"
+
+          cleanup() {
+            if [ -f "$KEYFILE" ]; then
+              shred -u "$KEYFILE" 2>/dev/null || rm -f "$KEYFILE"
+            fi
+          }
+          trap cleanup EXIT
+
+          cd release-assets
+          # -W disables password prompt; the key uses a password supplied via
+          # MINISIGN_PASSWORD env if set, else assumes empty password.
+          export MINISIGN_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+          # Use printf to feed the password (minisign reads from /dev/tty by
+          # default; piping stdin works for non-interactive runs).
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$KEYFILE" -m SHA256SUMS
+          ls -la SHA256SUMS SHA256SUMS.minisig
+          echo "--- SHA256SUMS.minisig ---"
+          cat SHA256SUMS.minisig
 
       - name: Attach artifacts to GitHub Release
         env:

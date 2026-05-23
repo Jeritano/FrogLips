@@ -98,7 +98,25 @@ gh release create v${VERSION} \
 The auto-updater queries `https://github.com/Jeritano/FrogLips/releases/latest/download/latest.json`. GitHub redirects `latest/download/<filename>` to the asset on the most-recent release — so as long as you upload `latest.json` to every release, the URL stays stable.
 
 The tagged `release.yml` CI workflow additionally publishes a `SHA256SUMS`
-file alongside the binaries so downloads can be integrity-verified.
+file alongside the binaries so downloads can be integrity-verified, plus a
+detached minisign signature `SHA256SUMS.minisig` over that manifest (signed
+with the same key used for updater bundles — see "Signing key" below).
+
+### Verifying a downloaded release
+
+```bash
+# 1. Verify the manifest signature against the project's minisign pubkey.
+#    PUBKEY is the same value embedded in tauri.conf.json under
+#    plugins.updater.pubkey (base64-decoded if necessary — the
+#    `minisign -P <pubkey>` form takes the raw key string).
+minisign -V -P "<MINISIGN_PUBKEY>" -m SHA256SUMS
+
+# 2. Now that SHA256SUMS itself is trusted, verify the asset hashes.
+sha256sum -c SHA256SUMS
+```
+
+If step 1 fails, **do not trust** the hashes in step 2 — the manifest may
+have been tampered with after the release was published.
 
 ## Signing key
 
@@ -112,6 +130,42 @@ npx @tauri-apps/cli signer generate -w ~/.tauri/froglips.key -p ""
 - Public: embedded in `tauri.conf.json` under `plugins.updater.pubkey`.
 
 Back the private key up to a password manager.
+
+### Key rotation playbook
+
+The minisign pubkey is embedded in `tauri.conf.json` and is what existing
+installs use to validate updater bundles **and** `SHA256SUMS.minisig`. If
+you ever need to rotate (suspected compromise, lost passphrase, planned
+hygiene), use a **dual-sign window** so users on the old version can still
+verify and auto-update onto the new key:
+
+1. Generate the new keypair:
+   ```bash
+   npx @tauri-apps/cli signer generate -w ~/.tauri/froglips-NEW.key -p ""
+   ```
+2. **Two consecutive releases** are signed with **both** keys:
+   - Build once normally (signed with the old key, as today).
+   - Re-run `minisign -S -s ~/.tauri/froglips-NEW.key -m <each .tar.gz>` and
+     `... -m SHA256SUMS` to produce `*.sig.new` / `SHA256SUMS.minisig.new`.
+   - Upload both `*.sig` (old) and `*.sig.new` (new) to the release.
+   - `latest.json` still references the **old** signature so existing
+     installs can update; new installs (which ship the new pubkey in their
+     embedded `tauri.conf.json`) read the `.sig.new` files.
+3. On release N (first dual-signed), update `tauri.conf.json` →
+   `plugins.updater.pubkey` to the **new** pubkey. Anyone fresh-installing
+   from N onward now trusts only the new key.
+4. After **two** dual-signed releases have shipped, drop the old key from
+   the signing pipeline. Anyone still on a pre-N version must reinstall
+   manually (download the DMG, verify with the *old* `SHA256SUMS.minisig`,
+   install, then auto-updates resume).
+5. Securely destroy the old private key (`shred -u`, then remove the
+   password-manager entry).
+
+If the old key is **already known-compromised**, skip the dual-sign window
+and force a manual reinstall instead — a single release signed with the
+new key, plus a security notice in the release notes directing users to
+download from GitHub manually. Auto-update cannot bridge a hostile-key
+gap.
 
 ## Troubleshooting builds
 

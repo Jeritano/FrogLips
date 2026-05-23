@@ -38,13 +38,6 @@ jobs:
         working-directory: src-tauri
         run: cargo test --no-default-features
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: cargo audit
-        working-directory: src-tauri
-        run: cargo audit
-
   # Production backend lint/test. `native-mistralrs` is the only backend
   # actually shipped to users; the lean `--no-default-features` job above
   # only protects the dev-iteration build. This job is what guards the
@@ -77,6 +70,26 @@ jobs:
       - name: cargo test (native-mistralrs)
         working-directory: src-tauri
         run: cargo test --features native-mistralrs --lib
+
+      # Smoke-check the browser-automation feature so chromiumoxide /
+      # related transitives stay buildable. `check` (not full clippy/test)
+      # because the dep graph is heavy and we don't want to double the
+      # job's compile budget — we just need to catch breakage early.
+      - name: cargo check (browser-automation)
+        working-directory: src-tauri
+        run: cargo check --features browser-automation
+
+      # cargo-audit reads Cargo.lock; it doesn't compile anything, so
+      # running it on the *shipped* feature set (native-mistralrs pulls in
+      # mistralrs-core / candle-core / indexmap / either / serde_yaml, none
+      # of which the lean no-default-features build sees) is what actually
+      # protects releases.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        working-directory: src-tauri
+        run: cargo audit
 
   frontend:
     runs-on: ubuntu-latest

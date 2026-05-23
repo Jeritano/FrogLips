@@ -40,6 +40,9 @@ src-tauri/gen/schemas
 *.p12
 *.pfx
 *.keystore
+*.minisign
+*.sec
+.signing-key
 secrets/
 .tauri/
 credentials.json
