@@ -543,32 +543,63 @@ fn row_to_image(r: &rusqlite::Row<'_>) -> rusqlite::Result<ImageRow> {
     })
 }
 
+/// Legacy listing helper (no pagination). Retained for callers / tests that
+/// don't need the unpaginated total; the IPC layer now uses
+/// [`list_images_page`] directly.
+#[allow(dead_code)]
 pub fn list_images(conv_id: Option<i64>, limit: Option<u32>) -> Result<Vec<ImageRow>> {
+    list_images_page(conv_id, limit, None).map(|(rows, _)| rows)
+}
+
+/// Paginated `images` listing. Returns `(rows, total_for_filter)` so callers
+/// can render a pager without a second round-trip. `limit` is capped at
+/// `IMAGES_PAGE_LIMIT_MAX`; `offset` is honored verbatim.
+pub fn list_images_page(
+    conv_id: Option<i64>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<(Vec<ImageRow>, i64)> {
     let conn = get_db()?;
-    let limit = limit.unwrap_or(500).min(2000) as i64;
-    let mut stmt;
-    let rows: Vec<ImageRow> = match conv_id {
+    let limit = limit.unwrap_or(200).min(IMAGES_PAGE_LIMIT_MAX) as i64;
+    let offset = offset.unwrap_or(0) as i64;
+    let (rows, total): (Vec<ImageRow>, i64) = match conv_id {
         Some(id) => {
-            stmt = conn.prepare(
+            let mut stmt = conn.prepare(
                 "SELECT id, conv_id, model, prompt, params_json, path, width, height, seed, created_at
                  FROM images WHERE conv_id = ?1
-                 ORDER BY created_at DESC LIMIT ?2",
+                 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
             )?;
-            stmt.query_map(params![id, limit], row_to_image)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
+            let rows: Vec<ImageRow> = stmt
+                .query_map(params![id, limit, offset], row_to_image)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let total: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM images WHERE conv_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            (rows, total)
         }
         None => {
-            stmt = conn.prepare(
+            let mut stmt = conn.prepare(
                 "SELECT id, conv_id, model, prompt, params_json, path, width, height, seed, created_at
                  FROM images
-                 ORDER BY created_at DESC LIMIT ?1",
+                 ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
             )?;
-            stmt.query_map(params![limit], row_to_image)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
+            let rows: Vec<ImageRow> = stmt
+                .query_map(params![limit, offset], row_to_image)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let total: i64 =
+                conn.query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0))?;
+            (rows, total)
         }
     };
-    Ok(rows)
+    Ok((rows, total))
 }
+
+/// Hard cap on `image_list` page size. Mirrors the existing 2000-row global
+/// cap; per-page caps at 200 so a renderer can't accidentally drag a 2000-row
+/// gallery in one IPC.
+pub const IMAGES_PAGE_LIMIT_MAX: u32 = 200;
 
 pub fn get_image(id: i64) -> Result<Option<ImageRow>> {
     let conn = get_db()?;

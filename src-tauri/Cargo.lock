@@ -4000,6 +4000,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -8288,6 +8289,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

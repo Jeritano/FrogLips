@@ -16,8 +16,6 @@
 //! The engine itself is responsible for memory-guard, atomic PNG writes, and
 //! tEXt-chunk metadata embedding. See [`engine`] and [`metadata`].
 
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 pub mod metadata;
@@ -57,8 +55,24 @@ pub use stub::{new_engine, ImageEngine};
 #[allow(dead_code)]
 pub type SharedEngine = ImageEngine;
 
+/// One row of the `image_list` paginated response. The engine returns rows +
+/// the total count under the supplied filter so the frontend can render a
+/// pager without needing a second `count(*)` round-trip.
+#[derive(Clone, Debug, Serialize)]
+pub struct ListImagesPage {
+    pub rows: Vec<ImageMeta>,
+    pub total: i64,
+}
+
 /// IPC-shaped options forwarded from the frontend. All fields optional; the
 /// engine fills in defaults appropriate to the resolved model + offload mode.
+///
+/// The struct itself is referenced only through `ImageGenOptsArg::From` in
+/// `commands/image.rs`; the conversion path goes IPC → `ImageGenOptsArg` →
+/// `ImageGenRequest`, so the engine-level type is constructed indirectly.
+/// Marking the type allow-dead-code so the linter doesn't complain while the
+/// conversion stays explicit.
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ImageGenOpts {
     /// Sampling steps. Schnell default 4, dev default 28.
@@ -74,6 +88,33 @@ pub struct ImageGenOpts {
     /// Force CPU-offloaded variant (`FluxOffloaded`) for low-VRAM Macs. When
     /// absent, the engine picks based on the available-RAM probe.
     pub offload: Option<bool>,
+    /// Opt-in to keep the pipeline loaded across generate calls. Default
+    /// `false` (C1 fix): mistralrs 0.8.1's diffusion pipeline holds a
+    /// load-time-seeded RNG and returns nearly identical images regardless
+    /// of prompt when the same pipeline runs multiple requests. Dropping the
+    /// pipeline between calls costs ~30-90 s warmup but produces correct
+    /// per-prompt outputs. Power users doing identical-prompt batch runs can
+    /// set this to `true` to skip the warmup, knowing they'll get the same
+    /// image each time.
+    pub reuse_pipeline: Option<bool>,
+}
+
+/// Short-hand for the FLUX.1 variants the model selector emits. The Rust IPC
+/// layer accepts both these shorthands and full HF repo ids ("org/name");
+/// shorthands are canonicalized inside `commands::image::canonicalize_flux_repo`.
+///
+/// `SchnellFp8` / `DevFp8` map to community-quantized repos that fit on
+/// 8-12 GiB Macs (`city96/FLUX.1-*-gguf`); see the canonicalization helper
+/// for the exact targets.
+#[allow(dead_code)] // Re-exported through the IPC surface; some variants are
+                    // only emitted by the frontend dropdown.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageGenModel {
+    Schnell,
+    Dev,
+    SchnellFp8,
+    DevFp8,
 }
 
 /// Fully-resolved request the engine actually runs. The IPC layer constructs
@@ -101,12 +142,21 @@ pub struct ImageGenRequest {
     /// memory guard sets this when available RAM is below the non-offload
     /// threshold and the caller didn't pin it explicitly.
     pub offload: bool,
+    /// `true` ⇒ keep the pipeline cached after this call. `false` (default)
+    /// drops it so the next generate re-loads — works around mistralrs 0.8.1
+    /// deterministic-output bug. See `ImageGenOpts::reuse_pipeline`.
+    pub reuse_pipeline: bool,
 }
 
 /// Streaming progress updates surfaced by the engine. The IPC layer fans these
 /// out as Tauri events (`image-progress`, `image-done`, `image-error`).
+///
+/// `Done` and `Error` are emitted by the IPC layer (not the engine) so the
+/// engine-side construction doesn't reach them — they live here so the
+/// event-pump match arm in `commands/image.rs` can stay exhaustive.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(dead_code)] // Done/Error are produced by the IPC layer, not the engine.
 pub enum ImageProgress {
     /// Pipeline / weights are loading. May fire once per backend boot.
     Loading { op_id: String, stage: String },
@@ -125,6 +175,12 @@ pub enum ImageProgress {
 /// Row-shaped record returned by `image_list` / `image_get`. The `params_json`
 /// field is the same blob embedded in the PNG tEXt chunk so callers don't have
 /// to re-parse the file to know how it was generated.
+///
+/// `seed` is recorded only when the underlying engine honors caller-supplied
+/// seeds; mistralrs 0.8.1's diffusion pipeline does NOT (it uses an
+/// internally-managed RNG), so today this column is always `None` for native
+/// generations. The field stays in the row schema for forward-compat with
+/// engines that will honor it.
 #[derive(Clone, Debug, Serialize)]
 pub struct ImageMeta {
     pub id: i64,
@@ -135,6 +191,8 @@ pub struct ImageMeta {
     pub path: String,
     pub width: Option<i64>,
     pub height: Option<i64>,
+    /// Recorded only when the underlying engine honors caller-supplied
+    /// seeds; `None` otherwise.
     pub seed: Option<i64>,
     pub created_at: i64,
 }

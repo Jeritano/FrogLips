@@ -761,17 +761,41 @@ export interface ImageGenOpts {
   steps?: number | null;
   /** Classifier-free guidance scale. Currently informational only. */
   cfg?: number | null;
-  /** PRNG seed for reproducibility. Currently informational only. */
+  /** PRNG seed. Recorded in `params_json` only — mistralrs 0.8.1 does NOT
+   * honor caller-supplied seeds (the diffusion path uses an internal RNG),
+   * so the value here is purely advisory until the engine catches up. */
   seed?: number | null;
   /** "WxH" — e.g. "1024x1024". Honored by the engine. */
   size?: string | null;
   /** Enable CPU offload for low-RAM Macs (slower, less peak VRAM). */
   offload?: boolean | null;
+  /**
+   * Opt-in to keep the loaded pipeline across consecutive generate calls.
+   * Default `false` (C1 fix): mistralrs 0.8.1 returns the same image
+   * regardless of prompt when the pipeline is reused, so the Rust engine
+   * drops the cache between calls. Set `true` only for identical-prompt
+   * batch runs where you knowingly want the same output (e.g. seed
+   * variation experiments) — costs ~30-90 s warmup per call when `false`.
+   */
+  reuse_pipeline?: boolean | null;
 }
+
+/**
+ * Friendly model identifiers the IPC's `canonicalize_flux_repo` accepts in
+ * addition to full HF repo ids. `*-fp8` map to community GGUF-quantized
+ * mirrors (`city96/FLUX.1-*-gguf`).
+ */
+export type ImageGenModel =
+  | "schnell"
+  | "dev"
+  | "schnell-fp8"
+  | "dev-fp8";
 
 /**
  * A persisted generated image row, returned by `image_list` / `image_get`.
  * `params_json` is the literal `ImageGenOpts` JSON the row was written with.
+ * `seed` is `null` whenever the underlying engine doesn't honor
+ * caller-supplied seeds (mistralrs 0.8.1 — always today).
  */
 export interface ImageMeta {
   id: number;
@@ -782,6 +806,17 @@ export interface ImageMeta {
   path: string;
   width: number;
   height: number;
+  /** `null` whenever the engine doesn't honor caller-supplied seeds. */
   seed: number | null;
   created_at: number;
+}
+
+/**
+ * Paginated `image_list` response. `rows` holds the current page; `total`
+ * is the unpaginated count under the same filter so the frontend can render
+ * a pager without a second round-trip. `limit` is capped at 200/page.
+ */
+export interface ListImagesPage {
+  rows: ImageMeta[];
+  total: number;
 }

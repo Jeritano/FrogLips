@@ -453,6 +453,8 @@ pub fn run() {
             commands::image::image_get,
             commands::image::image_delete,
             commands::image::image_cancel,
+            commands::image::image_unload,
+            commands::image::image_save_to,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

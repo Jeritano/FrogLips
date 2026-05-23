@@ -7,8 +7,8 @@
 //! friendly message rather than crashing.
 
 use anyhow::{anyhow, Result};
-use std::sync::Arc;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::{ImageGenRequest, ImageProgress};
 
@@ -20,20 +20,28 @@ pub fn new_engine() -> ImageEngine {
 }
 
 impl ImageEngine {
+    /// Mirrors the real engine — never called on stub builds (the IPC layer
+    /// short-circuits earlier), so flagged allow-dead-code.
+    #[allow(dead_code)]
     pub fn check_memory(&self, _model: &str, _offload: bool) -> Result<()> {
         Err(anyhow!("image gen unavailable on this build"))
     }
 
-    pub fn register_cancel(&self, _op_id: &str) -> Arc<Notify> {
-        // Hand back a fresh Notify nobody will ever fire — keeps the signature
-        // identical to the real engine so the IPC layer doesn't need cfg
-        // branches.
-        Arc::new(Notify::new())
+    /// Mirrors the real engine's signature so the IPC layer doesn't need cfg
+    /// branches. The returned token is never cancelled by the stub.
+    pub fn register_cancel(&self, _op_id: &str) -> CancellationToken {
+        CancellationToken::new()
     }
 
     pub fn release_cancel(&self, _op_id: &str) {}
 
     pub fn cancel(&self, _op_id: &str) -> bool {
+        false
+    }
+
+    /// Idempotent no-op on the stub: nothing was ever loaded, so nothing to
+    /// drop.
+    pub fn unload(&self) -> bool {
         false
     }
 

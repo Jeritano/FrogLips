@@ -18,6 +18,7 @@
 //! image-gen UI against a real, stable command shape now.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
@@ -28,6 +29,7 @@ use tokio::sync::mpsc;
 use crate::history;
 use crate::image_gen::{
     self, image_path, ImageEngine, ImageGenOpts, ImageGenRequest, ImageMeta, ImageProgress,
+    ListImagesPage,
 };
 
 use super::{path_safety, validate_hf_repo};
@@ -61,6 +63,7 @@ pub struct ImageGenOptsArg {
     pub seed: Option<u64>,
     pub size: Option<String>,
     pub offload: Option<bool>,
+    pub reuse_pipeline: Option<bool>,
 }
 
 impl From<ImageGenOptsArg> for ImageGenOpts {
@@ -71,20 +74,26 @@ impl From<ImageGenOptsArg> for ImageGenOpts {
             seed: a.seed,
             size: a.size,
             offload: a.offload,
+            reuse_pipeline: a.reuse_pipeline,
         }
     }
 }
 
-/// Begin a generation. Returns the inserted image row id once the engine
-/// resolves successfully; failures during generation surface as both the
-/// resolved Err and an `image-error` event so a frontend that registered the
-/// listener after the call doesn't miss the terminal signal.
+/// Begin a generation. Returns the **op_id** IMMEDIATELY — the actual
+/// diffusion runs on a background task and surfaces results via Tauri events
+/// (`image-progress` / `image-done` / `image-error`), all carrying the
+/// returned op_id.
 ///
-/// `op_id` is a caller-provided correlation token — every emitted progress /
-/// completion / error event carries it so multiple in-flight generations can
-/// be disambiguated. When omitted, the IPC layer mints one (millis + tail of
-/// the seed) so the frontend always has a stable handle to call
-/// `image_cancel` with.
+/// IMPORTANT (H3): the frontend MUST register `listen("image-progress")`,
+/// `listen("image-done")`, and `listen("image-error")` BEFORE calling
+/// `image_generate`. The engine waits ~50 ms before its first event emit to
+/// give the listener time to attach, but a frontend that races the call may
+/// still miss the warmup event. The returned op_id correlates every event
+/// back to the originating call.
+///
+/// `op_id` is an optional caller-provided correlation token; when omitted,
+/// the IPC layer mints one (millis + tail of the seed) so the frontend
+/// always has a stable handle to call `image_cancel` with.
 #[tauri::command]
 pub async fn image_generate(
     prompt: String,
@@ -93,10 +102,31 @@ pub async fn image_generate(
     conv_id: Option<i64>,
     op_id: Option<String>,
     app: tauri::AppHandle,
-) -> Result<i64, String> {
+) -> Result<String, String> {
     let request = build_request(prompt, model, opts.unwrap_or_default(), conv_id, op_id)?;
     let op_id = request.op_id.clone();
 
+    // Register the cancel token UP FRONT so an `image_cancel(op_id)` call
+    // that arrives before the engine has lazy-registered finds the entry.
+    let _ = ENGINE.register_cancel(&op_id);
+
+    // Spawn the work on a Tokio task and return the op_id immediately. All
+    // progress/result delivery flows through Tauri events from here.
+    let app_for_task = app.clone();
+    let op_for_task = op_id.clone();
+    let request_for_task = request.clone();
+    tokio::spawn(async move {
+        run_generation(app_for_task, request_for_task, op_for_task).await;
+    });
+
+    Ok(op_id)
+}
+
+/// Background-task body for one generation. Owns the engine call, the event
+/// pump, the atomic write, and the DB insert. Emits exactly one terminal
+/// event (`image-done` or `image-error`) per op_id. Never panics — any error
+/// is surfaced via `image-error`.
+async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: String) {
     // Engine plumbing — we hand the engine a sender, fan results out as
     // Tauri events on the corresponding receiver.
     let (tx, mut rx) = mpsc::channel::<ImageProgress>(64);
@@ -151,28 +181,19 @@ pub async fn image_generate(
                 }
             }
         }
-        // Best-effort drain; `_ = op_for_events` keeps the closure compact
-        // when the engine is the no-op stub (no events ever fire).
         drop(op_for_events);
     });
 
     // Run the engine to completion; convert any panic / engine error into
-    // an `image-error` event AND the `Err(_)` returned to the IPC caller so
-    // both paths see the failure.
+    // an `image-error` event.
     let engine = ENGINE.clone();
     let req_for_engine = request.clone();
     let result = engine.generate(req_for_engine, tx).await;
-    // Allow the pump to drain remaining events, then stop it.
     let _ = event_pump.await;
 
-    let png_bytes = match result {
+    let png_bytes_raw = match result {
         Ok(bytes) => bytes,
         Err(e) => {
-            // `{:#}` walks the anyhow chain ("outer: inner: root cause"); the
-            // bare `{}` Display we had before only showed the outermost
-            // `with_context` wrap, so the user saw "failed to load diffusion
-            // model … from HF" with the real reason (401 gated repo, network
-            // refused, disk full, etc) hidden one frame down.
             let mut message = format!("{e:#}");
             if let Some(hint) = hf_load_hint(&message) {
                 message.push_str("\n\nHint: ");
@@ -183,49 +204,77 @@ pub async fn image_generate(
                 serde_json::json!({ "op_id": op_id, "message": message }),
             );
             ENGINE.release_cancel(&op_id);
-            return Err(message);
+            return;
+        }
+    };
+
+    // C2: round-trip the PNG through `metadata::encode_with_metadata` so
+    // the `prompt`, `model`, `params_json`, `version` ZTXt chunks are
+    // actually present on disk.
+    let params_json = build_params_json(&request);
+    let png_bytes = match reencode_with_metadata(&png_bytes_raw, &request, &params_json) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = app.emit(
+                "image-error",
+                serde_json::json!({ "op_id": op_id, "message": e }),
+            );
+            ENGINE.release_cancel(&op_id);
+            return;
         }
     };
 
     // Resolve the storage path and validate it sits beneath
-    // `~/.local-llm-app/images/`. `validate_write_dest` canonicalizes the
-    // parent so a tampered $HOME or a symlinked images/ dir can't divert the
-    // write into a protected location.
+    // `~/.local-llm-app/images/`.
     let ts_ms = ms_since_epoch();
-    let path = image_path(request.conv_id, ts_ms, request.seed).inspect_err(|e| {
+    let path = match image_path(request.conv_id, ts_ms, request.seed) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = app.emit(
+                "image-error",
+                serde_json::json!({ "op_id": op_id, "message": e }),
+            );
+            ENGINE.release_cancel(&op_id);
+            return;
+        }
+    };
+    let validated = match path_safety::validate_write_dest(&path.to_string_lossy()) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = app.emit(
+                "image-error",
+                serde_json::json!({ "op_id": op_id, "message": e }),
+            );
+            ENGINE.release_cancel(&op_id);
+            return;
+        }
+    };
+    if let Err(e) = assert_under_images_root(&validated) {
         let _ = app.emit(
             "image-error",
             serde_json::json!({ "op_id": op_id, "message": e }),
         );
-    })?;
-    let validated = path_safety::validate_write_dest(&path.to_string_lossy()).inspect_err(|e| {
-        let _ = app.emit(
-            "image-error",
-            serde_json::json!({ "op_id": op_id, "message": e }),
-        );
-    })?;
-    assert_under_images_root(&validated).inspect_err(|e| {
-        let _ = app.emit(
-            "image-error",
-            serde_json::json!({ "op_id": op_id, "message": e }),
-        );
-    })?;
+        ENGINE.release_cancel(&op_id);
+        return;
+    }
 
-    // Atomic write: .tmp → fsync → rename.
-    write_atomic(&validated, &png_bytes).inspect_err(|e| {
+    // Atomic write: .tmp → fsync file → rename → fsync parent (M7).
+    if let Err(e) = write_atomic(&validated, &png_bytes) {
         let _ = app.emit(
             "image-error",
             serde_json::json!({ "op_id": op_id, "message": e }),
         );
-    })?;
+        ENGINE.release_cancel(&op_id);
+        return;
+    }
 
-    // params_json mirrors the same shape embedded in the PNG.
-    let params_json = format!(
-        "{{\"width\":{},\"height\":{},\"steps\":{},\"cfg\":{},\"seed\":{},\"offload\":{}}}",
-        request.width, request.height, request.steps, request.cfg, request.seed, request.offload,
-    );
-
-    let image_id = history::insert_image(
+    // M1: seed is engine-fabricated today. mistralrs 0.8.1's diffusion
+    // pipeline uses an internally-managed RNG; the seed in `request` is the
+    // value our IPC picked but the engine never consumed it. Record `None`
+    // in the DB column so the frontend can honestly say "seed not honored
+    // by current engine".
+    let seed_column: Option<i64> = None;
+    let image_id = match history::insert_image(
         request.conv_id,
         &request.model,
         &request.prompt,
@@ -233,28 +282,44 @@ pub async fn image_generate(
         &validated.to_string_lossy(),
         Some(request.width as i64),
         Some(request.height as i64),
-        Some(request.seed as i64),
-    )
-    .map_err(|e| e.to_string())?;
+        seed_column,
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = app.emit(
+                "image-error",
+                serde_json::json!({ "op_id": op_id, "message": e.to_string() }),
+            );
+            ENGINE.release_cancel(&op_id);
+            return;
+        }
+    };
 
     ENGINE.release_cancel(&op_id);
     let _ = app.emit(
         "image-done",
         serde_json::json!({ "op_id": op_id, "image_id": image_id }),
     );
-
-    Ok(image_id)
 }
 
-/// List generated images, newest first. `conv_id` filters to a single
-/// conversation; `None` returns all.
+/// List generated images, newest first, with pagination. `conv_id` filters
+/// to a single conversation; `None` returns all. `limit` is capped at
+/// [`history::IMAGES_PAGE_LIMIT_MAX`] (200); `offset` is honored verbatim.
+/// Returns `{ rows, total }` where `total` is the unpaginated count under
+/// the same filter so the frontend can render a pager without a second
+/// round-trip.
 #[tauri::command]
 pub async fn image_list(
     conv_id: Option<i64>,
     limit: Option<u32>,
-) -> Result<Vec<ImageMeta>, String> {
-    let rows = super::blocking(move || history::list_images(conv_id, limit)).await?;
-    Ok(rows.into_iter().map(row_to_meta).collect())
+    offset: Option<u32>,
+) -> Result<ListImagesPage, String> {
+    let (rows, total) =
+        super::blocking(move || history::list_images_page(conv_id, limit, offset)).await?;
+    Ok(ListImagesPage {
+        rows: rows.into_iter().map(row_to_meta).collect(),
+        total,
+    })
 }
 
 /// Fetch a single image row.
@@ -290,6 +355,13 @@ pub async fn image_delete(id: i64) -> Result<(), String> {
 
 /// Cancel an in-flight generation. Returns `Ok(())` whether or not the op
 /// was actually pending — a no-op cancel is not an error.
+///
+/// Reliability: pre-dispatch cancels (before the engine sends the request to
+/// mistralrs) ARE reliable now (C3 fix — backed by
+/// `tokio_util::sync::CancellationToken`). Mid-diffusion cancel remains
+/// best-effort against mistralrs 0.8.1 — the engine still drops its
+/// response receiver and stops emitting events for the op, but the
+/// underlying diffusion work continues to completion.
 #[tauri::command]
 pub async fn image_cancel(op_id: String) -> Result<(), String> {
     if op_id.is_empty() || op_id.len() > 128 {
@@ -297,6 +369,52 @@ pub async fn image_cancel(op_id: String) -> Result<(), String> {
     }
     ENGINE.cancel(&op_id);
     Ok(())
+}
+
+/// Unload the currently-resident pipeline (~14-28 GiB) so the OS can reclaim
+/// the memory. Idempotent — calling when nothing is loaded is a no-op.
+/// Returns `true` when a slot was actually dropped, `false` otherwise so
+/// the frontend can disambiguate "freed memory" from "already idle".
+#[tauri::command]
+pub async fn image_unload() -> Result<bool, String> {
+    Ok(ENGINE.unload())
+}
+
+/// Copy a previously-generated PNG (by row id) to a user-chosen destination.
+/// `dest` is validated through `path_safety::validate_write_dest` so the
+/// privileged backend can't be tricked into writing into `~/.ssh/`, the
+/// keychain, `/etc`, etc. Returns the resolved canonical destination path
+/// so the frontend can show a "Saved to X" toast.
+///
+/// The copy itself is atomic: write to `<dest>.tmp`, fsync, rename, fsync
+/// parent. A power-loss mid-copy leaves `<dest>` either fully written or
+/// not present.
+#[tauri::command]
+pub async fn image_save_to(id: i64, dest: String) -> Result<String, String> {
+    if id < 0 {
+        return Err("id must be non-negative".into());
+    }
+    let validated_dest = path_safety::validate_write_dest(&dest)?;
+    let validated_dest_str = validated_dest.to_string_lossy().to_string();
+
+    // Resolve the source row + validate the on-disk path before we copy.
+    let row = super::blocking(move || history::get_image(id))
+        .await?
+        .ok_or_else(|| format!("image id {id} not found"))?;
+    let src_validated = path_safety::validate_read_src(&row.path)?;
+    let src_path = src_validated.to_string_lossy().to_string();
+
+    let dest_for_blocking = validated_dest.clone();
+    super::blocking(move || {
+        let bytes = std::fs::read(&src_path)
+            .map_err(|e| anyhow::anyhow!("failed to read source image: {e}"))?;
+        write_atomic(&dest_for_blocking, &bytes)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    })
+    .await?;
+
+    Ok(validated_dest_str)
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
@@ -344,7 +462,10 @@ fn build_request(
     validate_hf_repo(&model)?;
 
     let (width, height) = parse_size(opts.size.as_deref())?;
-    let is_dev = model.to_ascii_lowercase().contains("dev");
+    // L1: exact-match check against canonical FLUX.1-dev repo ids. The old
+    // `contains("dev")` substring check would false-positive on names like
+    // `developer-edition` or `lewdev`.
+    let is_dev = is_dev_model(&model);
     let steps = opts
         .steps
         .unwrap_or(if is_dev {
@@ -363,6 +484,7 @@ fn build_request(
     }
     let seed = opts.seed.unwrap_or_else(random_seed);
     let offload = opts.offload.unwrap_or(false);
+    let reuse_pipeline = opts.reuse_pipeline.unwrap_or(false);
 
     let op_id = op_id
         .filter(|s| !s.trim().is_empty())
@@ -394,7 +516,119 @@ fn build_request(
         cfg,
         seed,
         offload,
+        reuse_pipeline,
     })
+}
+
+/// Whether `model` (already canonicalized to a HF repo id) is a FLUX.1-dev
+/// variant. Delegates to the engine when the real backend is compiled in so
+/// the stub build doesn't have to mirror the list; on stub builds falls back
+/// to a hard-coded set.
+#[cfg(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+fn is_dev_model(model: &str) -> bool {
+    crate::image_gen::engine::is_dev_repo(model)
+}
+
+#[cfg(not(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+)))]
+fn is_dev_model(model: &str) -> bool {
+    matches!(
+        model.trim(),
+        "black-forest-labs/FLUX.1-dev" | "city96/FLUX.1-dev-gguf"
+    )
+}
+
+/// Build the deterministic params JSON blob mirrored between the PNG ZTXt
+/// chunk and the DB row. Field order is fixed so the encoded bytes don't
+/// churn between identical generations.
+fn build_params_json(request: &ImageGenRequest) -> String {
+    format!(
+        "{{\"width\":{},\"height\":{},\"steps\":{},\"cfg\":{},\"seed\":{},\"offload\":{},\"reuse_pipeline\":{}}}",
+        request.width,
+        request.height,
+        request.steps,
+        request.cfg,
+        request.seed,
+        request.offload,
+        request.reuse_pipeline,
+    )
+}
+
+/// C2: re-encode the raw PNG bytes the engine returns through
+/// `metadata::encode_with_metadata` so the resulting file carries `prompt`,
+/// `model`, `params_json`, `version` ZTXt chunks. Decodes the engine PNG via
+/// the `png` crate (already a dependency under `native-mistralrs`), extracts
+/// the raw pixel buffer, then re-encodes through the metadata helper.
+///
+/// Round-trip cost on a 1024² image is small (~50 ms) and bounded — if the
+/// engine ever ships a build that already embeds chunks, the round-trip
+/// strips them and re-embeds with the canonical shape, which is the
+/// behaviour we want (single source of truth).
+#[cfg(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+fn reencode_with_metadata(
+    raw_png: &[u8],
+    request: &ImageGenRequest,
+    params_json: &str,
+) -> Result<Vec<u8>, String> {
+    use crate::image_gen::metadata::{encode_with_metadata, PngMetadata};
+
+    let decoder = png::Decoder::new(std::io::Cursor::new(raw_png));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| format!("failed to decode engine PNG header: {e}"))?;
+    let info = reader.info().clone();
+    if info.color_type != png::ColorType::Rgb || info.bit_depth != png::BitDepth::Eight {
+        // The metadata helper currently only handles RGB8 — if the engine
+        // ever returns something else we'd rather write the raw bytes than
+        // mis-decode + corrupt the image. Document the gap and pass through.
+        return Ok(raw_png.to_vec());
+    }
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let frame = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("failed to decode engine PNG idat: {e}"))?;
+    buf.truncate(frame.buffer_size());
+
+    let meta = PngMetadata {
+        prompt: &request.prompt,
+        model: &request.model,
+        width: info.width,
+        height: info.height,
+        steps: request.steps,
+        cfg: request.cfg,
+        seed: request.seed,
+        offload: request.offload,
+        reuse_pipeline: request.reuse_pipeline,
+    };
+    // The chunk content built inside the encoder must agree with the DB
+    // column we're about to insert — `PngMetadata::params_json()` and
+    // `build_params_json(request)` produce the same string by construction.
+    debug_assert_eq!(meta.params_json(), params_json);
+    encode_with_metadata(&buf, info.width, info.height, &meta)
+}
+
+#[cfg(not(all(
+    feature = "native-mistralrs",
+    target_os = "macos",
+    target_arch = "aarch64"
+)))]
+fn reencode_with_metadata(
+    raw_png: &[u8],
+    _request: &ImageGenRequest,
+    _params_json: &str,
+) -> Result<Vec<u8>, String> {
+    Ok(raw_png.to_vec())
 }
 
 /// Surface an actionable hint from a HuggingFace load failure. Most common
@@ -444,6 +678,15 @@ fn hf_load_hint(message: &str) -> Option<&'static str> {
 /// Map the UI's friendly Flux model shorthand to the canonical HuggingFace
 /// repo id. Anything already in `org/name` form passes through untouched so
 /// power users can point at a community fork.
+///
+/// F1: quantized variants — `schnell-fp8` / `dev-fp8` map to the city96
+/// GGUF-quantized repos. mistralrs 0.8.1's `FluxLoader` autodetects the
+/// quant layout from the safetensors / gguf shards present in the repo, so
+/// no per-variant loader changes are needed. NOTE on licensing: `city96`'s
+/// GGUFs inherit the upstream FLUX.1-dev license (gated, non-commercial) /
+/// FLUX.1-schnell license (Apache-2.0). The `dev-fp8` repo therefore still
+/// requires a HuggingFace token + license-accept on the upstream dev repo;
+/// the existing `hf_load_hint` covers the gated-403 case.
 fn canonicalize_flux_repo(model: &str) -> String {
     let trimmed = model.trim();
     match trimmed {
@@ -454,6 +697,13 @@ fn canonicalize_flux_repo(model: &str) -> String {
         "dev" | "FLUX.1-dev" | "flux-dev" | "flux.1-dev" => {
             "black-forest-labs/FLUX.1-dev".to_string()
         }
+        // F1: quantized variants. `city96` is the canonical community
+        // publisher of GGUF-quantized FLUX shards (Q4_K_M, fp8) that fit on
+        // 8-12 GiB Macs. Both repos load cleanly via `DiffusionLoaderType::Flux`
+        // /`FluxOffloaded` on mistralrs 0.8.1 because the loader probes the
+        // safetensors layout (not the repo name).
+        "schnell-fp8" | "flux-schnell-fp8" => "city96/FLUX.1-schnell-gguf".to_string(),
+        "dev-fp8" | "flux-dev-fp8" => "city96/FLUX.1-dev-gguf".to_string(),
         // Already canonical (or a custom repo) — pass through.
         other => other.to_string(),
     }
@@ -494,11 +744,13 @@ fn random_seed() -> u64 {
 /// catches denylisted system dirs and `..` traversal; this second check
 /// pins the scope to the images root so an attacker who somehow bypassed
 /// the first one still can't write to an arbitrary user file.
+///
+/// M6: the canonical images root is cached after the first successful
+/// resolution. The directory is created once at module init and never
+/// moved — re-canonicalizing on every write was wasteful.
 fn assert_under_images_root(path: &std::path::Path) -> Result<(), String> {
-    let root = image_gen::images_root()?;
-    let canon_root =
-        std::fs::canonicalize(&root).map_err(|e| format!("images root not accessible: {e}"))?;
-    if !path.starts_with(&canon_root) {
+    let canon_root = canonical_images_root()?;
+    if !path.starts_with(canon_root) {
         return Err(format!(
             "path {} escapes images root {}",
             path.display(),
@@ -508,11 +760,29 @@ fn assert_under_images_root(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Atomic write — `.tmp` next to the destination, fsync, then `rename` over
-/// the final path. Same shape as `agent/fs.rs::write_nofollow_sync`, but the
-/// final rename gives us crash-safety: a partially-written `.tmp` is never
-/// observable as a real image row because the row only lands AFTER the
-/// rename succeeds.
+/// Cached canonical `~/.local-llm-app/images/` path. The lookup runs once per
+/// process; subsequent calls return the cached `PathBuf` slice.
+static CANON_IMAGES_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+fn canonical_images_root() -> Result<&'static std::path::Path, String> {
+    if let Some(p) = CANON_IMAGES_ROOT.get() {
+        return Ok(p.as_path());
+    }
+    let root = image_gen::images_root()?;
+    let canon = std::fs::canonicalize(&root)
+        .map_err(|e| format!("images root not accessible: {e}"))?;
+    // Race: two concurrent callers may both compute the canonical path; the
+    // first wins, the second's result is dropped. Either way the stored
+    // value is correct.
+    let _ = CANON_IMAGES_ROOT.set(canon);
+    Ok(CANON_IMAGES_ROOT.get().expect("just set").as_path())
+}
+
+/// Atomic write — `.tmp` next to the destination, fsync the file, `rename`
+/// over the final path, fsync the parent directory. Same shape as
+/// `agent/fs.rs::write_nofollow_sync`, with the parent-dir fsync added (M7)
+/// so a power-loss between the rename and the next periodic OS flush
+/// doesn't leave the directory entry pointing at nothing.
 fn write_atomic(dest: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let parent = dest
@@ -546,7 +816,23 @@ fn write_atomic(dest: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
         let _ = std::fs::remove_file(&tmp);
         format!("failed to finalize image: {e}")
     })?;
+    // M7: fsync the parent dir so the rename is durable. APFS / ext4 can
+    // both lose the directory entry on power loss between rename and the
+    // next periodic flush. Best-effort — a fsync failure here only loses
+    // crash-safety, not the data itself, so we don't error out.
+    fsync_parent_best_effort(parent);
     Ok(())
+}
+
+/// Open `parent` for read and call `sync_all` so the directory entry change
+/// from the preceding `rename` is durable. Best-effort: directory fsync is
+/// supported on macOS HFS+/APFS and on Linux, but a closed-file-handle EBADF
+/// or platform that doesn't honor it is non-fatal — the file content is
+/// already on disk via the file fsync.
+fn fsync_parent_best_effort(parent: &std::path::Path) {
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
 }
 
 #[cfg(test)]
@@ -630,5 +916,127 @@ mod tests {
         let outside = std::env::temp_dir().join("not-an-image.png");
         let result = assert_under_images_root(&outside);
         assert!(result.is_err(), "outside-root path must be rejected");
+    }
+
+    #[test]
+    fn canonicalize_flux_repo_maps_quantized_shorthand() {
+        assert_eq!(canonicalize_flux_repo("schnell-fp8"), "city96/FLUX.1-schnell-gguf");
+        assert_eq!(canonicalize_flux_repo("dev-fp8"), "city96/FLUX.1-dev-gguf");
+        assert_eq!(canonicalize_flux_repo("flux-dev-fp8"), "city96/FLUX.1-dev-gguf");
+        // Bare shorthands still resolve to the upstream repos.
+        assert_eq!(
+            canonicalize_flux_repo("schnell"),
+            "black-forest-labs/FLUX.1-schnell"
+        );
+    }
+
+    #[test]
+    fn build_params_json_is_deterministic_and_contains_reuse_flag() {
+        let req = ImageGenRequest {
+            op_id: "op-1".into(),
+            conv_id: None,
+            model: "black-forest-labs/FLUX.1-schnell".into(),
+            prompt: "a cat".into(),
+            width: 1024,
+            height: 1024,
+            steps: 4,
+            cfg: 0.0,
+            seed: 42,
+            offload: false,
+            reuse_pipeline: false,
+        };
+        let a = build_params_json(&req);
+        let b = build_params_json(&req);
+        assert_eq!(a, b);
+        assert!(a.contains("\"reuse_pipeline\":false"));
+        assert!(a.contains("\"seed\":42"));
+        assert!(a.starts_with("{\"width\":1024,"));
+    }
+
+    /// M7 verification — `write_atomic` produces a regular file at the dest
+    /// path and the file content matches the input bytes. The fsync calls
+    /// themselves can't be unit-tested (kernel side-effect with no observable
+    /// from userspace), but the rename + write are observable here.
+    #[test]
+    fn write_atomic_lands_bytes_at_dest() {
+        let tmp = std::env::temp_dir()
+            .join(format!("froglips-img-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dest = tmp.join("out.png");
+        let bytes = b"\x89PNG\r\n\x1a\nfake-image-bytes".to_vec();
+        write_atomic(&dest, &bytes).expect("write atomic");
+        assert!(dest.exists(), "destination must exist after atomic write");
+        let read = std::fs::read(&dest).unwrap();
+        assert_eq!(read, bytes);
+        // The .tmp sibling must not linger.
+        let tmp_sibling = tmp.join("out.png.tmp");
+        assert!(!tmp_sibling.exists(), ".tmp must be renamed away");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// C2 round-trip test for the metadata encoder. Encode a known-good
+    /// 64×64 RGB8 buffer through `encode_with_metadata`, decode the result
+    /// back with the `png` crate, and assert the four ZTXt chunks are
+    /// recoverable with the values we put in.
+    #[cfg(all(
+        feature = "native-mistralrs",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    #[test]
+    fn metadata_roundtrip_recovers_ztxt_chunks() {
+        use crate::image_gen::metadata::{encode_with_metadata, PngMetadata};
+
+        let w = 64u32;
+        let h = 64u32;
+        let mut buf = vec![0u8; (w * h * 3) as usize];
+        // Fill with a non-trivial gradient so the IDAT isn't all zeros.
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 3) as usize;
+                buf[i] = (x * 4) as u8;
+                buf[i + 1] = (y * 4) as u8;
+                buf[i + 2] = ((x + y) * 2) as u8;
+            }
+        }
+        let meta = PngMetadata {
+            prompt: "a cat in a hat",
+            model: "black-forest-labs/FLUX.1-schnell",
+            width: w,
+            height: h,
+            steps: 4,
+            cfg: 0.0,
+            seed: 42,
+            offload: false,
+            reuse_pipeline: false,
+        };
+        let encoded = encode_with_metadata(&buf, w, h, &meta).expect("encode");
+        let decoder = png::Decoder::new(std::io::Cursor::new(&encoded));
+        let reader = decoder.read_info().expect("read header");
+        let info = reader.info();
+        // ZTXt chunks land in `info.compressed_latin1_text`; tEXt would be
+        // in `uncompressed_latin1_text`. We wrote ZTXt above.
+        let chunks: std::collections::HashMap<String, String> = info
+            .compressed_latin1_text
+            .iter()
+            .filter_map(|c| {
+                let mut c = c.clone();
+                c.decompress_text().ok()?;
+                Some((c.keyword.clone(), c.get_text().ok()?))
+            })
+            .collect();
+        assert_eq!(
+            chunks.get("prompt").map(String::as_str),
+            Some("a cat in a hat")
+        );
+        assert_eq!(
+            chunks.get("model").map(String::as_str),
+            Some("black-forest-labs/FLUX.1-schnell")
+        );
+        let params = chunks.get("params_json").expect("params_json chunk");
+        assert!(params.contains("\"width\":64"));
+        assert!(params.contains("\"seed\":42"));
+        assert!(chunks.contains_key("version"));
     }
 }

@@ -22,6 +22,7 @@ import type {
   GgufFile,
   ImageGenOpts,
   ImageMeta,
+  ListImagesPage,
   EditOp,
   EditResult,
   ExistsResult,
@@ -523,32 +524,61 @@ export const api = {
   workflowRunsList: (workflowId: number) =>
     invoke<WorkflowRun[]>("workflow_runs_list", { workflowId }),
 
-  // Image generation (mistralrs FLUX). `imageGenerate` returns the persisted
-  // image row id; the actual diffusion + PNG write runs async on the Rust side
-  // and emits `image-progress` / `image-done` / `image-error` events keyed by
-  // op_id. Callers mint the op_id (e.g. `crypto.randomUUID()`) so they can
-  // correlate progress events back to their own UI state.
+  // Image generation (mistralrs FLUX). `imageGenerate` returns the **op_id**
+  // immediately — the actual diffusion + PNG write runs async on the Rust
+  // side and emits `image-progress` / `image-done` / `image-error` events
+  // keyed by op_id. The terminal row id arrives via the `image-done` event's
+  // `image_id` field.
+  //
+  // IMPORTANT (H3): register your `listen("image-progress")` /
+  // `listen("image-done")` / `listen("image-error")` BEFORE calling this —
+  // the Rust engine waits ~50 ms before emitting its first event to give the
+  // listener time to attach, but a racing call may still miss the warmup.
   imageGenerate: (
     prompt: string,
     model: string,
     opts: ImageGenOpts,
     convId: number | null,
-    opId: string,
-  ) => invoke<number>("image_generate", {
+    opId: string | null,
+  ) => invoke<string>("image_generate", {
     prompt,
     model,
     opts,
     convId,
     opId,
   }),
-  imageList: (convId: number | null, limit?: number) =>
-    invoke<ImageMeta[]>("image_list", {
+  /**
+   * Paginated `images` listing. `limit` caps at 200/page; `offset` skips
+   * the first N rows. Returns `{ rows, total }` so the frontend can render
+   * a pager without a second round-trip.
+   */
+  imageList: (convId: number | null, limit?: number, offset?: number) =>
+    invoke<ListImagesPage>("image_list", {
       convId,
       limit: typeof limit === "number" ? limit : null,
+      offset: typeof offset === "number" ? offset : null,
     }),
   imageGet: (id: number) => invoke<ImageMeta | null>("image_get", { id }),
   imageDelete: (id: number) => invoke<void>("image_delete", { id }),
-  // Best-effort cancel — mistralrs 0.8.1 doesn't expose a mid-diffusion abort,
-  // so this only short-circuits pre-sample setup / post-sample save phases.
+  /**
+   * Cancel an in-flight generation. Pre-dispatch cancels are reliable now
+   * (C3 — `CancellationToken`). Mid-diffusion cancel remains best-effort
+   * against mistralrs 0.8.1: the engine drops its response receiver and
+   * stops emitting events, but the underlying GPU work runs to completion.
+   */
   imageCancel: (opId: string) => invoke<void>("image_cancel", { opId }),
+  /**
+   * Unload the currently-resident FLUX pipeline (~14-28 GiB). Returns
+   * `true` when a slot was actually dropped, `false` when nothing was
+   * loaded. Calling during a generation queues behind it.
+   */
+  imageUnload: () => invoke<boolean>("image_unload"),
+  /**
+   * Copy a previously-generated image (by row id) to `dest`. The Rust side
+   * validates `dest` against the same path-safety denylist as other write
+   * IPCs (rejects `~/.ssh/`, system dirs, credential filenames, etc).
+   * Returns the resolved canonical destination path.
+   */
+  imageSaveTo: (id: number, dest: string) =>
+    invoke<string>("image_save_to", { id, dest }),
 };
