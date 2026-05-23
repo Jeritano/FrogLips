@@ -196,7 +196,14 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
           aria-hidden="true"
           onClick={() => setBrowserOpen(true)}
         />
-        <select data-shortcut="focus-model" value={selValue} onChange={onChange} disabled={busy || !!status?.running}>
+        <select
+          data-shortcut="focus-model"
+          value={selValue}
+          onChange={onChange}
+          onMouseDown={() => { void loadModels(); }}
+          onFocus={() => { void loadModels(); }}
+          disabled={busy || !!status?.running}
+        >
           <option value="">— pick a model —</option>
           {models.ollama.length > 0 && (
             <optgroup label="Ollama (local)">
@@ -291,7 +298,11 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
       {browserOpen && (
         <Suspense fallback={<div className="lazy-loading">Loading model browser…</div>}>
           <ModelBrowser
-            onClose={() => setBrowserOpen(false)}
+            // Always re-list on close: the user may have pulled / removed
+            // models via a path that didn't fire onPulled (e.g. CLI alongside
+            // the app, or a remove). Cheaper than missing freshly-installed
+            // entries.
+            onClose={() => { setBrowserOpen(false); loadModels(); }}
             onPulled={() => { loadModels(); setBrowserOpen(false); }}
           />
         </Suspense>
