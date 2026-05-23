@@ -78,6 +78,12 @@ pub(crate) fn ensure_workflow_tables(conn: &Connection) -> Result<()> {
 /// Rows whose key doesn't fit the pattern are left with `workflow_id = NULL`
 /// and will be cleaned up by the next scheduler scan via `prune_card_last_fired`.
 pub(crate) fn ensure_card_fired_workflow_id_column(conn: &Connection) -> Result<()> {
+    // Re-run table creation first. Some users hit v8 BEFORE
+    // `workflow_card_fired` was added to `ensure_workflow_tables`, so their
+    // user_version is 8 but the table is absent — the ALTER below would
+    // explode on them. `ensure_workflow_tables` uses CREATE TABLE IF NOT
+    // EXISTS, so this is a free no-op on every healthy DB.
+    ensure_workflow_tables(conn)?;
     let has: bool = match conn.query_row(
         "SELECT 1 FROM pragma_table_info('workflow_card_fired') WHERE name = 'workflow_id'",
         [],
