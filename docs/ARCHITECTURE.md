@@ -22,8 +22,10 @@ Froglips is a Tauri 2 app with a Rust core, a React 19 + TypeScript frontend, an
 │  │  MessageList          │    │  memory.rs (embeddings)     │  │
 │  │  ChatInput            │    │  models.rs (list + delete)  │  │
 │  │  ParamsPanel          │    │  backend_process.rs (procs) │  │
-│  │  DiagnosticsPanel     │    │  data_backup.rs (export)    │  │
-│  │                       │    │  crash_log.rs / logging.rs  │  │
+│  │  ImageView + image/   │    │  image_gen/ (FLUX pipeline) │  │
+│  │  WorkflowsPage        │    │  workflows.rs (scheduler)   │  │
+│  │  AboutYouModal        │    │  data_backup.rs (export)    │  │
+│  │  DiagnosticsPanel     │    │  crash_log.rs / logging.rs  │  │
 │  │  lib/agent-loop/      │    │  settings.rs (persistence)  │  │
 │  │  lib/memory-client.ts │    │  util.rs (shared helpers)   │  │
 │  │  lib/mlx-client.ts    │    │  + tauri-plugin-updater     │  │
@@ -65,6 +67,8 @@ The Tauri command layer — every `#[tauri::command]` wrapper that JS reaches vi
 - `commands/memory.rs` — memory store and recall.
 - `commands/mcp.rs` — MCP server management.
 - `commands/data.rs` — data backup, JSON export, and additive import.
+- `commands/image.rs` — image-generation IPCs (`image_generate`, paginated `image_list`, `image_get`, `image_delete`, `image_cancel`, `image_unload`, `image_save_to`, `image_open_external`, `image_reveal_in_finder`). Delegates to `image_gen/` for the actual sampler; mints op-ids, validates paths via shared `commands/path_safety.rs`, persists rows, emits `image-progress` / `image-done` / `image-error` Tauri events keyed by op-id.
+- `commands/workflows.rs` — workflow CRUD, scheduler control, and run history (backs the Workflows canvas).
 - `commands/misc.rs` — settings, diagnostics, crash-log read, the diagnostics bundle, and the remaining odds and ends.
 
 ### `util.rs`
@@ -113,6 +117,20 @@ Lists MLX (scans HF hub directory, decodes `models--org--name` → `org/name`) a
 Wraps `mistralrs-core` 0.8.1 + candle + Metal. Holds `Arc<MistralRs>` per loaded model. `NativeRuntime::load(model_id)` spawns the heavy HF download + model load on a blocking thread; `chat_stream(messages, opts, on_chunk)` builds a `Request::Normal` with `is_streaming: true`, sends it to mistralrs via `get_sender()`, and forwards `Response::Chunk` deltas through a callback so the Tauri layer can re-emit them as `native-chunk:<op_id>` events. Five Tauri commands (`native_supported`, `native_load_model`, `native_unload_model`, `native_current_model`, `native_chat_stream`) gate access. Falls back to CPU if Metal init fails. Requires full Xcode + Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) at build time.
 
 `mistralrs-core` 0.8.1 exposes a real `tools`/`tool_choice` API and returns `tool_calls` in its stream, so the native chat command accepts tool definitions and tool-role messages and collects tool calls from the stream. **Agent mode works on the native backend** alongside Ollama and MLX — see `docs/AGENT_LAYER.md`.
+
+### `image_gen/` (feature-gated `native-mistralrs`)
+
+In-process text-to-image, wrapping `mistralrs-core` 0.8.1's `FluxLoader` + `DiffusionPipeline`. The supported repos are upstream BFL only — `black-forest-labs/FLUX.1-schnell` (4-step distilled) and `black-forest-labs/FLUX.1-dev` (28-step, gated by a HuggingFace license accept); community GGUF / single-file fp8 repos don't ship the multi-file safetensors layout `FluxLoader` requires.
+
+- `image_gen/engine.rs` — lazy pipeline cache (`OnceCell`), single-flight `generate_mutex`, `tokio_util::sync::CancellationToken` for in-flight cancel, idle evictor. Pipelines are dropped after each generate by default to dodge a `mistralrs` 0.8.1 sameness bug where the pipeline-scoped `Isaac64Rng` is never re-seeded — `opts.reuse_pipeline` opts back into the warm path. Routes `Response::ModelError` **and** `Response::CompletionModelError` (image-gen errors land in the latter; missing the arm surfaced as a misleading "diffusion response channel closed"). A `humanize_diffusion_error` helper rewrites T5 token-cap / HF 401 / OOM messages into actionable UI copy.
+- `image_gen/metadata.rs` — PNG `tEXt` provenance chunks (`prompt`, `model`, `params_json`, `version`) baked into every generated PNG so a saved image carries its own reproduction recipe.
+- `image_gen/mod.rs` — `ImageGenOpts` + `ImageGenModel` types shared with `commands/image.rs`.
+
+DB schema: migration v10 adds an `images` table (`id`, `conv_id`, `model`, `prompt`, `params_json`, `path`, `width`, `height`, `seed`, `created_at`). On-disk PNGs live under `~/.local-llm-app/images/`; the Tauri `assetProtocol` scope is widened to `$HOME/.local-llm-app/images/**` and the CSP extended for `asset:` + `http://asset.localhost` so the webview can render them via `convertFileSrc`. The frontend `ImageView` component consumes this surface — see Frontend modules below.
+
+### `workflows.rs`
+
+Agent-orchestration canvas backing. Card definitions (input / agent / tool / output), connections, schedules, run history, and the scheduler tick loop. Migration v9 adds `workflow_card_fired.workflow_id INTEGER` to fix a delete-by-LIKE prefix-collision bug; the column-add helper calls `ensure_workflow_tables(conn)` first so existing v8 DBs that hadn't yet seen the table no longer fail the migration with a missing-table error. Unattended runs are explicit opt-in.
 
 ### `backend_process.rs`
 
@@ -193,6 +211,26 @@ Embeddings via Ollama (`/api/embeddings` w/ `nomic-embed-text`). 16-entry LRU ca
 ### `lib/markdown.ts`
 
 `renderMarkdown(md)` pipes user/assistant content through `marked` (GFM enabled) and `highlight.js` (20+ languages registered) for syntax highlighting, then through DOMPurify with a strict tag + attribute allowlist. Custom `afterSanitizeAttributes` hook blocks `javascript:` / `vbscript:` / `data:` hrefs and forces `target="_blank" rel="noopener noreferrer"` on anchors. All `dangerouslySetInnerHTML` callers in MessageList go through this single sanitization path.
+
+### `components/MessageList.tsx`
+
+Renders the chat transcript. The wrapper owns the scroll container, the rAF-coalesced autoscroll-to-bottom effect, and the streaming bubble. The persisted-row list and pin state live in a memoized `<MessageHistory>` subtree pulled out of the wrapper so streaming-text re-renders (~60 Hz during a reply) don't walk + diff every row each frame — only the live `<StreamingMessage>` re-renders. `.message-list` declares `contain: layout paint` + `overscroll-behavior: contain`; the scroll listener is registered passively with a rAF-coalesced stick check; autoscroll-to-bottom is throttled to every third rAF tick while streaming. Result: scroll stays responsive against long histories during streaming.
+
+`MessageList` also caps initially-rendered rows at the most recent `WINDOW_SIZE = 150` and gates the rest behind an explicit "Show earlier messages" control (the newest messages — the ones that stream and that autoscroll targets — are always fully rendered).
+
+### `components/ImageView.tsx` + `src/hooks/useImageGeneration.ts`
+
+Top-level Image-generation surface (canvas-left + vertical thumb strip + sticky composer). Owns the gallery state, per-conversation filter chip (All / This chat / Standalone), pagination ("Load more"), the in-app right-click `<ImageContextMenu>` (Open in Preview · Save image as… · Reveal in Finder · Copy file path · Send to current chat), and the global `image-done` subscription that refreshes the gallery on any completed gen — including agent-tool-driven `generate_image` calls.
+
+The in-flight generation state (`running` / `progress` / `error` / `generate`) lives one level up in `App.tsx` via `useImageGeneration` and is passed into `ImageView` as props. Tab navigation unmounts `ImageView` but `App` stays mounted, so the Tauri `image-progress` / `image-done` / `image-error` listeners survive — without this, switching tabs mid-gen silently dropped the completion event (Rust kept generating, PNG landed in DB, UI forgot it was running).
+
+### `components/AboutYouModal.tsx` + `lib/user-profile.ts`
+
+Local-only structured user profile (name / occupation / location / about / response-style + an enabled toggle). `formatUserProfile` renders the enabled profile as a system-prompt block (framed as context the model has, not something to repeat back) which `useChatSend` prepends to every chat and the workflow runner prepends to every agent run. Stored under `settings.user_profile`; never leaves the device. Saving with any field filled auto-enables the profile (foot-gun fix — the original required two clicks).
+
+### `lib/auto-continue.ts` + `components/ContextRolloverBanner.tsx`
+
+When estimated context use crosses ~85% of the active model's window (resolved via `lib/model-context-lookup.ts`, which hits Ollama `/api/show` for the real `Modelfile num_ctx` / `model_info[*.context_length]`, cached per `(backend, model)`), a banner above the composer counts down 5 s, then summarizes prior turns via the active backend and forks the conversation into a fresh "Continued: …" child seeded with the summary as a system message. The countdown is gated on `backendReady = status?.running && status.model` so it can't fire while the backend is stopped.
 
 ### `components/ToolHistory.tsx`
 
