@@ -27,16 +27,44 @@ export function toOllamaMessages(msgs: Message[]) {
       // string"). The OpenAI spec also defines arguments as a string. Some
       // models (qwen3-coder via huihui-abliterated, etc.) round-trip the field
       // as an object; normalize before send.
-      const normalized = m.tool_calls.map((tc) => ({
-        ...tc,
-        function: {
-          ...tc.function,
-          arguments:
+      // Cloud-routing models (kimi-k2.6:cloud, deepseek-v4-pro:cloud,
+       // …) re-parse `arguments` strictly. If the previous-turn stream
+       // produced a partial / truncated JSON (model paused mid-thought
+       // before finishing the close brace), passing the raw string back
+       // returns 400 "Value looks like object, but can't find closing
+       // '}' symbol". Validate + repair: if the string isn't parseable
+       // JSON, replace with "{}" so the round-trip works. We log the
+       // repair via diagnostics so the loop can recover gracefully.
+      const normalized = m.tool_calls
+        // Drop any tool_call that lacks a function name — cloud routing
+        // refuses the whole request on a single empty-name entry.
+        .filter((tc) => tc.function && typeof tc.function.name === "string" && tc.function.name.length > 0)
+        .map((tc) => {
+          const raw =
             typeof tc.function.arguments === "string"
               ? tc.function.arguments
-              : JSON.stringify(tc.function.arguments ?? {}),
-        },
-      }));
+              : JSON.stringify(tc.function.arguments ?? {});
+          let safe = raw;
+          if (raw && raw !== "{}") {
+            try {
+              JSON.parse(raw);
+            } catch {
+              safe = "{}";
+            }
+          }
+          return {
+            ...tc,
+            // Ensure id is present — cloud routers require it.
+            id: tc.id || `call_${Math.random().toString(36).slice(2, 10)}`,
+            function: { ...tc.function, arguments: safe },
+          };
+        });
+      // If every tool_call was filtered out as invalid, fall through to
+      // the plain-assistant branch — sending `tool_calls: []` would also
+      // trigger the cloud schema reject we saw above.
+      if (normalized.length === 0) {
+        return { role: "assistant" as const, content: m.content ?? "" };
+      }
       return { role: "assistant" as const, content: m.content ?? "", tool_calls: normalized };
     }
     // Vision: Ollama /api/chat accepts `images: [base64...]` alongside text.
