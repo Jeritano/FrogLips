@@ -504,14 +504,23 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
     }
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(k);
+    // Sec re-review H-NEW-3: RAG hits flow back into the agent loop as
+    // primary input. Until now they bypassed the injection scanner that
+    // wraps every other external-content tool. Wrap the snippet so any
+    // attacker-shipped "ignore previous instructions" inside an indexed
+    // codebase / docs / chat-export carries the DATA-only marker.
     Ok(scored
         .into_iter()
-        .map(|(score, path, s, e, text)| RagHit {
-            path,
-            snippet: snippet_of(&text),
-            score,
-            start_byte: s,
-            end_byte: e,
+        .map(|(score, path, s, e, text)| {
+            let snippet = snippet_of(&text);
+            let (wrapped, _n) = crate::agent::injection_scan::scan_and_wrap(&snippet);
+            RagHit {
+                path,
+                snippet: wrapped,
+                score,
+                start_byte: s,
+                end_byte: e,
+            }
         })
         .collect())
 }

@@ -35,7 +35,25 @@ export const SHELL_TOOL = "run_shell";
 export const WRITE_TOOLS = new Set([
   "write_file", "edit_file", "multi_edit",
   "git_commit", "clipboard_set", "applescript_run", "http_request",
-  "move_path", "copy_path", "delete_path", "make_dir", "agent_undo",
+  // UX-CRIT-1 (2026-05-24 re-review): the safe additions only — anything
+  // truly destructive lives in IRREVERSIBLE_TOOLS below and is EXCLUDED
+  // from the session-blanket-approve branch in runner.ts. `agent_undo` is
+  // ALSO excluded because undo-of-undo is an unrecoverable redo.
+  "move_path", "copy_path", "make_dir",
+]);
+
+/**
+ * Tools that are NEVER eligible for blanket session approval — every call
+ * always requires an explicit user confirmation, even when "Approve all
+ * writes this session" or "Approve all shell this session" is on. The
+ * common theme: the operation is either irreversible (delete, kill,
+ * undo-of-undo) or its blast radius is too easy to misestimate from a
+ * single JSON-blob preview.
+ */
+export const IRREVERSIBLE_TOOLS = new Set([
+  "delete_path",
+  "kill_process",
+  "agent_undo",
 ]);
 
 /* ── Tool execution helpers ── */
@@ -330,6 +348,19 @@ export async function classifyToolRisk(
   if (isMcpToolName(fnName)) {
     return "destructive";
   }
+  // UX re-review C1: tools in IRREVERSIBLE_TOOLS (delete_path, kill_process,
+  // agent_undo) are inherently destructive regardless of arguments. The
+  // session-blanket approval branch already excludes them, but bumping risk
+  // here also flips the confirmation modal's visual badge from `normal` to
+  // `destructive`, which matters for the user-facing UX.
+  if (IRREVERSIBLE_TOOLS.has(fnName)) {
+    // delete_path with recursive=true is one tier worse than a single-file
+    // delete: bound it to `destructive` so the modal shows the loud badge.
+    return "destructive";
+  }
+  // delete_path with recursive=true → already covered above; the special
+  // case here is a NON-recursive delete still being shown as destructive
+  // (we collapse them; the modal copy explains the difference).
   // CRITICAL: Fail CLOSED. If any classifier RPC throws, we MUST NOT return
   // `"normal"` — a broken classifier combined with `approveAllShell` /
   // `approveAllWrite` would otherwise let a dangerous call slide past
@@ -897,10 +928,14 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "git_branches",
   "hash_file",
   "diff_files",
-  "list_processes",
-  "list_undo",
   "find_definition",
   "find_references",
+  // Code re-review H-4: `list_processes` + `list_undo` REMOVED — both
+  // reflect real-time state that a non-mutating cache invalidator (file
+  // edit, shell command, etc.) doesn't catch. A cached `list_processes`
+  // could feed a `kill_process` call against an exited PID — which on
+  // macOS may now be a different process. Same shape for `list_undo`
+  // when concurrent subagents push onto the global stack.
 ]);
 
 export function isReadOnlyTool(name: string): boolean {

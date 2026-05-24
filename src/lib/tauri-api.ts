@@ -20,6 +20,9 @@ export interface ApprovalPayload {
   signal?: string;
   text?: string;
   bundle_id?: string;
+  script?: string;
+  title?: string;
+  body?: string;
   mcp_command?: string;
   mcp_args?: string[];
   mcp_env_keys?: string[];
@@ -413,10 +416,9 @@ export const api = {
     invoke<void>("agent_show_notification", {
       title,
       body,
-      // Binding mirrors the Rust side: `${title}\x1f${body}` → SHA-256.
-      approval: await mintApproval("agent_show_notification", {
-        text: `${title}\u{1f}${body}`,
-      }),
+      // Binding uses title + body as independent length-prefixed fields
+      // (sec re-review M-NEW-1 — previous joined-string was collision-prone).
+      approval: await mintApproval("agent_show_notification", { title, body }),
     }),
   agentOpenPathInEditor: async (path: string, line?: number) =>
     invoke<string>("agent_open_path_in_editor", {
@@ -427,7 +429,8 @@ export const api = {
   agentApplescriptRun: async (script: string) =>
     invoke<ShellResult>("agent_applescript_run", {
       script,
-      approval: await mintApproval("agent_applescript_run"),
+      // Sec re-review H-1: payload-bind the script body.
+      approval: await mintApproval("agent_applescript_run", { script }),
     }),
   agentHttpRequest: async (input: HttpReqInput) =>
     invoke<HttpResp>("agent_http_request", {
@@ -450,16 +453,38 @@ export const api = {
       url,
       approval: await mintApproval("agent_browser_navigate", { url }),
     }),
-  agentBrowserClick: (selector: string) =>
-    invoke<BrowserOkResult>("agent_browser_click", { selector }),
-  agentBrowserFill: (selector: string, value: string) =>
-    invoke<BrowserOkResult>("agent_browser_fill", { selector, value }),
-  agentBrowserScreenshot: () =>
-    invoke<BrowserScreenshotResult>("agent_browser_screenshot"),
-  agentBrowserGetText: (selector?: string) =>
-    invoke<BrowserTextResult>("agent_browser_get_text", { selector: selector ?? null }),
-  agentBrowserClose: () =>
-    invoke<BrowserOkResult>("agent_browser_close"),
+  // Sec re-review H-NEW-2: each interactive browser action is approval-
+  // gated and bound to the target selector / value. Previously only
+  // navigate gated; the rest rode the post-navigate session.
+  agentBrowserClick: async (selector: string) =>
+    invoke<BrowserOkResult>("agent_browser_click", {
+      selector,
+      approval: await mintApproval("agent_browser_click", { text: selector }),
+    }),
+  agentBrowserFill: async (selector: string, value: string) =>
+    invoke<BrowserOkResult>("agent_browser_fill", {
+      selector,
+      value,
+      approval: await mintApproval("agent_browser_fill", {
+        text: selector,
+        body: value,
+      }),
+    }),
+  agentBrowserScreenshot: async () =>
+    invoke<BrowserScreenshotResult>("agent_browser_screenshot", {
+      approval: await mintApproval("agent_browser_screenshot"),
+    }),
+  agentBrowserGetText: async (selector?: string) =>
+    invoke<BrowserTextResult>("agent_browser_get_text", {
+      selector: selector ?? null,
+      approval: await mintApproval("agent_browser_get_text", {
+        text: selector ?? "",
+      }),
+    }),
+  agentBrowserClose: async () =>
+    invoke<BrowserOkResult>("agent_browser_close", {
+      approval: await mintApproval("agent_browser_close"),
+    }),
 
   // Filesystem watcher
   agentWatchPath: (path: string, glob?: string, debounceMs?: number) =>

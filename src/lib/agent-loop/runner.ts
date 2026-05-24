@@ -3,6 +3,7 @@ import type { AgentMetrics, AgentRunOptions, Risk, ToolResult } from "./types";
 import { TOOLS } from "./tools";
 import {
   DANGEROUS_TOOLS,
+  IRREVERSIBLE_TOOLS,
   SHELL_TOOL,
   WRITE_TOOLS,
   classifyToolRisk,
@@ -420,7 +421,10 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     return `${name}::${JSON.stringify(norm)}`;
   };
   const cacheStore = (key: string, value: string) => {
-    if (readOnlyCache.size >= READ_ONLY_CACHE_CAP) {
+    // Code re-review M-3: skip eviction when overwriting an existing
+    // entry. Without this guard, hitting the cap with a re-set drops a
+    // different unrelated entry while just updating the present key.
+    if (!readOnlyCache.has(key) && readOnlyCache.size >= READ_ONLY_CACHE_CAP) {
       const oldest = readOnlyCache.keys().next().value;
       if (oldest !== undefined) readOnlyCache.delete(oldest);
     }
@@ -687,14 +691,20 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
           risk === "normal" &&
           firstWord !== "" &&
           approvedShellPrefixes.includes(firstWord);
+        // UX re-review C1 (2026-05-24): tools in IRREVERSIBLE_TOOLS NEVER
+        // ride the session-blanket-approve branch. delete_path,
+        // kill_process, agent_undo all permanently change state in ways
+        // the user can't recover from with another agent call.
+        const isIrreversible = IRREVERSIBLE_TOOLS.has(fnName);
         const sessionApproved =
-          policyVerdict === "auto" ||
-          prefixApproved ||
-          (fnName === SHELL_TOOL && approveAllShell && risk === "normal") ||
-          // Blanket write-approval only covers normal-risk writes — an
-          // elevated call (e.g. an http_request carrying a body, or a
-          // destructive method) always needs an explicit confirmation.
-          (WRITE_TOOLS.has(fnName) && approveAllWrite && risk === "normal");
+          !isIrreversible &&
+          (policyVerdict === "auto" ||
+            prefixApproved ||
+            (fnName === SHELL_TOOL && approveAllShell && risk === "normal") ||
+            // Blanket write-approval only covers normal-risk writes — an
+            // elevated call (e.g. an http_request carrying a body, or a
+            // destructive method) always needs an explicit confirmation.
+            (WRITE_TOOLS.has(fnName) && approveAllWrite && risk === "normal"));
         if (sessionApproved) {
           auditApproval = "session_allowed";
         }

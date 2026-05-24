@@ -50,15 +50,21 @@ async function getCachedSettings(): Promise<AppSettings> {
       throw err;
     });
   if (!invalidatorBound) {
-    invalidatorBound = true;
     // Settings IPC emits this event after a successful settings_set.
     // Drop the cache so the next read goes to disk again.
+    // Code re-review M-5: only flip the bound flag on REGISTRATION
+    // SUCCESS so a transient `listen` failure during boot doesn't
+    // permanently leave us with a cache that never invalidates.
     listen("settings-changed", () => {
       cachedSettings = null;
-    }).catch(() => {
-      // Listener registration failure is non-fatal — worst case we hold
-      // a stale About You block until app restart.
-    });
+    })
+      .then(() => {
+        invalidatorBound = true;
+      })
+      .catch(() => {
+        // Listener registration failed — leave invalidatorBound=false so
+        // the next getCachedSettings() call retries the registration.
+      });
   }
   return cacheInFlight;
 }

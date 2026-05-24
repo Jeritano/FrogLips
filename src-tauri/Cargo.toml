@@ -25,6 +25,8 @@ tauri-build = { version = "2", features = [] }
 # refactor needed; this comment is the documentation requested by the audit.
 tauri = { version = "2", features = ["tray-icon", "test"] }
 tempfile = "3"
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }

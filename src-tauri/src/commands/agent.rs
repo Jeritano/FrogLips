@@ -35,6 +35,9 @@ pub struct ApprovalPayload {
     pub signal: Option<String>,
     pub text: Option<String>,
     pub bundle_id: Option<String>,
+    pub script: Option<String>,
+    pub title: Option<String>,
+    pub body: Option<String>,
     pub mcp_command: Option<String>,
     pub mcp_args: Option<Vec<String>>,
     pub mcp_env_keys: Option<Vec<String>>,
@@ -73,62 +76,115 @@ pub fn mint_tool_approval(
     }
 }
 
-/// SHA-256 hex of a canonical string built from the payload fields the tool
-/// cares about. Each family's canonical form is documented inline — change
-/// it ONLY in lock-step with the corresponding `*_fingerprint` helper on
-/// the consume side, otherwise the token will silently never verify.
+/// SHA-256 hex of a canonical, separator-collision-proof encoding of the
+/// payload fields the tool cares about. Each field is length-prefixed so
+/// a value containing the separator can never collide with a different
+/// field split (sec re-review M-NEW-1).
+///
+/// Encoding shape: `&lt;len&gt;:&lt;name&gt;=&lt;value&gt;\x1f` repeated for each field,
+/// where `len` is the byte length of `value`. A field whose value contains
+/// `\x1f` is fully captured because the parser reads exactly `len` bytes.
+/// `\x1f` between fields is just a visual separator; the length-prefix is
+/// the actual boundary.
 pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
     match tool {
-        "agent_run_shell" => Some(sha256_hex(p.command.as_deref().unwrap_or(""))),
+        "agent_run_shell" => Some(sha256_hex(&kv(&[("command", p.command.as_deref().unwrap_or(""))]))),
         // Path-family: write / edit / multi_edit / make_dir / delete /
-        // undo / open_in_editor / format_code all bind to a single path.
+        // open_in_editor / format_code all bind to a single path.
         "agent_write_file"
         | "agent_edit_file"
         | "agent_multi_edit"
         | "agent_make_dir"
         | "agent_delete_path"
         | "agent_open_path_in_editor"
-        | "agent_format_code" => Some(sha256_hex(&format!("path={}", p.path.as_deref().unwrap_or("")))),
+        | "agent_format_code" => Some(sha256_hex(&kv(&[("path", p.path.as_deref().unwrap_or(""))]))),
         // Two-path family: move + copy.
-        "agent_move_path" | "agent_copy_path" => Some(sha256_hex(&format!(
-            "from={}|to={}",
-            p.from.as_deref().unwrap_or(""),
-            p.to.as_deref().unwrap_or(""),
-        ))),
+        "agent_move_path" | "agent_copy_path" => Some(sha256_hex(&kv(&[
+            ("from", p.from.as_deref().unwrap_or("")),
+            ("to", p.to.as_deref().unwrap_or("")),
+        ]))),
         // Undo restores the most-recent snapshot — the path isn't known
         // until pop time, so bind to a synthetic marker that at least ties
         // the token to "this minted-for-undo intent" (single-use binding
         // still prevents stale token replay of a different family).
-        "agent_undo_last" => Some(sha256_hex("undo_last")),
+        "agent_undo_last" => Some(sha256_hex(&kv(&[("op", "undo_last")]))),
         // Process family.
-        "agent_kill_process" => Some(sha256_hex(&format!(
-            "pid={}|signal={}",
-            p.pid.unwrap_or(-1),
-            p.signal.as_deref().unwrap_or("TERM").to_ascii_uppercase()
-        ))),
+        "agent_kill_process" => {
+            let signal = p.signal.as_deref().unwrap_or("TERM").to_ascii_uppercase();
+            let pid_str = p.pid.unwrap_or(-1).to_string();
+            Some(sha256_hex(&kv(&[("pid", &pid_str), ("signal", &signal)])))
+        }
         // Clipboard write — bound to the exact text the user confirmed.
-        "agent_clipboard_set" => Some(sha256_hex(&format!("text={}", p.text.as_deref().unwrap_or("")))),
-        // App-launch + notifications — bound to the bundle id / message.
-        "agent_open_app" => Some(sha256_hex(&format!("app={}", p.bundle_id.as_deref().unwrap_or("")))),
-        "agent_show_notification" => Some(sha256_hex(&format!("text={}", p.text.as_deref().unwrap_or("")))),
+        "agent_clipboard_set" => Some(sha256_hex(&kv(&[("text", p.text.as_deref().unwrap_or(""))]))),
+        // App-launch — bound to the bundle id / app name.
+        "agent_open_app" => Some(sha256_hex(&kv(&[("app", p.bundle_id.as_deref().unwrap_or(""))]))),
+        // Notification — bound to BOTH title + body as independent fields.
+        // Old `text="${title}\x1f${body}"` was collision-prone (M-NEW-1).
+        "agent_show_notification" => Some(sha256_hex(&kv(&[
+            ("title", p.title.as_deref().unwrap_or("")),
+            ("body", p.body.as_deref().unwrap_or("")),
+        ]))),
+        // AppleScript — sec re-review H-1: previously unbound. AppleScript
+        // is strictly more powerful than agent_run_shell (it can issue
+        // `do shell script` plus drive any scriptable app), so it
+        // absolutely needs payload binding.
+        "agent_applescript_run" => Some(sha256_hex(&kv(&[
+            ("script", p.script.as_deref().unwrap_or("")),
+        ]))),
         // Screenshot: bind to a path target so a token issued for
         // "save to ~/Desktop/x.png" can't be reused for a different dest.
-        "agent_screenshot" => Some(sha256_hex(&format!("path={}", p.path.as_deref().unwrap_or("")))),
+        "agent_screenshot" => Some(sha256_hex(&kv(&[("path", p.path.as_deref().unwrap_or(""))]))),
         // HTTP + browser — URL-bound.
         "agent_http_request" | "agent_web_fetch" | "agent_browser_navigate" => {
-            Some(sha256_hex(&format!("url={}", p.url.as_deref().unwrap_or(""))))
+            Some(sha256_hex(&kv(&[("url", p.url.as_deref().unwrap_or(""))])))
         }
+        // Browser per-action — sec re-review H-NEW-2: after navigate the
+        // CDP session was driven without further approval. Each
+        // click/fill/screenshot/get_text/close is now bound to its target
+        // selector + value where applicable so the user explicitly
+        // approves each on-page action, not just the navigation.
+        "agent_browser_click" => Some(sha256_hex(&kv(&[("selector", p.text.as_deref().unwrap_or(""))]))),
+        "agent_browser_fill" => Some(sha256_hex(&kv(&[
+            ("selector", p.text.as_deref().unwrap_or("")),
+            ("value", p.body.as_deref().unwrap_or("")),
+        ]))),
+        "agent_browser_get_text" => Some(sha256_hex(&kv(&[("selector", p.text.as_deref().unwrap_or(""))]))),
+        "agent_browser_screenshot" => Some(sha256_hex(&kv(&[("op", "screenshot")]))),
+        "agent_browser_close" => Some(sha256_hex(&kv(&[("op", "close")]))),
         // MCP server spawn — bind to command + args + env keys (NOT values,
         // since values may legitimately differ session to session but the
         // *capability* the user approves is the program + its arg vector).
-        "mcp_start_server" => Some(sha256_hex(&format!(
-            "cmd={}|args={}|env_keys={}",
-            p.mcp_command.as_deref().unwrap_or(""),
-            p.mcp_args.as_deref().map(|a| a.join("\u{1f}")).unwrap_or_default(),
-            p.mcp_env_keys.as_deref().map(|k| k.join("\u{1f}")).unwrap_or_default(),
-        ))),
+        "mcp_start_server" => {
+            let args_joined = p
+                .mcp_args
+                .as_deref()
+                .map(|a| a.join("\u{1f}"))
+                .unwrap_or_default();
+            let env_joined = p
+                .mcp_env_keys
+                .as_deref()
+                .map(|k| k.join("\u{1f}"))
+                .unwrap_or_default();
+            Some(sha256_hex(&kv(&[
+                ("cmd", p.mcp_command.as_deref().unwrap_or("")),
+                ("args", &args_joined),
+                ("env_keys", &env_joined),
+            ])))
+        }
         _ => None,
     }
+}
+
+/// Length-prefixed canonical encoding of key/value pairs. Returns a string
+/// like `7:command=ls -la\x1f` — the leading `&lt;len&gt;:` makes the boundary
+/// unambiguous regardless of what the value contains.
+fn kv(pairs: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(64 + pairs.iter().map(|(_, v)| v.len()).sum::<usize>());
+    for (k, v) in pairs {
+        use std::fmt::Write;
+        let _ = write!(out, "{}:{}={}\u{1f}", v.len(), k, v);
+    }
+    out
 }
 
 /// SHA-256 hex of an arbitrary string. Used everywhere a binding is needed.
@@ -411,14 +467,14 @@ pub async fn agent_show_notification(
 ) -> Result<(), String> {
     // Approval gate (sec review S-C2): notifications can phish — popping
     // "macOS Update Available — click here" is a real attack surface. Bind
-    // to the combined title + body so a token for one message can't deliver
-    // another within the TTL.
-    let payload_text = format!("{title}\u{1f}{body}");
+    // to title + body as INDEPENDENT fields (sec re-review M-NEW-1 caught
+    // the prior `"${title}\x1f${body}"` collision).
     verify_bound(
         "agent_show_notification",
         &approval,
         ApprovalPayload {
-            text: Some(payload_text),
+            title: Some(title.clone()),
+            body: Some(body.clone()),
             ..Default::default()
         },
     )?;
@@ -450,9 +506,18 @@ pub async fn agent_applescript_run(
     script: String,
     approval: String,
 ) -> Result<agent::ShellResult, String> {
-    if !approval::consume("agent_applescript_run", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    // Sec re-review H-1: applescript_run is strictly more powerful than
+    // run_shell (it can `do shell script` AND drive any scriptable app),
+    // so it absolutely needs payload binding. Was previously the only
+    // dangerous IPC still on the legacy bareword approval path.
+    verify_bound(
+        "agent_applescript_run",
+        &approval,
+        ApprovalPayload {
+            script: Some(script.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::applescript_run(script).await
 }
 
@@ -550,8 +615,27 @@ pub async fn agent_browser_navigate(
     agent::browser::navigate(url).await
 }
 
+// Sec re-review H-NEW-2: previously only browser_navigate was approval-
+// gated. After the user approved a navigation to e.g. github.com the
+// model could drive click/fill/get_text/screenshot/close without further
+// consent — fill the password field, click "Authorize", or screenshot the
+// logged-in account. Each interactive action is now bound to its target
+// selector + value where applicable so the user explicitly approves
+// each on-page action.
+
 #[tauri::command]
-pub async fn agent_browser_click(selector: String) -> Result<agent::BrowserOkResult, String> {
+pub async fn agent_browser_click(
+    selector: String,
+    approval: String,
+) -> Result<agent::BrowserOkResult, String> {
+    verify_bound(
+        "agent_browser_click",
+        &approval,
+        ApprovalPayload {
+            text: Some(selector.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::browser::click(selector).await
 }
 
@@ -559,24 +643,55 @@ pub async fn agent_browser_click(selector: String) -> Result<agent::BrowserOkRes
 pub async fn agent_browser_fill(
     selector: String,
     value: String,
+    approval: String,
 ) -> Result<agent::BrowserOkResult, String> {
+    verify_bound(
+        "agent_browser_fill",
+        &approval,
+        ApprovalPayload {
+            text: Some(selector.clone()),
+            body: Some(value.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::browser::fill(selector, value).await
 }
 
 #[tauri::command]
-pub async fn agent_browser_screenshot() -> Result<agent::BrowserScreenshotResult, String> {
+pub async fn agent_browser_screenshot(
+    approval: String,
+) -> Result<agent::BrowserScreenshotResult, String> {
+    verify_bound(
+        "agent_browser_screenshot",
+        &approval,
+        ApprovalPayload::default(),
+    )?;
     agent::browser::screenshot().await
 }
 
 #[tauri::command]
 pub async fn agent_browser_get_text(
     selector: Option<String>,
+    approval: String,
 ) -> Result<agent::BrowserTextResult, String> {
+    verify_bound(
+        "agent_browser_get_text",
+        &approval,
+        ApprovalPayload {
+            text: selector.clone(),
+            ..Default::default()
+        },
+    )?;
     agent::browser::get_text(selector).await
 }
 
 #[tauri::command]
-pub async fn agent_browser_close() -> Result<agent::BrowserOkResult, String> {
+pub async fn agent_browser_close(approval: String) -> Result<agent::BrowserOkResult, String> {
+    verify_bound(
+        "agent_browser_close",
+        &approval,
+        ApprovalPayload::default(),
+    )?;
     agent::browser::close().await
 }
 
@@ -708,10 +823,17 @@ pub fn policy_evaluate_write(cwd: String, path: String) -> policy::Decision {
 
 #[tauri::command]
 pub fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, String> {
+    let previous = agent::get_workspace_root();
     let result = agent::set_workspace_root(path)?;
     let mut s = crate::settings::load();
     s.workspace_root = result.clone();
     let _ = crate::settings::save(&s);
+    // Code re-review M-1: snapshot stack was documented as workspace-
+    // scoped but `clear()` was never called from here. Switching projects
+    // could otherwise let `agent_undo` later write into the old project.
+    if previous != result {
+        agent::snapshot::clear();
+    }
     Ok(result)
 }
 

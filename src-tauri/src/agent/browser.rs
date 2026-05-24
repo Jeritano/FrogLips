@@ -269,10 +269,17 @@ mod backend {
             .await
             .map_err(|e| err_string(ToolError::io(format!("inner_text: {e}"))))?
             .unwrap_or_default();
-        // Cap the response so a giant page doesn't blow the context.
+        // Cap the response so a giant page doesn't blow the context. Sec
+        // re-review M-NEW-3: a raw byte-index slice panics if MAX lands
+        // inside a multi-byte UTF-8 sequence. Walk back to the previous
+        // char boundary.
         const MAX: usize = 65_536;
         let truncated_text = if text.len() > MAX {
-            format!("{}…[truncated {} bytes]", &text[..MAX], text.len() - MAX)
+            let mut cut = MAX;
+            while cut > 0 && !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            format!("{}…[truncated {} bytes]", &text[..cut], text.len() - cut)
         } else {
             text
         };

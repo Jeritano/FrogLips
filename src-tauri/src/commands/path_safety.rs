@@ -110,8 +110,12 @@ pub fn validate_read_src(src: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-/// Denylist mirrored from `agent::fs::is_protected_for_write`: system dirs,
-/// sudo state, keychains, TCC db, plus per-user credential locations.
+/// Denylist mirrored from `agent::fs::is_protected_for_write`. Sec
+/// re-review H-NEW-1: the H2 sweep expanded the agent/fs.rs list but
+/// missed THIS one, so `backup_database` / `export_data` / `import_data`
+/// could still target a LaunchAgent plist, shell rc, or Froglips' own DB
+/// to plant persistence or rewrite settings. Kept in sync with
+/// `agent::fs::protected_prefixes` — add new entries to BOTH places.
 fn is_denied(resolved: &std::path::Path) -> bool {
     let mut deny: Vec<PathBuf> = [
         "/System",
@@ -131,12 +135,32 @@ fn is_denied(resolved: &std::path::Path) -> bool {
             ".ssh",
             ".aws",
             ".config/gh",
+            ".config/gcloud",
             ".gnupg",
             "Library/Keychains",
             "Library/Cookies",
             "Library/Application Support/com.apple.TCC",
             "Library/Mail",
             "Library/Messages",
+            // Sec re-review H-NEW-1: persistence + shell-init + IDE-state
+            // surface — matches agent/fs.rs::protected_prefixes.
+            "Library/LaunchAgents",
+            "Library/LaunchDaemons",
+            ".bash_profile",
+            ".bashrc",
+            ".profile",
+            ".zshrc",
+            ".zprofile",
+            ".zshenv",
+            "Library/Preferences/com.apple.Terminal.plist",
+            ".netrc",
+            ".npmrc",
+            ".pypirc",
+            ".gitconfig",
+            ".docker/config.json",
+            ".kube",
+            ".local-llm-app",
+            "Library/Application Support/Froglips",
         ] {
             deny.push(home.join(sub));
         }

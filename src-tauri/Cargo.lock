@@ -3977,6 +3977,7 @@ dependencies = [
  "globset",
  "html2text 0.13.6",
  "indexmap 2.14.0",
+ "libc",
  "mistralrs-core",
  "notify",
  "once_cell",

@@ -117,6 +117,10 @@ fn mint_internal(tool: &str, binding: Option<String>) -> Result<String, String> 
 /// if the token exists, is not expired, and was minted for this exact tool.
 /// Tokens minted with a payload binding (via `mint_with_binding`) are NOT
 /// accepted here — callers for those tools must use `consume_with_binding`.
+///
+/// Retained for tests + future bareword-binding callers, even though every
+/// production caller is now on `consume_with_binding`.
+#[allow(dead_code)]
 pub fn consume(tool: &str, token: &str) -> bool {
     let mut store = STORE.lock();
     gc(&mut store);

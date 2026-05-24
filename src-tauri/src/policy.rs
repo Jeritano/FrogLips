@@ -109,28 +109,22 @@ pub fn load_for_cwd(cwd: &Path) -> Option<ProjectPolicy> {
 }
 
 /// Unix-only ownership check. Returns `true` if the file's owner uid
-/// equals the running process's uid. On non-Unix this would always
-/// return `true` (the app is macOS-only today, so the cfg below is the
-/// expected and only path).
+/// equals the running process's effective uid. Sec re-review M-NEW-4:
+/// previously compared against the owner of `$HOME` as a "stable proxy"
+/// — but the kernel sets a file's owner to whoever extracts/creates it,
+/// so an attacker-shipped policy file inside a cloned repo is owned by
+/// the EXTRACTING user (same uid as $HOME) and the check never fired.
+/// Now uses `libc::geteuid` directly so the comparison reflects the
+/// running process's real uid.
 fn is_owned_by_current_user(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         match std::fs::metadata(path) {
             Ok(md) => {
-                // `geteuid` via libc would be cleaner but pulls a dep;
-                // std::process::id is the pid, not the uid. We read the
-                // effective uid the same way every other Unix tool does:
-                // by stat'ing /proc/self... not portable to macOS. Use
-                // `users::get_current_uid` if added, else compare to the
-                // owner of $HOME as a stable proxy.
-                let home_uid = dirs::home_dir()
-                    .and_then(|h| std::fs::metadata(&h).ok())
-                    .map(|m| m.uid());
-                match home_uid {
-                    Some(uid) => md.uid() == uid,
-                    None => true, // can't compare → fail open (no $HOME is bizarre)
-                }
+                // SAFETY: `geteuid` is async-signal-safe and takes no args.
+                let euid = unsafe { libc::geteuid() };
+                md.uid() == euid
             }
             Err(_) => false,
         }

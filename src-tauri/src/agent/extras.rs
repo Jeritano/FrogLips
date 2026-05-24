@@ -56,6 +56,13 @@ pub async fn move_path(from: String, to: String, overwrite: bool) -> Result<File
             .await
             .map_err(|e| ok_err("io", e.to_string()))?;
     }
+    // Code re-review H-2: capture source contents BEFORE the rename so
+    // agent_undo can put the file back at its old path. We can't restore
+    // the directory shape of a moved tree, but we can at least save the
+    // single-file move (the common case).
+    let src_snap = src.clone();
+    let _ = tokio::task::spawn_blocking(move || super::snapshot::capture(&src_snap, "move_path"))
+        .await;
     tokio::fs::rename(&src, &dst)
         .await
         .map_err(|e| ok_err("io", e.to_string()))?;
@@ -97,6 +104,12 @@ pub async fn copy_path(from: String, to: String, overwrite: bool) -> Result<File
             .await
             .map_err(|e| ok_err("io", e.to_string()))?;
     }
+    // Code re-review H-2: capture the destination (if it existed) so
+    // agent_undo can put the original back. Source is unchanged by copy
+    // and doesn't need a snapshot.
+    let dst_snap = dst.clone();
+    let _ = tokio::task::spawn_blocking(move || super::snapshot::capture(&dst_snap, "copy_path"))
+        .await;
     tokio::fs::copy(&src, &dst)
         .await
         .map_err(|e| ok_err("io", e.to_string()))?;
@@ -128,38 +141,49 @@ pub async fn delete_path(path: String, recursive: bool) -> Result<DeleteResult, 
                 .await
                 .map_err(|e| ok_err("io", e.to_string()))?;
         } else {
-            // Walk first to enforce the cap, then remove. `remove_dir_all`
-            // doesn't expose a cap so we count manually before invoking it.
-            let mut count: usize = 0;
-            let walk = std::fs::read_dir(&resolved).map_err(|e| ok_err("io", e.to_string()))?;
-            for entry in walk.flatten() {
-                count += 1;
-                if count > 1000 {
-                    return Err(ok_err(
-                        "too_large",
-                        "recursive delete refused: more than 1000 entries; use shell with approval",
-                    ));
-                }
-                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    // Cheap nested count: 1 deep is fine, deeper escalates
-                    if let Ok(rd) = std::fs::read_dir(entry.path()) {
-                        for _ in rd {
-                            count += 1;
-                            if count > 1000 {
-                                return Err(ok_err(
-                                    "too_large",
-                                    "recursive delete refused: more than 1000 entries; use shell with approval",
-                                ));
-                            }
+            // Code re-review H-3: the previous shallow walk (top-level
+            // + one nested level) was depth-2-bypassable. A tree shaped
+            // root/a/b/<1M files> passed the cap because root had 1 dir
+            // and a had 1 dir. Now we walk the FULL tree counting every
+            // descendant before invoking remove_dir_all.
+            let walk_root = resolved.clone();
+            let count = tokio::task::spawn_blocking(move || -> Result<usize, std::io::Error> {
+                let mut count: usize = 0;
+                let mut stack: Vec<PathBuf> = vec![walk_root];
+                while let Some(dir) = stack.pop() {
+                    let rd = std::fs::read_dir(&dir)?;
+                    for entry in rd.flatten() {
+                        count += 1;
+                        if count > 1000 {
+                            return Ok(count);
+                        }
+                        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                            stack.push(entry.path());
                         }
                     }
                 }
+                Ok(count)
+            })
+            .await
+            .map_err(|e| ok_err("io", e.to_string()))?
+            .map_err(|e| ok_err("io", e.to_string()))?;
+            if count > 1000 {
+                return Err(ok_err(
+                    "too_large",
+                    "recursive delete refused: more than 1000 entries; use shell with approval",
+                ));
             }
             tokio::fs::remove_dir_all(&resolved)
                 .await
                 .map_err(|e| ok_err("io", e.to_string()))?;
         }
     } else {
+        // Code re-review H-2: capture the file bytes before delete so
+        // agent_undo can restore. Best-effort; large files (>MAX_PER_ENTRY
+        // _BYTES) silently skip the snapshot and lose undo coverage.
+        let snap_path = resolved.clone();
+        let _ = tokio::task::spawn_blocking(move || super::snapshot::capture(&snap_path, "delete_path"))
+            .await;
         tokio::fs::remove_file(&resolved)
             .await
             .map_err(|e| ok_err("io", e.to_string()))?;
