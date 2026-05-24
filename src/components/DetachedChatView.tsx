@@ -5,6 +5,7 @@ import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { Conversation, ServerStatus } from "../types";
 import { ModelPicker } from "./ModelPicker";
 import { ChatWindow } from "./ChatWindow";
+import { ErrorBar } from "./ErrorBar";
 
 /**
  * Single-conversation view for detached windows.
@@ -86,7 +87,7 @@ export function DetachedChatView({ conversationId }: Props) {
   if (loadError) {
     return (
       <div className="app detached" data-testid="detached-error">
-        <div className="error-bar" style={{ padding: 16 }}>{loadError}</div>
+        <ErrorBar message={loadError} onDismiss={() => setLoadError(null)} />
       </div>
     );
   }

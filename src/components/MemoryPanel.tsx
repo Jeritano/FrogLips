@@ -11,6 +11,7 @@ import {
   setMemoryMode,
 } from "../lib/memory-client";
 import { EmptyState } from "./EmptyState";
+import { ErrorBar } from "./ErrorBar";
 
 interface Props {
   refreshToken?: number;
@@ -294,7 +295,7 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
           </div>
 
           {err && (
-            <div className="error-bar" onClick={() => setErr(null)} title="Click to dismiss">{err}</div>
+            <ErrorBar message={err} onDismiss={() => setErr(null)} />
           )}
 
           {/* List */}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { ErrorBar } from "./ErrorBar";
 import type { ForkTree } from "../types";
 
 interface Props {
@@ -58,13 +59,24 @@ export function ForkTreeModal({ open, onClose, rootId, onSelect }: Props) {
 
   if (!open) return null;
 
-  return <ForkTreeOverlay onClose={onClose} tree={tree} err={err} loading={loading} rootId={rootId} onSelect={onSelect} />;
+  return (
+    <ForkTreeOverlay
+      onClose={onClose}
+      tree={tree}
+      err={err}
+      onDismissErr={() => setErr(null)}
+      loading={loading}
+      rootId={rootId}
+      onSelect={onSelect}
+    />
+  );
 }
 
 function ForkTreeOverlay({
   onClose,
   tree,
   err,
+  onDismissErr,
   loading,
   rootId,
   onSelect,
@@ -72,6 +84,7 @@ function ForkTreeOverlay({
   onClose: () => void;
   tree: ForkTree | null;
   err: string | null;
+  onDismissErr: () => void;
   loading: boolean;
   rootId: number | null;
   onSelect: (id: number) => void;
@@ -94,7 +107,11 @@ function ForkTreeOverlay({
           <button type="button" onClick={onClose} aria-label="Close" className="fork-tree-close">×</button>
         </div>
         {loading && <div>Loading…</div>}
-        {err && <div className="error-bar" data-testid="fork-tree-error">{err}</div>}
+        <ErrorBar
+          message={err}
+          onDismiss={onDismissErr}
+          testId="fork-tree-error"
+        />
         {!loading && !err && tree && (
           <ForkNodeView node={tree} depth={0} onSelect={onSelect} />
         )}

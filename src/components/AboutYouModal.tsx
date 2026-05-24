@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { ErrorBar } from "./ErrorBar";
 import type { UserProfile } from "../types";
 
 interface Props {
@@ -179,7 +180,7 @@ export function AboutYouModal({ onClose }: Props) {
               />
             </label>
 
-            {err && <div className="error-bar" role="alert">{err}</div>}
+            <ErrorBar message={err} onDismiss={() => setErr(null)} />
 
             <div className="profile-actions">
               <button className="agent-settings-btn" onClick={onClose} disabled={saving}>

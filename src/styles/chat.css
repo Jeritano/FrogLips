@@ -399,11 +399,30 @@
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
-  padding: 0 4px;
+  /* UI re-review L-2: padding-block was effectively 0 so the hit area was
+     under the 24×24 WCAG min. Bumping vertical padding so keyboard +
+     touch targets satisfy the guideline. */
+  padding: 4px 6px;
   border-radius: 4px;
+  min-width: 24px;
+  min-height: 24px;
 }
 .error-bar-close:hover { background: var(--danger-bg); }
 .error-bar-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.error-bar-retry {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--danger-fg);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.error-bar-retry:hover { background: var(--danger-bg); color: var(--text); }
+.error-bar-retry:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

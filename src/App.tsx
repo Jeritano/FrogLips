@@ -16,6 +16,7 @@ import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { EmptyState } from "./components/EmptyState";
 import { Toast } from "./components/Toast";
+import { ErrorBar } from "./components/ErrorBar";
 import { LiveRegion } from "./components/LiveRegion";
 import { announce } from "./lib/announce";
 import { parseTags, encodeTags, tagsFromInput } from "./lib/conversation-tags";
@@ -786,24 +787,8 @@ function App() {
           value={convSearch}
           onChange={(e) => setConvSearch(e.target.value)}
         />
-        {err && (
-          // UI review U-H6: error-bar previously dismissed via a custom
-          // "click anywhere" interaction users wouldn't discover, with no
-          // keyboard affordance. Now: explicit × button + role=alert so
-          // screen readers announce + keyboard users can dismiss.
-          <div className="error-bar" role="alert">
-            <span className="error-bar-text">{err}</span>
-            <button
-              type="button"
-              className="error-bar-close"
-              onClick={() => setErr(null)}
-              aria-label="Dismiss error"
-              title="Dismiss"
-            >
-              ×
-            </button>
-          </div>
-        )}
+        <ErrorBar message={err} onDismiss={() => setErr(null)} />
+
         <ul className="conv-list" data-testid="conv-list">
           {orderedConversations.length === 0 && (
             <li className="conv-list-empty" data-testid="conv-list-empty">

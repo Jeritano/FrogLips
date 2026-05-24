@@ -12,6 +12,7 @@ import { ToolHistory } from "./ToolHistory";
 import { ParamsPanel } from "./ParamsPanel";
 import { ContextMeter } from "./ContextMeter";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ErrorBar } from "./ErrorBar";
 import { AgentToolbar } from "./AgentToolbar";
 import { AgentSettingsPanel } from "./AgentSettingsPanel";
 import { EmptyChatLanding } from "./EmptyChatLanding";
@@ -436,7 +437,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             Recalled {recalled.length} memor{recalled.length === 1 ? "y" : "ies"} for this turn
           </div>
         )}
-        {err && <div className="error-bar" role="alert">{err}</div>}
+        <ErrorBar message={err} onDismiss={() => setErr(null)} />
 
         <AgentToolbar
           conversation={conversation}
@@ -475,6 +476,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             agent={agent}
             workspaceRoot={workspaceRoot}
             workspaceErr={workspaceErr}
+            onDismissWorkspaceErr={() => setWorkspaceErr(null)}
             updateMsg={updateMsg}
             onChooseWorkspace={chooseWorkspace}
             onCheckUpdates={checkUpdates}

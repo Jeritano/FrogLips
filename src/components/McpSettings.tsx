@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
+import { ErrorBar } from "./ErrorBar";
 import type { McpServerConfig, McpServerInfo } from "../types";
 
 /* ── MCP servers settings pane ────────────────────────────────────────── */
@@ -263,16 +264,12 @@ export function McpSettings({ onConfigsChanged }: Props) {
               <code>{cfg.command}{cfg.args && cfg.args.length ? " " + cfg.args.join(" ") : ""}</code>
             </div>
             {live?.last_error && (
-              <div className="error-bar" role="alert" style={{ fontSize: 11 }}>
-                Server error: {live.last_error}
-                <button
-                  className="agent-settings-btn"
-                  style={{ marginLeft: 6 }}
-                  onClick={() => restartConfig(cfg)}
-                >
-                  Restart
-                </button>
-              </div>
+              <ErrorBar
+                message={`Server error: ${live.last_error}`}
+                onDismiss={() => {/* server-driven; clears on next status update */}}
+                onRetry={() => restartConfig(cfg)}
+                retryLabel="Restart"
+              />
             )}
             {toolNames.length > 0 && (
               <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
@@ -353,7 +350,7 @@ export function McpSettings({ onConfigsChanged }: Props) {
         </div>
       )}
 
-      {err && <div className="error-bar" role="alert" style={{ marginTop: 8 }}>{err}</div>}
+      <ErrorBar message={err} onDismiss={() => setErr(null)} />
     </div>
   );
 }

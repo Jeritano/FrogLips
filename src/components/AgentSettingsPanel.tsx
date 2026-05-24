@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import { McpSettings } from "./McpSettings";
+import { ErrorBar } from "./ErrorBar";
 import type { AgentSettings } from "../hooks/useAgentSettings";
 
 // RagPanel and AuditLog only render inside the agent-settings disclosure
@@ -28,6 +29,10 @@ interface Props {
   agent: AgentSettings;
   workspaceRoot: string | null;
   workspaceErr: string | null;
+  /** Optional dismiss callback for the workspace error — UX re-review H-2
+   *  added so this surface uses the shared ErrorBar component with a real
+   *  close button instead of a sticky inline string. */
+  onDismissWorkspaceErr?: () => void;
   updateMsg: string | null;
   onChooseWorkspace: () => void;
   onCheckUpdates: () => void;
@@ -42,6 +47,7 @@ export function AgentSettingsPanel({
   agent,
   workspaceRoot,
   workspaceErr,
+  onDismissWorkspaceErr,
   updateMsg,
   onChooseWorkspace,
   onCheckUpdates,
@@ -53,7 +59,10 @@ export function AgentSettingsPanel({
         <code className="agent-settings-value">{workspaceRoot ?? "(full filesystem)"}</code>
         <button className="agent-settings-btn" onClick={onChooseWorkspace}>Set…</button>
       </div>
-      {workspaceErr && <div className="error-bar" role="alert">{workspaceErr}</div>}
+      <ErrorBar
+        message={workspaceErr}
+        onDismiss={onDismissWorkspaceErr ?? (() => undefined)}
+      />
       <div className="agent-settings-row">
         <span className="agent-settings-label">Approve all this session:</span>
         <label>

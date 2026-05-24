@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ErrorBar } from "./ErrorBar";
 import {
   deleteCustomTemplate,
   extractVariables,
@@ -197,7 +198,7 @@ export function PromptLibrary({ open, onClose, onChange }: Props) {
             <div className="prompt-library-section-head">
               <strong>{draft.id ? "Edit template" : "New template"}</strong>
             </div>
-            {err && <div className="error-bar">{err}</div>}
+            <ErrorBar message={err} onDismiss={() => setErr(null)} />
             <label className="prompt-library-field">
               <span>Name</span>
               <input
