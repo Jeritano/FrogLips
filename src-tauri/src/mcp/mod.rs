@@ -474,6 +474,7 @@ pub async fn start_server(
         .map(|arr| {
             arr.iter()
                 .filter_map(|t| serde_json::from_value::<ToolDescriptor>(t.clone()).ok())
+                .map(sanitize_mcp_tool_descriptor)
                 .collect()
         })
         .unwrap_or_default();
@@ -513,6 +514,69 @@ pub fn list_tools(name: &str) -> Result<Vec<ToolDescriptor>> {
     let handle = handle.ok_or_else(|| anyhow!("no MCP server named '{}'", name))?;
     let tools = handle.tools.read().clone();
     Ok(tools)
+}
+
+/// Per-MCP-tool sanitization for `description` + `name`. The description
+/// flows into the LLM's system prompt verbatim if not stripped (frontend
+/// builds the tool catalogue from this list), so an MCP server can inject
+/// fake "system" instructions there: bidi/zero-width chars to smuggle
+/// payload past the scanner, length-bombs that crowd out real tools, etc.
+///
+/// We strip the same family of invisible chars the injection scanner does,
+/// length-cap descriptions, and refuse names that don't match a strict
+/// `[A-Za-z0-9_]` pattern. Sec review H8.
+fn sanitize_mcp_tool_descriptor(mut t: ToolDescriptor) -> ToolDescriptor {
+    const MAX_DESCRIPTION_BYTES: usize = 1024;
+    const MAX_NAME_LEN: usize = 64;
+    // Description: strip invisible/control chars, collapse newlines so a
+    // multi-line payload can't smuggle multiple instructions, then cap.
+    let cleaned = strip_for_prompt(&t.description);
+    let mut flat = cleaned.replace(['\r', '\n'], " ");
+    while flat.contains("  ") {
+        flat = flat.replace("  ", " ");
+    }
+    if flat.len() > MAX_DESCRIPTION_BYTES {
+        let mut cut = MAX_DESCRIPTION_BYTES;
+        while cut > 0 && !flat.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        flat.truncate(cut);
+        flat.push('…');
+    }
+    t.description = flat;
+    // Name: refuse anything that isn't a conservative identifier.
+    if t.name.len() > MAX_NAME_LEN
+        || !t
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        // Replace with a safe placeholder so the frontend can still
+        // present it; the dispatch layer should refuse to call it.
+        t.name = "__mcp_tool_with_invalid_name__".to_string();
+    }
+    t
+}
+
+/// Strip zero-width / bidi / control characters from a string that's about
+/// to be embedded in an LLM system prompt or any other LLM-visible
+/// trusted-frame context. Same character class as
+/// `injection_scan::normalize_for_scan` — keep in sync.
+fn strip_for_prompt(s: &str) -> String {
+    s.chars()
+        .filter(|&ch| {
+            !matches!(
+                ch as u32,
+                0x200B..=0x200D | 0xFEFF | 0x2060 | 0x180E
+                | 0x202A..=0x202E
+                | 0x2066..=0x2069
+                | 0x0000..=0x0008
+                | 0x000B..=0x000C
+                | 0x000E..=0x001F
+                | 0x007F..=0x009F
+            )
+        })
+        .collect()
 }
 
 pub async fn call_tool(server: &str, tool: &str, args_json: Value) -> Result<String> {

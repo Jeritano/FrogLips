@@ -135,6 +135,44 @@ fn protected_prefixes() -> Vec<PathBuf> {
     .map(PathBuf::from)
     .collect();
     v.extend(home_prefixes());
+    // Sec review H2 — broader macOS persistence / shell-init / IDE state
+    // surface. These were previously writable when WORKSPACE_ROOT was unset
+    // (e.g. on a fresh install): a prompt-injected agent could drop a
+    // LaunchAgent plist for persistence or rewrite the user's shell rc.
+    if let Some(home) = dirs::home_dir() {
+        for sub in [
+            // Per-user launchd persistence — single biggest macOS foothold.
+            "Library/LaunchAgents",
+            "Library/LaunchDaemons",
+            // Shell init files — modifying these gives every new shell
+            // session whatever the attacker wrote.
+            ".bash_profile",
+            ".bashrc",
+            ".profile",
+            ".zshrc",
+            ".zprofile",
+            ".zshenv",
+            "Library/Preferences/com.apple.Terminal.plist",
+            // Common credential / config files (some already in
+            // is_protected_for_read; repeat here so write is denied even
+            // when read is intentionally allowed in the future).
+            ".netrc",
+            ".npmrc",
+            ".pypirc",
+            ".gitconfig",
+            ".docker/config.json",
+            ".kube",
+            ".config/gh",
+            ".config/gcloud",
+            // Froglips' own data dir — the agent should not be able to
+            // rewrite the DB, settings, or backup snapshots from inside
+            // a workspace.
+            ".local-llm-app",
+            "Library/Application Support/Froglips",
+        ] {
+            v.push(home.join(sub));
+        }
+    }
     v
 }
 
@@ -196,9 +234,20 @@ fn is_protected_for_write(p: &Path) -> bool {
     prefixes.iter().any(|pre| p.starts_with(pre))
 }
 
+/// Default workspace root used when no project has been explicitly set.
+/// Sec review H2: `within_workspace` previously returned `true` when no
+/// root was configured, letting the agent read/write anywhere not on the
+/// denylist on a fresh install. Now we fall back to the user's home dir
+/// (still blocked from the protected prefixes above) so the agent is at
+/// least scoped to their account by default.
+fn default_workspace_root() -> Option<PathBuf> {
+    dirs::home_dir()
+}
+
 pub(super) fn within_workspace(p: &Path) -> bool {
-    match workspace_root_clone() {
-        None => true,
+    let root = workspace_root_clone().or_else(default_workspace_root);
+    match root {
+        None => false, // no home dir and no explicit root → refuse everything
         Some(root) => p.starts_with(&root),
     }
 }

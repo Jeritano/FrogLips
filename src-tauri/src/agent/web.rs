@@ -474,6 +474,19 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
         "x-forwarded-for",
         "x-forwarded-host",
         "x-real-ip",
+        // Sec review H6 — origin/referer/user-agent let the model spoof a
+        // browser session: bypassing naive CSRF checks ("we only accept
+        // requests with Origin: ourdomain.com"), impersonating GoogleBot
+        // to scrape gated content, or evading rate-limit detection. The
+        // Fetch metadata family (Sec-Fetch-*) tells the receiver this is
+        // a browser-initiated request; forging them lies about provenance.
+        "referer",
+        "origin",
+        "user-agent",
+        "sec-fetch-dest",
+        "sec-fetch-mode",
+        "sec-fetch-site",
+        "sec-fetch-user",
     ];
     for (k, v) in &headers {
         if k.is_empty() || k.len() > 256 || v.len() > 4096 {
