@@ -10,6 +10,41 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 ### Positioning
 - Froglips is now framed as **the local-LLM power workstation**, built on three pillars — **Agent** (tools, MCP, workspace sandbox, dry-run), **Knowledge** (memory + RAG + searchable history), and **Models** (backend/model fleet management, parameters). Plain chat is the substrate, not the headline.
 
+### Security (2026-05-24 review sweep)
+- **Payload-bound approval tokens for every dangerous IPC.** Tokens now bind to a SHA-256 of the live arguments (path, pid+signal, command, URL, mcp-command+args+env-keys, etc.) so a token approved for one payload cannot be silently spent on another within the 60s TTL. Covers `agent_run_shell`, `agent_write_file`, `agent_edit_file`, `agent_multi_edit`, `agent_move_path`, `agent_copy_path`, `agent_delete_path`, `agent_make_dir`, `agent_undo_last`, `agent_kill_process`, `agent_clipboard_set`, `agent_open_app`, `agent_show_notification`, `agent_open_path_in_editor`, `agent_format_code`, `agent_screenshot`, `agent_http_request`, `agent_browser_navigate`, `mcp_start_server`.
+- **Approval gates added** where they were missing: `agent_clipboard_set` (clipboard hijack), `agent_open_app` (arbitrary app launch), `agent_show_notification` (notification phishing), `agent_open_path_in_editor`, `agent_format_code`, `agent_screenshot` (window-content exfil), `agent_browser_navigate`, `mcp_start_server` (was unauthenticated — user-level RCE).
+- **Workspace confinement default** — `within_workspace` no longer returns true when no explicit root is set; falls back to `$HOME` so a fresh install isn't free-roaming. Protected prefixes expanded to cover `~/Library/LaunchAgents`, `~/Library/LaunchDaemons`, shell init files (`.bash_profile`, `.zshrc`, `.zshenv`, `.profile`, `.zprofile`), `Terminal.plist`, `~/.local-llm-app`, `~/Library/Application Support/Froglips`, `.pypirc`, `.gitconfig`, `.docker/`, `.kube/`.
+- **Browser navigate SSRF guard** — `agent_browser_navigate` now rejects non-http(s) schemes (no `file://`, `chrome://`, `javascript:`, `data:`) and reuses `agent::web::is_safe_public_host` so the headless browser can no longer be driven at private IPs / link-local / metadata endpoints.
+- **HTTP deny-headers expanded** with `Referer`, `Origin`, `User-Agent`, `Sec-Fetch-*` — prevents the model from forging Origin (defeats naive CSRF), impersonating browser/bot UAs, or lying about navigation provenance.
+- **Prompt-injection scanner normalizes input** — strips zero-width chars (U+200B-U+200D, U+FEFF, U+2060, U+180E), bidi overrides (U+202A-U+202E, U+2066-U+2069), and C0/C1 controls before pattern matching. `i​gnore previous in​structions` (zero-width-space between letters) no longer sails past the literal-word regex. Wrapper also flags "invisible formatting chars" finding so the agent knows the content carried smuggling characters.
+- **MCP tool descriptions sanitized** before they hit the system prompt: same invisible/control char strip, newline collapse (defeats multi-line fake-instruction smuggling), 1024-byte cap, conservative name validation (`[A-Za-z0-9_.-]{1,64}`).
+- **`asset://` scope tightened** from `images/**` to `images/*.png` + `images/**/*.png` so the model can't drop arbitrary-content files under that prefix and have the renderer fetch them.
+- **Approval-token RNG hard-fails** on `/dev/urandom` read failure instead of falling back to a time+counter+pid mix the reviewer flagged as bruteforceable in the 60s TTL window.
+- **Approval-token store capacity** — `approval::mint` refuses when 256 live tokens exist rather than evicting; eviction would let a spam attacker invalidate legitimate live tokens.
+- **`image_save_to` requires `.png` extension** — image bytes are PNG-encoded; the suffix check stops the model from using this IPC to drop arbitrary-named bytes anywhere the user has approved.
+- **`ask_user` answer scanned + wrapped** — the user is trusted for intent but the *content* may be pasted external text carrying jailbreak phrases. Now treated as data via `injection_scan::scan_and_wrap` before flowing back into the agent loop.
+- **Project policy file ownership check** — `policy::load_for_cwd` refuses `.froglips/policy.json` files not owned by the current uid. Stops an untrusted git repo from shipping a policy that auto-approves arbitrary shell commands.
+
+### Code quality (2026-05-24 review sweep)
+- **Read-only tool cache bounded** at 256 entries with FIFO eviction in `runAgentLoop` — was unbounded for the lifetime of one agent run.
+- **Task-queue auto-prune** — `task_queue::create` runs an opportunistic prune of TaskEntrys older than 30 minutes before counting against the cap. Long sessions no longer leak terminal task rows.
+- **`setActiveShell` / `clearActiveShell` / `cancelActiveShell`** no longer collide on the unkeyed fallback path — bounded `Map<symbol, string>` replaces the module-level mutable singleton.
+- **`useChatSend` rAF flush** bails when `ctrl.signal.aborted` so a stale snapshot can't land on the next conversation after a user-abort + restart.
+- **`image_gen` idle evictor race** closed — evictor now takes `generate_mutex` before its check-then-drop dance.
+- **`db_unavailable_notice` IPC** wired so the UI can render an actionable banner when SQLite init fails, instead of every downstream IPC returning a generic error.
+- **`redactValue` depth-capped** at 32 levels to prevent stack overflow on a pathologically deep arg tree.
+- **`useChatSend` settings cache** — caches `AppSettings` per-renderer + invalidates via a new `settings-changed` Tauri event emitted from `settings_set`. Was round-tripping the whole settings blob per send just to read `user_profile`.
+- **`classify_shell_risk` normalizes whitespace** before substring match — `rm  -rf  /`, `rm\t-rf /`, and ` rm -rf ~ ` are now caught.
+- **MCP autostart parallel** — `for ... await` replaced with `tokio::spawn` + `join_all`, each task wrapped in a 15s per-server timeout so one wedged server can't gate the rest.
+- **Streaming-response truncation** at `ACC_MAX=262144` bytes now surfaces a diagnostics warning instead of silently aborting.
+
+### UX (2026-05-24 review sweep)
+- **Sidebar "VIEWS" micro-section label** groups the Workflows + Images buttons so they read as a navigation cluster rather than orphaned verbs.
+- **Per-view header title** — the chrome no longer collapses to a lone theme-toggle on Workflows / Images; renders an h1 with the active view name.
+- **SetupWizard Step 2 Next** no longer hard-gates on a fresh starter download — also enabled when the user already has any installed model or no starters exist.
+- **SetupWizard Esc** moves focus to the Skip button instead of being a silent no-op so users discover the escape hatch.
+- **Sidebar error-bar** now has an explicit × dismiss button + `role="alert"` for screen reader announcement.
+
 ### Added
 - **Agent mode on the Native backend** — `mistralrs-core` 0.8.1 exposes a real `tools`/`tool_choice` API and returns `tool_calls` in its stream, so the native chat command now accepts tool definitions and tool-role messages and the agent loop routes the native backend through a native agent-chat path. **Agent mode now works on all three backends** (Ollama, MLX, Native); it is no longer rejected on Native.
 - **Agent-loop context-window manager** — before each model call the message array is budgeted against the model's context size: oversized tool results are truncated in the sent copy and the oldest turns collapse into a synthetic summary, while the system prompt is always kept. Stops long agent runs from overflowing small-context models and evicting their own tool definitions.

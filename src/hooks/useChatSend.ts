@@ -479,6 +479,16 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         if (chunk.done) break;
         acc += chunk.delta;
         if (acc.length > ACC_MAX) {
+          // Code review L2: previously truncated silently — surface it in
+          // diagnostics so a user investigating a clipped reply has a
+          // breadcrumb. The user-visible UI still gets the truncated
+          // response; this is a developer / support hint.
+          logDiag({
+            level: "warn",
+            source: "chat-send",
+            message: `streaming response hit ACC_MAX (${ACC_MAX} bytes) — truncated`,
+            detail: { backend: status.backend, model: status.model },
+          });
           ctrl.abort();
           break;
         }
