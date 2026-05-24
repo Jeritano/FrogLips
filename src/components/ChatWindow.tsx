@@ -677,7 +677,22 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               </label>
             </>
           )}
-          <pre className="agent-confirm-args">
+          {/* UX re-review H-3: surface a "Long-running" chip when the
+              model requested a non-default timeout_secs so the user
+              isn't surprised by a 5-min hang from a JSON arg buried in
+              the &lt;pre&gt; below. */}
+          {confirmState.toolName === "run_shell" && (() => {
+            const t = (confirmState.args as Record<string, unknown>).timeout_secs;
+            if (typeof t === "number" && t > 60) {
+              return (
+                <div className="agent-confirm-chip" data-testid="agent-confirm-long-running">
+                  ⏱ Long-running ({t}s budget)
+                </div>
+              );
+            }
+            return null;
+          })()}
+          <pre className="agent-confirm-args" data-testid="agent-confirm-args">
             {JSON.stringify(confirmState.args, null, 2)}
           </pre>
           {confirmState.toolName === "run_shell" && confirmState.risk === "normal" && (() => {

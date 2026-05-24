@@ -229,13 +229,34 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
               ))}
             </optgroup>
           )}
-          <optgroup label="Native (alpha — in-process Metal inference)">
-            <option value="__native__">⚡ Load a HuggingFace model natively…</option>
-          </optgroup>
-          <optgroup label="Add model">
-            <option value="__browse__">⬇ Browse &amp; download models…</option>
-          </optgroup>
         </select>
+        {/* UX re-review U-C3 / H6: the previous design tucked
+            "__native__" + "__browse__" as side-effect options INSIDE the
+            <select>, so selecting them mutated surrounding UI (opened a
+            repo input or a heavy modal). Assistive tech announced them
+            as model choices. Split into real buttons so the dropdown
+            contains only models. */}
+        <button
+          type="button"
+          className="topbar-btn topbar-action-secondary"
+          onClick={() => setNativeRepo((r) => r ?? "NousResearch/Llama-3.2-1B")}
+          title="Load a HuggingFace model into the in-process Metal native runtime"
+          data-testid="model-picker-load-native"
+          disabled={busy || !!status?.running}
+        >
+          ⚡ Native…
+        </button>
+        <button
+          type="button"
+          className="topbar-btn topbar-action-secondary"
+          data-shortcut="open-library"
+          onClick={() => setBrowserOpen(true)}
+          title="Browse & download models (HuggingFace, Civitai, Ollama)"
+          data-testid="model-picker-open-library"
+          disabled={busy || !!status?.running}
+        >
+          ⬇ Browse
+        </button>
 
         {nativeRepo !== null && (
           <>

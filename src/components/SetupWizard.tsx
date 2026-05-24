@@ -403,6 +403,7 @@ export function SetupWizard({ onDone }: Props) {
                 className="setup-wizard-skip"
                 onClick={() => finish(null)}
                 data-testid="setup-wizard-skip-all"
+                data-setup-wizard-escape="true"
               >
                 Skip setup
               </button>
@@ -481,6 +482,7 @@ export function SetupWizard({ onDone }: Props) {
                 className="setup-wizard-skip"
                 onClick={skipModel}
                 data-testid="setup-wizard-skip-model"
+                data-setup-wizard-escape="true"
               >
                 Skip — I'll add a model later
               </button>
@@ -577,11 +579,23 @@ function WizardOverlay({
         onEscapeHint();
         return;
       }
-      // Fallback: focus the first .setup-wizard-skip in the modal so the
-      // user can see the escape path even when no explicit hint handler
-      // is wired.
-      const skip = ref.current?.querySelector<HTMLButtonElement>(".setup-wizard-skip");
-      skip?.focus();
+      // Fallback: focus the wizard's "Skip setup" exit button. UX
+      // re-review caught the first `.setup-wizard-skip` selector
+      // grabbing the "Back" button (which shares the class) on Steps
+      // 2 + 3. Now we query a stable data-attribute that ONLY the
+      // skip-all-of-setup buttons carry; on Step 3 we fall back to
+      // the Done button.
+      const skip = ref.current?.querySelector<HTMLButtonElement>(
+        '[data-setup-wizard-escape="true"]',
+      );
+      if (skip) {
+        skip.focus();
+        return;
+      }
+      const done = ref.current?.querySelector<HTMLButtonElement>(
+        '[data-testid="setup-wizard-done"]',
+      );
+      done?.focus();
     },
     containerRef: ref,
   });

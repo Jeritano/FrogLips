@@ -371,6 +371,26 @@ body {
   user-select: none;
 }
 
+/* UX re-review U-C3 / H6: secondary actions sitting next to the model
+   <select> (Native loader trigger + Browse models). Lower contrast than
+   the select so the model list reads as the primary surface. */
+.topbar-action-secondary {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+}
+.topbar-action-secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.topbar-action-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Top-bar menu (now used inside .sidebar-actions) ── */
 .topbar-actions {
   display: flex;
