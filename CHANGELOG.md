@@ -10,6 +10,38 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 ### Positioning
 - Froglips is now framed as **the local-LLM power workstation**, built on three pillars — **Agent** (tools, MCP, workspace sandbox, dry-run), **Knowledge** (memory + RAG + searchable history), and **Models** (backend/model fleet management, parameters). Plain chat is the substrate, not the headline.
 
+### Security (2026-05-24 re-review pass)
+- **Browser per-action approval gates.** Previously only `agent_browser_navigate` was gated — `_click`, `_fill`, `_screenshot`, `_get_text`, `_close` rode the post-navigate session. Now each is approval-gated AND bound to its target selector / value where applicable so the user explicitly confirms each on-page action.
+- **AppleScript binding.** `agent_applescript_run` was the only remaining dangerous IPC on the legacy bareword approval path — it's strictly more powerful than `run_shell` (can `do shell script` + drive any scriptable app). Now payload-bound to the script body.
+- **Binding canonicalization collision-proof.** Length-prefixed `<len>:<name>=<value>` encoding replaces the prior `\x1f` and `|` separators. A `title` value containing `\x1f` could otherwise have colluded with a different `title`/`body` split that hashed identically.
+- **`policy::is_owned_by_current_user` uses `libc::geteuid`** instead of comparing against `$HOME`'s uid (which was a stable proxy but never fired on the real attack — extracting user owns the file). Added `libc` as a cfg(unix) dep.
+- **RAG search results scanned.** `agent_search_files` hits + `rag::search` snippets now flow through `injection_scan::scan_and_wrap`. Previously the only external-content paths that bypassed the scanner.
+- **MCP `inputSchema` nested descriptions sanitized** (every `description` + `title` string in the JSON Schema tree gets the same strip + 512-byte cap as the top-level `description`).
+- **`path_safety::is_denied` mirrors `agent::fs::protected_prefixes`** — backup / export / image_save_to could otherwise still target `~/Library/LaunchAgents`, shell rc files, `~/.local-llm-app`, etc.
+- **`commands/path_safety.rs` extra prefixes:** LaunchAgents/Daemons, shell init, Terminal.plist, `~/.pypirc`/`.gitconfig`/`.docker`/`.kube`, `~/.local-llm-app`, `~/Library/Application Support/Froglips`.
+- **`agent/browser.rs::get_text` byte-slice panic fixed** — now walks to char boundary before truncation.
+- **`IRREVERSIBLE_TOOLS` set added.** `delete_path`, `kill_process`, `agent_undo` are NEVER auto-approved via the session-blanket branch even when "Approve all writes this session" is on. classifyToolRisk bumps them to `destructive` so the modal carries the loud red badge.
+
+### Code quality (2026-05-24 re-review pass)
+- **`agent_undo` covers extras.** `move_path`, `copy_path` (when overwriting), `delete_path` now `snapshot::capture` before mutation so a stray destructive op can be reverted.
+- **`delete_path` recursive cap walks the full subtree** — the prior cap counted top-level + one nested level, depth-2-bypassable by nesting (`root/a/b/<1M files>` slipped through).
+- **`list_processes` + `list_undo` removed from READ_ONLY_TOOLS.** Both reflect real-time state that a non-mutating tool can't invalidate; a cached `list_processes` could feed `kill_process` against an exited (and possibly reused) PID.
+- **`agent_set_workspace` clears `snapshot::STACK`** on root change so an undo from project A can't write into project B's tree.
+- **`cacheStore` skips eviction when overwriting an existing key** (was dropping an unrelated entry on cap-hit re-set).
+- **`useChatSend` settings cache `invalidatorBound` flag** flips only on `listen` success — a transient registration failure during boot no longer leaves the cache un-invalidatable.
+
+### UX (2026-05-24 re-review pass)
+- **Shared `<ErrorBar>` component** applied to 9 sites (App, AboutYou, AgentSettings, ChatWindow, McpSettings, PromptLibrary, MemoryPanel, ForkTree, DetachedChatView). All carry `role="alert"`, an explicit × button with `aria-label`, focus-visible style, optional Retry slot. Hit area bumped to 24×24 min.
+- **SetupWizard Esc** focuses the wizard's "Skip" exit button via a stable `data-setup-wizard-escape` attribute instead of the first `.setup-wizard-skip` match (which on Steps 2 + 3 was the "Back" button).
+- **AgentToolbar wraps** (`flex-wrap: wrap`) so the 10+ chips/buttons on a narrow window drop to a second row instead of clipping.
+- **ModelPicker split** — `__native__` and `__browse__` are now real buttons next to the `<select>`, not synthetic options inside it (assistive tech no longer announces them as model choices).
+- **Long-running chip** in the agent confirm modal when `run_shell` requests `timeout_secs > 60`.
+- **Plain-language danger chips** for `kill_process` (SIG + pid + irreversible), `delete_path` (recursive / path), `agent_undo` (revert + can't redo). Each in addition to the existing destructive risk badge.
+- **`agent_undo` toolbar surface.** New "↶ Undo `<file>`" button on AgentToolbar reading the snapshot stack every 3 s. Stays disabled when stack is empty.
+- **Sidebar "VIEWS" micro-section** groups Workflows + Images. `aria-current="page"` for the active view (in addition to `aria-pressed` for CSS).
+- **Header parity** — `topbar-view-title` is 13px to match ModelPicker so chrome height is constant.
+- **Header label sync** — "Images" instead of "Image generation" matches the sidebar entry.
+
 ### Security (2026-05-24 review sweep)
 - **Payload-bound approval tokens for every dangerous IPC.** Tokens now bind to a SHA-256 of the live arguments (path, pid+signal, command, URL, mcp-command+args+env-keys, etc.) so a token approved for one payload cannot be silently spent on another within the 60s TTL. Covers `agent_run_shell`, `agent_write_file`, `agent_edit_file`, `agent_multi_edit`, `agent_move_path`, `agent_copy_path`, `agent_delete_path`, `agent_make_dir`, `agent_undo_last`, `agent_kill_process`, `agent_clipboard_set`, `agent_open_app`, `agent_show_notification`, `agent_open_path_in_editor`, `agent_format_code`, `agent_screenshot`, `agent_http_request`, `agent_browser_navigate`, `mcp_start_server`.
 - **Approval gates added** where they were missing: `agent_clipboard_set` (clipboard hijack), `agent_open_app` (arbitrary app launch), `agent_show_notification` (notification phishing), `agent_open_path_in_editor`, `agent_format_code`, `agent_screenshot` (window-content exfil), `agent_browser_navigate`, `mcp_start_server` (was unauthenticated — user-level RCE).
