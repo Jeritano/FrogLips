@@ -33,6 +33,13 @@ pub fn list_mlx_models() -> Result<Vec<ModelEntry>> {
         };
         // HF encodes "org/sub/name" as "org--sub--name"; replace ALL "--" → "/"
         let id = rest.replace("--", "/");
+        // Skip repos cached by adjacent features (image-gen FLUX pipeline +
+        // its text/vision encoders) — they live in the same HF hub dir but
+        // aren't usable as chat models. Without this they'd clutter the
+        // chat ModelPicker.
+        if is_non_chat_repo(&id) {
+            continue;
+        }
         let size_bytes = cached_dir_size(&entry.path()).unwrap_or(0);
         out.push(ModelEntry {
             id,
@@ -42,6 +49,62 @@ pub fn list_mlx_models() -> Result<Vec<ModelEntry>> {
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
+}
+
+/// Repo-id pattern blocklist for the chat picker. Anything matched here is
+/// either a diffusion weight set or a text/vision encoder downloaded as a
+/// dependency of the in-process FLUX pipeline. None of these are chat-capable.
+fn is_non_chat_repo(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    // Image-gen base weights (BFL ships only FLUX).
+    if lower.starts_with("black-forest-labs/") {
+        return true;
+    }
+    // FLUX quant repos elsewhere on the hub.
+    if lower.contains("flux.1") || lower.contains("/flux-") {
+        return true;
+    }
+    // CLIP / SigLIP vision-text encoders that FLUX (and other diffusion
+    // pipelines) pull as standalone repos.
+    if lower.contains("/clip-vit-") || lower.contains("/siglip-") {
+        return true;
+    }
+    // T5 text encoders the FLUX pipeline depends on. Match the encoder-only
+    // and tokenizer-only repos, not full T5 chat checkpoints (unlikely on
+    // local Macs but cheap to be precise).
+    if lower.contains("t5_tokenizer")
+        || lower.contains("t5-v1_1-xxl-enc-only")
+        || lower.contains("t5-v1_1-xxl_tokenizer")
+    {
+        return true;
+    }
+    // Standalone VAE repos (Stable Diffusion / FLUX variants).
+    if lower.contains("/vae-") || lower.ends_with("-vae") {
+        return true;
+    }
+    false
+}
+
+#[cfg(test)]
+mod chat_picker_filter_tests {
+    use super::is_non_chat_repo;
+
+    #[test]
+    fn filters_flux_and_encoders() {
+        assert!(is_non_chat_repo("black-forest-labs/FLUX.1-dev"));
+        assert!(is_non_chat_repo("black-forest-labs/FLUX.1-schnell"));
+        assert!(is_non_chat_repo("city96/FLUX.1-dev-gguf"));
+        assert!(is_non_chat_repo("openai/clip-vit-large-patch14"));
+        assert!(is_non_chat_repo("EricB/t5-v1_1-xxl-enc-only"));
+        assert!(is_non_chat_repo("EricB/t5_tokenizer"));
+    }
+
+    #[test]
+    fn keeps_real_chat_models() {
+        assert!(!is_non_chat_repo("mlx-community/Llama-3.2-3B-Instruct-4bit"));
+        assert!(!is_non_chat_repo("mlx-community/Qwen3-7B-Instruct"));
+        assert!(!is_non_chat_repo("microsoft/phi-2"));
+    }
 }
 
 pub fn list_ollama_models() -> Result<Vec<ModelEntry>> {
