@@ -82,7 +82,7 @@ function AgentUndoButton() {
         title="Nothing to undo — no agent writes captured yet"
         disabled
       >
-        ↶ Undo
+        ↶ Undo (none)
       </button>
     );
   }

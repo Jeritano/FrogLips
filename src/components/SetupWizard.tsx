@@ -483,8 +483,9 @@ export function SetupWizard({ onDone }: Props) {
                 onClick={skipModel}
                 data-testid="setup-wizard-skip-model"
                 data-setup-wizard-escape="true"
+                title="Skip — add a model later from the model picker"
               >
-                Skip — I'll add a model later
+                Skip setup
               </button>
               {/* UI review U-H1: Next was hard-disabled until a starter
                   finished downloading, which penalised users who had

@@ -783,6 +783,16 @@ function App() {
             data-testid="images-entry-btn"
           >
             <span aria-hidden="true">🎨</span> Images
+            {/* UX re-review M5: dot indicator while image generation is
+                in flight so a user who navigated away can see something
+                is happening on a tab they're not currently viewing. */}
+            {imageGen.running && (
+              <span
+                className="sidebar-activity-dot"
+                aria-label="Image generation in progress"
+                data-testid="images-entry-activity-dot"
+              />
+            )}
           </button>
         </div>
         <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>

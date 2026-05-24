@@ -536,6 +536,26 @@
 
 /* ── Sidebar entry chip — same styling pattern as Workflows ─────────── */
 
+/* UX re-review M5: live-activity dot for the Images sidebar entry while
+   image generation is in flight on a tab the user isn't currently
+   viewing. Pulse animation respects prefers-reduced-motion. */
+.sidebar-activity-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 6px;
+  animation: sidebar-activity-pulse 1.4s ease-in-out infinite;
+}
+@keyframes sidebar-activity-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.25); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-activity-dot { animation: none; opacity: 1; }
+}
+
 .images-entry {
   display: flex;
   align-items: center;

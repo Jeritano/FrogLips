@@ -729,12 +729,16 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
                 </div>
               );
             }
+            // UX re-review L-new-3: the modal doesn't have access to
+            // list_undo() here, so we can't tell whether the top entry
+            // was an Absent-marker (create → undo deletes) or a Bytes
+            // entry (edit → undo restores). Surface both possibilities.
             return (
               <div
                 className="agent-confirm-chip danger"
                 data-testid="agent-confirm-undo"
               >
-                ⚠ Revert the most recent agent write — cannot be redone
+                ⚠ Revert the most recent agent file write (may delete a created file) — cannot be redone
               </div>
             );
           })()}
