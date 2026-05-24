@@ -4,7 +4,7 @@ import { logDiag } from "../lib/diagnostics";
 import { announce } from "../lib/announce";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { ImageGenOpts, ImageMeta } from "../types";
-import { useImageGeneration } from "../hooks/useImageGeneration";
+import type { UseImageGenerationResult } from "../hooks/useImageGeneration";
 import { ImagePromptPanel } from "./image/ImagePromptPanel";
 import { ImageGallery } from "./image/ImageGallery";
 import { ImageDetail } from "./image/ImageDetail";
@@ -23,6 +23,16 @@ interface Props {
    * with a populated `images` array.
    */
   onSendToChat: (meta: ImageMeta) => void;
+  /**
+   * In-flight image-gen state — owned by App so it survives tab navigation.
+   * Earlier this view called `useImageGeneration()` itself, so unmounting on
+   * tab nav tore down the Tauri listeners and silently dropped the
+   * `image-done` payload mid-run.
+   */
+  running: boolean;
+  progress: UseImageGenerationResult["progress"];
+  error: string | null;
+  generate: UseImageGenerationResult["generate"];
 }
 
 /** Three-state gallery scope chip. Stored as a string for stable test selectors. */
@@ -46,7 +56,14 @@ const PAGE_LIMIT = 200;
  * composer — see images.css. Detail metadata lives behind an "ℹ" disclosure
  * inside the canvas pane (own column eliminated in the 2026-05-23 rework).
  */
-export function ImageView({ conversationId, onSendToChat }: Props) {
+export function ImageView({
+  conversationId,
+  onSendToChat,
+  running,
+  progress,
+  error,
+  generate,
+}: Props) {
   const [images, setImages] = useState<ImageMeta[]>([]);
   const [selected, setSelected] = useState<ImageMeta | null>(null);
   const [listErr, setListErr] = useState<string | null>(null);
@@ -56,7 +73,6 @@ export function ImageView({ conversationId, onSendToChat }: Props) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [pageLimit, setPageLimit] = useState(PAGE_LIMIT);
   const [totalCount, setTotalCount] = useState<number>(0);
-  const { running, progress, error, generate } = useImageGeneration();
 
   // Whenever the parent's selected conversation changes, switch the default
   // scope back to "This chat" if a real conv is active. The user can still

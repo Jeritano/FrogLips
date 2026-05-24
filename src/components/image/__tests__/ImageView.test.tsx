@@ -84,8 +84,21 @@ async function mount(convId: number | null = null): Promise<Harness> {
   document.body.appendChild(container);
   const root = createRoot(container);
   const onSendToChat = vi.fn();
+  // In-flight image-gen state is hoisted to App in production. Tests pass
+  // an idle/stubbed shape — the ImageView surface under test doesn't depend
+  // on a live generate flow for any of the assertions below.
+  const generate = vi.fn(async () => 0);
   await act(async () => {
-    root.render(<ImageView conversationId={convId} onSendToChat={onSendToChat} />);
+    root.render(
+      <ImageView
+        conversationId={convId}
+        onSendToChat={onSendToChat}
+        running={false}
+        progress={{ phase: "idle" }}
+        error={null}
+        generate={generate}
+      />,
+    );
   });
   await flush();
   return { container, root, onSendToChat };

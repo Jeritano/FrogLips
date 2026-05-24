@@ -9,6 +9,7 @@ import { useModalA11y } from "./lib/use-modal-a11y";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 import { usePlatformChrome } from "./hooks/usePlatformChrome";
 import { useWindowGeometry } from "./hooks/useWindowGeometry";
+import { useImageGeneration } from "./hooks/useImageGeneration";
 import type { ChatImage, Conversation, ImageMeta, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
@@ -106,6 +107,12 @@ function App() {
   // follows the traffic lights disappearing in real time.
   const { updateFullscreen } = usePlatformChrome();
   useWindowGeometry(updateFullscreen);
+
+  // Hoisted at App-level so the in-flight image-gen state + Tauri event
+  // listeners survive a tab switch. Earlier this lived inside `ImageView`
+  // and got torn down on view nav, which left a generate orphaned in Rust
+  // while the UI forgot it was running. ImageView consumes via props.
+  const imageGen = useImageGeneration();
 
   // Initial data + first-run wizard gate.
   useEffect(() => {
@@ -948,6 +955,10 @@ function App() {
             <ImageView
               conversationId={current?.id ?? null}
               onSendToChat={onSendImageToChat}
+              running={imageGen.running}
+              progress={imageGen.progress}
+              error={imageGen.error}
+              generate={imageGen.generate}
             />
           </Suspense>
         ) : (
