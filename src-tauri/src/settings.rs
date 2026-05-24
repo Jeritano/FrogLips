@@ -95,49 +95,39 @@ fn keychain_disabled() -> bool {
 }
 
 /// Write an API key into the macOS Keychain under (KEYCHAIN_SERVICE, account).
+///
+/// Sec re-review H-2: previously called `security add-generic-password -w
+/// &lt;key&gt;` which passed the secret as an argv element — any same-uid
+/// process running `ps auxww` or `proc_pidinfo` could read it during the
+/// brief window. Now uses the native `security-framework` binding directly
+/// so the secret never crosses an argv boundary.
 fn keychain_set(account: &str, key: &str) {
     if keychain_disabled() {
         return;
     }
-    // -U updates an existing item in place rather than erroring on duplicate.
-    let _ = std::process::Command::new("security")
-        .args([
-            "add-generic-password",
-            "-U",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            account,
-            "-w",
-            key,
-        ])
-        .output();
+    use security_framework::passwords::set_generic_password;
+    if let Err(e) = set_generic_password(KEYCHAIN_SERVICE, account, key.as_bytes()) {
+        // Non-fatal — settings::save still persists the redacted shape.
+        // Log the failure so a missing keychain doesn't silently lose the
+        // user's keys forever.
+        eprintln!("[settings] keychain_set({account}): {e}");
+    }
 }
 
 /// Fetch an API key from the macOS Keychain. Returns `None` if absent.
+///
+/// Sec re-review H-2 (symmetric with `keychain_set`): the previous CLI
+/// invocation read the value from `security`'s stdout, which carried the
+/// secret into a pipe a same-uid process could in principle attach to.
+/// The native binding keeps the secret in-process.
 pub fn keychain_get(account: &str) -> Option<String> {
     if keychain_disabled() {
         return None;
     }
-    let out = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            account,
-            "-w",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
+    use security_framework::passwords::get_generic_password;
+    match get_generic_password(KEYCHAIN_SERVICE, account) {
+        Ok(bytes) => String::from_utf8(bytes).ok().filter(|s| !s.is_empty()),
+        Err(_) => None,
     }
 }
 
@@ -146,6 +136,11 @@ fn keychain_delete(account: &str) {
     if keychain_disabled() {
         return;
     }
+    use security_framework::passwords::delete_generic_password;
+    let _ = delete_generic_password(KEYCHAIN_SERVICE, account);
+    // Legacy fallback was a CLI invocation that is now redundant; left
+    // here as a note in case a future tester needs to clear a stale
+    // entry created by older builds.
     let _ = std::process::Command::new("security")
         .args([
             "delete-generic-password",

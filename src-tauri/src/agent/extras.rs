@@ -146,33 +146,56 @@ pub async fn delete_path(path: String, recursive: bool) -> Result<DeleteResult, 
             // root/a/b/<1M files> passed the cap because root had 1 dir
             // and a had 1 dir. Now we walk the FULL tree counting every
             // descendant before invoking remove_dir_all.
+            // Code re-review M-NEW-2: walk the tree once, capturing each
+            // regular file's contents into the snapshot stack along the
+            // way. recursive delete now has the same undo coverage as
+            // single-file delete (modulo the per-entry size cap inside
+            // `snapshot::capture`).
             let walk_root = resolved.clone();
-            let count = tokio::task::spawn_blocking(move || -> Result<usize, std::io::Error> {
-                let mut count: usize = 0;
-                let mut stack: Vec<PathBuf> = vec![walk_root];
-                while let Some(dir) = stack.pop() {
-                    let rd = std::fs::read_dir(&dir)?;
-                    for entry in rd.flatten() {
-                        count += 1;
-                        if count > 1000 {
-                            return Ok(count);
-                        }
-                        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                            stack.push(entry.path());
+            let (count, files_to_snapshot) =
+                tokio::task::spawn_blocking(move || -> Result<(usize, Vec<PathBuf>), std::io::Error> {
+                    let mut count: usize = 0;
+                    let mut files: Vec<PathBuf> = Vec::new();
+                    let mut stack: Vec<PathBuf> = vec![walk_root];
+                    while let Some(dir) = stack.pop() {
+                        let rd = std::fs::read_dir(&dir)?;
+                        for entry in rd.flatten() {
+                            count += 1;
+                            if count > 1000 {
+                                return Ok((count, files));
+                            }
+                            let ftype = match entry.file_type() {
+                                Ok(t) => t,
+                                Err(_) => continue,
+                            };
+                            if ftype.is_dir() {
+                                stack.push(entry.path());
+                            } else if ftype.is_file() {
+                                files.push(entry.path());
+                            }
                         }
                     }
-                }
-                Ok(count)
-            })
-            .await
-            .map_err(|e| ok_err("io", e.to_string()))?
-            .map_err(|e| ok_err("io", e.to_string()))?;
+                    Ok((count, files))
+                })
+                .await
+                .map_err(|e| ok_err("io", e.to_string()))?
+                .map_err(|e| ok_err("io", e.to_string()))?;
             if count > 1000 {
                 return Err(ok_err(
                     "too_large",
                     "recursive delete refused: more than 1000 entries; use shell with approval",
                 ));
             }
+            // Capture each file's contents before remove_dir_all clobbers
+            // them. Snapshot stack itself is capped at MAX_ENTRIES (50)
+            // with FIFO eviction — anything beyond that limit loses undo
+            // coverage but the destructive op still proceeds.
+            let _ = tokio::task::spawn_blocking(move || {
+                for path in files_to_snapshot {
+                    super::snapshot::capture(&path, "delete_path");
+                }
+            })
+            .await;
             tokio::fs::remove_dir_all(&resolved)
                 .await
                 .map_err(|e| ok_err("io", e.to_string()))?;

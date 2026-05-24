@@ -266,7 +266,7 @@ export function McpSettings({ onConfigsChanged }: Props) {
             {live?.last_error && (
               <ErrorBar
                 message={`Server error: ${live.last_error}`}
-                onDismiss={() => {/* server-driven; clears on next status update */}}
+                dismissable={false}
                 onRetry={() => restartConfig(cfg)}
                 retryLabel="Restart"
               />

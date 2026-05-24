@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ExportMenu } from "./ExportMenu";
 import { api } from "../lib/tauri-api";
+import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import type { AgentSettings } from "../hooks/useAgentSettings";
 import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
 import type { Conversation, ConversationParams, Message, ProjectPolicy } from "../types";
@@ -41,10 +42,16 @@ interface Props {
  * UI surface for `agent_undo`. Reads the snapshot stack on render, shows
  * "Undo last (filename)" when there's something to revert, and pops via
  * the approval-gated IPC. Stays disabled while empty.
+ *
+ * Code re-review H-NEW-1: wrapped in `useTwoClickConfirm` so a single
+ * misclick can't revert. Same pattern as conversation delete + Fork-from-
+ * here. The Rust IPC's approval token is still required; this is the
+ * human-facing gate.
  */
 function AgentUndoButton() {
   const [topEntry, setTopEntry] = useState<{ path: string; kind: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const confirmer = useTwoClickConfirm();
   const refresh = useCallback(async () => {
     try {
       const rows = await api.agentListUndo();
@@ -55,8 +62,17 @@ function AgentUndoButton() {
   }, []);
   useEffect(() => {
     void refresh();
-    const id = setInterval(() => void refresh(), 3000);
-    return () => clearInterval(id);
+    // UX re-review L-new-1: only poll while the document is visible so a
+    // long backgrounded session doesn't burn ~28k IPC/day.
+    const onVisChange = () => { if (document.visibilityState === "visible") void refresh(); };
+    document.addEventListener("visibilitychange", onVisChange);
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, 3000);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisChange);
+    };
   }, [refresh]);
   if (!topEntry) {
     return (
@@ -71,29 +87,40 @@ function AgentUndoButton() {
     );
   }
   const base = topEntry.path.split("/").pop() ?? topEntry.path;
+  const armed = confirmer.armed === "undo";
   return (
     <button
       type="button"
-      className="agent-settings-btn"
-      title={`Revert ${topEntry.kind} of ${topEntry.path}`}
+      className={`agent-settings-btn${armed ? " armed" : ""}`}
+      title={
+        armed
+          ? `Click again to revert ${topEntry.kind} of ${topEntry.path}`
+          : `Revert ${topEntry.kind} of ${topEntry.path}`
+      }
       data-testid="agent-undo-btn"
       disabled={busy}
       onClick={() => {
-        void (async () => {
-          setBusy(true);
-          try {
-            await api.agentUndoLast();
-            await refresh();
-          } catch {
-            // Approval rejection / nothing-to-undo — surface in toolbar
-            // is not actionable; the diag layer already logs the cause.
-          } finally {
-            setBusy(false);
-          }
-        })();
+        confirmer.request("undo", () => {
+          void (async () => {
+            setBusy(true);
+            try {
+              await api.agentUndoLast();
+              await refresh();
+            } catch {
+              // Approval rejection / nothing-to-undo — surface in toolbar
+              // is not actionable; the diag layer already logs the cause.
+            } finally {
+              setBusy(false);
+            }
+          })();
+        });
       }}
     >
-      {busy ? "Reverting…" : `↶ Undo ${base}`}
+      {busy
+        ? "Reverting…"
+        : armed
+          ? "Click again to confirm"
+          : `↶ Undo ${base}`}
     </button>
   );
 }

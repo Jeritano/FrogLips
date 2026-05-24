@@ -130,7 +130,15 @@ fn is_denied(resolved: &std::path::Path) -> bool {
     .iter()
     .map(PathBuf::from)
     .collect();
-    if let Some(home) = dirs::home_dir() {
+    let Some(home) = dirs::home_dir() else {
+        // Sec re-review M-2: when $HOME is unset, the entire per-user
+        // denylist disappears and any path under /Users or /home becomes
+        // writable. Fail closed — refuse the IPC entirely instead of
+        // leaking attack surface.
+        eprintln!("[path_safety] home_dir() unavailable — denying by default");
+        return true;
+    };
+    {
         for sub in [
             ".ssh",
             ".aws",

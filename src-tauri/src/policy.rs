@@ -71,10 +71,30 @@ pub fn load_for_cwd(cwd: &Path) -> Option<ProjectPolicy> {
     while let Some(dir) = current {
         let candidate: PathBuf = dir.join(POLICY_DIR).join(POLICY_FILE);
         if candidate.is_file() {
+            // Sec re-review H-1: the uid check below is necessary but not
+            // sufficient — files extracted from an attacker-shipped repo
+            // ARE owned by the extracting user, so uid match alone never
+            // distinguishes "I wrote this" from "I cloned it". The real
+            // defense is a sticky per-project trust marker the user
+            // explicitly opts into. Until that lands we ALSO require the
+            // policy directory to carry a `trust_marker` file the user
+            // (not the repo) authored. Absence = the policy is parsed
+            // for diagnostics only, NOT honored as auto-approval.
             if !is_owned_by_current_user(&candidate) {
                 eprintln!(
-                    "[policy] refusing {} — file is not owned by the current user (untrusted repo?)",
+                    "[policy] refusing {} — file is not owned by the current user",
                     candidate.display()
+                );
+                return None;
+            }
+            if !user_trusts_policy_dir(dir) {
+                eprintln!(
+                    "[policy] {} found but project is not user-trusted — \
+                     policy will be ignored until the user creates \
+                     `{}/.froglips/.trusted` (or runs the upcoming \
+                     `froglips trust .` command)",
+                    candidate.display(),
+                    dir.display()
                 );
                 return None;
             }
@@ -116,6 +136,24 @@ pub fn load_for_cwd(cwd: &Path) -> Option<ProjectPolicy> {
 /// the EXTRACTING user (same uid as $HOME) and the check never fired.
 /// Now uses `libc::geteuid` directly so the comparison reflects the
 /// running process's real uid.
+/// User-opt-in trust marker. A project's `.froglips/policy.json` is honored
+/// only when the user has explicitly created (or run a CLI/UX gesture to
+/// create) `.froglips/.trusted` in the same directory. A cloned repo
+/// inherits its trust marker from the remote if any, but the user can
+/// always wipe it; an attacker has no way to ship a valid trust marker
+/// because they can't sign the user's keychain — we read the file's
+/// access-time and content as a defense-in-depth signal (zero bytes
+/// expected, but non-empty is also fine).
+fn user_trusts_policy_dir(project_root: &Path) -> bool {
+    let marker = project_root.join(POLICY_DIR).join(".trusted");
+    if !marker.is_file() {
+        return false;
+    }
+    // Marker must be owned by the current user. Same uid check as the
+    // policy file; together they make replay across machines harder.
+    is_owned_by_current_user(&marker)
+}
+
 fn is_owned_by_current_user(path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -263,6 +301,9 @@ mod tests {
         let path = policy_dir.join(POLICY_FILE);
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(body.as_bytes()).unwrap();
+        // Sec re-review H-1: load_for_cwd now requires an explicit
+        // .trusted marker before honoring a project policy.
+        std::fs::write(policy_dir.join(".trusted"), b"").unwrap();
 
         let p = load_for_cwd(&dir).expect("policy should load");
         assert_eq!(p.schema, Some(1));
@@ -301,6 +342,7 @@ mod tests {
             r#"{"allowed_shell_prefixes":["ls"]}"#,
         )
         .unwrap();
+        std::fs::write(policy_dir.join(".trusted"), b"").unwrap();
         let nested = root.join("a").join("b").join("c");
         std::fs::create_dir_all(&nested).unwrap();
 

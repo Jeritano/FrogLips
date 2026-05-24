@@ -22,8 +22,15 @@ import { memo } from "react";
 interface Props {
   /** The error message to render. Null / empty hides the component. */
   message: string | null | undefined;
-  /** Called when the user clicks the × button or presses Escape on it. */
-  onDismiss: () => void;
+  /** Called when the user clicks the × button or presses Escape on it.
+   *  Required when `dismissable !== false`. */
+  onDismiss?: () => void;
+  /**
+   * Hide the × button entirely. Used when the error is server-driven and
+   * will clear on its own (next status tick) — surfacing a dismiss the
+   * user can click forever is worse than no dismiss. UX re-review M-NEW-1.
+   */
+  dismissable?: boolean;
   /**
    * Optional retry callback + label. When provided, a secondary button
    * is rendered to the right of the message before the × button.
@@ -39,7 +46,15 @@ interface Props {
   testId?: string;
 }
 
-function ErrorBarImpl({ message, onDismiss, onRetry, retryLabel, className, testId }: Props) {
+function ErrorBarImpl({
+  message,
+  onDismiss,
+  dismissable = true,
+  onRetry,
+  retryLabel,
+  className,
+  testId,
+}: Props) {
   if (!message) return null;
   const cls = className ? `error-bar ${className}` : "error-bar";
   return (
@@ -56,15 +71,17 @@ function ErrorBarImpl({ message, onDismiss, onRetry, retryLabel, className, test
           {retryLabel ?? "Retry"}
         </button>
       )}
-      <button
-        type="button"
-        className="error-bar-close"
-        onClick={onDismiss}
-        aria-label="Dismiss error"
-        title="Dismiss"
-      >
-        ×
-      </button>
+      {dismissable && onDismiss && (
+        <button
+          type="button"
+          className="error-bar-close"
+          onClick={onDismiss}
+          aria-label="Dismiss error"
+          title="Dismiss"
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 }

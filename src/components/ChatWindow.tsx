@@ -704,8 +704,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             const signal = typeof a.signal === "string" ? a.signal.toUpperCase() : "TERM";
             return (
               <div
-                className="agent-confirm-chip"
-                style={{ background: "var(--danger-bg)", color: "var(--danger-fg)" }}
+                className="agent-confirm-chip danger"
                 data-testid="agent-confirm-kill"
               >
                 ⚠ Send SIG{signal} to pid {String(pid)} — irreversible
@@ -732,8 +731,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             }
             return (
               <div
-                className="agent-confirm-chip"
-                style={{ background: "var(--danger-bg)", color: "var(--danger-fg)" }}
+                className="agent-confirm-chip danger"
                 data-testid="agent-confirm-undo"
               >
                 ⚠ Revert the most recent agent write — cannot be redone

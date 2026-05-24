@@ -1240,6 +1240,16 @@ button.cancel {
   color: var(--text-muted);
   border: 1px solid var(--border-subtle);
 }
+/* UX re-review H-new-2: irreversible/danger variant — strong border +
+   heavier weight so it visually separates from neutral metadata chips
+   sitting next to it. */
+.agent-confirm-chip.danger {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  border: 1.5px solid var(--danger-fg);
+  font-weight: 600;
+  padding: 3px 10px;
+}
 
 .agent-confirm-args {
   margin: 0 0 16px;
@@ -1332,7 +1342,20 @@ button.cancel {
   cursor: pointer;
   font-size: 11px;
 }
-.agent-settings-btn:hover { background: var(--accent-bg); color: var(--accent); }
+.agent-settings-btn:hover:not(:disabled) { background: var(--accent-bg); color: var(--accent); }
+/* UI re-review H-new-1: was no :disabled rule — disabled buttons (e.g.
+   empty agent-undo) flashed hover background as if clickable. */
+.agent-settings-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* Two-click confirm armed state — matches the visual treatment of the
+   conv-row delete + Fork-from-here patterns. */
+.agent-settings-btn.armed {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  border-color: var(--danger-fg);
+}
 .agent-settings-hint { color: var(--text-muted); font-style: italic; }
 .agent-tool-grid {
   display: flex;

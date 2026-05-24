@@ -178,9 +178,16 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
 /// Length-prefixed canonical encoding of key/value pairs. Returns a string
 /// like `7:command=ls -la\x1f` — the leading `&lt;len&gt;:` makes the boundary
 /// unambiguous regardless of what the value contains.
+///
+/// Code re-review L-NEW-5: pairs are sorted by key before encoding so the
+/// canonical form is independent of caller-side argument order. A future
+/// contributor reordering arms in `binding_for` would otherwise silently
+/// break mint/verify symmetry with no compile-time signal.
 fn kv(pairs: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(64 + pairs.iter().map(|(_, v)| v.len()).sum::<usize>());
-    for (k, v) in pairs {
+    let mut sorted: Vec<&(&str, &str)> = pairs.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let mut out = String::with_capacity(64 + sorted.iter().map(|(_, v)| v.len()).sum::<usize>());
+    for (k, v) in sorted {
         use std::fmt::Write;
         let _ = write!(out, "{}:{}={}\u{1f}", v.len(), k, v);
     }

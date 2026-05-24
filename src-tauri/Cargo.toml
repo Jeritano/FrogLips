@@ -28,6 +28,13 @@ tempfile = "3"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Used for keychain access without passing secrets via argv (see
+# `settings::keychain_set`). Sec re-review H-2 / M-NEW-2 — the prior
+# `security` CLI invocation exposed the key in argv to any same-uid
+# `ps`-style snoop. security-framework is the native macOS binding.
+security-framework = "3"
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-opener = "2"
