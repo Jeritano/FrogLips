@@ -8,6 +8,7 @@ import {
   classifyToolRisk,
   executeTool,
   formatToolError,
+  isReadOnlyTool,
   parseArgs,
   recordAuditSafe,
   toolCallSig,
@@ -397,6 +398,21 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   // the loop injects a stop-and-report hint.
   let consecutiveToolErrors = 0;
   let stopAndReportHintPending = false;
+  // Per-run cache for read-only tool results. Keyed by
+  // `${name}::${stableArgsHash}`. Invalidated whenever any mutating tool
+  // (anything NOT in READ_ONLY_TOOLS from dispatch.ts) succeeds — at that
+  // point the cached read may no longer reflect disk state. See dispatch.ts
+  // for the registry definition.
+  const readOnlyCache = new Map<string, string>();
+  const cacheKey = (name: string, args: Record<string, unknown>): string => {
+    // Stable JSON.stringify with sorted keys so {a:1,b:2} and {b:2,a:1}
+    // produce identical keys. JSON.stringify by itself preserves insertion
+    // order, which is not stable across model providers' arg serialization.
+    const keys = Object.keys(args).sort();
+    const norm: Record<string, unknown> = {};
+    for (const k of keys) norm[k] = args[k];
+    return `${name}::${JSON.stringify(norm)}`;
+  };
 
   onStatusChange("thinking");
 
@@ -713,18 +729,43 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         } else if (fnName === "list_subagents") {
           result = listSubagents();
         } else {
-          // `shellTrackKey: signal` keys this loop's active-shell entry by
-          // its AbortSignal. Sibling loops (parent + subagent) get distinct
-          // signals and therefore distinct map entries, so a `run_shell` in
-          // one loop can't be overwritten or cancelled by the other.
-          result = await executeTool(fnName, args, {
-            dryRun,
-            shellTrackKey: signal,
-            // Surfaced for tools that tag their output to a conversation
-            // (currently `generate_image`). The runner already carries the
-            // active conversation id in opts; pass it down unmodified.
-            conversationId: opts.conversationId,
-          });
+          // Read-only cache short-circuit: if the model just called the same
+          // read-only tool with the same args (e.g. read_file the same path
+          // twice across two iterations), return the cached payload instead
+          // of round-tripping IPC. The cache is invalidated below whenever a
+          // non-read-only tool succeeds.
+          const isCacheable = isReadOnlyTool(fnName);
+          const ckey = isCacheable ? cacheKey(fnName, args) : null;
+          if (ckey != null && readOnlyCache.has(ckey)) {
+            result = readOnlyCache.get(ckey)!;
+          } else {
+            // `shellTrackKey: signal` keys this loop's active-shell entry
+            // by its AbortSignal. Sibling loops (parent + subagent) get
+            // distinct signals and therefore distinct map entries, so a
+            // `run_shell` in one loop can't be overwritten or cancelled by
+            // the other.
+            result = await executeTool(fnName, args, {
+              dryRun,
+              shellTrackKey: signal,
+              // Surfaced for tools that tag their output to a conversation
+              // (currently `generate_image`). The runner already carries
+              // the active conversation id in opts; pass it down
+              // unmodified.
+              conversationId: opts.conversationId,
+            });
+            if (ckey != null) {
+              // Only cache responses that don't look like errors — caching
+              // a transient `{ok:false}` would mask a retry.
+              let cacheable = true;
+              try {
+                const r = JSON.parse(result) as { ok?: boolean } | null;
+                if (r && r.ok === false) cacheable = false;
+              } catch {
+                /* non-JSON read result — cache it */
+              }
+              if (cacheable) readOnlyCache.set(ckey, result);
+            }
+          }
         }
       } catch (e) {
         result = formatToolError(e);
@@ -784,6 +825,14 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         }
       } else {
         consecutiveToolErrors = 0;
+      }
+
+      // Invalidate the read-only cache whenever a non-read-only tool ran
+      // successfully — any cached read for the affected file/dir/process
+      // table could now be stale. Conservative: nuke the whole map rather
+      // than try to dependency-track by path.
+      if (outcome !== "error" && !isReadOnlyTool(fnName)) {
+        readOnlyCache.clear();
       }
     }
 
