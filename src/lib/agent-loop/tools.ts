@@ -123,12 +123,19 @@ export const TOOLS = [
     function: {
       name: "run_shell",
       description:
-        "Execute a shell command via sh -c. Optional cwd + env. 30s timeout. ALWAYS requires user approval. Returns stdout, stderr, exit_code, duration_ms, timed_out.",
+        "Execute a shell command via sh -c. Optional cwd + env + per-call timeout. Default timeout 30s; pass timeout_secs (clamped 1-600) for slow builds, test suites, or downloads. ALWAYS requires user approval. Returns stdout, stderr, exit_code, duration_ms, timed_out.",
       parameters: {
         type: "object",
         properties: {
           command: { type: "string", description: "Shell command string passed to sh -c." },
           cwd: { type: "string", description: "Optional working directory." },
+          timeout_secs: {
+            type: "integer",
+            description:
+              "Wall-clock budget in seconds. Defaults to 30. Clamped to [1, 600] server-side. Use a longer value for cargo build / npm install / test suites that legitimately exceed the default.",
+            minimum: 1,
+            maximum: 600,
+          },
         },
         required: ["command"],
       },
@@ -681,6 +688,175 @@ export const TOOLS = [
         },
         required: ["prompt"],
       },
+    },
+  },
+  // ── Extras: file ops + hash + diff + processes + undo ────────────────────
+  // These exist so the model isn't forced to ask for shell approval on
+  // every basic mv/cp/rm/mkdir; the dedicated tools still gate destructive
+  // ops with a confirmation but at least the prompt copy is honest about
+  // what's about to happen ("Move A → B?" instead of "Run `mv A B`?").
+  {
+    type: "function",
+    function: {
+      name: "move_path",
+      description:
+        "Move or rename a file or directory within the workspace. Refuses to clobber an existing destination unless overwrite=true. ALWAYS requires user approval. Cheaper than run_shell mv.",
+      parameters: {
+        type: "object",
+        properties: {
+          from: { type: "string", description: "Source path." },
+          to: { type: "string", description: "Destination path." },
+          overwrite: {
+            type: "boolean",
+            description: "Replace an existing destination. Default false.",
+          },
+        },
+        required: ["from", "to"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "copy_path",
+      description:
+        "Copy a single file (not a directory) within the workspace. Source ≤ 256 MiB. Refuses to clobber existing destination unless overwrite=true. ALWAYS requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          from: { type: "string", description: "Source file path." },
+          to: { type: "string", description: "Destination file path." },
+          overwrite: {
+            type: "boolean",
+            description: "Replace an existing destination. Default false.",
+          },
+        },
+        required: ["from", "to"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_path",
+      description:
+        "Delete a file or empty directory. Pass recursive=true for non-empty directories (capped at 1000 entries — bigger trees still need shell with approval). ALWAYS requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Path to delete." },
+          recursive: {
+            type: "boolean",
+            description: "Allow non-empty directory deletion. Default false.",
+          },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "make_dir",
+      description:
+        "Create a directory and any missing parents. Idempotent — returns created=false if it already existed. ALWAYS requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Directory path to create." },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "hash_file",
+      description:
+        "Compute a SHA-2 hash of a file's contents (sha256 default; sha512 also supported). Source ≤ 1 GiB. Read-only — no approval needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File to hash." },
+          algorithm: {
+            type: "string",
+            enum: ["sha256", "sha512"],
+            description: "Hash algorithm. Default sha256.",
+          },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "diff_files",
+      description:
+        "Unified diff between two arbitrary files (works outside git repos via `git diff --no-index`). Each side ≤ 4 MiB. Returns {diff, identical}. Read-only — no approval needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          left: { type: "string", description: "First file path." },
+          right: { type: "string", description: "Second file path." },
+        },
+        required: ["left", "right"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_processes",
+      description:
+        "List running processes (top 200 by CPU). Optional case-insensitive filter on the command name. Returns rows of {pid, ppid, cpu_pct, mem_mib, command}. Read-only.",
+      parameters: {
+        type: "object",
+        properties: {
+          filter: {
+            type: "string",
+            description: "Optional substring filter on the command name.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "kill_process",
+      description:
+        "Send a POSIX signal to a process. Default signal TERM; KILL/HUP/INT/QUIT/USR1/USR2 also allowed (other values fall back to TERM). Refuses pid<=1. ALWAYS requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          pid: { type: "integer", description: "Target process id." },
+          signal: {
+            type: "string",
+            description: "Signal name (without the leading SIG). Default TERM.",
+          },
+        },
+        required: ["pid"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "agent_undo",
+      description:
+        "Revert the most recent write_file / edit_file / multi_edit by restoring the file's prior contents (or deleting it if the snapshot recorded the file as new). Up to 50 edits are tracked in memory; the stack drops on app restart. ALWAYS requires user approval.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_undo",
+      description:
+        "List the in-memory undo stack newest-first so you can see what agent_undo would revert. Returns rows of {path, kind, taken_at_ms, size_bytes, was_absent}. Read-only.",
+      parameters: { type: "object", properties: {} },
     },
   },
 ] as const;

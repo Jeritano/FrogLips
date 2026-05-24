@@ -109,6 +109,7 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
         let opts = ShellOpts {
             cwd: cwd_for_task,
             env: None,
+            timeout_secs: None,
         };
         let work = run_shell(cmd_for_task, Some(opts), Some(id_for_task.clone()));
         tokio::select! {

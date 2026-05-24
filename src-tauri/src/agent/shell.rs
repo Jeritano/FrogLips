@@ -9,7 +9,16 @@ use tokio::task::AbortHandle;
 
 use super::fs::{err_string, validate_for_read, workspace_root_clone, ToolError, MAX_SHELL_OUTPUT};
 
-const SHELL_TIMEOUT_SECS: u64 = 30;
+/// Default per-command wall-clock budget when the caller doesn't specify one.
+/// Tuned for read-only inspection commands (`ls`, `git status`, `cargo
+/// check --message-format=short`) that almost always finish under a few
+/// seconds. Long-running operations (`cargo test`, `npm install`, model
+/// downloads) should pass `opts.timeout_secs` explicitly.
+pub(crate) const SHELL_TIMEOUT_DEFAULT_SECS: u64 = 30;
+/// Hard ceiling on caller-supplied timeouts so a buggy agent can't wedge an
+/// op for hours. Roughly long enough for a fresh `cargo build` from cold,
+/// short enough that a hung child is recoverable in one coffee break.
+pub(crate) const SHELL_TIMEOUT_MAX_SECS: u64 = 600;
 
 /// Whether an env var name belongs to the dynamic-linker family used to
 /// inject code into the child process at exec time (`LD_PRELOAD`,
@@ -48,6 +57,10 @@ pub struct ShellResult {
 pub struct ShellOpts {
     pub cwd: Option<String>,
     pub env: Option<Vec<(String, String)>>,
+    /// Per-call wall-clock budget in seconds. Clamped to
+    /// `[1, SHELL_TIMEOUT_MAX_SECS]`; `None` falls back to
+    /// `SHELL_TIMEOUT_DEFAULT_SECS`.
+    pub timeout_secs: Option<u64>,
 }
 
 static SHELL_HANDLES: Lazy<Mutex<HashMap<String, AbortHandle>>> =
@@ -70,7 +83,14 @@ pub async fn run_shell(
     let opts = opts.unwrap_or(ShellOpts {
         cwd: None,
         env: None,
+        timeout_secs: None,
     });
+    // Resolve the timeout up front so the value baked into both the future and
+    // the diagnostic message agree.
+    let timeout_secs = opts
+        .timeout_secs
+        .map(|t| t.clamp(1, SHELL_TIMEOUT_MAX_SECS))
+        .unwrap_or(SHELL_TIMEOUT_DEFAULT_SECS);
 
     // NOTE: only the cwd is path-validated here — the command itself is NOT
     // contained to the workspace and can touch any path the user could.
@@ -121,7 +141,7 @@ pub async fn run_shell(
             }
         }
 
-        let timeout = std::time::Duration::from_secs(SHELL_TIMEOUT_SECS);
+        let timeout = std::time::Duration::from_secs(timeout_secs);
         let fut = cmd.output();
         let (output, timed_out) = match tokio::time::timeout(timeout, fut).await {
             Ok(Ok(o)) => (o, false),
@@ -131,7 +151,7 @@ pub async fn run_shell(
             Err(_) => {
                 return Ok(ShellResult {
                     stdout: String::new(),
-                    stderr: format!("timed out after {SHELL_TIMEOUT_SECS}s"),
+                    stderr: format!("timed out after {timeout_secs}s"),
                     exit_code: -1,
                     duration_ms: started.elapsed().as_millis() as u64,
                     timed_out: true,

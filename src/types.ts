@@ -389,6 +389,9 @@ export type ShellRisk = "normal" | "destructive" | "pipe-from-network" | "privil
 export interface ShellOpts {
   cwd?: string;
   env?: [string, string][];
+  /** Per-call wall-clock budget in seconds. Clamped to [1, 600] server-side;
+   * `undefined` falls back to the 30s default. */
+  timeout_secs?: number;
 }
 
 export type MemoryScope = "global" | "project" | "conversation";

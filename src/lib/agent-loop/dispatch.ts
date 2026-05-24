@@ -26,11 +26,16 @@ export const DANGEROUS_TOOLS = new Set([
   // Image generation — disk + GPU spend, and the model can be told arbitrary
   // prompts (which then become user-visible PNGs in the gallery).
   "generate_image",
+  // Extras: file ops + process control + undo. Each touches the filesystem
+  // or sends a signal to a foreign process — gate behind confirmation.
+  "move_path", "copy_path", "delete_path", "make_dir",
+  "kill_process", "agent_undo",
 ]);
 export const SHELL_TOOL = "run_shell";
 export const WRITE_TOOLS = new Set([
   "write_file", "edit_file", "multi_edit",
   "git_commit", "clipboard_set", "applescript_run", "http_request",
+  "move_path", "copy_path", "delete_path", "make_dir", "agent_undo",
 ]);
 
 /* ── Tool execution helpers ── */
@@ -611,13 +616,26 @@ export async function executeTool(
     }
     case "run_shell": {
       const cwd = args.cwd ? String(args.cwd) : undefined;
+      // Per-call timeout — optional. The Rust side clamps to [1, 600] and
+      // falls back to its default (30s) on undefined / NaN. We only forward a
+      // value when it's a positive finite number so a model passing
+      // `timeout_secs: "30"` (string) or `null` doesn't poison the opts.
+      const rawTimeout = args.timeout_secs;
+      const timeoutSecs =
+        typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
+          ? Math.floor(rawTimeout)
+          : undefined;
+      const shellOpts =
+        cwd || timeoutSecs !== undefined
+          ? { cwd, timeout_secs: timeoutSecs }
+          : undefined;
       const opId = `shell-${crypto.randomUUID()}`;
       const key = options.shellTrackKey ?? null;
       setActiveShell(key, opId);
       try {
         const r = await api.agentRunShell(
           String(args.command ?? ""),
-          cwd ? { cwd } : undefined,
+          shellOpts,
           opId,
         );
         return JSON.stringify(r);
@@ -746,7 +764,121 @@ export async function executeTool(
         return JSON.stringify({ ok: false, kind: "image_gen_failed", message });
       }
     }
+    // ── Extras: file ops + hash + diff + processes + undo ────────────────
+    case "move_path": {
+      const r = await api.agentMovePath(
+        String(args.from ?? ""),
+        String(args.to ?? ""),
+        typeof args.overwrite === "boolean" ? args.overwrite : undefined,
+      );
+      return JSON.stringify({ ok: true, ...r });
+    }
+    case "copy_path": {
+      const r = await api.agentCopyPath(
+        String(args.from ?? ""),
+        String(args.to ?? ""),
+        typeof args.overwrite === "boolean" ? args.overwrite : undefined,
+      );
+      return JSON.stringify({ ok: true, ...r });
+    }
+    case "delete_path": {
+      const r = await api.agentDeletePath(
+        String(args.path ?? ""),
+        typeof args.recursive === "boolean" ? args.recursive : undefined,
+      );
+      return JSON.stringify({ ok: true, ...r });
+    }
+    case "make_dir": {
+      const r = await api.agentMakeDir(String(args.path ?? ""));
+      return JSON.stringify({ ok: true, ...r });
+    }
+    case "hash_file": {
+      const algo = args.algorithm === "sha512" ? "sha512" : "sha256";
+      const r = await api.agentHashFile(String(args.path ?? ""), algo);
+      return JSON.stringify({ ok: true, ...r });
+    }
+    case "diff_files": {
+      const r = await api.agentDiffFiles(
+        String(args.left ?? ""),
+        String(args.right ?? ""),
+      );
+      return JSON.stringify({ ok: true, ...r });
+    }
+    case "list_processes": {
+      const r = await api.agentListProcesses(
+        typeof args.filter === "string" ? args.filter : undefined,
+      );
+      return JSON.stringify({ ok: true, rows: r });
+    }
+    case "kill_process": {
+      const pid = typeof args.pid === "number" ? Math.floor(args.pid) : -1;
+      if (pid < 2) {
+        return JSON.stringify({ ok: false, kind: "invalid_argument", message: "pid must be >= 2" });
+      }
+      const r = await api.agentKillProcess(
+        pid,
+        typeof args.signal === "string" ? args.signal : undefined,
+      );
+      return JSON.stringify({ ok: true, ...r });
+    }
+    case "agent_undo": {
+      try {
+        const r = await api.agentUndoLast();
+        return JSON.stringify({ ok: true, ...r });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return JSON.stringify({ ok: false, kind: "undo_failed", message });
+      }
+    }
+    case "list_undo": {
+      const r = await api.agentListUndo();
+      return JSON.stringify({ ok: true, rows: r });
+    }
     default:
       return JSON.stringify({ ok: false, kind: "unknown_tool", message: `Unknown tool: ${name}` });
   }
+}
+
+// ── Read-only tool registry + cache ────────────────────────────────────────
+//
+// `READ_ONLY_TOOLS` is the set of tool names whose execution has no side
+// effects on the workspace or process state. The runner uses it for two
+// optimizations:
+//
+//   1. **Per-run result cache.** Duplicate read-only calls in the same agent
+//      run (same name + same args hash) return the cached result instead of
+//      re-invoking the IPC. The cache is invalidated as soon as any tool
+//      OUTSIDE this set runs successfully — the assumption is that any
+//      non-read-only tool may have changed filesystem / process / network
+//      state in ways the cached read would miss.
+//
+//   2. **Parallel execution.** When an assistant turn issues multiple tool
+//      calls AND every one of them is in this set, the runner can fire them
+//      with `Promise.all` instead of serial `await`. Mixed batches stay
+//      sequential (write ordering matters; approvals are per-call).
+//
+// Anything mutating, anything network-side-effectful, anything that depends
+// on real-time state (clipboard, screenshots), or anything that requires
+// user approval is EXCLUDED. When in doubt, leave it out — false negatives
+// just mean missing an optimization; false positives are correctness bugs.
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  "read_file",
+  "list_dir",
+  "file_exists",
+  "search_files",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "git_branches",
+  "hash_file",
+  "diff_files",
+  "list_processes",
+  "list_undo",
+  "find_definition",
+  "find_references",
+]);
+
+export function isReadOnlyTool(name: string): boolean {
+  return READ_ONLY_TOOLS.has(name);
 }
