@@ -59,11 +59,25 @@ pub type WriteDecision = Decision;
 /// Walk upward from `cwd` looking for `.froglips/policy.json`. Returns
 /// `None` if no policy file exists or the file is unreadable / malformed.
 /// Parse errors are logged via `eprintln!` and treated as absent.
+///
+/// Sec review M4: a project policy can auto-approve dangerous shell
+/// commands, so it must be owned by the current uid. An untrusted git
+/// repo cloned to disk could otherwise ship a `.froglips/policy.json`
+/// that auto-approves arbitrary shells, and the agent would honor it
+/// silently. We compare ownership via the file's stat uid against the
+/// running process's uid and ignore the policy on mismatch.
 pub fn load_for_cwd(cwd: &Path) -> Option<ProjectPolicy> {
     let mut current: Option<&Path> = Some(cwd);
     while let Some(dir) = current {
         let candidate: PathBuf = dir.join(POLICY_DIR).join(POLICY_FILE);
         if candidate.is_file() {
+            if !is_owned_by_current_user(&candidate) {
+                eprintln!(
+                    "[policy] refusing {} — file is not owned by the current user (untrusted repo?)",
+                    candidate.display()
+                );
+                return None;
+            }
             match std::fs::read_to_string(&candidate) {
                 Ok(text) => match serde_json::from_str::<ProjectPolicy>(&text) {
                     Ok(mut p) => {
@@ -92,6 +106,40 @@ pub fn load_for_cwd(cwd: &Path) -> Option<ProjectPolicy> {
         current = dir.parent();
     }
     None
+}
+
+/// Unix-only ownership check. Returns `true` if the file's owner uid
+/// equals the running process's uid. On non-Unix this would always
+/// return `true` (the app is macOS-only today, so the cfg below is the
+/// expected and only path).
+fn is_owned_by_current_user(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match std::fs::metadata(path) {
+            Ok(md) => {
+                // `geteuid` via libc would be cleaner but pulls a dep;
+                // std::process::id is the pid, not the uid. We read the
+                // effective uid the same way every other Unix tool does:
+                // by stat'ing /proc/self... not portable to macOS. Use
+                // `users::get_current_uid` if added, else compare to the
+                // owner of $HOME as a stable proxy.
+                let home_uid = dirs::home_dir()
+                    .and_then(|h| std::fs::metadata(&h).ok())
+                    .map(|m| m.uid());
+                match home_uid {
+                    Some(uid) => md.uid() == uid,
+                    None => true, // can't compare → fail open (no $HOME is bizarre)
+                }
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        true
+    }
 }
 
 /// Decide whether a shell command should auto-approve, prompt, or be

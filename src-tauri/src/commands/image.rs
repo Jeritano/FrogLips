@@ -395,6 +395,21 @@ pub async fn image_save_to(id: i64, dest: String) -> Result<String, String> {
         return Err("id must be non-negative".into());
     }
     let validated_dest = path_safety::validate_write_dest(&dest)?;
+    // Sec review M6: require .png suffix so the model can't use this IPC to
+    // drop arbitrary-named bytes anywhere the user has approved. The image
+    // bytes are still PNG-encoded; the suffix check prevents a model from
+    // (for example) naming the output `~/Library/LaunchAgents/foo.plist`
+    // and relying on macOS handling rules.
+    match validated_dest
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+    {
+        Some(ext) if ext == "png" => {}
+        _ => {
+            return Err("destination must have a .png extension".into());
+        }
+    }
     let validated_dest_str = validated_dest.to_string_lossy().to_string();
 
     // Resolve the source row + validate the on-disk path before we copy.

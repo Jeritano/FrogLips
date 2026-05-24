@@ -58,7 +58,14 @@ pub async fn await_reply(rx: oneshot::Receiver<String>, id: &str) -> Result<Stri
             PENDING.lock().remove(id);
             format!("ask_user channel closed: {e}")
         })?;
-    Ok(answer)
+    // Sec review M2: the user is trusted for INTENT (they typed the answer
+    // into our modal), but the *content* of the answer can carry attacker-
+    // influenced text — most commonly because the user pasted error output
+    // or chat content from somewhere else. Scan + wrap before the answer
+    // flows back into the agent loop so jailbreak phrases inside the
+    // paste are flagged as DATA, not interpreted as instructions.
+    let (wrapped, _findings) = crate::agent::injection_scan::scan_and_wrap(&answer);
+    Ok(wrapped)
 }
 
 pub fn reply(id: &str, answer: String) -> Result<(), String> {
