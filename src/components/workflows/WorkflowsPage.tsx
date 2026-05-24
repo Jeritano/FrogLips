@@ -277,28 +277,37 @@ export function WorkflowsPage({ status }: Props) {
     [setState],
   );
 
-  const baseRunOpts = useCallback((): Omit<RunWorkflowOptions, "model"> & { model: string } | null => {
-    // Per-card models override the workflow default. Only require a
-    // loaded model when at least one card is missing a `model` field —
-    // those cards inherit `opts.model` as the fallback. Cards with their
-    // own model run against that model directly (cloud Ollama models
-    // don't need the local server "running" status).
-    const anyCardMissingModel = cards.some((c) => !c.model);
-    const fallbackModel = status?.model ?? "";
-    if (anyCardMissingModel && !fallbackModel) {
-      setErr(
-        "Load a model before running — at least one card has no model assigned, and no fallback is loaded.",
-      );
-      return null;
-    }
-    return {
-      // Cards with their own `model` ignore this; cards without one use it.
-      model: fallbackModel,
-      defaultBackend: (status?.backend as RunWorkflowOptions["defaultBackend"]) ?? undefined,
-      serverStatus: status,
-      userProfile: userProfile ?? undefined,
-    };
-  }, [status, userProfile, cards]);
+  /**
+   * Build the per-run options. `cardSubset` restricts the model-coverage
+   * check to a specific list of cards — used by `runSingleCard` so a
+   * one-card run only validates THAT card's model, not every card on
+   * the canvas. For `runWorkflowNow` we validate every card.
+   */
+  const baseRunOpts = useCallback(
+    (
+      cardSubset?: WorkflowCard[],
+    ): Omit<RunWorkflowOptions, "model"> & { model: string } | null => {
+      const subset = cardSubset ?? cards;
+      const missing = subset.filter((c) => !c.model);
+      const fallbackModel = status?.model ?? "";
+      if (missing.length > 0 && !fallbackModel) {
+        const names = missing.map((c) => c.name || c.id).slice(0, 3).join(", ");
+        const more = missing.length > 3 ? ` (+${missing.length - 3} more)` : "";
+        setErr(
+          `Load a model first — ${missing.length} card(s) without a model assignment: ${names}${more}. Either assign a model to each card via Edit, or load a default in the chat picker.`,
+        );
+        return null;
+      }
+      return {
+        // Cards with their own `model` ignore this; cards without one use it.
+        model: fallbackModel,
+        defaultBackend: (status?.backend as RunWorkflowOptions["defaultBackend"]) ?? undefined,
+        serverStatus: status,
+        userProfile: userProfile ?? undefined,
+      };
+    },
+    [status, userProfile, cards],
+  );
 
   function runWorkflowNow() {
     if (!selected || !validation.ok) {
@@ -335,7 +344,9 @@ export function WorkflowsPage({ status }: Props) {
       setErr("A run is already in progress.");
       return;
     }
-    const opts = baseRunOpts();
+    // Scope the model check to JUST this card so a one-card run from a
+    // workflow with other un-modeled cards still succeeds.
+    const opts = baseRunOpts([card]);
     if (!opts) return;
     const ac = new AbortController();
     abortRef.current = ac;
