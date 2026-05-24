@@ -66,20 +66,32 @@ export async function streamAgentChat(
       // params override individual fields (resolveAgentChatConfig handles the
       // null-fallthrough). Applied uniformly with the mlx/native paths.
       const cfg = resolveAgentChatConfig(params);
-      const ollamaOptions: Record<string, unknown> = {
-        temperature: cfg.temperature,
-        top_p: cfg.top_p,
-        num_predict: cfg.max_tokens,
-        num_ctx: cfg.context_size,
+      // Strip null/undefined entries — Ollama's cloud-routing backend
+      // (kimi-k2.6:cloud, deepseek-v4-pro:cloud, etc.) rejects
+      // `num_ctx: null` etc. with "Value looks like object, but can't
+      // find closing '}' symbol". Local Ollama is fine with nulls; the
+      // cloud passthrough re-validates the JSON more strictly.
+      const ollamaOptions: Record<string, unknown> = {};
+      if (cfg.temperature != null) ollamaOptions.temperature = cfg.temperature;
+      if (cfg.top_p != null) ollamaOptions.top_p = cfg.top_p;
+      if (cfg.max_tokens != null) ollamaOptions.num_predict = cfg.max_tokens;
+      if (cfg.context_size != null) ollamaOptions.num_ctx = cfg.context_size;
+      // Same trick on the top-level body: a cloud passthrough that sees
+      // `tools: []` for a model that doesn't support tools also barfs
+      // on the schema check. Only include `tools` when we have any.
+      const body: Record<string, unknown> = {
+        model: opts.model,
+        messages: toOllamaMessages(msgs),
       };
+      if (Object.keys(ollamaOptions).length > 0) {
+        body.options = ollamaOptions;
+      }
+      if (Array.isArray(tools) && tools.length > 0) {
+        body.tools = tools;
+      }
       return await streamOllamaChat(
         `${OLLAMA_BASE}/api/chat`,
-        {
-          model: opts.model,
-          options: ollamaOptions,
-          messages: toOllamaMessages(msgs),
-          tools,
-        },
+        body,
         signal,
         onContentChunk,
       );
