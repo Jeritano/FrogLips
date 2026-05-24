@@ -64,7 +64,19 @@ fn rand_seed() -> u32 {
     SEED.with(crate::util::xorshift)
 }
 
+/// Opportunistic auto-prune budget. Code review H2: TASKS never shrank on
+/// its own; a long session that fires many background commands leaked
+/// `TaskEntry`s forever (their `JoinHandle` is `None` after completion but
+/// the map row stayed). Run on every `create` call so the worst case is
+/// "next task you start cleans up the previous ones." 30-minute window is
+/// long enough that diagnostic introspection (`task_status`/`task_list`)
+/// still sees recent runs.
+const AUTO_PRUNE_AFTER_SECS: u64 = 30 * 60;
+
 pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> {
+    // Opportunistic auto-prune of long-completed tasks before we count
+    // against the cap. Best-effort; no error path matters here.
+    let _ = prune(AUTO_PRUNE_AFTER_SECS);
     // Count only non-terminal tasks — terminal entries linger in the map
     // until pruned and must not count against the concurrency cap.
     let active = TASKS

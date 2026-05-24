@@ -62,11 +62,12 @@ pub fn recovery_notice() -> Option<String> {
 ///
 /// Intended caller: an IPC command (e.g. `db_unavailable_notice`) that the
 /// frontend probes on app boot to show a "DB unavailable" banner instead of
-/// every history-touching command failing with a generic error. Marked
-/// `allow(dead_code)` so the structured-error mechanism lands even before
-/// the command wrapper is wired (the panic-on-startup behaviour it replaces
-/// is the higher-severity risk).
-#[allow(dead_code)]
+/// every history-touching command failing with a generic error.
+///
+/// Code review H8: was previously `#[allow(dead_code)]` and never wired
+/// as an IPC, so the frontend could only see the symptom (generic IPC
+/// failures) not the cause. Now exposed via the `db_unavailable_notice`
+/// command registered in `lib.rs::generate_handler!`.
 pub fn db_unavailable_notice() -> Option<String> {
     match &*DB {
         Ok(_) => None,

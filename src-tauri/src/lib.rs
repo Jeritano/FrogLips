@@ -449,6 +449,7 @@ pub fn run() {
             commands::misc::quick_prompt_hide,
             commands::misc::read_crash_log,
             commands::misc::db_recovery_notice,
+            commands::misc::db_unavailable_notice,
             commands::misc::export_diagnostics_bundle,
             commands::data::backup_database,
             commands::data::export_data,

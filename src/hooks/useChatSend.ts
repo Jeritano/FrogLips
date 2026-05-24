@@ -289,6 +289,12 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           rafHandle = 0;
           const snap = pendingMsgs;
           pendingMsgs = null;
+          // Code review H4: an in-flight rAF callback can fire AFTER the
+          // user aborts and starts the next send, landing a stale
+          // pre-abort snapshot on the new conversation's message list.
+          // Skip the setMessages if either the conversation has moved or
+          // this send's controller was aborted.
+          if (ctrl.signal.aborted) return;
           if (snap && isStreamConvActive()) {
             setMessages(snap.filter((m) => m.role !== "system"));
           }

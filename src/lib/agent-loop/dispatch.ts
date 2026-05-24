@@ -121,39 +121,56 @@ export async function agentRagSearch(
  * means we don't leak entries for completed loops whose signals were GC'd.
  */
 const activeShellByKey = new WeakMap<object, string>();
-// Fallback for callers (older tests / non-loop entry points) that don't
-// supply a key. Module-singleton semantics for that path are kept for
-// backward compatibility — but the main loop now always supplies a key.
-let fallbackShellOpId: string | null = null;
+// Fallback "key" for callers (older tests, non-loop entry points) that
+// don't supply one. Code review H3: the previous module-level singleton
+// could collide between concurrent unkeyed callers (e.g. tests spawning
+// nested runs); we now hand each caller a synthetic-per-mintActiveShell
+// key the first time they call without one, persisted via this Symbol
+// keyspace so a cancel from the same caller still finds the entry. The
+// Map is bounded — `clear` drops the key on shell completion.
+const fallbackKeyMap = new Map<symbol, string>();
+const SYNTHETIC_FALLBACK_KEY: unique symbol = Symbol("dispatch.fallbackShellKey");
+type FallbackKey = typeof SYNTHETIC_FALLBACK_KEY;
+function fallbackKeyOrSynthetic(key: ShellTrackKey | null | undefined): object | FallbackKey {
+  return key ?? SYNTHETIC_FALLBACK_KEY;
+}
 
 /** Stable key for the active-shell map. Use the AbortSignal when available. */
 export type ShellTrackKey = object;
 
 export function setActiveShell(key: ShellTrackKey | null, opId: string): void {
-  if (key) activeShellByKey.set(key, opId);
-  else fallbackShellOpId = opId;
+  const k = fallbackKeyOrSynthetic(key);
+  if (k === SYNTHETIC_FALLBACK_KEY) {
+    fallbackKeyMap.set(SYNTHETIC_FALLBACK_KEY, opId);
+  } else {
+    activeShellByKey.set(k as object, opId);
+  }
 }
 
 export function clearActiveShell(key: ShellTrackKey | null, opId: string): void {
-  if (key) {
-    if (activeShellByKey.get(key) === opId) activeShellByKey.delete(key);
+  const k = fallbackKeyOrSynthetic(key);
+  if (k === SYNTHETIC_FALLBACK_KEY) {
+    if (fallbackKeyMap.get(SYNTHETIC_FALLBACK_KEY) === opId) {
+      fallbackKeyMap.delete(SYNTHETIC_FALLBACK_KEY);
+    }
     return;
   }
-  if (fallbackShellOpId === opId) fallbackShellOpId = null;
+  if (activeShellByKey.get(k as object) === opId) activeShellByKey.delete(k as object);
 }
 
 /**
- * Cancel the active shell associated with `key`. With no key, falls back to
- * the (legacy) module-singleton. Returns true iff a cancel was dispatched.
+ * Cancel the active shell associated with `key`. With no key, falls back
+ * to the unkeyed entry. Returns true iff a cancel was dispatched.
  */
 export function cancelActiveShell(key?: ShellTrackKey | null): boolean {
   let id: string | null = null;
-  if (key) {
-    id = activeShellByKey.get(key) ?? null;
-    if (id) activeShellByKey.delete(key);
+  const k = fallbackKeyOrSynthetic(key);
+  if (k === SYNTHETIC_FALLBACK_KEY) {
+    id = fallbackKeyMap.get(SYNTHETIC_FALLBACK_KEY) ?? null;
+    if (id) fallbackKeyMap.delete(SYNTHETIC_FALLBACK_KEY);
   } else {
-    id = fallbackShellOpId;
-    fallbackShellOpId = null;
+    id = activeShellByKey.get(k as object) ?? null;
+    if (id) activeShellByKey.delete(k as object);
   }
   if (!id) return false;
   const captured = id;

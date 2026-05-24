@@ -48,6 +48,16 @@ pub fn db_recovery_notice() -> Option<String> {
     crate::history::recovery_notice()
 }
 
+/// Code review H8: when the SQLite layer fails to initialize (file
+/// corrupt, disk full at startup, parent dir not writable), every
+/// downstream IPC fails with a generic error. This wrapper surfaces the
+/// underlying string so the UI can render an actionable banner instead.
+/// Returns `None` when the DB is healthy.
+#[tauri::command]
+pub fn db_unavailable_notice() -> Option<String> {
+    crate::history::db_unavailable_notice()
+}
+
 /// Best-effort host OS description for the diagnostics bundle.
 fn os_description() -> String {
     let os = std::env::consts::OS;

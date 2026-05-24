@@ -403,6 +403,12 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   // (anything NOT in READ_ONLY_TOOLS from dispatch.ts) succeeds — at that
   // point the cached read may no longer reflect disk state. See dispatch.ts
   // for the registry definition.
+  //
+  // Code review H1: bounded at READ_ONLY_CACHE_CAP entries with FIFO
+  // eviction so a long-running loop that reads many distinct files can't
+  // grow the map unboundedly. JS Map preserves insertion order, so we
+  // delete the oldest key (the first one) when at cap.
+  const READ_ONLY_CACHE_CAP = 256;
   const readOnlyCache = new Map<string, string>();
   const cacheKey = (name: string, args: Record<string, unknown>): string => {
     // Stable JSON.stringify with sorted keys so {a:1,b:2} and {b:2,a:1}
@@ -412,6 +418,13 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     const norm: Record<string, unknown> = {};
     for (const k of keys) norm[k] = args[k];
     return `${name}::${JSON.stringify(norm)}`;
+  };
+  const cacheStore = (key: string, value: string) => {
+    if (readOnlyCache.size >= READ_ONLY_CACHE_CAP) {
+      const oldest = readOnlyCache.keys().next().value;
+      if (oldest !== undefined) readOnlyCache.delete(oldest);
+    }
+    readOnlyCache.set(key, value);
   };
 
   onStatusChange("thinking");
@@ -763,7 +776,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
               } catch {
                 /* non-JSON read result — cache it */
               }
-              if (cacheable) readOnlyCache.set(ckey, result);
+              if (cacheable) cacheStore(ckey, result);
             }
           }
         }

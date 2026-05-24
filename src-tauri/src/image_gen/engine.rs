@@ -232,6 +232,12 @@ impl ImageEngine {
                 if crate::is_shutting_down() {
                     return;
                 }
+                // Code review H6: take the generate_mutex before deciding
+                // to evict so we serialize against an in-flight generate
+                // that may have just bumped last_use. Without this, the
+                // two-step check-then-drop could race a new gen that the
+                // mutex would otherwise have queued in front of us.
+                let _generate_guard = engine.inner.generate_mutex.lock().await;
                 let should_evict = {
                     let guard = engine.inner.last_use.lock();
                     match *guard {
@@ -243,6 +249,7 @@ impl ImageEngine {
                     engine.unload();
                     *engine.inner.last_use.lock() = None;
                 }
+                drop(_generate_guard);
             }
         });
     }
