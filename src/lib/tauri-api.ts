@@ -1,4 +1,42 @@
 import { invoke } from "@tauri-apps/api/core";
+
+/**
+ * Approval-payload shape — mirrors `ApprovalPayload` in
+ * `src-tauri/src/commands/agent.rs`. Only the fields a given tool family
+ * requires are set; everything else stays undefined.
+ *
+ * The Rust side recomputes the binding from these fields at consume time,
+ * so a token issued for one payload cannot be silently reused for another
+ * within the 60s TTL (a write-file token for `notes.md` can't clobber
+ * `~/.bashrc`; a kill token for pid 12345 can't kill pid 1234; etc.).
+ */
+export interface ApprovalPayload {
+  command?: string;
+  path?: string;
+  from?: string;
+  to?: string;
+  url?: string;
+  pid?: number;
+  signal?: string;
+  text?: string;
+  bundle_id?: string;
+  mcp_command?: string;
+  mcp_args?: string[];
+  mcp_env_keys?: string[];
+}
+
+/**
+ * Internal helper: mint a binding-aware approval token. Pre-mints into a
+ * local before any further `await`, so a fast burst of dangerous calls
+ * can't interleave their mint/consume across the renderer event loop.
+ */
+async function mintApproval(tool: string, payload?: ApprovalPayload): Promise<string> {
+  return await invoke<string>("mint_tool_approval", {
+    tool,
+    command: payload?.command ?? null,
+    payload: payload ?? null,
+  });
+}
 import type {
   AgentAuditEntry,
   AgentAuditFilter,
@@ -225,14 +263,16 @@ export const api = {
     }),
 
   // Dangerous-tool capability gate. `mintToolApproval` mints a single-use,
-  // 60s token bound to a Rust command name; the four dangerous commands below
-  // require it. The wrappers mint immediately before invoking, so they must
-  // only be called on the agent loop's post-confirmation path.
-  // `command` is required for `agent_run_shell` (the token is SHA-256-bound
-  // to that exact command on the Rust side so an approval for `ls` cannot be
-  // silently reused for `rm -rf`). Other tools ignore the binding.
-  mintToolApproval: (tool: string, command?: string) =>
-    invoke<string>("mint_tool_approval", { tool, command: command ?? null }),
+  // 60s token bound to a Rust command name AND to a tool-family-specific
+  // payload (path, pid+signal, url, etc.). Every dangerous wrapper passes
+  // the same payload to both `mintToolApproval` and the IPC call so the
+  // Rust side can recompute the SHA-256 binding from the live arguments
+  // and refuse a token that was approved for a different payload.
+  //
+  // Payload shape mirrors `ApprovalPayload` in src-tauri/src/commands/agent.rs.
+  // Only the fields the target tool requires need to be set; the rest stay
+  // undefined (the canonical-string builder substitutes empty strings).
+  mintToolApproval: (tool: string, payload?: ApprovalPayload) => mintApproval(tool, payload),
 
   // Agent tools
   agentReadFile: (path: string, offset?: number, limit?: number) =>
@@ -244,12 +284,7 @@ export const api = {
       command,
       opts: opts ?? null,
       opId: opId ?? null,
-      // Token is bound to a SHA-256 of `command` on the Rust side; pass the
-      // exact same command we are about to run.
-      approval: await invoke<string>("mint_tool_approval", {
-        tool: "agent_run_shell",
-        command,
-      }),
+      approval: await mintApproval("agent_run_shell", { command }),
     }),
   agentCancelShell: (opId: string) =>
     invoke<void>("agent_cancel_shell", { opId }),
@@ -257,7 +292,7 @@ export const api = {
     invoke<void>("agent_write_file", {
       path,
       content,
-      approval: await invoke<string>("mint_tool_approval", { tool: "agent_write_file", command: null }),
+      approval: await mintApproval("agent_write_file", { path }),
     }),
   agentEditFile: async (path: string, oldString: string, newString: string, replaceAll?: boolean) =>
     invoke<EditResult>("agent_edit_file", {
@@ -265,10 +300,7 @@ export const api = {
       oldString,
       newString,
       replaceAll: replaceAll ?? null,
-      approval: await invoke<string>("mint_tool_approval", {
-        tool: "agent_edit_file",
-        command: null,
-      }),
+      approval: await mintApproval("agent_edit_file", { path }),
     }),
   agentFileExists: (path: string) =>
     invoke<ExistsResult>("agent_file_exists", { path }),
@@ -282,10 +314,7 @@ export const api = {
     invoke<MultiEditResult>("agent_multi_edit", {
       path,
       edits,
-      approval: await invoke<string>("mint_tool_approval", {
-        tool: "agent_multi_edit",
-        command: null,
-      }),
+      approval: await mintApproval("agent_multi_edit", { path }),
     }),
 
   // ── Extras: file ops + hash + diff + processes + undo ─────────────────
@@ -298,37 +327,25 @@ export const api = {
       from,
       to,
       overwrite: overwrite ?? null,
-      approval: await invoke<string>("mint_tool_approval", {
-        tool: "agent_move_path",
-        command: null,
-      }),
+      approval: await mintApproval("agent_move_path", { from, to }),
     }),
   agentCopyPath: async (from: string, to: string, overwrite?: boolean) =>
     invoke<{ from: string; to: string }>("agent_copy_path", {
       from,
       to,
       overwrite: overwrite ?? null,
-      approval: await invoke<string>("mint_tool_approval", {
-        tool: "agent_copy_path",
-        command: null,
-      }),
+      approval: await mintApproval("agent_copy_path", { from, to }),
     }),
   agentDeletePath: async (path: string, recursive?: boolean) =>
     invoke<{ path: string; was_dir: boolean }>("agent_delete_path", {
       path,
       recursive: recursive ?? null,
-      approval: await invoke<string>("mint_tool_approval", {
-        tool: "agent_delete_path",
-        command: null,
-      }),
+      approval: await mintApproval("agent_delete_path", { path }),
     }),
   agentMakeDir: async (path: string) =>
     invoke<{ path: string; created: boolean }>("agent_make_dir", {
       path,
-      approval: await invoke<string>("mint_tool_approval", {
-        tool: "agent_make_dir",
-        command: null,
-      }),
+      approval: await mintApproval("agent_make_dir", { path }),
     }),
   agentHashFile: (path: string, algorithm?: "sha256" | "sha512") =>
     invoke<{ algorithm: string; hex: string; size_bytes: number }>("agent_hash_file", {
@@ -345,10 +362,7 @@ export const api = {
     invoke<{ pid: number; signal: string }>("agent_kill_process", {
       pid,
       signal: signal ?? null,
-      approval: await invoke<string>("mint_tool_approval", {
-        tool: "agent_kill_process",
-        command: null,
-      }),
+      approval: await mintApproval("agent_kill_process", { pid, signal }),
     }),
   agentListUndo: () =>
     invoke<
@@ -357,12 +371,7 @@ export const api = {
   agentUndoLast: async () =>
     invoke<{ path: string; kind: string; restored_bytes: number; was_absent: boolean }>(
       "agent_undo_last",
-      {
-        approval: await invoke<string>("mint_tool_approval", {
-          tool: "agent_undo_last",
-          command: null,
-        }),
-      },
+      { approval: await mintApproval("agent_undo_last") },
     ),
   agentClearUndoStack: () => invoke<void>("agent_clear_undo_stack"),
   agentGitStatus: (path?: string) =>
@@ -383,38 +392,64 @@ export const api = {
     invoke<WebSearchResult>("agent_web_search", { query, n: n ?? null }),
   agentReadPdf: (path: string, limit?: number) =>
     invoke<PdfResult>("agent_read_pdf", { path, limit: limit ?? null }),
-  agentScreenshot: (outPath?: string) =>
-    invoke<ScreenshotResult>("agent_screenshot", { outPath: outPath ?? null }),
+  agentScreenshot: async (outPath?: string) =>
+    invoke<ScreenshotResult>("agent_screenshot", {
+      outPath: outPath ?? null,
+      approval: await mintApproval("agent_screenshot", { path: outPath }),
+    }),
   agentClipboardGet: () =>
     invoke<string>("agent_clipboard_get"),
-  agentClipboardSet: (text: string) =>
-    invoke<void>("agent_clipboard_set", { text }),
-  agentOpenApp: (name: string) =>
-    invoke<void>("agent_open_app", { name }),
-  agentShowNotification: (title: string, body: string) =>
-    invoke<void>("agent_show_notification", { title, body }),
-  agentOpenPathInEditor: (path: string, line?: number) =>
-    invoke<string>("agent_open_path_in_editor", { path, line: line ?? null }),
+  agentClipboardSet: async (text: string) =>
+    invoke<void>("agent_clipboard_set", {
+      text,
+      approval: await mintApproval("agent_clipboard_set", { text }),
+    }),
+  agentOpenApp: async (name: string) =>
+    invoke<void>("agent_open_app", {
+      name,
+      approval: await mintApproval("agent_open_app", { bundle_id: name }),
+    }),
+  agentShowNotification: async (title: string, body: string) =>
+    invoke<void>("agent_show_notification", {
+      title,
+      body,
+      // Binding mirrors the Rust side: `${title}\x1f${body}` → SHA-256.
+      approval: await mintApproval("agent_show_notification", {
+        text: `${title}\u{1f}${body}`,
+      }),
+    }),
+  agentOpenPathInEditor: async (path: string, line?: number) =>
+    invoke<string>("agent_open_path_in_editor", {
+      path,
+      line: line ?? null,
+      approval: await mintApproval("agent_open_path_in_editor", { path }),
+    }),
   agentApplescriptRun: async (script: string) =>
     invoke<ShellResult>("agent_applescript_run", {
       script,
-      approval: await invoke<string>("mint_tool_approval", { tool: "agent_applescript_run", command: null }),
+      approval: await mintApproval("agent_applescript_run"),
     }),
   agentHttpRequest: async (input: HttpReqInput) =>
     invoke<HttpResp>("agent_http_request", {
       input,
-      approval: await invoke<string>("mint_tool_approval", { tool: "agent_http_request", command: null }),
+      approval: await mintApproval("agent_http_request", { url: input.url }),
     }),
   agentFindDefinition: (symbol: string, path?: string) =>
     invoke<SearchResult>("agent_find_definition", { symbol, path: path ?? null }),
   agentFindReferences: (symbol: string, path?: string) =>
     invoke<SearchResult>("agent_find_references", { symbol, path: path ?? null }),
-  agentFormatCode: (path: string) =>
-    invoke<FormatResult>("agent_format_code", { path }),
+  agentFormatCode: async (path: string) =>
+    invoke<FormatResult>("agent_format_code", {
+      path,
+      approval: await mintApproval("agent_format_code", { path }),
+    }),
 
   // Browser automation
-  agentBrowserNavigate: (url: string) =>
-    invoke<BrowserNavigateResult>("agent_browser_navigate", { url }),
+  agentBrowserNavigate: async (url: string) =>
+    invoke<BrowserNavigateResult>("agent_browser_navigate", {
+      url,
+      approval: await mintApproval("agent_browser_navigate", { url }),
+    }),
   agentBrowserClick: (selector: string) =>
     invoke<BrowserOkResult>("agent_browser_click", { selector }),
   agentBrowserFill: (selector: string, value: string) =>
@@ -499,17 +534,34 @@ export const api = {
   ollamaProbe: () => invoke<boolean>("ollama_probe"),
 
   // MCP (Model Context Protocol)
-  mcpStartServer: (
+  mcpStartServer: async (
     name: string,
     command: string,
     args?: string[],
     env?: Record<string, string>,
-  ) => invoke<McpToolDescriptor[]>("mcp_start_server", {
-    name,
-    command,
-    args: args ?? null,
-    env: env ?? null,
-  }),
+  ) => {
+    // Sec review S-C1: mcp_start_server spawns an arbitrary subprocess with
+    // arbitrary args + env — full user-level RCE if abused. Bind the
+    // approval to (command + sorted args + sorted env keys). The Rust side
+    // recomputes the same canonical string and refuses a mismatched token.
+    // Env VALUES are not in the binding (they may rotate session to session
+    // for things like API keys) — the user is approving the program +
+    // its argv + the SET of variables it will read.
+    const mcpArgs = args ?? [];
+    const envKeys = env ? Object.keys(env).slice().sort() : [];
+    const approval = await mintApproval("mcp_start_server", {
+      mcp_command: command,
+      mcp_args: mcpArgs,
+      mcp_env_keys: envKeys,
+    });
+    return invoke<McpToolDescriptor[]>("mcp_start_server", {
+      name,
+      command,
+      args: args ?? null,
+      env: env ?? null,
+      approval,
+    });
+  },
   mcpStopServer: (name: string) =>
     invoke<void>("mcp_stop_server", { name }),
   mcpListServers: () => invoke<McpServerInfo[]>("mcp_list_servers"),

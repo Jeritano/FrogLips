@@ -1,6 +1,6 @@
 //! Model Context Protocol server management commands.
 
-use crate::mcp;
+use crate::{approval, commands::agent::{binding_for, ApprovalPayload}, mcp};
 
 #[tauri::command]
 pub async fn mcp_start_server(
@@ -8,9 +8,36 @@ pub async fn mcp_start_server(
     command: String,
     args: Option<Vec<String>>,
     env: Option<std::collections::HashMap<String, String>>,
+    approval: String,
 ) -> Result<Vec<mcp::ToolDescriptor>, String> {
-    let args = args.unwrap_or_default();
-    mcp::start_server(name, command, args, env)
+    // Approval gate (sec review S-C1): spawning an MCP server is arbitrary
+    // process execution under the user's session — `command`, `args`, and
+    // `env` are all caller-supplied. Without this gate, a compromised
+    // renderer (or any path that reaches the IPC) gains user-level RCE.
+    //
+    // Token is bound to a SHA-256 of (command + args + env keys) so a token
+    // approved for one MCP binary cannot be silently reused to spawn a
+    // different one within the 60s TTL. Env VALUES are intentionally NOT in
+    // the binding — they may legitimately differ session to session
+    // (rotating API keys etc.); the capability the user approves is the
+    // program + its arg vector + the set of variables it will read.
+    let args_vec = args.unwrap_or_default();
+    let env_map = env.unwrap_or_default();
+    let mut env_keys: Vec<String> = env_map.keys().cloned().collect();
+    env_keys.sort(); // canonicalize so the binding is stable across HashMap order
+    let payload = ApprovalPayload {
+        mcp_command: Some(command.clone()),
+        mcp_args: Some(args_vec.clone()),
+        mcp_env_keys: Some(env_keys),
+        ..Default::default()
+    };
+    let Some(expected) = binding_for("mcp_start_server", &payload) else {
+        return Err("internal: mcp_start_server binding missing".into());
+    };
+    if !approval::consume_with_binding("mcp_start_server", &approval, &expected) {
+        return Err("tool approval required or expired".into());
+    }
+    mcp::start_server(name, command, args_vec, Some(env_map))
         .await
         .map_err(|e| e.to_string())
 }

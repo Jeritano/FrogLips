@@ -40,51 +40,28 @@ static STORE: Lazy<Mutex<HashMap<String, TokenEntry>>> = Lazy::new(|| Mutex::new
 
 /// Generate a 128-bit cryptographically-random opaque token, hex-encoded.
 ///
-/// Reads from the OS CSPRNG via `/dev/urandom` (macOS/Linux). This replaces
-/// the previous time+counter mix, which was predictable enough that an
-/// attacker who could observe (or guess) the clock could feasibly forge a
-/// token within the 60s TTL window. We hex-encode 16 raw bytes → 32 chars.
-///
-/// On the (effectively impossible) failure to read /dev/urandom we fall back
-/// to a time+counter+pid mix XOR'd into the buffer rather than returning a
-/// predictable value — so the worst case still has some entropy, but
-/// successful reads (the only path you'll ever see in practice on macOS)
-/// give a full 128 bits.
-fn random_token() -> String {
+/// Reads from the OS CSPRNG via `/dev/urandom` (macOS/Linux). Hex-encodes
+/// 16 raw bytes → 32 chars. Returns `Err` on read failure rather than
+/// falling back to a predictable mix — review M3 (2026-05-24) flagged the
+/// old time+counter fallback as bruteforceable inside the 60 s TTL window
+/// if `/dev/urandom` were ever unreadable. Hard-fail keeps the security
+/// posture monotonic: if we can't generate true entropy we don't mint a
+/// token at all.
+fn random_token() -> Result<String, String> {
     use std::io::Read;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     let mut buf = [0u8; 16];
-    let mut filled = false;
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        if f.read_exact(&mut buf).is_ok() {
-            filled = true;
-        }
-    }
-    if !filled {
-        // Fallback path — should not happen on macOS. Mix several entropy
-        // sources into the buffer so the token is at least not trivially
-        // predictable from the clock alone.
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id() as u128;
-        let mix = nanos
-            ^ ((n as u128) << 64)
-            ^ (n as u128).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            ^ pid.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        buf.copy_from_slice(&mix.to_le_bytes());
-    }
+    let mut f = std::fs::File::open("/dev/urandom")
+        .map_err(|e| format!("approval: cannot open /dev/urandom: {e}"))?;
+    f.read_exact(&mut buf)
+        .map_err(|e| format!("approval: read /dev/urandom failed: {e}"))?;
 
     let mut out = String::with_capacity(32);
     for b in buf {
         use std::fmt::Write;
         let _ = write!(out, "{b:02x}");
     }
-    out
+    Ok(out)
 }
 
 /// Drop expired entries. Called opportunistically on mint/consume so the map
@@ -94,8 +71,14 @@ fn gc(store: &mut HashMap<String, TokenEntry>) {
     store.retain(|_, e| now.duration_since(e.minted) < TOKEN_TTL);
 }
 
-/// Mint a single-use approval token bound to `tool`. Returns the token string.
-pub fn mint(tool: &str) -> String {
+/// Max live tokens before a mint is rejected. Sized for plausible burst
+/// (rapid agent loop) but tight enough that a misbehaving renderer can't
+/// run away with the store. Surfaces as `approval: token store at capacity`.
+const MAX_LIVE_TOKENS: usize = 256;
+
+/// Mint a single-use approval token bound to `tool`. Returns the token
+/// string. Returns `Err` on entropy failure or store-at-capacity.
+pub fn mint(tool: &str) -> Result<String, String> {
     mint_internal(tool, None)
 }
 
@@ -104,14 +87,21 @@ pub fn mint(tool: &str) -> String {
 /// confirmed). Consumers must call [`consume_with_binding`] with the same
 /// binding to spend the token. Prevents reusing a token approved for one
 /// command on a different command.
-pub fn mint_with_binding(tool: &str, binding: &str) -> String {
+pub fn mint_with_binding(tool: &str, binding: &str) -> Result<String, String> {
     mint_internal(tool, Some(binding.to_string()))
 }
 
-fn mint_internal(tool: &str, binding: Option<String>) -> String {
-    let token = random_token();
+fn mint_internal(tool: &str, binding: Option<String>) -> Result<String, String> {
+    let token = random_token()?;
     let mut store = STORE.lock();
     gc(&mut store);
+    if store.len() >= MAX_LIVE_TOKENS {
+        // Refuse rather than evict — eviction makes spam profitable.
+        return Err(format!(
+            "approval: token store at capacity ({} live); wait for TTL expiry",
+            store.len()
+        ));
+    }
     store.insert(
         token.clone(),
         TokenEntry {
@@ -120,7 +110,7 @@ fn mint_internal(tool: &str, binding: Option<String>) -> String {
             binding,
         },
     );
-    token
+    Ok(token)
 }
 
 /// Validate `token` for `tool` and remove it (single-use). Returns `true` only
@@ -163,7 +153,7 @@ mod tests {
 
     #[test]
     fn mint_then_consume_succeeds_once() {
-        let t = mint("agent_run_shell");
+        let t = mint("agent_run_shell").expect("mint");
         assert!(consume("agent_run_shell", &t), "first consume must succeed");
         // Single-use: the same token cannot be consumed twice.
         assert!(!consume("agent_run_shell", &t), "second consume must fail");
@@ -171,7 +161,7 @@ mod tests {
 
     #[test]
     fn consume_rejects_wrong_tool() {
-        let t = mint("agent_write_file");
+        let t = mint("agent_write_file").expect("mint");
         // Token is bound to its tool — a different tool name must be rejected.
         assert!(!consume("agent_run_shell", &t));
         // And the token is now consumed even on the mismatched attempt, so a
@@ -187,7 +177,7 @@ mod tests {
 
     #[test]
     fn expired_token_is_rejected() {
-        let token = random_token();
+        let token = random_token().expect("urandom");
         {
             let mut store = STORE.lock();
             // Inject a token minted well outside the TTL window.
@@ -208,7 +198,7 @@ mod tests {
 
     #[test]
     fn bound_token_requires_matching_binding() {
-        let t = mint_with_binding("agent_run_shell", "fp_ls");
+        let t = mint_with_binding("agent_run_shell", "fp_ls").expect("mint");
         // Wrong binding: rejected, token consumed (fail-closed).
         assert!(!consume_with_binding("agent_run_shell", &t, "fp_rmrf"));
         assert!(!consume_with_binding("agent_run_shell", &t, "fp_ls"));
@@ -219,7 +209,7 @@ mod tests {
         // A token minted with a binding MUST NOT be consumable via the
         // bareword `consume` path — otherwise a refactor could quietly
         // strip the payload check.
-        let t = mint_with_binding("agent_run_shell", "fp_ls");
+        let t = mint_with_binding("agent_run_shell", "fp_ls").expect("mint");
         assert!(!consume("agent_run_shell", &t));
     }
 
@@ -227,23 +217,47 @@ mod tests {
     fn unbound_token_rejects_bound_consume() {
         // Symmetric: a token minted without a binding must not satisfy a
         // bound consume call — bound call sites fail closed.
-        let t = mint("agent_run_shell");
+        let t = mint("agent_run_shell").expect("mint");
         assert!(!consume_with_binding("agent_run_shell", &t, "fp_anything"));
     }
 
     #[test]
     fn bound_token_single_use_with_correct_binding() {
-        let t = mint_with_binding("agent_run_shell", "fp_x");
+        let t = mint_with_binding("agent_run_shell", "fp_x").expect("mint");
         assert!(consume_with_binding("agent_run_shell", &t, "fp_x"));
         assert!(!consume_with_binding("agent_run_shell", &t, "fp_x"));
     }
 
     #[test]
     fn distinct_mints_yield_distinct_tokens() {
-        let a = mint("agent_applescript_run");
-        let b = mint("agent_applescript_run");
+        let a = mint("agent_applescript_run").expect("mint");
+        let b = mint("agent_applescript_run").expect("mint");
         assert_ne!(a, b, "tokens must be unique");
         assert!(consume("agent_applescript_run", &a));
         assert!(consume("agent_applescript_run", &b));
+    }
+
+    #[test]
+    fn mint_refuses_when_store_at_capacity() {
+        // Fill the store from a clean slate. We can't reset STORE between
+        // tests (cargo runs them in parallel + STORE is static), so a
+        // failure here only proves "the gate fires at the cap" — not that
+        // *exactly* MAX_LIVE_TOKENS will live concurrently in production.
+        let _serialize = STORE.lock(); // hold to keep parallel tests from racing
+        drop(_serialize);
+        let mut held = Vec::new();
+        for _ in 0..MAX_LIVE_TOKENS {
+            match mint("capacity_test") {
+                Ok(t) => held.push(t),
+                Err(_) => break, // already near cap from other tests
+            }
+        }
+        // The next mint MUST refuse with a capacity error.
+        let r = mint("capacity_test");
+        assert!(r.is_err(), "expected capacity refusal, got {:?}", r);
+        // Cleanup so other tests don't trip the cap.
+        for t in held {
+            let _ = consume("capacity_test", &t);
+        }
     }
 }

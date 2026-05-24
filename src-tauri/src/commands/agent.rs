@@ -13,44 +13,138 @@ use crate::{agent, agent_audit, approval, ask_user, policy, rag, task_queue};
  * compromised renderer (the webview could mint its own token); that is an
  * inherent Tauri trust limit. See `approval.rs`. */
 
+/// Payload that the frontend passes alongside a `mint_tool_approval` call so
+/// the resulting token is bound not just to the tool name but to the exact
+/// arguments the user confirmed. A token approved for `write_file("a.txt")`
+/// must not be silently spendable on `write_file("~/.bashrc")`. Each
+/// dangerous tool family has its own payload shape; the unused fields
+/// default to `None`.
+///
+/// `tag` is a frontend-supplied tag — currently unused by the binding but
+/// reserved so the renderer can disambiguate two different intents that
+/// happen to share the same payload (e.g. an undo-vs-redo). It is NOT
+/// trusted as a security boundary; the payload is the boundary.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ApprovalPayload {
+    pub command: Option<String>,
+    pub path: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub url: Option<String>,
+    pub pid: Option<i32>,
+    pub signal: Option<String>,
+    pub text: Option<String>,
+    pub bundle_id: Option<String>,
+    pub mcp_command: Option<String>,
+    pub mcp_args: Option<Vec<String>>,
+    pub mcp_env_keys: Option<Vec<String>>,
+}
+
 /// Mint a single-use approval token bound to `tool`. Wired from the frontend's
 /// post-confirmation path; the returned string is passed to the matching
 /// dangerous command as its `approval` argument.
 ///
-/// For `agent_run_shell` the caller MUST additionally pass the `command`
-/// string the user just approved — the token is then payload-bound to a
-/// SHA-256 hash of that exact string so a token approved for `ls` cannot be
-/// silently reused for `rm -rf`. For other tools `command` is ignored and
-/// the token is bound to the bare tool name as before.
+/// Each dangerous tool family declares the subset of `payload` fields it
+/// requires; the token is bound to a SHA-256 of those fields' canonical
+/// serialization so the approval is non-transferable across argument
+/// changes. New families MUST be added to `binding_for()` and to the matching
+/// command's `consume_with_binding` call site (compile-time fail-closed: a
+/// command that opts in but forgets the matching consume side will reject
+/// every token).
+///
+/// `payload` is optional for backwards compat: tool names not listed in
+/// `binding_for` mint an unbound token via `approval::mint`.
 #[tauri::command]
-pub fn mint_tool_approval(tool: String, command: Option<String>) -> String {
-    if tool == "agent_run_shell" {
-        // Bind to the SHA-256 of the exact command. Empty/missing command
-        // here would mint a token bound to the hash of "" — still useless
-        // unless the caller eventually runs an empty command (which the
-        // length check in run_shell rejects), so we don't special-case it.
-        let cmd = command.unwrap_or_default();
-        let fp = shell_command_fingerprint(&cmd);
-        approval::mint_with_binding(&tool, &fp)
-    } else {
-        approval::mint(&tool)
+pub fn mint_tool_approval(
+    tool: String,
+    command: Option<String>,
+    payload: Option<ApprovalPayload>,
+) -> Result<String, String> {
+    // Back-compat: the original signature took only `command`. New call
+    // sites use `payload`; legacy ones (still in flight on tauri-api.ts at
+    // commit time) keep working via the synthetic merge below.
+    let mut p = payload.unwrap_or_default();
+    if p.command.is_none() {
+        p.command = command;
+    }
+    match binding_for(&tool, &p) {
+        Some(fp) => approval::mint_with_binding(&tool, &fp),
+        None => approval::mint(&tool),
     }
 }
 
-/// SHA-256 hex of the exact command string. Used as the binding for shell
-/// approval tokens so the approval is non-transferable across commands.
-fn shell_command_fingerprint(command: &str) -> String {
+/// SHA-256 hex of a canonical string built from the payload fields the tool
+/// cares about. Each family's canonical form is documented inline — change
+/// it ONLY in lock-step with the corresponding `*_fingerprint` helper on
+/// the consume side, otherwise the token will silently never verify.
+pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
+    match tool {
+        "agent_run_shell" => Some(sha256_hex(p.command.as_deref().unwrap_or(""))),
+        // Path-family: write / edit / multi_edit / make_dir / delete /
+        // undo / open_in_editor / format_code all bind to a single path.
+        "agent_write_file"
+        | "agent_edit_file"
+        | "agent_multi_edit"
+        | "agent_make_dir"
+        | "agent_delete_path"
+        | "agent_open_path_in_editor"
+        | "agent_format_code" => Some(sha256_hex(&format!("path={}", p.path.as_deref().unwrap_or("")))),
+        // Two-path family: move + copy.
+        "agent_move_path" | "agent_copy_path" => Some(sha256_hex(&format!(
+            "from={}|to={}",
+            p.from.as_deref().unwrap_or(""),
+            p.to.as_deref().unwrap_or(""),
+        ))),
+        // Undo restores the most-recent snapshot — the path isn't known
+        // until pop time, so bind to a synthetic marker that at least ties
+        // the token to "this minted-for-undo intent" (single-use binding
+        // still prevents stale token replay of a different family).
+        "agent_undo_last" => Some(sha256_hex("undo_last")),
+        // Process family.
+        "agent_kill_process" => Some(sha256_hex(&format!(
+            "pid={}|signal={}",
+            p.pid.unwrap_or(-1),
+            p.signal.as_deref().unwrap_or("TERM").to_ascii_uppercase()
+        ))),
+        // Clipboard write — bound to the exact text the user confirmed.
+        "agent_clipboard_set" => Some(sha256_hex(&format!("text={}", p.text.as_deref().unwrap_or("")))),
+        // App-launch + notifications — bound to the bundle id / message.
+        "agent_open_app" => Some(sha256_hex(&format!("app={}", p.bundle_id.as_deref().unwrap_or("")))),
+        "agent_show_notification" => Some(sha256_hex(&format!("text={}", p.text.as_deref().unwrap_or("")))),
+        // Screenshot: bind to a path target so a token issued for
+        // "save to ~/Desktop/x.png" can't be reused for a different dest.
+        "agent_screenshot" => Some(sha256_hex(&format!("path={}", p.path.as_deref().unwrap_or("")))),
+        // HTTP + browser — URL-bound.
+        "agent_http_request" | "agent_web_fetch" | "agent_browser_navigate" => {
+            Some(sha256_hex(&format!("url={}", p.url.as_deref().unwrap_or(""))))
+        }
+        // MCP server spawn — bind to command + args + env keys (NOT values,
+        // since values may legitimately differ session to session but the
+        // *capability* the user approves is the program + its arg vector).
+        "mcp_start_server" => Some(sha256_hex(&format!(
+            "cmd={}|args={}|env_keys={}",
+            p.mcp_command.as_deref().unwrap_or(""),
+            p.mcp_args.as_deref().map(|a| a.join("\u{1f}")).unwrap_or_default(),
+            p.mcp_env_keys.as_deref().map(|k| k.join("\u{1f}")).unwrap_or_default(),
+        ))),
+        _ => None,
+    }
+}
+
+/// SHA-256 hex of an arbitrary string. Used everywhere a binding is needed.
+pub(crate) fn sha256_hex(s: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(command.as_bytes());
+    h.update(s.as_bytes());
     let out = h.finalize();
-    let mut s = String::with_capacity(64);
+    let mut hex = String::with_capacity(64);
     for b in out {
         use std::fmt::Write;
-        let _ = write!(s, "{b:02x}");
+        let _ = write!(hex, "{b:02x}");
     }
-    s
+    hex
 }
+
 
 /* ── Agent tool commands ── */
 
@@ -68,6 +162,23 @@ pub async fn agent_list_dir(path: String) -> Result<agent::DirListing, String> {
     agent::list_dir(path).await
 }
 
+/// Shared helper — rebuilds the binding for a tool family from its actual
+/// IPC arguments and verifies the approval token. `recompute_binding` is
+/// the source of truth on the consume side; the matching mint side lives
+/// in `binding_for`. Both MUST produce the same canonical string for the
+/// same logical payload — drift = silent reject of every legitimate call.
+fn verify_bound(tool: &str, approval: &str, payload: ApprovalPayload) -> Result<(), String> {
+    let Some(expected) = binding_for(tool, &payload) else {
+        return Err(format!(
+            "internal: tool {tool} has no binding declared but expected one"
+        ));
+    };
+    if !approval::consume_with_binding(tool, approval, &expected) {
+        return Err("tool approval required or expired".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn agent_run_shell(
     command: String,
@@ -80,10 +191,14 @@ pub async fn agent_run_shell(
     // 60s TTL. The fingerprint is recomputed here from the command we are
     // about to run, so the frontend can't approve one string and execute
     // another.
-    let fp = shell_command_fingerprint(&command);
-    if !approval::consume_with_binding("agent_run_shell", &approval, &fp) {
-        return Err("tool approval required or expired".into());
-    }
+    verify_bound(
+        "agent_run_shell",
+        &approval,
+        ApprovalPayload {
+            command: Some(command.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::run_shell(command, opts, op_id).await
 }
 
@@ -98,9 +213,16 @@ pub async fn agent_write_file(
     content: String,
     approval: String,
 ) -> Result<(), String> {
-    if !approval::consume("agent_write_file", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    // Path-bound: a token approved for `notes.md` cannot be silently reused
+    // to clobber `~/.bashrc` within the 60s TTL.
+    verify_bound(
+        "agent_write_file",
+        &approval,
+        ApprovalPayload {
+            path: Some(path.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::write_file(path, content).await
 }
 
@@ -113,11 +235,17 @@ pub async fn agent_edit_file(
     approval: String,
 ) -> Result<agent::EditResult, String> {
     // edit_file mutates the filesystem just like write_file — require the
-    // same single-use approval token so a refactor or new caller cannot
-    // accidentally bypass the user confirmation gate.
-    if !approval::consume("agent_edit_file", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    // same path-bound approval token so a refactor or new caller cannot
+    // accidentally bypass the user confirmation gate AND so a token issued
+    // for one file can't quietly be spent on another.
+    verify_bound(
+        "agent_edit_file",
+        &approval,
+        ApprovalPayload {
+            path: Some(path.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::edit_file(path, old_string, new_string, replace_all).await
 }
 
@@ -142,10 +270,15 @@ pub async fn agent_multi_edit(
     edits: Vec<agent::EditOp>,
     approval: String,
 ) -> Result<agent::MultiEditResult, String> {
-    // multi_edit is just a batched form of edit_file; same approval gate.
-    if !approval::consume("agent_multi_edit", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    // multi_edit is a batched form of edit_file; same path-bound approval.
+    verify_bound(
+        "agent_multi_edit",
+        &approval,
+        ApprovalPayload {
+            path: Some(path.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::multi_edit(path, edits).await
 }
 
@@ -210,7 +343,23 @@ pub async fn agent_read_pdf(path: String, limit: Option<u64>) -> Result<agent::P
 }
 
 #[tauri::command]
-pub async fn agent_screenshot(out_path: Option<String>) -> Result<agent::ScreenshotResult, String> {
+pub async fn agent_screenshot(
+    out_path: Option<String>,
+    approval: String,
+) -> Result<agent::ScreenshotResult, String> {
+    // Approval gate (sec review H4): a screenshot can expose any window the
+    // user has open — bank, password manager, IDE, Slack — and the captured
+    // bytes are then readable via `agent_read_file`. Always require explicit
+    // confirmation, bound to the output path so a token for `~/x.png` can't
+    // silently be reused for `~/Documents/secrets.png`.
+    verify_bound(
+        "agent_screenshot",
+        &approval,
+        ApprovalPayload {
+            path: out_path.clone(),
+            ..Default::default()
+        },
+    )?;
     agent::screenshot(out_path).await
 }
 
@@ -220,22 +369,79 @@ pub async fn agent_clipboard_get() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn agent_clipboard_set(text: String) -> Result<(), String> {
+pub async fn agent_clipboard_set(text: String, approval: String) -> Result<(), String> {
+    // Approval gate (sec review S-C2): clipboard hijack attack — a prompt-
+    // injected model can silently overwrite the user's clipboard right
+    // before they paste (bank account, password, address). Bind to the
+    // exact text the user confirmed so a token for "hello" can't be reused
+    // to set arbitrary text within the 60s TTL.
+    verify_bound(
+        "agent_clipboard_set",
+        &approval,
+        ApprovalPayload {
+            text: Some(text.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::clipboard_set(text).await
 }
 
 #[tauri::command]
-pub async fn agent_open_app(name: String) -> Result<(), String> {
+pub async fn agent_open_app(name: String, approval: String) -> Result<(), String> {
+    // Approval gate (sec review S-C2): launching an arbitrary app is a real
+    // capability — e.g. opening 1Password or System Settings under the
+    // user's session. Bind to the app identifier so a token for `Calculator`
+    // doesn't silently launch `Terminal`.
+    verify_bound(
+        "agent_open_app",
+        &approval,
+        ApprovalPayload {
+            bundle_id: Some(name.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::open_app(name).await
 }
 
 #[tauri::command]
-pub async fn agent_show_notification(title: String, body: String) -> Result<(), String> {
+pub async fn agent_show_notification(
+    title: String,
+    body: String,
+    approval: String,
+) -> Result<(), String> {
+    // Approval gate (sec review S-C2): notifications can phish — popping
+    // "macOS Update Available — click here" is a real attack surface. Bind
+    // to the combined title + body so a token for one message can't deliver
+    // another within the TTL.
+    let payload_text = format!("{title}\u{1f}{body}");
+    verify_bound(
+        "agent_show_notification",
+        &approval,
+        ApprovalPayload {
+            text: Some(payload_text),
+            ..Default::default()
+        },
+    )?;
     agent::show_notification(title, body).await
 }
 
 #[tauri::command]
-pub async fn agent_open_path_in_editor(path: String, line: Option<u32>) -> Result<String, String> {
+pub async fn agent_open_path_in_editor(
+    path: String,
+    line: Option<u32>,
+    approval: String,
+) -> Result<String, String> {
+    // Approval gate (sec review S-C2): opening a path in an external editor
+    // (`code`, `cursor`, `open`) is a side-effect the user should see. Bind
+    // to the path so a token for one file isn't silently reused.
+    verify_bound(
+        "agent_open_path_in_editor",
+        &approval,
+        ApprovalPayload {
+            path: Some(path.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::open_path_in_editor(path, line).await
 }
 
@@ -255,9 +461,16 @@ pub async fn agent_http_request(
     input: agent::HttpReqInput,
     approval: String,
 ) -> Result<agent::HttpResp, String> {
-    if !approval::consume("agent_http_request", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    // URL-bound: a token approved for a public docs page can't be reused to
+    // post to a metadata endpoint within the 60s TTL.
+    verify_bound(
+        "agent_http_request",
+        &approval,
+        ApprovalPayload {
+            url: Some(input.url.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::http_request(input).await
 }
 
@@ -278,14 +491,62 @@ pub async fn agent_find_references(
 }
 
 #[tauri::command]
-pub async fn agent_format_code(path: String) -> Result<agent::FormatResult, String> {
+pub async fn agent_format_code(
+    path: String,
+    approval: String,
+) -> Result<agent::FormatResult, String> {
+    // Path-bound approval gate (sec review L6 + S-C2 family): format_code
+    // mutates the target file in place by shelling out to the platform
+    // formatter (`prettier`, `rustfmt`, etc.). Without a gate it bypasses
+    // every other approval the user has on file edits.
+    verify_bound(
+        "agent_format_code",
+        &approval,
+        ApprovalPayload {
+            path: Some(path.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::format_code(path).await
 }
 
 /* ── Browser automation ──────────────────────────────────────────────────── */
 
 #[tauri::command]
-pub async fn agent_browser_navigate(url: String) -> Result<agent::BrowserNavigateResult, String> {
+pub async fn agent_browser_navigate(
+    url: String,
+    approval: String,
+) -> Result<agent::BrowserNavigateResult, String> {
+    // Approval gate + URL-bound (sec review H3). The web_fetch path enforces
+    // a private-range / link-local / metadata-IP denylist; the headless
+    // browser tool previously bypassed that entirely (it has its own DNS
+    // resolution, cookies, JS execution, and supports `file://`, `chrome://`,
+    // etc.). We do BOTH here:
+    //   1. Run the SSRF guard for HTTP(S) URLs and reject any non-HTTP(S)
+    //      scheme outright (file://, chrome://, javascript:, data: are dead).
+    //   2. Bind the approval token to the exact URL so a token for a public
+    //      docs page can't be silently reused on `http://localhost:11434`.
+    let parsed = url::Url::parse(&url).map_err(|e| format!("invalid url: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => return Err(format!("scheme {other} not permitted for browser_navigate")),
+    }
+    if let Some(host) = parsed.host_str() {
+        // Reuse the same SSRF host check the web tools use.
+        if !agent::web::is_safe_public_host(host) {
+            return Err(format!("host {host} is not permitted for browser_navigate"));
+        }
+    } else {
+        return Err("url has no host".into());
+    }
+    verify_bound(
+        "agent_browser_navigate",
+        &approval,
+        ApprovalPayload {
+            url: Some(url.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::browser::navigate(url).await
 }
 
@@ -568,9 +829,15 @@ pub async fn agent_move_path(
     overwrite: Option<bool>,
     approval: String,
 ) -> Result<agent::extras::FileOpResult, String> {
-    if !approval::consume("agent_move_path", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    verify_bound(
+        "agent_move_path",
+        &approval,
+        ApprovalPayload {
+            from: Some(from.clone()),
+            to: Some(to.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::extras::move_path(from, to, overwrite.unwrap_or(false)).await
 }
 
@@ -581,9 +848,15 @@ pub async fn agent_copy_path(
     overwrite: Option<bool>,
     approval: String,
 ) -> Result<agent::extras::FileOpResult, String> {
-    if !approval::consume("agent_copy_path", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    verify_bound(
+        "agent_copy_path",
+        &approval,
+        ApprovalPayload {
+            from: Some(from.clone()),
+            to: Some(to.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::extras::copy_path(from, to, overwrite.unwrap_or(false)).await
 }
 
@@ -593,9 +866,14 @@ pub async fn agent_delete_path(
     recursive: Option<bool>,
     approval: String,
 ) -> Result<agent::extras::DeleteResult, String> {
-    if !approval::consume("agent_delete_path", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    verify_bound(
+        "agent_delete_path",
+        &approval,
+        ApprovalPayload {
+            path: Some(path.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::extras::delete_path(path, recursive.unwrap_or(false)).await
 }
 
@@ -604,9 +882,14 @@ pub async fn agent_make_dir(
     path: String,
     approval: String,
 ) -> Result<agent::extras::MakeDirResult, String> {
-    if !approval::consume("agent_make_dir", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    verify_bound(
+        "agent_make_dir",
+        &approval,
+        ApprovalPayload {
+            path: Some(path.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::extras::make_dir(path).await
 }
 
@@ -639,9 +922,17 @@ pub async fn agent_kill_process(
     signal: Option<String>,
     approval: String,
 ) -> Result<agent::extras::KillResult, String> {
-    if !approval::consume("agent_kill_process", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    // (pid, signal)-bound (sec review S-C3): a token approved for "TERM pid
+    // 12345" cannot be reused inside the 60s TTL to kill an arbitrary pid.
+    verify_bound(
+        "agent_kill_process",
+        &approval,
+        ApprovalPayload {
+            pid: Some(pid),
+            signal: signal.clone(),
+            ..Default::default()
+        },
+    )?;
     agent::extras::kill_process(agent::extras::KillRequest { pid, signal }).await
 }
 
@@ -655,10 +946,10 @@ pub fn agent_list_undo() -> Vec<agent::snapshot::UndoEntry> {
 #[tauri::command]
 pub fn agent_undo_last(approval: String) -> Result<agent::snapshot::UndoResult, String> {
     // Undo touches the filesystem so we route it through the dangerous-tool
-    // gate. The frontend mints the token after a confirmation modal.
-    if !approval::consume("agent_undo_last", &approval) {
-        return Err("tool approval required or expired".into());
-    }
+    // gate. The frontend mints the token after a confirmation modal. Bound
+    // to a synthetic "undo_last" marker so a token from another family
+    // can't be replayed here.
+    verify_bound("agent_undo_last", &approval, ApprovalPayload::default())?;
     agent::snapshot::undo_last()
 }
 
