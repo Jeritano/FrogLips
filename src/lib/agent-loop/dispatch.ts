@@ -222,14 +222,21 @@ function redactSecrets(s: string): string {
   return looksLikeSecret(scrubbed) ? "[REDACTED]" : scrubbed;
 }
 
-/** Recursively redact secret-looking string values within an args value. */
-function redactValue(v: unknown): unknown {
+/** Recursively redact secret-looking string values within an args value.
+ *  Depth-capped — Code review M3: tool args theoretically come from the
+ *  model and can't be cyclic via JSON, but a future caller (an MCP server
+ *  result, a non-JSON path) could pass something with cycles or absurd
+ *  depth and stack-overflow this fn. 32 levels is well past anything any
+ *  legit tool surface produces. */
+const REDACT_MAX_DEPTH = 32;
+function redactValue(v: unknown, depth = 0): unknown {
+  if (depth > REDACT_MAX_DEPTH) return "[REDACTED:depth]";
   if (typeof v === "string") return redactSecrets(v);
-  if (Array.isArray(v)) return v.map(redactValue);
+  if (Array.isArray(v)) return v.map((x) => redactValue(x, depth + 1));
   if (v && typeof v === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, vv] of Object.entries(v as Record<string, unknown>)) {
-      out[k] = redactValue(vv);
+      out[k] = redactValue(vv, depth + 1);
     }
     return out;
   }

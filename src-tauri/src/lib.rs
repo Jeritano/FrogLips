@@ -116,24 +116,41 @@ pub fn run() {
     let configured_mcp = persisted.mcp_servers.clone().unwrap_or_default();
     if !configured_mcp.is_empty() {
         tauri::async_runtime::spawn(async move {
-            for cfg in configured_mcp {
-                if !cfg.enabled {
-                    continue;
-                }
-                let name = cfg.name.clone();
-                let env_opt = if cfg.env.is_empty() {
-                    None
-                } else {
-                    Some(cfg.env)
-                };
-                if let Err(e) = mcp::start_server(cfg.name, cfg.command, cfg.args, env_opt).await {
-                    diagnostics::warn_with(
-                        "mcp",
-                        &format!("auto-start '{}' failed: {}", name, e),
-                        serde_json::json!({ "server": name, "error": e.to_string() }),
-                    );
-                }
-            }
+            // Code review M9: was a sequential `for ... .await`, so a single
+            // misconfigured server that blocked in `start_server` (e.g.
+            // hung handshake, slow tools/list response) would gate every
+            // subsequent server's start. Now: spawn each in its own task
+            // and `join_all` so independent servers come up in parallel.
+            // Each task is wrapped in a 15-second timeout so a wedged
+            // server can't keep its task pinned forever — the autostart
+            // pass logs + moves on.
+            use futures::future::join_all;
+            use std::time::Duration;
+            let tasks = configured_mcp
+                .into_iter()
+                .filter(|c| c.enabled)
+                .map(|cfg| {
+                    tokio::spawn(async move {
+                        let name = cfg.name.clone();
+                        let env_opt = if cfg.env.is_empty() { None } else { Some(cfg.env) };
+                        let fut = mcp::start_server(cfg.name, cfg.command, cfg.args, env_opt);
+                        match tokio::time::timeout(Duration::from_secs(15), fut).await {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(e)) => diagnostics::warn_with(
+                                "mcp",
+                                &format!("auto-start '{}' failed: {}", name, e),
+                                serde_json::json!({ "server": name, "error": e.to_string() }),
+                            ),
+                            Err(_) => diagnostics::warn_with(
+                                "mcp",
+                                &format!("auto-start '{}' timed out after 15s", name),
+                                serde_json::json!({ "server": name, "error": "timeout" }),
+                            ),
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            let _ = join_all(tasks).await;
         });
     }
 

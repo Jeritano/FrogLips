@@ -266,6 +266,25 @@ pub(super) async fn capped_output(
 /// own — user is still the final gate.
 pub fn classify_shell_risk(command: &str) -> &'static str {
     let lc = command.to_lowercase();
+    // Code review M8: substring matching missed `rm  -rf  /` (double
+    // space) and similar whitespace-bypass cases. Normalize whitespace
+    // first so the same logical command always matches.
+    let normalized: String = {
+        let mut out = String::with_capacity(lc.len());
+        let mut last_was_space = false;
+        for ch in lc.chars() {
+            if ch.is_whitespace() {
+                if !last_was_space {
+                    out.push(' ');
+                }
+                last_was_space = true;
+            } else {
+                out.push(ch);
+                last_was_space = false;
+            }
+        }
+        out.trim().to_string()
+    };
     let patterns: &[&str] = &[
         "rm -rf /",
         "rm -rf ~",
@@ -276,19 +295,19 @@ pub fn classify_shell_risk(command: &str) -> &'static str {
         "shutdown",
         "reboot",
         "halt",
-        "diskutil eraseDisk",
+        "diskutil erasedisk",
         "format /",
         "chown -r root",
         "chmod -r 777 /",
         "> /dev/sda",
     ];
-    if patterns.iter().any(|p| lc.contains(p)) {
+    if patterns.iter().any(|p| normalized.contains(p)) {
         return "destructive";
     }
-    if lc.contains("curl ") && lc.contains("| sh") {
+    if normalized.contains("curl ") && normalized.contains("| sh") {
         return "pipe-from-network";
     }
-    if lc.contains("sudo ") {
+    if normalized.contains("sudo ") || normalized.starts_with("sudo") {
         return "privileged";
     }
     "normal"
@@ -309,6 +328,10 @@ mod tests {
             "dd of=/dev/disk0",
             ":(){:|:&};:",
             "shutdown -h now",
+            // M8 whitespace-evasion cases now caught by the normalizer.
+            "rm  -rf  /",
+            "rm\t-rf /",
+            "  rm -rf ~  ",
         ] {
             assert_eq!(classify_shell_risk(cmd), "destructive", "case: {cmd}");
         }
