@@ -16,9 +16,51 @@ import { logDiag } from "../lib/diagnostics";
 import { formatUserProfile } from "../lib/user-profile";
 import type { AgentSettings } from "./useAgentSettings";
 import { useEvent } from "./useEvent";
+import type { AppSettings } from "../types";
+import { listen } from "@tauri-apps/api/event";
 
 function tmpKey(): string {
   return `tmp:${crypto.randomUUID()}`;
+}
+
+// ── Settings cache for per-send reads ────────────────────────────────────
+//
+// Code review M5: streaming a send used to round-trip the entire settings
+// blob just to read user_profile. Cache it lazily + invalidate when the
+// settings IPC fires a `settings-changed` event after a successful save.
+// Cache miss on first send is fine — the IPC is local + cheap, just not
+// cheap enough to repeat every keystroke-driven message.
+
+let cachedSettings: AppSettings | null = null;
+let cacheInFlight: Promise<AppSettings> | null = null;
+let invalidatorBound = false;
+
+async function getCachedSettings(): Promise<AppSettings> {
+  if (cachedSettings) return cachedSettings;
+  if (cacheInFlight) return cacheInFlight;
+  cacheInFlight = api
+    .settingsGet()
+    .then((s) => {
+      cachedSettings = s;
+      cacheInFlight = null;
+      return s;
+    })
+    .catch((err) => {
+      cacheInFlight = null;
+      throw err;
+    });
+  if (!invalidatorBound) {
+    invalidatorBound = true;
+    // Settings IPC emits this event after a successful settings_set.
+    // Drop the cache so the next read goes to disk again.
+    listen("settings-changed", () => {
+      cachedSettings = null;
+    }).catch(() => {
+      // Listener registration failure is non-fatal — worst case we hold
+      // a stale About You block until app restart.
+    });
+  }
+  return cacheInFlight;
 }
 
 /**
@@ -227,8 +269,14 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     // "About You" profile — the user-authored identity block. Injected here so
     // it reaches both plain chat and agent mode (both consume `historyForApi`).
     // A failed settings read just omits the block; chat proceeds normally.
+    //
+    // Code review M5: previously called api.settingsGet() on every send,
+    // round-tripping the entire settings blob just to read user_profile.
+    // Cached for the lifetime of the module + invalidated by a global
+    // `settings-changed` event the settings IPC fires after settings_set.
     try {
-      const profileBlock = formatUserProfile((await api.settingsGet()).user_profile);
+      const settings = await getCachedSettings();
+      const profileBlock = formatUserProfile(settings?.user_profile);
       if (profileBlock) {
         systemPreamble.push({
           _tmpKey: tmpKey(),

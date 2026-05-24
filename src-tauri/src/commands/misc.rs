@@ -359,7 +359,10 @@ fn validate_settings_patch(
 }
 
 #[tauri::command]
-pub fn settings_set(patch: serde_json::Value) -> Result<settings::Settings, String> {
+pub fn settings_set(
+    patch: serde_json::Value,
+    app: tauri::AppHandle,
+) -> Result<settings::Settings, String> {
     let patch_obj = patch
         .as_object()
         .ok_or("settings patch must be a JSON object")?;
@@ -372,6 +375,11 @@ pub fn settings_set(patch: serde_json::Value) -> Result<settings::Settings, Stri
     }
     let updated: settings::Settings = serde_json::from_value(current).map_err(|e| e.to_string())?;
     settings::save(&updated).map_err(|e| e.to_string())?;
+    // Code review M5: notify the frontend so consumers (useChatSend's
+    // per-send settings cache) can invalidate. Best-effort; emit failure
+    // is non-fatal.
+    use tauri::Emitter;
+    let _ = app.emit("settings-changed", ());
     // Redact keys before returning — never echo plaintext back to the webview.
     Ok(settings::redacted(updated))
 }
