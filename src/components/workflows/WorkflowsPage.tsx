@@ -278,17 +278,27 @@ export function WorkflowsPage({ status }: Props) {
   );
 
   const baseRunOpts = useCallback((): Omit<RunWorkflowOptions, "model"> & { model: string } | null => {
-    if (!status?.model) {
-      setErr("Load a model before running a workflow.");
+    // Per-card models override the workflow default. Only require a
+    // loaded model when at least one card is missing a `model` field —
+    // those cards inherit `opts.model` as the fallback. Cards with their
+    // own model run against that model directly (cloud Ollama models
+    // don't need the local server "running" status).
+    const anyCardMissingModel = cards.some((c) => !c.model);
+    const fallbackModel = status?.model ?? "";
+    if (anyCardMissingModel && !fallbackModel) {
+      setErr(
+        "Load a model before running — at least one card has no model assigned, and no fallback is loaded.",
+      );
       return null;
     }
     return {
-      model: status.model,
-      defaultBackend: (status.backend as RunWorkflowOptions["defaultBackend"]) ?? undefined,
+      // Cards with their own `model` ignore this; cards without one use it.
+      model: fallbackModel,
+      defaultBackend: (status?.backend as RunWorkflowOptions["defaultBackend"]) ?? undefined,
       serverStatus: status,
       userProfile: userProfile ?? undefined,
     };
-  }, [status, userProfile]);
+  }, [status, userProfile, cards]);
 
   function runWorkflowNow() {
     if (!selected || !validation.ok) {
