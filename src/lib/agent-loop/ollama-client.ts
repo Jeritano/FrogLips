@@ -21,7 +21,23 @@ export function toOllamaMessages(msgs: Message[]) {
       return { role: "tool" as const, content: m.content };
     }
     if (m.tool_calls?.length) {
-      return { role: "assistant" as const, content: m.content ?? "", tool_calls: m.tool_calls };
+      // Ollama's Go server rejects `function.arguments` as an object — its
+      // struct expects a JSON-encoded string ("json: cannot unmarshal object
+      // into Go struct field .messages.tool_calls.function.arguments of type
+      // string"). The OpenAI spec also defines arguments as a string. Some
+      // models (qwen3-coder via huihui-abliterated, etc.) round-trip the field
+      // as an object; normalize before send.
+      const normalized = m.tool_calls.map((tc) => ({
+        ...tc,
+        function: {
+          ...tc.function,
+          arguments:
+            typeof tc.function.arguments === "string"
+              ? tc.function.arguments
+              : JSON.stringify(tc.function.arguments ?? {}),
+        },
+      }));
+      return { role: "assistant" as const, content: m.content ?? "", tool_calls: normalized };
     }
     // Vision: Ollama /api/chat accepts `images: [base64...]` alongside text.
     // The base64 must be the raw payload — no `data:` prefix.

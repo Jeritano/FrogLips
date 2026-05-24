@@ -31,9 +31,22 @@ function toOpenAiMessages(messages: Message[]) {
       return { role: m.role, content: parts };
     }
     // Assistant turn that issued tool calls — forward them so the server
-    // can match the following `tool` messages to their requests.
+    // can match the following `tool` messages to their requests. Normalize
+    // `arguments` to a string: the OpenAI spec (which MLX's OpenAI-compatible
+    // server enforces) defines it as string, and some models round-trip the
+    // field as a parsed object which the server then rejects.
     if (m.tool_calls?.length) {
-      return { role: "assistant", content: m.content ?? "", tool_calls: m.tool_calls };
+      const normalized = m.tool_calls.map((tc) => ({
+        ...tc,
+        function: {
+          ...tc.function,
+          arguments:
+            typeof tc.function.arguments === "string"
+              ? tc.function.arguments
+              : JSON.stringify(tc.function.arguments ?? {}),
+        },
+      }));
+      return { role: "assistant", content: m.content ?? "", tool_calls: normalized };
     }
     if (m.role === "tool") {
       return { role: "tool", content: m.content, tool_call_id: m.tool_call_id };
