@@ -694,6 +694,52 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             }
             return null;
           })()}
+          {/* UX re-review M10: kill_process modal previously showed raw
+              {pid: 12345} with no process name — the user couldn't tell
+              if pid 12345 was their editor or Finder. Surface pid +
+              signal in plain language. */}
+          {confirmState.toolName === "kill_process" && (() => {
+            const a = confirmState.args as Record<string, unknown>;
+            const pid = typeof a.pid === "number" ? a.pid : "?";
+            const signal = typeof a.signal === "string" ? a.signal.toUpperCase() : "TERM";
+            return (
+              <div
+                className="agent-confirm-chip"
+                style={{ background: "var(--danger-bg)", color: "var(--danger-fg)" }}
+                data-testid="agent-confirm-kill"
+              >
+                ⚠ Send SIG{signal} to pid {String(pid)} — irreversible
+              </div>
+            );
+          })()}
+          {/* UX re-review M10 generalized: every IRREVERSIBLE tool gets a
+              loud plain-language chip in addition to the destructive
+              risk badge. */}
+          {(confirmState.toolName === "delete_path" || confirmState.toolName === "agent_undo") && (() => {
+            const a = confirmState.args as Record<string, unknown>;
+            if (confirmState.toolName === "delete_path") {
+              const recursive = a.recursive === true;
+              const path = typeof a.path === "string" ? a.path : "?";
+              return (
+                <div
+                  className="agent-confirm-chip"
+                  style={{ background: "var(--danger-bg)", color: "var(--danger-fg)" }}
+                  data-testid="agent-confirm-delete"
+                >
+                  ⚠ {recursive ? "Recursively delete" : "Delete"} <code>{path}</code> — cannot be undone unless captured by agent_undo
+                </div>
+              );
+            }
+            return (
+              <div
+                className="agent-confirm-chip"
+                style={{ background: "var(--danger-bg)", color: "var(--danger-fg)" }}
+                data-testid="agent-confirm-undo"
+              >
+                ⚠ Revert the most recent agent write — cannot be redone
+              </div>
+            );
+          })()}
           <pre className="agent-confirm-args" data-testid="agent-confirm-args">
             {JSON.stringify(confirmState.args, null, 2)}
           </pre>

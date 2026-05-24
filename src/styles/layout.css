@@ -344,7 +344,9 @@ body {
    so the user always knows where they are. Sized to sit at parity with
    the ModelPicker (Chat's header) so the chrome height is constant. */
 .topbar-view-title {
-  font-size: 14px;
+  /* UI re-review M2: was 14px/600 — header chrome grew 1-2px taller on
+     non-chat views. ModelPicker controls in chat are 13px so match. */
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
   margin: 0;
@@ -358,8 +360,10 @@ body {
 .sidebar-view-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 8px;
+  /* UI re-review M3: trim the gap so the group adds ~60px (not ~80px)
+     above the locked + New chat button. */
+  gap: 2px;
+  margin-bottom: 4px;
 }
 .sidebar-section-label {
   font-size: 10px;
@@ -367,7 +371,7 @@ body {
   text-transform: uppercase;
   color: var(--text-muted);
   padding: 0 10px;
-  margin-bottom: 2px;
+  margin-bottom: 0;
   user-select: none;
 }
 

@@ -764,6 +764,11 @@ function App() {
             type="button"
             className="workflows-entry"
             onClick={() => setView("workflows")}
+            // UI re-review M7: these are navigation targets, not toggles;
+            // `aria-current="page"` is the semantically correct attribute.
+            // Retain `aria-pressed` for compatibility with the existing
+            // CSS selector — both set together.
+            aria-current={view === "workflows" ? "page" : undefined}
             aria-pressed={view === "workflows"}
             data-testid="workflows-entry-btn"
           >
@@ -773,6 +778,7 @@ function App() {
             type="button"
             className="images-entry"
             onClick={() => setView("images")}
+            aria-current={view === "images" ? "page" : undefined}
             aria-pressed={view === "images"}
             data-testid="images-entry-btn"
           >
@@ -950,8 +956,11 @@ function App() {
               non-chat views so the header always carries the active view
               name + theme control. */}
           {view !== "chat" && (
+            // UI re-review L3: label syncs with the sidebar entry. Was
+            // "Image generation" in the header but "Images" in the
+            // sidebar — pick one.
             <h1 className="topbar-view-title" data-testid="topbar-view-title">
-              {view === "workflows" ? "Workflows" : "Image generation"}
+              {view === "workflows" ? "Workflows" : "Images"}
             </h1>
           )}
           <button
