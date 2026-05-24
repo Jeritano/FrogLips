@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ExportMenu } from "./ExportMenu";
+import { api } from "../lib/tauri-api";
 import type { AgentSettings } from "../hooks/useAgentSettings";
 import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
 import type { Conversation, ConversationParams, Message, ProjectPolicy } from "../types";
@@ -36,6 +37,67 @@ interface Props {
  * is on — always-visible preset + workspace discoverability chips. A one-line
  * coach hint appears once on the agent toggle (dismissal persisted).
  */
+/**
+ * UI surface for `agent_undo`. Reads the snapshot stack on render, shows
+ * "Undo last (filename)" when there's something to revert, and pops via
+ * the approval-gated IPC. Stays disabled while empty.
+ */
+function AgentUndoButton() {
+  const [topEntry, setTopEntry] = useState<{ path: string; kind: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const refresh = useCallback(async () => {
+    try {
+      const rows = await api.agentListUndo();
+      setTopEntry(rows[0] ?? null);
+    } catch {
+      setTopEntry(null);
+    }
+  }, []);
+  useEffect(() => {
+    void refresh();
+    const id = setInterval(() => void refresh(), 3000);
+    return () => clearInterval(id);
+  }, [refresh]);
+  if (!topEntry) {
+    return (
+      <button
+        type="button"
+        className="agent-settings-btn"
+        title="Nothing to undo — no agent writes captured yet"
+        disabled
+      >
+        ↶ Undo
+      </button>
+    );
+  }
+  const base = topEntry.path.split("/").pop() ?? topEntry.path;
+  return (
+    <button
+      type="button"
+      className="agent-settings-btn"
+      title={`Revert ${topEntry.kind} of ${topEntry.path}`}
+      data-testid="agent-undo-btn"
+      disabled={busy}
+      onClick={() => {
+        void (async () => {
+          setBusy(true);
+          try {
+            await api.agentUndoLast();
+            await refresh();
+          } catch {
+            // Approval rejection / nothing-to-undo — surface in toolbar
+            // is not actionable; the diag layer already logs the cause.
+          } finally {
+            setBusy(false);
+          }
+        })();
+      }}
+    >
+      {busy ? "Reverting…" : `↶ Undo ${base}`}
+    </button>
+  );
+}
+
 export function AgentToolbar(props: Props) {
   const {
     conversation, messages, agent, agentMode, agentAvailable, agentStatus,
@@ -184,6 +246,12 @@ export function AgentToolbar(props: Props) {
             `·${agentMetrics.promptTokens}+${agentMetrics.completionTokens}tok`}
         </span>
       )}
+      {/* UX re-review M1: agent_undo had no UI surface — only the model
+          could revert its own writes. This button lets the user pop the
+          most-recent agent file-write off the snapshot stack without
+          asking the model. The Rust IPC is approval-gated so a stray
+          click still has to confirm. */}
+      {agentMode && <AgentUndoButton />}
     </div>
   );
 }
