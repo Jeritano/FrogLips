@@ -342,53 +342,51 @@ const StreamingMessage = memo(function StreamingMessage({ text }: { text: string
   );
 });
 
-export function MessageList({ messages, streaming, conversationId, workspaceRoot, currentModel, agentStatus, onRegenerate, onEditUser, onFork }: Props) {
-  const listRef = useRef<HTMLDivElement>(null);
-  const scrollRafRef = useRef<number | null>(null);
-  // Autoscroll "sticks" to the bottom only while the user is already there.
-  // Scrolling up to read pauses it; scrolling back near the bottom resumes.
-  const stickRef = useRef(true);
+// ────────────────────────────────────────────────────────────────────────────
+// MessageHistory — memoized subtree that owns the row-list rendering.
+//
+// Pulled out of MessageList so streaming-driven re-renders of the wrapper
+// don't walk + diff every persisted row each frame. When the parent
+// MessageList re-renders for a streaming-text update, MessageHistory's memo
+// bails out on shallow-equal props (handlers are stabilized via useEvent in
+// ChatWindow; `messages` only updates when a real persisted message lands).
+// Result: history-row reconciliation cost is paid once per persisted change,
+// not 60×/sec during streaming. Pin state lives here too because it's a
+// row-list concern that the streaming bubble never touches.
+// ────────────────────────────────────────────────────────────────────────────
+interface MessageHistoryProps {
+  messages: Message[];
+  conversationId?: number | null;
+  workspaceRoot?: string | null;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  onRegenerate?: () => void;
+  onEditUser?: (m: Message) => void;
+  onFork?: (m: Message) => void;
+}
+
+const MessageHistory = memo(function MessageHistory({
+  messages,
+  conversationId,
+  workspaceRoot,
+  scrollContainerRef,
+  onRegenerate,
+  onEditUser,
+  onFork,
+}: MessageHistoryProps) {
   const [pinned, setPinned] = useState<Set<string>>(new Set());
   const [pinning, setPinning] = useState<string | null>(null);
   // How many leading (oldest) rows are collapsed behind "Show earlier
   // messages". Reset to the cap whenever the conversation changes.
   const [hiddenCount, setHiddenCount] = useState(0);
 
-  // Distance from the bottom under which autoscroll stays engaged.
-  const STICK_THRESHOLD_PX = 64;
-
-  const onScroll = useCallback(() => {
-    const el = listRef.current;
-    if (!el) return;
-    stickRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
-  }, []);
-
-  // New conversation → always start pinned to the bottom, and re-collapse
-  // older messages so a freshly-opened long thread stays cheap.
   useEffect(() => {
-    stickRef.current = true;
     setHiddenCount(0);
   }, [conversationId]);
 
-  useEffect(() => {
-    if (!stickRef.current) return;
-    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
-    const behavior: ScrollBehavior = streaming !== undefined || agentStatus === "thinking" || agentStatus === "tool" ? "auto" : "smooth";
-    scrollRafRef.current = requestAnimationFrame(() => {
-      const el = listRef.current;
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior });
-    });
-    return () => {
-      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
-    };
-  }, [messages.length, streaming, agentStatus]);
-
-  const { rows, lastAsstModel } = useMemo(() => {
+  const rows = useMemo<Row[]>(() => {
     let prev: string | null = null;
-    const out: Row[] = messages.map((m, i) => {
+    return messages.map((m, i) => {
       let divider: Row["divider"] = null;
-      // Only show model dividers on regular assistant messages, not tool turns
       if (m.role === "assistant" && m.model && !m.tool_calls?.length) {
         if (prev === null) divider = { label: m.model, tone: "start" };
         else if (prev !== m.model) divider = { label: m.model, tone: "change" };
@@ -396,18 +394,6 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
       }
       return { msg: m, key: keyFor(m, i), divider };
     });
-    // Last assistant model anywhere in history, INCLUDING tool turns. The
-    // streaming divider keys off this so a history ending on a tool turn
-    // (e.g. after a fork/regenerate) doesn't flash a false "Switched to"
-    // banner — `prev` would be stale there because it ignores tool turns.
-    let last: string | null = null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant" && messages[i].model) {
-        last = messages[i].model!;
-        break;
-      }
-    }
-    return { rows: out, lastAsstModel: last };
   }, [messages]);
 
   // Conservative windowing: render at most the most-recent WINDOW_SIZE rows
@@ -416,13 +402,16 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
   // leave a stale offset that hides the whole list.
   const maxHidden = Math.max(0, rows.length - WINDOW_SIZE);
   const effectiveHidden = Math.min(hiddenCount === 0 ? maxHidden : hiddenCount, maxHidden);
-  const visibleRows = effectiveHidden > 0 ? rows.slice(effectiveHidden) : rows;
+  const visibleRows = useMemo(
+    () => (effectiveHidden > 0 ? rows.slice(effectiveHidden) : rows),
+    [rows, effectiveHidden],
+  );
 
   // Reveal the next batch of older messages while keeping the viewport
-  // anchored on the message the user was reading (the scrollHeight grows by
-  // the prepended rows' height, so we shift scrollTop by the same delta).
+  // anchored on the message the user was reading (scrollHeight grows by the
+  // prepended rows' height, so we shift scrollTop by the same delta).
   const showEarlier = useCallback(() => {
-    const el = listRef.current;
+    const el = scrollContainerRef.current;
     const before = el?.scrollHeight ?? 0;
     const prevTop = el?.scrollTop ?? 0;
     setHiddenCount((h) => {
@@ -430,12 +419,11 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
       return Math.max(0, cur - WINDOW_SIZE);
     });
     requestAnimationFrame(() => {
-      const node = listRef.current;
+      const node = scrollContainerRef.current;
       if (node) node.scrollTop = prevTop + (node.scrollHeight - before);
     });
-  }, [maxHidden]);
+  }, [maxHidden, scrollContainerRef]);
 
-  // Stabilize the pin handler so MessageRow's memo doesn't bust each render.
   const pin = useCallback(async (m: Message, key: string, scope: MemoryScope) => {
     if (!m.content.trim()) return;
     setPinning(key);
@@ -446,9 +434,6 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
         sourceMsgId: m.id ?? null,
         tags: m.role,
         scope,
-        // project scope requires a workspace_root; the dropdown guards
-        // against selecting project when none is set, so this is non-null
-        // by construction when scope === "project".
         projectRoot: scope === "project" ? (workspaceRoot ?? null) : null,
       });
       setPinned((s) => new Set([...s, key]));
@@ -459,29 +444,22 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
         message: "pin-message: saveMemory failed",
         detail: err,
       });
+    } finally {
+      setPinning(null);
     }
-    finally { setPinning(null); }
   }, [conversationId, workspaceRoot]);
 
   const canPinProject = !!workspaceRoot;
   const canPinConversation = conversationId != null;
-  // Forking requires both a persisted conversation AND a persisted message id —
-  // an in-flight (still-streaming) message has no id to use as the cutoff.
   const canForkBase = conversationId != null && !!onFork;
 
-  // Index of the most recent user message — the Edit affordance attaches
-  // here even when an assistant reply follows it.
   let lastUserIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "user") { lastUserIdx = i; break; }
   }
 
-  const showEndFooter =
-    messages.length > 0 && streaming === undefined && agentStatus === "idle" && lastAsstModel;
-  const modelMatches = currentModel && lastAsstModel && currentModel === lastAsstModel;
-
   return (
-    <div className="message-list" ref={listRef} onScroll={onScroll}>
+    <>
       {effectiveHidden > 0 && (
         <button
           type="button"
@@ -495,26 +473,132 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
       {visibleRows.map(({ msg: m, key: k, divider }, sliceIdx) => {
         const idx = effectiveHidden + sliceIdx;
         return (
-        <div key={k}>
-          <MessageRow
-            msg={m}
-            divider={divider}
-            isLast={idx === rows.length - 1}
-            isLastUser={idx === lastUserIdx}
-            isPinned={pinned.has(k)}
-            isPinning={pinning === k}
-            onPin={pin}
-            rowKey={k}
-            canPinProject={canPinProject}
-            canPinConversation={canPinConversation}
-            onRegenerate={onRegenerate}
-            onEditUser={onEditUser}
-            canFork={canForkBase && m.id != null}
-            onFork={onFork}
-          />
-        </div>
+          <div key={k}>
+            <MessageRow
+              msg={m}
+              divider={divider}
+              isLast={idx === rows.length - 1}
+              isLastUser={idx === lastUserIdx}
+              isPinned={pinned.has(k)}
+              isPinning={pinning === k}
+              onPin={pin}
+              rowKey={k}
+              canPinProject={canPinProject}
+              canPinConversation={canPinConversation}
+              onRegenerate={onRegenerate}
+              onEditUser={onEditUser}
+              canFork={canForkBase && m.id != null}
+              onFork={onFork}
+            />
+          </div>
         );
       })}
+    </>
+  );
+});
+
+export function MessageList({ messages, streaming, conversationId, workspaceRoot, currentModel, agentStatus, onRegenerate, onEditUser, onFork }: Props) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const scrollRafRef = useRef<number | null>(null);
+  // Autoscroll "sticks" to the bottom only while the user is already there.
+  // Scrolling up to read pauses it; scrolling back near the bottom resumes.
+  const stickRef = useRef(true);
+  // Frame counter for autoscroll throttling. During streaming we only re-
+  // dispatch a scrollTo every Nth requestAnimationFrame tick (≈20Hz instead
+  // of 60Hz) — the bubble grows by a few px between ticks so visual catch-up
+  // is imperceptible, but main-thread cost drops ~3×.
+  const scrollTickRef = useRef(0);
+  const SCROLL_THROTTLE_FRAMES = 3;
+
+  // Distance from the bottom under which autoscroll stays engaged.
+  const STICK_THRESHOLD_PX = 64;
+
+  // rAF-coalesce the stick check so a finger-flick scroll (which fires
+  // dozens of `scroll` events) doesn't recompute geometry per event. The
+  // listener itself is passive (registered via useEffect below) so it
+  // never blocks the compositor.
+  const stickRafRef = useRef<number | null>(null);
+  const recomputeStick = useCallback(() => {
+    if (stickRafRef.current != null) return;
+    stickRafRef.current = requestAnimationFrame(() => {
+      stickRafRef.current = null;
+      const el = listRef.current;
+      if (!el) return;
+      stickRef.current =
+        el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.addEventListener("scroll", recomputeStick, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", recomputeStick);
+      if (stickRafRef.current != null) {
+        cancelAnimationFrame(stickRafRef.current);
+        stickRafRef.current = null;
+      }
+    };
+  }, [recomputeStick]);
+
+  // New conversation → always start pinned to the bottom.
+  useEffect(() => {
+    stickRef.current = true;
+  }, [conversationId]);
+
+  // Autoscroll on streaming/message/agent-status changes. Throttled to every
+  // Nth frame while streaming so the scroll-thread has headroom; un-throttled
+  // for one-shot events (new message lands, agent status flips).
+  const streamingKey = streaming !== undefined ? "s" : "n";
+  useEffect(() => {
+    if (!stickRef.current) return;
+    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+    const isStreamingTick = streaming !== undefined;
+    if (isStreamingTick) {
+      scrollTickRef.current = (scrollTickRef.current + 1) % SCROLL_THROTTLE_FRAMES;
+      if (scrollTickRef.current !== 0) return;
+    }
+    const behavior: ScrollBehavior =
+      isStreamingTick || agentStatus === "thinking" || agentStatus === "tool"
+        ? "auto"
+        : "smooth";
+    scrollRafRef.current = requestAnimationFrame(() => {
+      const el = listRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+    });
+    return () => {
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+    };
+  }, [messages.length, streaming, agentStatus, streamingKey]);
+
+  // Last assistant model anywhere in history (incl. tool turns) — the
+  // streaming-bubble divider keys off this so a history ending on a tool
+  // turn doesn't flash a stale "Switched to" banner.
+  const lastAsstModel = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant" && messages[i].model) {
+        return messages[i].model!;
+      }
+    }
+    return null;
+  }, [messages]);
+
+  const showEndFooter =
+    messages.length > 0 && streaming === undefined && agentStatus === "idle" && lastAsstModel;
+  const modelMatches = currentModel && lastAsstModel && currentModel === lastAsstModel;
+
+  return (
+    <div className="message-list" ref={listRef}>
+      <MessageHistory
+        messages={messages}
+        conversationId={conversationId}
+        workspaceRoot={workspaceRoot}
+        scrollContainerRef={listRef}
+        onRegenerate={onRegenerate}
+        onEditUser={onEditUser}
+        onFork={onFork}
+      />
 
       {streaming !== undefined && (
         <>

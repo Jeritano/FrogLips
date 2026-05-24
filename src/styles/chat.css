@@ -183,6 +183,12 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Isolate paint + layout to this subtree so streaming-row updates don't
+     invalidate the whole document. Combined with overscroll-behavior, this
+     keeps the scroll thread responsive while the streaming bubble repaints
+     ~60Hz against a long history. */
+  contain: layout paint;
+  overscroll-behavior: contain;
 }
 
 /* "Show earlier messages" control — revealed only when the message list is
