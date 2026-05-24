@@ -23,6 +23,10 @@ const apiMocks = vi.hoisted(() => ({
   pullHfModel: vi.fn(async () => "Downloaded"),
   settingsSet: vi.fn(async () => ({})),
   setupCompleteSet: vi.fn(async () => undefined),
+  // U-H1: wizard probes existing-model count to decide whether Next on
+  // step 2 stays gated on a fresh download. Tests don't care about the
+  // value here; an empty list keeps the original behaviour.
+  listAllModels: vi.fn(async () => ({ mlx: [], ollama: [] })),
 }));
 
 vi.mock("../../lib/tauri-api", () => ({ api: apiMocks }));

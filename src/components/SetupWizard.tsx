@@ -149,6 +149,26 @@ export function SetupWizard({ onDone }: Props) {
   const [downloading, setDownloading] = useState<StarterModel | null>(null);
   const [downloadErr, setDownloadErr] = useState<string | null>(null);
   const [downloaded, setDownloaded] = useState<StarterModel | null>(null);
+  // UI review U-H1: count of models already installed (any backend). If
+  // the user already has at least one, Next is enabled regardless of
+  // download state — they don't need to fetch a starter to proceed.
+  const [existingModelsCount, setExistingModelsCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listAllModels()
+      .then((m) => {
+        if (cancelled) return;
+        setExistingModelsCount((m.mlx?.length ?? 0) + (m.ollama?.length ?? 0));
+      })
+      .catch(() => {
+        // Probe failure → keep count at 0; user just sees the original
+        // behaviour (Next gated on download success).
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Probe on mount. Run all three concurrently — none of them block, and on
   // a fresh launch the user is staring at the spinner so latency matters.
@@ -464,10 +484,22 @@ export function SetupWizard({ onDone }: Props) {
               >
                 Skip — I'll add a model later
               </button>
+              {/* UI review U-H1: Next was hard-disabled until a starter
+                  finished downloading, which penalised users who had
+                  already installed a model via CLI or who wanted to pick
+                  a non-starter from the browser later. Now: Next is
+                  enabled when ANY of {a starter finished, no starters
+                  exist, the user already has at least one ollama/mlx
+                  model on disk}. Skip stays as the explicit "I'll do
+                  nothing now" path. */}
               <button
                 className="setup-wizard-primary"
                 onClick={() => setStep(3)}
-                disabled={downloaded === null && availableStarters().length > 0}
+                disabled={
+                  downloaded === null
+                  && availableStarters().length > 0
+                  && existingModelsCount === 0
+                }
                 data-testid="setup-wizard-next-2"
               >
                 Next
@@ -521,15 +553,38 @@ export function SetupWizard({ onDone }: Props) {
 }
 
 /**
- * Wizard overlay wrapper — adds focus trap + ESC + autofocus while leaving
- * dismiss to the wizard's explicit Skip / Done buttons (no backdrop close,
- * because the wizard is meant to be completed not dismissed casually).
+ * Wizard overlay wrapper — adds focus trap + ESC + autofocus.
+ *
+ * UI review U-H2: previously Esc was a no-op and there was no backdrop
+ * close, so new users hitting Esc out of habit got no response. We now
+ * use Esc as a soft hint — it doesn't dismiss outright (we still don't
+ * want a stray key to dump first-run) but it focuses the "Skip setup"
+ * button so the user discovers the escape hatch. Optionally accepts an
+ * `onEscapeHint` callback to surface the same behaviour from elsewhere.
  */
-function WizardOverlay({ children }: { children: React.ReactNode }) {
+function WizardOverlay({
+  children,
+  onEscapeHint,
+}: {
+  children: React.ReactNode;
+  onEscapeHint?: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  // No-op onClose — the wizard owns its own dismissal via finish(). ESC is
-  // disabled intentionally; we don't want a stray key to dump first-run.
-  useModalA11y({ open: true, onClose: () => {}, containerRef: ref });
+  useModalA11y({
+    open: true,
+    onClose: () => {
+      if (onEscapeHint) {
+        onEscapeHint();
+        return;
+      }
+      // Fallback: focus the first .setup-wizard-skip in the modal so the
+      // user can see the escape path even when no explicit hint handler
+      // is wired.
+      const skip = ref.current?.querySelector<HTMLButtonElement>(".setup-wizard-skip");
+      skip?.focus();
+    },
+    containerRef: ref,
+  });
   return (
     <div
       className="setup-wizard-overlay"

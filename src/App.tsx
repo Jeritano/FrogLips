@@ -751,24 +751,33 @@ function App() {
           </button>
         </div>
         <div className="sidebar-spacer-top" aria-hidden="true" />
-        <button
-          type="button"
-          className="workflows-entry"
-          onClick={() => setView("workflows")}
-          aria-pressed={view === "workflows"}
-          data-testid="workflows-entry-btn"
-        >
-          <span aria-hidden="true">🧩</span> Workflows
-        </button>
-        <button
-          type="button"
-          className="images-entry"
-          onClick={() => setView("images")}
-          aria-pressed={view === "images"}
-          data-testid="images-entry-btn"
-        >
-          <span aria-hidden="true">🎨</span> Images
-        </button>
+        {/* UI review U-C1: surface a small "Views" group label so the
+            two top-level verbs (Workflows / Images) read as a navigation
+            group rather than floating buttons. Chat is implicit — it's
+            the substrate everything else lives in — so it doesn't get
+            its own button (the locked layout reserves the + New chat
+            button below for chat creation). */}
+        <div className="sidebar-view-group" role="navigation" aria-label="App views">
+          <div className="sidebar-section-label" aria-hidden="true">VIEWS</div>
+          <button
+            type="button"
+            className="workflows-entry"
+            onClick={() => setView("workflows")}
+            aria-pressed={view === "workflows"}
+            data-testid="workflows-entry-btn"
+          >
+            <span aria-hidden="true">🧩</span> Workflows
+          </button>
+          <button
+            type="button"
+            className="images-entry"
+            onClick={() => setView("images")}
+            aria-pressed={view === "images"}
+            data-testid="images-entry-btn"
+          >
+            <span aria-hidden="true">🎨</span> Images
+          </button>
+        </div>
         <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
         <input
           className="conv-search"
@@ -936,6 +945,16 @@ function App() {
               onStatusChange={setStatus}
               desiredModel={current?.model ?? null}
             />
+          )}
+          {/* UI review U-C2: previously the header collapsed to a single
+              theme button on Workflows / Images. Users lost orientation
+              when switching views. Render a view-title placeholder for
+              non-chat views so the header always carries the active view
+              name + theme control. */}
+          {view !== "chat" && (
+            <h1 className="topbar-view-title" data-testid="topbar-view-title">
+              {view === "workflows" ? "Workflows" : "Image generation"}
+            </h1>
           )}
           <button
             className="theme-toggle topbar-theme"
