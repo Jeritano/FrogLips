@@ -309,7 +309,43 @@ export function WorkflowsPage({ status }: Props) {
     [status, userProfile, cards],
   );
 
+  /**
+   * Best-effort: start the local server for the card's pinned model if
+   * it differs from the currently-loaded one. Cloud Ollama models
+   * (anything ending with `:cloud`) bypass startup — the daemon routes
+   * them directly. Native + MLX + local Ollama models need a Start call
+   * so the agent loop has a serving endpoint.
+   */
+  async function ensureCardModelLoaded(card: WorkflowCard): Promise<void> {
+    if (!card.model) return;
+    if (card.model.endsWith(":cloud")) return; // daemon-routed, no start needed
+    if (status?.model === card.model && status?.running) return;
+    const backend =
+      card.backend === "native" || card.backend === "mlx" || card.backend === "ollama"
+        ? card.backend
+        : (status?.backend ?? "ollama");
+    try {
+      // The App-level `server-status` listener picks up the new state
+      // on the next tick — no setter wiring needed here.
+      await api.startServer(card.model, backend);
+    } catch (e) {
+      // Non-fatal — the agent loop may still succeed (cloud routing,
+      // pre-existing daemon, etc.). Surface in the diag layer so the
+      // user has a breadcrumb if the run fails downstream.
+      logDiag({
+        level: "info",
+        source: "workflows",
+        message: `ensureCardModelLoaded: startServer failed for ${card.model} (${backend}); continuing`,
+        detail: e,
+      });
+    }
+  }
+
   function runWorkflowNow() {
+    // Clear any sticky banner from a prior attempt — without this,
+    // fixing the issue and clicking Run again leaves the old red error
+    // text on screen as if the new run also failed.
+    setErr(null);
     if (!selected || !validation.ok) {
       setErr("Fix the chain warning before running.");
       return;
@@ -320,6 +356,13 @@ export function WorkflowsPage({ status }: Props) {
     }
     const opts = baseRunOpts();
     if (!opts) return;
+    // Best-effort: ensure each card's pinned model is loadable. Cloud
+    // models are no-ops here. Sequential to avoid hammering the server.
+    void (async () => {
+      for (const c of cards) {
+        await ensureCardModelLoaded(c);
+      }
+    })();
     const ac = new AbortController();
     abortRef.current = ac;
     setRunning(true);
@@ -338,6 +381,8 @@ export function WorkflowsPage({ status }: Props) {
   }
 
   function runSingleCard(id: string) {
+    // Clear stale banner first — see runWorkflowNow for context.
+    setErr(null);
     const card = cards.find((c) => c.id === id);
     if (!card || !selected) return;
     if (running) {
@@ -348,6 +393,12 @@ export function WorkflowsPage({ status }: Props) {
     // workflow with other un-modeled cards still succeeds.
     const opts = baseRunOpts([card]);
     if (!opts) return;
+    // Auto-load the card's pinned model if it isn't already the
+    // current server.model. Cloud Ollama models route via the daemon
+    // without needing a local "Start" — startServer no-ops gracefully
+    // when the daemon already serves the model. Best-effort; log on
+    // failure but don't block the run.
+    void ensureCardModelLoaded(card);
     const ac = new AbortController();
     abortRef.current = ac;
     setRunning(true);
