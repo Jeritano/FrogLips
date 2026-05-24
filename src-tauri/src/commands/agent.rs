@@ -554,3 +554,115 @@ pub async fn agent_dashboard_summary(
     let filter = filter.unwrap_or_default();
     blocking(move || agent_audit::dashboard_summary(filter)).await
 }
+
+/* ── extras: file ops + hash + diff + processes ──────────────────────────────
+ * Auxiliary tools added so the model isn't forced through `agent_run_shell`
+ * (with its per-call approval modal) for every basic file/system task. Each
+ * destructive op stays approval-gated (move/copy/delete/kill); read-only
+ * ones (list_processes, hash_file, diff_files) don't need a token. */
+
+#[tauri::command]
+pub async fn agent_move_path(
+    from: String,
+    to: String,
+    overwrite: Option<bool>,
+    approval: String,
+) -> Result<agent::extras::FileOpResult, String> {
+    if !approval::consume("agent_move_path", &approval) {
+        return Err("tool approval required or expired".into());
+    }
+    agent::extras::move_path(from, to, overwrite.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn agent_copy_path(
+    from: String,
+    to: String,
+    overwrite: Option<bool>,
+    approval: String,
+) -> Result<agent::extras::FileOpResult, String> {
+    if !approval::consume("agent_copy_path", &approval) {
+        return Err("tool approval required or expired".into());
+    }
+    agent::extras::copy_path(from, to, overwrite.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn agent_delete_path(
+    path: String,
+    recursive: Option<bool>,
+    approval: String,
+) -> Result<agent::extras::DeleteResult, String> {
+    if !approval::consume("agent_delete_path", &approval) {
+        return Err("tool approval required or expired".into());
+    }
+    agent::extras::delete_path(path, recursive.unwrap_or(false)).await
+}
+
+#[tauri::command]
+pub async fn agent_make_dir(
+    path: String,
+    approval: String,
+) -> Result<agent::extras::MakeDirResult, String> {
+    if !approval::consume("agent_make_dir", &approval) {
+        return Err("tool approval required or expired".into());
+    }
+    agent::extras::make_dir(path).await
+}
+
+#[tauri::command]
+pub async fn agent_hash_file(
+    path: String,
+    algorithm: Option<String>,
+) -> Result<agent::extras::HashResult, String> {
+    agent::extras::hash_file(path, algorithm.unwrap_or_else(|| "sha256".into())).await
+}
+
+#[tauri::command]
+pub async fn agent_diff_files(
+    left: String,
+    right: String,
+) -> Result<agent::extras::DiffResult, String> {
+    agent::extras::diff_files(left, right).await
+}
+
+#[tauri::command]
+pub async fn agent_list_processes(
+    filter: Option<String>,
+) -> Result<Vec<agent::extras::ProcessRow>, String> {
+    agent::extras::list_processes(filter).await
+}
+
+#[tauri::command]
+pub async fn agent_kill_process(
+    pid: i32,
+    signal: Option<String>,
+    approval: String,
+) -> Result<agent::extras::KillResult, String> {
+    if !approval::consume("agent_kill_process", &approval) {
+        return Err("tool approval required or expired".into());
+    }
+    agent::extras::kill_process(agent::extras::KillRequest { pid, signal }).await
+}
+
+/* ── snapshot / undo ───────────────────────────────────────────────────────── */
+
+#[tauri::command]
+pub fn agent_list_undo() -> Vec<agent::snapshot::UndoEntry> {
+    agent::snapshot::list_undo()
+}
+
+#[tauri::command]
+pub fn agent_undo_last(approval: String) -> Result<agent::snapshot::UndoResult, String> {
+    // Undo touches the filesystem so we route it through the dangerous-tool
+    // gate. The frontend mints the token after a confirmation modal.
+    if !approval::consume("agent_undo_last", &approval) {
+        return Err("tool approval required or expired".into());
+    }
+    agent::snapshot::undo_last()
+}
+
+#[tauri::command]
+pub fn agent_clear_undo_stack() {
+    agent::snapshot::clear();
+}

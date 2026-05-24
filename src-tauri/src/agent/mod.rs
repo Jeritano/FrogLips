@@ -11,11 +11,13 @@
 
 pub mod browser;
 pub mod code;
+pub mod extras;
 pub mod fs;
 pub mod fs_watcher;
 pub mod git;
 pub mod injection_scan;
 pub mod shell;
+pub mod snapshot;
 pub mod system;
 pub mod web;
 

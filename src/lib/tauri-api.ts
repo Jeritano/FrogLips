@@ -287,6 +287,84 @@ export const api = {
         command: null,
       }),
     }),
+
+  // ── Extras: file ops + hash + diff + processes + undo ─────────────────
+  //
+  // Mutating ops go through the same `mint_tool_approval` gate as the
+  // existing dangerous tools. Read-only ones (hash_file, diff_files,
+  // list_processes, list_undo) don't need a token.
+  agentMovePath: async (from: string, to: string, overwrite?: boolean) =>
+    invoke<{ from: string; to: string }>("agent_move_path", {
+      from,
+      to,
+      overwrite: overwrite ?? null,
+      approval: await invoke<string>("mint_tool_approval", {
+        tool: "agent_move_path",
+        command: null,
+      }),
+    }),
+  agentCopyPath: async (from: string, to: string, overwrite?: boolean) =>
+    invoke<{ from: string; to: string }>("agent_copy_path", {
+      from,
+      to,
+      overwrite: overwrite ?? null,
+      approval: await invoke<string>("mint_tool_approval", {
+        tool: "agent_copy_path",
+        command: null,
+      }),
+    }),
+  agentDeletePath: async (path: string, recursive?: boolean) =>
+    invoke<{ path: string; was_dir: boolean }>("agent_delete_path", {
+      path,
+      recursive: recursive ?? null,
+      approval: await invoke<string>("mint_tool_approval", {
+        tool: "agent_delete_path",
+        command: null,
+      }),
+    }),
+  agentMakeDir: async (path: string) =>
+    invoke<{ path: string; created: boolean }>("agent_make_dir", {
+      path,
+      approval: await invoke<string>("mint_tool_approval", {
+        tool: "agent_make_dir",
+        command: null,
+      }),
+    }),
+  agentHashFile: (path: string, algorithm?: "sha256" | "sha512") =>
+    invoke<{ algorithm: string; hex: string; size_bytes: number }>("agent_hash_file", {
+      path,
+      algorithm: algorithm ?? null,
+    }),
+  agentDiffFiles: (left: string, right: string) =>
+    invoke<{ diff: string; identical: boolean }>("agent_diff_files", { left, right }),
+  agentListProcesses: (filter?: string) =>
+    invoke<
+      Array<{ pid: number; ppid: number; cpu_pct: number; mem_mib: number; command: string }>
+    >("agent_list_processes", { filter: filter ?? null }),
+  agentKillProcess: async (pid: number, signal?: string) =>
+    invoke<{ pid: number; signal: string }>("agent_kill_process", {
+      pid,
+      signal: signal ?? null,
+      approval: await invoke<string>("mint_tool_approval", {
+        tool: "agent_kill_process",
+        command: null,
+      }),
+    }),
+  agentListUndo: () =>
+    invoke<
+      Array<{ path: string; kind: string; taken_at_ms: number; size_bytes: number; was_absent: boolean }>
+    >("agent_list_undo"),
+  agentUndoLast: async () =>
+    invoke<{ path: string; kind: string; restored_bytes: number; was_absent: boolean }>(
+      "agent_undo_last",
+      {
+        approval: await invoke<string>("mint_tool_approval", {
+          tool: "agent_undo_last",
+          command: null,
+        }),
+      },
+    ),
+  agentClearUndoStack: () => invoke<void>("agent_clear_undo_stack"),
   agentGitStatus: (path?: string) =>
     invoke<GitResult>("agent_git_status", { path: path ?? null }),
   agentGitDiff: (path?: string, staged?: boolean) =>

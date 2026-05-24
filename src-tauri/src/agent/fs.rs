@@ -522,6 +522,12 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
             .await
             .map_err(|e| err_string(classify_io(&e)))?;
     }
+    // Snapshot prior contents (or mark absent) for agent_undo. Cheap — runs
+    // off the tokio runtime via spawn_blocking. Only captured after path
+    // validation so a rejected write can't pollute the undo stack.
+    let snap_path = resolved.clone();
+    let _ = tokio::task::spawn_blocking(move || super::snapshot::capture(&snap_path, "write_file"))
+        .await;
     let bytes = content.into_bytes();
     let target = resolved.clone();
     tokio::task::spawn_blocking(move || write_nofollow_sync(&target, &bytes, false))
@@ -586,6 +592,17 @@ pub async fn edit_file(
     }
     let bytes = updated.into_bytes();
     let target = resolved.clone();
+    // Capture for agent_undo before clobbering. Uses the original bytes we
+    // already have in memory so there's no extra disk read.
+    {
+        let snap_path = resolved.clone();
+        let original_bytes = original.into_bytes();
+        let _ = tokio::task::spawn_blocking(move || {
+            // Push a synthetic snapshot using the bytes we already loaded.
+            super::snapshot::capture_with_bytes(&snap_path, original_bytes, "edit_file");
+        })
+        .await;
+    }
     tokio::task::spawn_blocking(move || write_nofollow_sync(&target, &bytes, false))
         .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?
@@ -843,6 +860,16 @@ pub async fn multi_edit(path: String, edits: Vec<EditOp>) -> Result<MultiEditRes
         return Err(err_string(ToolError::TooLarge {
             message: format!("file exceeds {MAX_WRITE_BYTES} bytes"),
         }));
+    }
+    // Capture for agent_undo using bytes we already loaded. Pre-edit copy
+    // so a botched multi-step diff is recoverable as one undo.
+    {
+        let snap_path = resolved.clone();
+        let prior_bytes = bytes.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            super::snapshot::capture_with_bytes(&snap_path, prior_bytes, "multi_edit");
+        })
+        .await;
     }
     let mut content = String::from_utf8(bytes)
         .map_err(|_| err_string(ToolError::invalid("file is not valid UTF-8 — cannot edit")))?;
