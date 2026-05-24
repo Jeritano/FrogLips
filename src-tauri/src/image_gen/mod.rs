@@ -107,7 +107,7 @@ pub struct ImageGenOpts {
 /// 8-12 GiB Macs (`city96/FLUX.1-*-gguf`); see the canonicalization helper
 /// for the exact targets.
 #[allow(dead_code)] // Re-exported through the IPC surface; some variants are
-                    // only emitted by the frontend dropdown.
+// only emitted by the frontend dropdown.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ImageGenModel {

@@ -588,8 +588,7 @@ pub fn list_images_page(
             let rows: Vec<ImageRow> = stmt
                 .query_map(params![limit, offset], row_to_image)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            let total: i64 =
-                conn.query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0))?;
+            let total: i64 = conn.query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0))?;
             (rows, total)
         }
     };

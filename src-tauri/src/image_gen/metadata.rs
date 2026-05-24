@@ -14,9 +14,10 @@ use serde::Serialize;
 /// Reproducible-generation manifest embedded as `prompt`, `model`,
 /// `params_json`, and `version` tEXt chunks. JSON-serialized to a single
 /// chunk because PNG tEXt is key/value with no structured value type.
-#[allow(dead_code)] // Only constructed under `native-mistralrs`; the stub
-                    // build references the type but never builds an
-                    // instance.
+#[allow(dead_code)]
+// Only constructed under `native-mistralrs`; the stub
+// build references the type but never builds an
+// instance.
 #[derive(Clone, Debug, Serialize)]
 pub struct PngMetadata<'a> {
     pub prompt: &'a str,
