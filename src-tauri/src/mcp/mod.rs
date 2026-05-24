@@ -555,7 +555,52 @@ fn sanitize_mcp_tool_descriptor(mut t: ToolDescriptor) -> ToolDescriptor {
         // present it; the dispatch layer should refuse to call it.
         t.name = "__mcp_tool_with_invalid_name__".to_string();
     }
+    // Sec re-review L-NEW-2: input_schema carries nested `description` /
+    // `title` strings (one per property) that flow into the model's tool
+    // catalogue alongside the top-level fields. Walk the JSON tree and
+    // strip + cap every string value at the same keys.
+    sanitize_schema_strings(&mut t.input_schema);
     t
+}
+
+/// Recursively strip control / bidi / zero-width characters from every
+/// `description` / `title` string in an MCP JSON Schema. Other string
+/// values (enum literals, formats, etc.) stay verbatim because they're
+/// matched against payloads, not rendered into prompts.
+fn sanitize_schema_strings(v: &mut serde_json::Value) {
+    const MAX_SCHEMA_STRING_BYTES: usize = 512;
+    match v {
+        serde_json::Value::Object(map) => {
+            for (k, sub) in map.iter_mut() {
+                if (k == "description" || k == "title") && sub.is_string() {
+                    if let Some(s) = sub.as_str() {
+                        let mut cleaned = strip_for_prompt(s)
+                            .replace(['\r', '\n'], " ");
+                        while cleaned.contains("  ") {
+                            cleaned = cleaned.replace("  ", " ");
+                        }
+                        if cleaned.len() > MAX_SCHEMA_STRING_BYTES {
+                            let mut cut = MAX_SCHEMA_STRING_BYTES;
+                            while cut > 0 && !cleaned.is_char_boundary(cut) {
+                                cut -= 1;
+                            }
+                            cleaned.truncate(cut);
+                            cleaned.push('…');
+                        }
+                        *sub = serde_json::Value::String(cleaned);
+                    }
+                } else {
+                    sanitize_schema_strings(sub);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                sanitize_schema_strings(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Strip zero-width / bidi / control characters from a string that's about

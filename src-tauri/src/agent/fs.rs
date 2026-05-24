@@ -873,7 +873,18 @@ pub async fn search_files(
     })
     .await
     .map_err(|e| err_string(ToolError::io(e.to_string())))?;
-    Ok(result)
+    // Sec re-review M-NEW-5: search hits are primary input back to the
+    // agent loop. Files under workspace are theoretically user-owned but
+    // `read_file` results are scanned and consistency matters — wrap
+    // each hit's text the same way so an attacker-shipped repo's "ignore
+    // previous instructions" inside a code comment isn't taken as
+    // instructions.
+    let mut wrapped = result;
+    for hit in &mut wrapped.hits {
+        let (w, _n) = crate::agent::injection_scan::scan_and_wrap(&hit.text);
+        hit.text = w;
+    }
+    Ok(wrapped)
 }
 
 /* ── Multi-edit (atomic) ─────────────────────────────────────────────────── */
