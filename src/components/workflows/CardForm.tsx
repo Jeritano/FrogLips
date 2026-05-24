@@ -3,6 +3,7 @@ import type { ModelEntry, WorkflowCard } from "../../types";
 import { loadAllPresets } from "../../lib/agent-presets";
 import { useModalA11y } from "../../lib/use-modal-a11y";
 import { generateAgentName } from "../../lib/agent-name";
+import { isNonChatRepo } from "../../lib/chat-model-filter";
 import { api } from "../../lib/tauri-api";
 
 /** Origin rect the card flies in from / back to (the deck or a placed node). */
@@ -87,7 +88,12 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   useEffect(() => {
     api
       .listAllModels()
-      .then((m) => setModels([...m.mlx, ...m.ollama]))
+      .then((m) => {
+        // Strip image-gen weight sets + their dep encoders even if the
+        // Rust filter is missing. See src/lib/chat-model-filter.ts.
+        const mlx = m.mlx.filter((e) => !isNonChatRepo(e.id));
+        setModels([...mlx, ...m.ollama]);
+      })
       .catch(() => setModels([]));
   }, []);
 

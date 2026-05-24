@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { useTauriEvent } from "../hooks/useTauriEvent";
+import { isNonChatRepo } from "../lib/chat-model-filter";
 import type { AllModels, ModelEntry, ServerStatus } from "../types";
 
 // ModelBrowser bundles three large tabs (HF, Civitai, GGUF) plus their data
@@ -51,7 +52,14 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   async function loadModels() {
     try {
       const m = await api.listAllModels();
-      setModels(m);
+      // Strip image-gen weight sets + their dep encoders even if the Rust
+      // backend filter is missing (older binary). Matches the patterns in
+      // `is_non_chat_repo` in src-tauri/src/models.rs — keep in sync.
+      const filtered: AllModels = {
+        ...m,
+        mlx: m.mlx.filter((entry) => !isNonChatRepo(entry.id)),
+      };
+      setModels(filtered);
       // Surface backend-specific list errors as a short hint, not a hard error
       const hints: string[] = [];
       if (m.ollama_error) hints.push(`Ollama: ${m.ollama_error}`);
