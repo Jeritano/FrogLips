@@ -663,6 +663,18 @@ body {
 .conv-list li:focus-within .del {
   color: var(--text-3);
 }
+/* UI re-review UX-H5: detach (⧉) and delete (×) historically sat
+   adjacent in the row — easy to misclick the destructive one. Add a
+   small left margin to the delete button so the visual gap separates
+   it from the navigation cluster (pin / tag / detach). Hover-only
+   color shift on delete also lands red for clarity. */
+.conv-list li .del:last-child {
+  margin-left: 6px;
+}
+.conv-list li:hover .del:last-child,
+.conv-list li:focus-within .del:last-child {
+  color: var(--danger-fg);
+}
 /* Armed delete = two-click pattern primed. Color shift makes the state
    discoverable for colorblind users; label changes already too. */
 .conv-list .del.armed,
