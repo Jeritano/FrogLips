@@ -735,6 +735,7 @@ export function WorkflowsPage({ status }: Props) {
     );
   }
 
+  const canRun = runInfo.length > 0 && validation.ok;
   const editorHeader = (
     <>
       <button
@@ -765,6 +766,32 @@ export function WorkflowsPage({ status }: Props) {
           ● Run in progress — leaving this view will cancel it.
         </span>
       )}
+      {/* Run/Stop sits in the top bar, immediately left of the theme
+          toggle. `.topbar-action` keeps the button compact so the
+          header row matches the chat ModelPicker's height. `margin-left:
+          auto` pushes it to the right edge of the slot (theme toggle
+          still floats further right via its own auto-margin). */}
+      {running ? (
+        <button
+          type="button"
+          className="wf-btn wf-btn-danger topbar-action"
+          style={{ marginLeft: "auto" }}
+          onClick={stopRun}
+        >
+          Stop
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="wf-btn wf-btn-primary topbar-action"
+          style={{ marginLeft: "auto" }}
+          onClick={runWorkflowNow}
+          disabled={!canRun}
+          title={canRun ? "Run workflow" : "Add cards and a valid linear chain first"}
+        >
+          Run workflow
+        </button>
+      )}
     </>
   );
 
@@ -787,13 +814,7 @@ export function WorkflowsPage({ status }: Props) {
             runningCardId={runningCardId}
           />
         </ReactFlowProvider>
-        <RunPanel
-          running={running}
-          canRun={runInfo.length > 0 && validation.ok}
-          cards={runInfo}
-          onRun={runWorkflowNow}
-          onStop={stopRun}
-        />
+        <RunPanel cards={runInfo} />
       </div>
       {formCard && (
         <CardForm

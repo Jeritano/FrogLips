@@ -9,11 +9,7 @@ export interface CardRunInfo {
 }
 
 interface Props {
-  running: boolean;
-  canRun: boolean;
   cards: CardRunInfo[];
-  onRun: () => void;
-  onStop: () => void;
 }
 
 const STATE_ICON: Record<CardRunState, string> = {
@@ -23,33 +19,18 @@ const STATE_ICON: Record<CardRunState, string> = {
   failed: "✕",
 };
 
-/** Side panel: run/stop controls + live per-card state and output. */
-export function RunPanel({
-  running,
-  canRun,
-  cards,
-  onRun,
-  onStop,
-}: Props) {
+/**
+ * Side panel: live per-card status and output.
+ *
+ * Run/Stop has moved into the global top-bar (next to the theme toggle) so
+ * the workflow header stays at parity with chat's ModelPicker — see
+ * WorkflowsPage.editorHeader. This panel is now read-only status.
+ */
+export function RunPanel({ cards }: Props) {
   return (
     <aside className="wf-run-panel" data-testid="wf-run-panel">
       <div className="wf-run-head">
-        <span>Run</span>
-        {running ? (
-          <button type="button" className="wf-btn wf-btn-danger" onClick={onStop}>
-            Stop
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="wf-btn wf-btn-primary"
-            onClick={onRun}
-            disabled={!canRun}
-            title={canRun ? "Run workflow" : "Add cards and a valid linear chain first"}
-          >
-            Run workflow
-          </button>
-        )}
+        <span>Status</span>
       </div>
       <div className="wf-run-list">
         {cards.length === 0 && (
