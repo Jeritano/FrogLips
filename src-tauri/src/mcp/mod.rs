@@ -230,6 +230,44 @@ pub async fn start_server(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    // SECURITY: MCP servers run as child processes with full user privileges.
+    // Tokio's Command inherits the parent env by default, which means every
+    // MCP server gets a copy of the Froglips app's env — including ANTHROPIC
+    // /OPENAI/AWS/GCP/GITHUB tokens the user (or their shell rc) exported.
+    // A malicious or careless server could exfiltrate them with one
+    // `process.env` read. Strip everything except a curated allowlist of
+    // benign vars the child genuinely needs to start and run (PATH for binary
+    // resolution, HOME for ~ expansion, locale for output, TMPDIR for scratch
+    // files, etc.). User-supplied env values (validated above the next block)
+    // are then layered on top — MCP server configs declare what credentials
+    // they actually need via the explicit `env` map.
+    cmd.env_clear();
+    const SAFE_ENV_ALLOWLIST: &[&str] = &[
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TZ",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "TMPDIR",
+        "PWD",
+        "OLDPWD",
+        "DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+    ];
+    for var in SAFE_ENV_ALLOWLIST {
+        if let Ok(val) = std::env::var(var) {
+            cmd.env(var, val);
+        }
+    }
+
     if let Some(env_map) = env.as_ref() {
         for (k, v) in env_map {
             // Reject dynamic-linker hijacking keys (LD_*, DYLD_*) — same family

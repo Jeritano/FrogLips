@@ -128,7 +128,12 @@ const NEVER_AUTO_APPROVE = new Set([SHELL_TOOL, "applescript_run"]);
  * is the safe default.)
  */
 function isRepoLocalPolicy(policy: ProjectPolicy): boolean {
-  const sp = policy.source_path ?? "";
+  // Lowercase comparison so case-variant repo dirs (`.Froglips/`,
+  // `.FROGLIPS\`) on case-insensitive filesystems (Windows NTFS, macOS HFS+
+  // default, exFAT) still match. The previous case-sensitive match let an
+  // attacker-controlled repo dodge the repo-local detection on those FSes
+  // and have their `.Froglips/policy.json` auto-approve dangerous tools.
+  const sp = (policy.source_path ?? "").toLowerCase();
   return sp.includes("/.froglips/") || sp.includes("\\.froglips\\");
 }
 

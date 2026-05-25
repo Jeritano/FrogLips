@@ -147,7 +147,16 @@ pub fn undo_last() -> Result<UndoResult, String> {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            std::fs::write(&path, &bytes).map_err(|e| format!("restore write failed: {e}"))?;
+            // SECURITY: `std::fs::write` follows symlinks at the leaf. Between
+            // the agent-tool call that captured this snapshot and the user
+            // clicking Undo, an attacker could race-swap the target with a
+            // symlink to e.g. `/etc/hosts` or `~/.ssh/authorized_keys` and
+            // the restore would happily write the captured bytes there.
+            // Reuse the existing `write_nofollow_sync` helper (the same
+            // primitive `write_file` / `edit_file` already use) so the
+            // kernel refuses to open a symlink at the final path component.
+            crate::agent::fs::write_nofollow_sync(&path, &bytes, false)
+                .map_err(|e| format!("restore write failed: {e}"))?;
             Ok(UndoResult {
                 path: path.to_string_lossy().into_owned(),
                 kind: entry.kind,

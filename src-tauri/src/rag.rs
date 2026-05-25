@@ -418,6 +418,27 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for (s, e, chunk) in &chunks {
+                // Defense-in-depth: chunks that obviously embed prompt-
+                // injection markers are flagged here so they never enter
+                // the corpus in the first place. Search-time `scan_and_wrap`
+                // (line ~516) still runs as a second layer for chunks that
+                // slipped past these heuristics; pairing both makes
+                // attacker-controlled docs harder to weaponize.
+                let (_wrapped, hits) =
+                    crate::agent::injection_scan::scan_and_wrap(chunk);
+                if hits > 0 {
+                    crate::diagnostics::warn_with(
+                        "rag-ingest",
+                        "skipped chunk with injection markers",
+                        serde_json::json!({
+                            "path": rel,
+                            "start": *s,
+                            "end": *e,
+                            "hits": hits,
+                        }),
+                    );
+                    continue;
+                }
                 let emb = embed(chunk);
                 stmt.execute(params![
                     corpus_id,

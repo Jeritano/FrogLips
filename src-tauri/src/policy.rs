@@ -169,8 +169,16 @@ fn is_owned_by_current_user(path: &Path) -> bool {
     }
     #[cfg(not(unix))]
     {
+        // SECURITY: Windows ownership check is not implemented yet — returning
+        // `true` (the prior behavior) would auto-approve attacker-cloned
+        // policy files. Refuse to honor policy.json on Windows until a
+        // platform-correct implementation (GetFileInformationByHandle +
+        // GetCurrentProcessUser via OpenProcessToken + GetTokenInformation)
+        // lands. The cost of false-negative (refuse a legit user-owned
+        // policy) is much lower than the cost of false-positive (silently
+        // honor a malicious one).
         let _ = path;
-        true
+        false
     }
 }
 
