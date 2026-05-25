@@ -137,17 +137,27 @@ function sanitizeMcpSchema(
 }
 
 /** Count `$ref` keys anywhere in a JSON-like tree. */
-function countRefs(v: unknown, seen: WeakSet<object> = new WeakSet()): number {
+function countRefs(v: unknown, depth = 0): number {
+  // Use depth-cap instead of WeakSet cycle guard. JSON values can't
+  // contain cycles, but a JS-constructed schema could share the same
+  // sub-object under two paths (`{a: shared, b: shared}`). With a
+  // WeakSet, the second visit was skipped — so refs reachable only
+  // via that path were undercounted, weakening the cap's defense.
+  // A simple depth cap halts both honest cycles AND legitimate shared
+  // subtrees deterministically, and counts every reachable ref at
+  // depths within the budget.
+  if (depth > 64) return 0;
   if (!v || typeof v !== "object") return 0;
-  if (seen.has(v as object)) return 0;
-  seen.add(v as object);
   let n = 0;
   if (Array.isArray(v)) {
-    for (const item of v) n += countRefs(item, seen);
+    for (const item of v) n += countRefs(item, depth + 1);
   } else {
     for (const [k, sub] of Object.entries(v as Record<string, unknown>)) {
-      if (k === "$ref") n += 1;
-      n += countRefs(sub, seen);
+      // Only count `$ref` whose value is a string (the JSON-Schema
+      // contract). Junk values like `{"$ref": null}` or `{"$ref": {}}`
+      // are not real refs and would otherwise inflate the counter.
+      if (k === "$ref" && typeof sub === "string") n += 1;
+      n += countRefs(sub, depth + 1);
     }
   }
   return n;
@@ -186,6 +196,12 @@ export async function fetchMcpTools(): Promise<OpenAIToolDef[]> {
   } catch {
     return [];
   }
+  // Clear the schema cache at the start of every discovery pass so
+  // schemas for servers that have since been removed (or tools that
+  // were renamed) don't linger forever. Each pass repopulates the
+  // cache from current state, bounding memory to the live server set
+  // even under heavy MCP churn (dev workflow: start/stop/reload).
+  MCP_TOOL_SCHEMAS.clear();
   const out: OpenAIToolDef[] = [];
   for (const s of servers) {
     // A server name containing the `__` separator would corrupt

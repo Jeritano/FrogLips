@@ -251,6 +251,28 @@ pub fn cosine_normalized(a: &[f32], b: &[f32]) -> f32 {
         is_unit_length(a) && is_unit_length(b),
         "rag::cosine_normalized called with un-normalized input"
     );
+    // Release-mode safety net: if a future regression breaks the
+    // normalization invariant (embedder swap, custom corpus import,
+    // ONNX integration that doesn't normalize), the debug_assert above
+    // would catch it locally but not in production. Sample at the
+    // lowest cost we can get away with — once per process via Once —
+    // and emit one diag rather than per-call (which would spam the
+    // ring buffer). The non-normalized result is still returned so
+    // ranking continues to work; the log is a breadcrumb for triage.
+    if !is_unit_length(a) || !is_unit_length(b) {
+        static LOGGED_ONCE: std::sync::Once = std::sync::Once::new();
+        LOGGED_ONCE.call_once(|| {
+            crate::diagnostics::warn_with(
+                "rag",
+                "cosine_normalized invariant violated: input not unit-length",
+                serde_json::json!({
+                    "a_len": a.len(),
+                    "b_len": b.len(),
+                    "note": "results may be misranked until embedder normalization is fixed",
+                }),
+            );
+        });
+    }
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 

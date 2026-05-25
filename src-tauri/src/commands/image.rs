@@ -854,6 +854,18 @@ fn canonical_images_root() -> Result<&'static std::path::Path, String> {
 /// agent can't fill the disk silently. Configurable via a future setting.
 const GALLERY_BYTES_CAP: u64 = 2 * 1024 * 1024 * 1024;
 
+/// Gallery-wide write lock. Held for the eviction + write_atomic
+/// rename sequence so concurrent image generations can't race the
+/// inventory (one thread reading file sizes while another renames a
+/// `.tmp` into place would compute a stale total) or race the eviction
+/// itself (one thread's eviction deleting the destination another
+/// thread is about to rename onto). std::sync::Mutex is fine here
+/// because the critical section is fast (filesystem syscalls, no
+/// awaits); the IPC layer already serializes per-image at the agent
+/// loop, so contention is rare even under bursts.
+static GALLERY_WRITE_LOCK: Lazy<std::sync::Mutex<()>> =
+    Lazy::new(|| std::sync::Mutex::new(()));
+
 /// Walk `root` recursively summing regular-file sizes. Symlinks are NOT
 /// followed (defense against a symlink pointing outside the gallery
 /// skewing the budget). Returns (total_bytes, files_sorted_by_mtime_asc).
@@ -940,6 +952,16 @@ fn evict_until_under_cap(incoming_bytes: u64) -> Result<usize, String> {
 /// this, a long-running session of image generation can balloon the
 /// gallery to disk-full and crash subsequent writes mid-stream.
 fn write_atomic(dest: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    // Serialize eviction + write under one lock so concurrent image
+    // generations can't race the inventory or evict each other's
+    // destination. The lock is dropped at function exit so the parent
+    // IPC continues to handle multiple in-flight requests, just not
+    // through the critical fs section. Poison-recovery: re-take the
+    // lock data even on PoisonError — the lock data is `()`, nothing
+    // to corrupt.
+    let _guard = GALLERY_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     // Best-effort eviction. If it fails we still try to write — the
     // atomic-write below will fail with a clearer disk-full error if
     // there really is no space.
