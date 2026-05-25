@@ -1037,9 +1037,19 @@ function App() {
         <div
           className="memories-overlay"
           onClick={(e) => { if (e.target === e.currentTarget) setMemoriesOpen(false); }}
+          // WCAG 2.1 Level A: modal dialogs must close on Escape. Without this,
+          // keyboard-only users had no way to dismiss the modal except by
+          // tab-navigating to the × button.
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              setMemoriesOpen(false);
+            }
+          }}
           role="dialog"
           aria-modal="true"
           aria-label="Memories"
+          tabIndex={-1}
         >
           <div className="memories-modal" ref={memoriesModalRef}>
             <div className="memories-modal-header">

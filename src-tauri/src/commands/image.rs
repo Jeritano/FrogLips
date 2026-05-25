@@ -847,12 +847,103 @@ fn canonical_images_root() -> Result<&'static std::path::Path, String> {
     Ok(CANON_IMAGES_ROOT.get().expect("just set").as_path())
 }
 
+/// Hard cap on the gallery. Once total bytes inside images_root() exceed
+/// this, oldest-first eviction runs until the new write fits. 2 GiB is
+/// roughly 2k FLUX.1-schnell 1024x1024 PNGs (~1 MB each) — generous for
+/// a personal scratch gallery but bounded so a runaway loop or hostile
+/// agent can't fill the disk silently. Configurable via a future setting.
+const GALLERY_BYTES_CAP: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Walk `root` recursively summing regular-file sizes. Symlinks are NOT
+/// followed (defense against a symlink pointing outside the gallery
+/// skewing the budget). Returns (total_bytes, files_sorted_by_mtime_asc).
+fn gallery_inventory(root: &std::path::Path) -> Result<(u64, Vec<(PathBuf, u64, SystemTime)>), String> {
+    let mut total: u64 = 0;
+    let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let read = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in read.flatten() {
+            let p = entry.path();
+            let md = match std::fs::symlink_metadata(&p) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if md.file_type().is_symlink() {
+                continue;
+            }
+            if md.is_dir() {
+                stack.push(p);
+            } else if md.is_file() {
+                let sz = md.len();
+                let mtime = md.modified().unwrap_or(UNIX_EPOCH);
+                total += sz;
+                files.push((p, sz, mtime));
+            }
+        }
+    }
+    files.sort_by_key(|(_, _, m)| *m);
+    Ok((total, files))
+}
+
+/// Evict oldest files from the gallery until total bytes + `incoming_bytes`
+/// fits under `GALLERY_BYTES_CAP`. Best-effort: deletion failures are
+/// logged via diagnostics and skipped. Returns the count of files evicted.
+fn evict_until_under_cap(incoming_bytes: u64) -> Result<usize, String> {
+    let root = canonical_images_root()?;
+    let (mut total, files) = gallery_inventory(root)?;
+    if total + incoming_bytes <= GALLERY_BYTES_CAP {
+        return Ok(0);
+    }
+    let mut evicted = 0usize;
+    for (path, size, _mtime) in files {
+        if total + incoming_bytes <= GALLERY_BYTES_CAP {
+            break;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(_) => {
+                total = total.saturating_sub(size);
+                evicted += 1;
+            }
+            Err(e) => {
+                crate::diagnostics::warn_with(
+                    "image-gallery",
+                    "eviction failed",
+                    serde_json::json!({ "path": path.display().to_string(), "error": e.to_string() }),
+                );
+            }
+        }
+    }
+    if evicted > 0 {
+        crate::diagnostics::info(
+            "image-gallery",
+            &format!(
+                "evicted {} old image(s) to stay under {} byte cap",
+                evicted, GALLERY_BYTES_CAP
+            ),
+        );
+    }
+    Ok(evicted)
+}
+
 /// Atomic write — `.tmp` next to the destination, fsync the file, `rename`
 /// over the final path, fsync the parent directory. Same shape as
 /// `agent/fs.rs::write_nofollow_sync`, with the parent-dir fsync added (M7)
 /// so a power-loss between the rename and the next periodic OS flush
 /// doesn't leave the directory entry pointing at nothing.
+///
+/// Before writing, runs eviction so a gallery that has filled to its
+/// hard cap (GALLERY_BYTES_CAP) sheds oldest-first to make room. Without
+/// this, a long-running session of image generation can balloon the
+/// gallery to disk-full and crash subsequent writes mid-stream.
 fn write_atomic(dest: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    // Best-effort eviction. If it fails we still try to write — the
+    // atomic-write below will fail with a clearer disk-full error if
+    // there really is no space.
+    let _ = evict_until_under_cap(bytes.len() as u64);
     use std::io::Write;
     let parent = dest
         .parent()

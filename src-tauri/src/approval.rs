@@ -38,6 +38,10 @@ struct TokenEntry {
 
 static STORE: Lazy<Mutex<HashMap<String, TokenEntry>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Recent mint timestamps for the sliding-window rate limit. Pruned on every
+/// mint so the worst-case length is RATE_MAX.
+static RECENT_MINTS: Lazy<Mutex<Vec<Instant>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
 /// Generate a 128-bit cryptographically-random opaque token, hex-encoded.
 ///
 /// Reads from the OS CSPRNG via `/dev/urandom` (macOS/Linux). Hex-encodes
@@ -76,6 +80,15 @@ fn gc(store: &mut HashMap<String, TokenEntry>) {
 /// run away with the store. Surfaces as `approval: token store at capacity`.
 const MAX_LIVE_TOKENS: usize = 256;
 
+/// Sliding-window rate limit on mints. A hostile or buggy renderer that
+/// hammers `mint_tool_approval` would otherwise fill the 256-entry store
+/// in milliseconds and lock out legitimate tool calls for the full 60s
+/// TTL. RATE_WINDOW + RATE_MAX bound that to ~MAX_BURST_PER_WINDOW mints
+/// per window. Recent mint timestamps live in a single Vec; expired
+/// entries are pruned on each mint so the vec stays bounded by RATE_MAX.
+const RATE_WINDOW: Duration = Duration::from_secs(10);
+const RATE_MAX: usize = 60;
+
 /// Mint a single-use approval token bound to `tool`. Returns the token
 /// string. Returns `Err` on entropy failure or store-at-capacity.
 pub fn mint(tool: &str) -> Result<String, String> {
@@ -92,6 +105,24 @@ pub fn mint_with_binding(tool: &str, binding: &str) -> Result<String, String> {
 }
 
 fn mint_internal(tool: &str, binding: Option<String>) -> Result<String, String> {
+    // Sliding-window rate limit. Without this, a misbehaving renderer (XSS
+    // payload, runaway loop in MCP code) can fill MAX_LIVE_TOKENS within
+    // milliseconds and lock out the user from approving any tool call until
+    // the 60s TTL expires. Capping mints/window keeps the steady-state cost
+    // bounded.
+    {
+        let now = Instant::now();
+        let mut recents = RECENT_MINTS.lock();
+        recents.retain(|t| now.duration_since(*t) < RATE_WINDOW);
+        if recents.len() >= RATE_MAX {
+            return Err(format!(
+                "approval: rate limit exceeded ({} mints in {}s); slow down",
+                recents.len(),
+                RATE_WINDOW.as_secs()
+            ));
+        }
+        recents.push(now);
+    }
     let token = random_token()?;
     let mut store = STORE.lock();
     gc(&mut store);
