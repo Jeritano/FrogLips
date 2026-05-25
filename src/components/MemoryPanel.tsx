@@ -80,9 +80,13 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
 
   const refresh = useCallback(async () => {
     try {
+      // Pass workspaceRoot + conversationId so the Rust layer applies the
+      // same scope filter the search paths use. Without this the panel
+      // leaked conversation-scoped memories from other chats and
+      // project-scoped memories from other workspaces.
       const [a, p] = await Promise.all([
-        api.listMemories("active"),
-        api.listMemories("pending"),
+        api.listMemories("active", workspaceRoot ?? null, conversationId ?? null),
+        api.listMemories("pending", workspaceRoot ?? null, conversationId ?? null),
       ]);
       setActive(a);
       setPending(p);
@@ -94,7 +98,7 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
         detail: err,
       });
     }
-  }, []);
+  }, [workspaceRoot, conversationId]);
 
   // Refresh on open AND on every refreshToken bump — even while collapsed —
   // so the count badge (active.length / pending.length) stays accurate after

@@ -222,8 +222,16 @@ export const api = {
     scope: args.scope ?? "global",
     projectRoot: args.projectRoot ?? null,
   }),
-  listMemories: (status?: "active" | "pending" | "archived") =>
-    invoke<Memory[]>("list_memories", { status: status ?? null }),
+  listMemories: (
+    status?: "active" | "pending" | "archived",
+    cwd?: string | null,
+    convId?: number | null,
+  ) =>
+    invoke<Memory[]>("list_memories", {
+      status: status ?? null,
+      cwd: cwd ?? null,
+      convId: convId ?? null,
+    }),
   deleteMemory: (id: number) => invoke<void>("delete_memory", { id }),
   updateMemoryStatus: (id: number, status: "active" | "pending" | "archived") =>
     invoke<void>("update_memory_status", { id, status }),

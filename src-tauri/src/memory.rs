@@ -263,28 +263,51 @@ pub fn add_memory(
     Ok(id)
 }
 
-pub fn list_memories(status_filter: Option<&str>) -> Result<Vec<Memory>> {
-    const HARD_LIMIT: i64 = 1000;
+pub fn list_memories(
+    status_filter: Option<&str>,
+    ctx: &MemoryContext,
+) -> Result<Vec<Memory>> {
+    // Two-tier limit: HARD_LIMIT is the largest result set we'll ever
+    // return to the renderer (UI safeguard), OVER_FETCH is what we pull
+    // from disk before the scope filter prunes it. Without over-fetching,
+    // a global memory pool with many out-of-scope entries could yield
+    // far fewer than the user expects after filtering.
+    const HARD_LIMIT: usize = 1000;
+    const OVER_FETCH: i64 = 4000;
     let conn = get_db()?;
-    // Build query strings that include the dynamic MEM_COLS list. Done with
-    // format! once at call time rather than const string concat.
     let sql_with = format!(
         "SELECT {MEM_COLS} FROM memories WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2"
     );
-    let sql_all = format!("SELECT {MEM_COLS} FROM memories ORDER BY created_at DESC LIMIT ?1");
+    let sql_all = format!(
+        "SELECT {MEM_COLS} FROM memories ORDER BY created_at DESC LIMIT ?1"
+    );
     let sql: &str = match status_filter {
         Some(_) => &sql_with,
         None => &sql_all,
     };
     let mut stmt = conn.prepare(sql)?;
-    let rows: Vec<Memory> = if let Some(s) = status_filter {
-        stmt.query_map(params![s, HARD_LIMIT], row_to_memory)?
+    let raw: Vec<Memory> = if let Some(s) = status_filter {
+        stmt.query_map(params![s, OVER_FETCH], row_to_memory)?
             .collect::<rusqlite::Result<Vec<_>>>()?
     } else {
-        stmt.query_map(params![HARD_LIMIT], row_to_memory)?
+        stmt.query_map(params![OVER_FETCH], row_to_memory)?
             .collect::<rusqlite::Result<Vec<_>>>()?
     };
-    Ok(rows)
+    // SECURITY: previously this function returned the entire memories table
+    // ignoring scope, so conversation-scoped memories from other chats and
+    // project-scoped memories from other workspaces leaked across contexts.
+    // Apply the same scope_matches filter the search paths use so the list
+    // honors the caller's MemoryContext. Pass MemoryContext::default() to
+    // recover the legacy behaviour (returns only global-scoped memories +
+    // any project/conversation that explicitly matches the empty context).
+    let mut filtered: Vec<Memory> = raw
+        .into_iter()
+        .filter(|m| scope_matches(m, ctx))
+        .collect();
+    if filtered.len() > HARD_LIMIT {
+        filtered.truncate(HARD_LIMIT);
+    }
+    Ok(filtered)
 }
 
 pub fn delete_memory(id: i64) -> Result<()> {

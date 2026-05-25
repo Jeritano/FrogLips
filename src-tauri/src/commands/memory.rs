@@ -66,8 +66,17 @@ pub async fn add_memory(
 }
 
 #[tauri::command]
-pub async fn list_memories(status: Option<String>) -> Result<Vec<memory::Memory>, String> {
-    blocking(move || memory::list_memories(status.as_deref())).await
+pub async fn list_memories(
+    status: Option<String>,
+    cwd: Option<String>,
+    conv_id: Option<i64>,
+) -> Result<Vec<memory::Memory>, String> {
+    // Honor the caller's scope so the memories panel doesn't surface entries
+    // from other conversations / other workspaces. Same MemoryContext shape
+    // the search paths use — missing cwd / conv_id degrades to "global-only"
+    // via scope_matches in the memory layer.
+    let ctx = memory::MemoryContext::new(cwd, conv_id);
+    blocking(move || memory::list_memories(status.as_deref(), &ctx)).await
 }
 
 #[tauri::command]

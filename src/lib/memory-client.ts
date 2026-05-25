@@ -20,8 +20,29 @@ const OLLAMA_BASE = "http://127.0.0.1:11434";
 const MEMORY_FETCH_TIMEOUT_MS = 15_000;
 const DEFAULT_EMBED_MODEL = "nomic-embed-text";
 const DEFAULT_RECALL_THRESHOLD = 0.55;
+// Dedup at save time is a near-identical threshold: anything THIS close to an
+// existing memory is treated as a duplicate and the new copy is skipped. It
+// stays strictly above the recall threshold — recall is "show me anything
+// reasonably related", dedup is "this is essentially the same memory". The
+// two used to drift (recall 0.55, dedup 0.85), which let similar-but-not-
+// identical memories pile up: they survived dedup but clustered in recall.
+// Pinning dedup to a derived constant keeps them in lockstep when the recall
+// threshold is later adjusted via the settings UI.
+const DEDUP_DELTA_ABOVE_RECALL = 0.3;
+const DEDUP_THRESHOLD_FLOOR = 0.8;
 const EXTRACTOR_MODEL = "qwen3:4b";          // fallback list checked at runtime
 const EXTRACTOR_FALLBACKS = ["phi4-mini:3.8b", "llama3.2:3b", "qwen2.5:7b"];
+
+/**
+ * Derived dedup threshold. Sits 0.3 above the active recall threshold,
+ * floored at 0.8 so it never drops into noisy-match territory even if the
+ * user nudges recall very low. With the default recall (0.55) this resolves
+ * to 0.85 — preserving prior behavior — but it tracks recall when the user
+ * tightens or loosens it.
+ */
+export function getDedupThreshold(): number {
+  return Math.max(DEDUP_THRESHOLD_FLOOR, _recallThreshold + DEDUP_DELTA_ABOVE_RECALL);
+}
 
 const MODE_KEY = "froglips.memoryMode";
 
@@ -279,7 +300,7 @@ export async function saveMemory(args: {
 }): Promise<{ id: number; deduped: boolean }> {
   const emb = await embed(args.content);
   if (emb && emb.length) {
-    const dup = await api.findDuplicateMemory(emb, 0.85);
+    const dup = await api.findDuplicateMemory(emb, getDedupThreshold());
     if (dup != null) {
       await api.touchMemory(dup);
       return { id: dup, deduped: true };

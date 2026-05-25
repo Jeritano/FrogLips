@@ -415,6 +415,18 @@ pub(crate) fn ensure_conversation_fork_columns(conn: &Connection) -> Result<()> 
         "CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_conv_id)",
         [],
     )?;
+    // One-time cleanup of dangling parent refs left over from before
+    // `delete_conversation` cascaded fork parentage. Without this sweep,
+    // a DB upgraded from a pre-cascade version can still surface
+    // "parent conversation not found" errors in the fork tree. Idempotent:
+    // re-running it on a clean DB updates zero rows.
+    conn.execute(
+        "UPDATE conversations
+         SET parent_conv_id = NULL, parent_message_id = NULL
+         WHERE parent_conv_id IS NOT NULL
+           AND parent_conv_id NOT IN (SELECT id FROM conversations)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -753,8 +765,23 @@ pub fn list_conversations() -> Result<Vec<Conversation>> {
 }
 
 pub fn delete_conversation(id: i64) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+    let mut conn = get_db()?;
+    // SQLite ALTER TABLE can't add a FOREIGN KEY ... ON DELETE SET NULL to
+    // an existing column, so do the cascade in the app layer: any
+    // conversation whose `parent_conv_id` points at the deleted row has its
+    // parent reference cleared. Without this, deleting a parent leaves
+    // every descendant fork pointing at a non-existent id and the
+    // fork-tree query (get_fork_tree / list_branches) surfaces "parent
+    // conversation not found" errors. Run both updates + the final delete
+    // in a single transaction so a crash can never leave dangling refs.
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE conversations SET parent_conv_id = NULL, parent_message_id = NULL
+         WHERE parent_conv_id = ?1",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+    tx.commit()?;
     Ok(())
 }
 

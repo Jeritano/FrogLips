@@ -228,15 +228,46 @@ pub fn embed(text: &str) -> Vec<f32> {
     v
 }
 
-/// Cosine similarity. Inputs must be L2-normalized (embed() guarantees this)
-/// — then cosine collapses to dot product.
-/// NOTE: distinct from `memory::cosine`, which normalizes inputs itself. Keep
-/// both — the semantics genuinely differ.
-pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+/// Cosine similarity over pre-normalized vectors.
+///
+/// CONTRACT: both inputs MUST be L2-normalized; the function collapses
+/// cosine to a dot product for speed. Calling this with un-normalized
+/// vectors silently returns incorrect scores (no guard for performance).
+///
+/// All vectors flowing through this module pass through `embed()`, which
+/// guarantees L2 normalization (lines 222-227 above). If a future caller
+/// pulls embeddings from a different source — Ollama's nomic-embed-text,
+/// for example — verify normalization at the source OR use the safer
+/// `memory::cosine`, which normalizes inputs itself.
+///
+/// In debug builds, asserts the inputs really are unit-length so a
+/// future regression in the embedding pipeline fails loudly instead of
+/// silently misranking results.
+pub fn cosine_normalized(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
     }
+    debug_assert!(
+        is_unit_length(a) && is_unit_length(b),
+        "rag::cosine_normalized called with un-normalized input"
+    );
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+/// Backwards-compatible alias. Kept so existing callers don't need an
+/// atomic rename across the crate; new code should use the explicit name.
+#[inline]
+pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    cosine_normalized(a, b)
+}
+
+#[inline]
+fn is_unit_length(v: &[f32]) -> bool {
+    if v.is_empty() {
+        return true;
+    }
+    let sq: f32 = v.iter().map(|x| x * x).sum();
+    (sq - 1.0).abs() < 1e-3
 }
 
 use crate::util::{blob_to_vec, vec_to_blob};
