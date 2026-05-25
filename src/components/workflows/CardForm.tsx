@@ -291,12 +291,30 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
               </select>
             </label>
             <label className="wf-field">
+              <span>System prompt (optional)</span>
+              <textarea
+                value={draft.systemPrompt ?? ""}
+                onChange={(e) =>
+                  set("systemPrompt", e.target.value === "" ? null : e.target.value)
+                }
+                rows={3}
+                placeholder="Persona, constraints, output format. Leave blank to inherit from Role."
+                maxLength={16_384}
+              />
+              <small className="wf-field-hint">
+                Overrides the Role's system prompt for THIS card only. Use it to
+                give one agent a different persona, output format, or hard
+                constraints without making a new Role. Blank = use the Role's
+                default.
+              </small>
+            </label>
+            <label className="wf-field">
               <span>Instructions</span>
               <textarea
                 value={draft.prompt}
                 onChange={(e) => set("prompt", e.target.value)}
                 rows={4}
-                placeholder="What should this agent do?"
+                placeholder="What should this agent do? (sent as the user message)"
               />
             </label>
             <label className="wf-field">

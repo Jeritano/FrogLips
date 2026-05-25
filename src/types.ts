@@ -595,6 +595,15 @@ export interface WorkflowCard {
   name: string;
   preset: string;
   prompt: string;
+  /**
+   * Per-card system prompt override. When non-empty, this REPLACES the
+   * `preset.systemPromptOverride` value when the card runs — so a card can
+   * customize behavior without forcing the user to create a brand-new preset.
+   * Null/absent/empty = fall back to the preset's system prompt (legacy
+   * behavior). The env block (workspace + date + tools) is always appended
+   * after this string by `buildSystemPrompt`.
+   */
+  systemPrompt?: string | null;
   tools: string[];
   schedule: string | null;
   backend: string | null;
@@ -680,11 +689,20 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
   const tools = Array.isArray(c.tools)
     ? c.tools.filter((t): t is string => typeof t === "string")
     : [];
+  // Per-card system prompt override. Hard-cap at 16 KB so a corrupt or
+  // adversarial graph_json blob can't push a runaway-size string into every
+  // run's context window. Anything past the cap is truncated rather than
+  // dropping the card entirely.
+  const SYSTEM_PROMPT_MAX = 16_384;
+  const rawSys = typeof c.systemPrompt === "string" ? c.systemPrompt : null;
+  const systemPrompt =
+    rawSys && rawSys.length > SYSTEM_PROMPT_MAX ? rawSys.slice(0, SYSTEM_PROMPT_MAX) : rawSys;
   return {
     id: c.id,
     name: c.name,
     preset: c.preset,
     prompt: c.prompt,
+    systemPrompt,
     tools,
     schedule: typeof c.schedule === "string" ? c.schedule : null,
     backend: typeof c.backend === "string" ? c.backend : null,

@@ -343,7 +343,16 @@ function buildCardOptions(
     workspaceRoot: opts.workspaceRoot ?? null,
     backend,
     serverStatus: opts.serverStatus ?? null,
-    systemPromptOverride: preset?.systemPromptOverride,
+    // Per-card systemPrompt wins over the preset's systemPromptOverride.
+    // This lets the user customize behavior per card without minting a new
+    // preset for every variation. Empty/whitespace strings fall through to
+    // the preset so a stray space doesn't blank out the persona. The env
+    // block (workspace + date + tools) is appended downstream by
+    // `buildSystemPrompt` regardless of which source wins.
+    systemPromptOverride:
+      card.systemPrompt && card.systemPrompt.trim().length > 0
+        ? card.systemPrompt
+        : preset?.systemPromptOverride,
     toolAllowlist,
     approveAllShell: opts.approveAllShell === true,
     approveAllWrite: opts.approveAllWrite === true,
