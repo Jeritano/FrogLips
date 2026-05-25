@@ -99,6 +99,21 @@ impl ServerHandle {
     }
 
     async fn send_rpc(&self, method: &str, params: Value) -> Result<Value> {
+        // Fast-fail liveness check: if the stdout pump already marked the
+        // server stopped (process exited but registry entry not yet cleaned),
+        // refuse new RPCs immediately instead of writing to a pipe whose
+        // peer is gone and waiting the full RPC_TIMEOUT for nothing. Without
+        // this, every tool call on a dead server hangs 120s before failing.
+        {
+            let s = self.status.read();
+            if s.as_str() != "running" {
+                return Err(anyhow!(
+                    "MCP server '{}' is not running (status: {})",
+                    self.name,
+                    s
+                ));
+            }
+        }
         let id = self.next_request_id().await;
         let (tx, rx) = oneshot::channel();
         self.waiters.lock().await.insert(id, tx);

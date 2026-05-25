@@ -10,12 +10,19 @@
  * slice a line — and therefore a `data:` prefix — mid-token.
  */
 
+import { logDiag } from "./diagnostics";
+
 const MAX_BUF = 1 << 20; // 1 MB
 
 /**
  * Read a byte stream, decode it, and invoke `onLine` for every complete
  * `\n`-terminated line. Any leftover (unterminated) tail is delivered once
  * the stream ends. The reader lock is always released.
+ *
+ * If the per-read buffer ever exceeds `MAX_BUF` (a server that emits a
+ * single ~1 MB+ line, or pathologically newline-less output), the dropped
+ * prefix is logged via `logDiag` so the loss is visible. Previously the
+ * truncation was silent and tool-call chunks past the cap vanished.
  */
 export async function readLines(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -30,6 +37,17 @@ export async function readLines(
       buf += decoder.decode(value, { stream: true });
       if (buf.length > MAX_BUF) {
         const lastNl = buf.lastIndexOf("\n", buf.length - MAX_BUF);
+        const dropped = lastNl >= 0 ? lastNl + 1 : buf.length;
+        logDiag({
+          level: "warn",
+          source: "stream-lines",
+          message: `readLines buffer exceeded ${MAX_BUF} bytes; dropping ${dropped} bytes`,
+          detail: {
+            bufLength: buf.length,
+            droppedBytes: dropped,
+            keepingTail: buf.length - dropped,
+          },
+        });
         buf = lastNl >= 0 ? buf.slice(lastNl + 1) : "";
       }
       let nl: number;

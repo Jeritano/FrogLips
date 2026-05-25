@@ -850,9 +850,14 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
             ? (args.subagent_ids as unknown[]).map((v) => String(v))
             : [];
           // Clamp the model-supplied timeout: floor 0, ceiling 10 min, so a
-          // bogus huge value can't wedge the loop indefinitely.
+          // bogus huge value can't wedge the loop indefinitely. Coerce via
+          // Number() so a stringified "30" (which the previous typeof check
+          // silently rejected, falling back to 600s) is honored. Non-finite
+          // / NaN inputs collapse to the 600s default rather than 0 (a 0s
+          // timeout would fire immediately and orphan the subagents).
           const AWAIT_TIMEOUT_CAP_MS = 600_000;
-          const rawTimeoutSecs = typeof args.timeout_seconds === "number" ? args.timeout_seconds : 600;
+          const coerced = Number(args.timeout_seconds ?? 600);
+          const rawTimeoutSecs = Number.isFinite(coerced) ? coerced : 600;
           const timeoutMs = Math.min(AWAIT_TIMEOUT_CAP_MS, Math.max(0, rawTimeoutSecs) * 1000);
           result = await awaitSubagents(ids, timeoutMs);
         } else if (fnName === "list_subagents") {
