@@ -47,16 +47,32 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
   {
     id: "researcher",
     name: "Researcher",
-    description: "Read-only exploration of FS + web + PDFs. No shell, no writes.",
+    description:
+      "Exploration of FS + web + PDFs with the ability to write findings to files. No shell.",
     allowedTools: [
       "read_file", "list_dir", "search_files", "file_exists",
       "read_pdf", "web_fetch", "web_search",
       "git_status", "git_diff", "git_log", "git_show", "git_branches",
+      // Write capability — researchers can save summaries, reports, and
+      // working notes to disk. `delete_path` and `run_shell` remain off
+      // the list so this preset cannot remove user files or execute
+      // arbitrary commands. Every write still hits the approval gate
+      // (WRITE_TOOLS in agent-loop/dispatch.ts) unless the user has
+      // explicitly granted session-wide write approval.
+      "write_file", "edit_file", "multi_edit",
     ],
     systemPromptOverride:
-      "You are a read-only research agent. " +
-      "Investigate the user's question by reading files, listing directories, and searching for patterns. " +
-      "You cannot run commands or modify anything — report findings as prose with file:line citations.",
+      "You are a research agent. " +
+      "Investigate the user's question by reading files, listing directories, searching for patterns, " +
+      "and fetching web content. " +
+      "You cannot run shell commands.\n\n" +
+      "DELIVERABLE RULES (non-negotiable):\n" +
+      "- When the user asks for a report, summary, document, or file output, you MUST call `write_file` " +
+      "with the deliverable before ending the turn. Do not just narrate findings in chat.\n" +
+      "- Budget at most half of your turns on research; use the rest to draft + write the file.\n" +
+      "- If the user gave a literal filename (in quotes or backticks), use that EXACT basename.\n" +
+      "- The final assistant message after the write should be one short confirmation line — not the file's contents.\n" +
+      "- Cite sources inline (URL or file:line) inside the written document, not only in chat.",
   },
   {
     id: "shell",

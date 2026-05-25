@@ -695,8 +695,11 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
     // don't load with their cards stranded in the deck. Only an explicit
     // `placed: false` puts a card in the deck.
     placed: c.placed === false ? false : true,
-    x: typeof c.x === "number" ? c.x : 0,
-    y: typeof c.y === "number" ? c.y : 0,
+    // Reject NaN, ±Infinity, and absurd magnitudes — `typeof NaN === "number"`
+    // and React Flow's viewport math goes off the rails if a node lands at
+    // 1e308. A finite range of ±1e6 covers every reasonable canvas position.
+    x: typeof c.x === "number" && Number.isFinite(c.x) && Math.abs(c.x) <= 1e6 ? c.x : 0,
+    y: typeof c.y === "number" && Number.isFinite(c.y) && Math.abs(c.y) <= 1e6 ? c.y : 0,
   };
 }
 
@@ -707,10 +710,19 @@ export function parseWorkflow(raw: RawWorkflow): Workflow {
     const parsed = JSON.parse(raw.graph_json) as Partial<WorkflowGraph>;
     if (parsed && Array.isArray(parsed.cards) && Array.isArray(parsed.edges)) {
       // Drop or normalize malformed cards; drop edges to unknown card ids.
-      const cards = parsed.cards
-        .map(normalizeWorkflowCard)
-        .filter((c): c is WorkflowCard => c !== null);
-      const ids = new Set(cards.map((c) => c.id));
+      // Duplicate ids would collide in React's key map and silently drop
+      // one card from the runner's `byId` Map — keep the first occurrence
+      // and discard the rest with a one-line audit signal.
+      const seen = new Set<string>();
+      const cards: WorkflowCard[] = [];
+      for (const raw of parsed.cards) {
+        const c = normalizeWorkflowCard(raw);
+        if (c === null) continue;
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        cards.push(c);
+      }
+      const ids = seen;
       const edges = parsed.edges.filter(
         (e): e is WorkflowEdge =>
           !!e &&

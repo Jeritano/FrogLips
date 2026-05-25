@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import type { Message, ToolCall } from "../../types";
 import { withTimeout } from "../signal-utils";
 import { readLines } from "../stream-lines";
@@ -18,45 +19,73 @@ export { finalizeToolCalls, mergeToolCallChunk } from "./tool-call-merge";
 export function toOllamaMessages(msgs: Message[]) {
   return msgs.map((m) => {
     if (m.role === "tool") {
-      return { role: "tool" as const, content: m.content };
+      // OpenAI's current tool-message spec is `{role,content,tool_call_id}`
+      // only — the legacy `name` field was removed and the cloud router
+      // (kimi-k2.6:cloud, deepseek-v4-pro:cloud, …) rejects payloads that
+      // include it with the cryptic "Value looks like object, but can't
+      // find closing '}' symbol" 400. Forward `tool_call_id` (required for
+      // pairing) and nothing else.
+      //
+      // Some cloud-routing passthroughs run a heuristic on tool message
+      // content: if it starts with `{`, they speculatively parse it as a
+      // JSON object and reject the whole request when the parser's
+      // single-pass scan doesn't find a matching close brace at the same
+      // depth. Our content is *literal text* (a JSON-stringified search
+      // result, a directory listing, etc.) — never a structured payload.
+      // Prefix it with a newline so the cloud heuristic falls through and
+      // treats the content as plain text. The leading `\n` is invisible
+      // to the model.
+      let content = m.content;
+      if (content.length > 0 && content[0] === "{") {
+        content = `\n${content}`;
+      }
+      const toolMsg: Record<string, unknown> = { role: "tool", content };
+      if (m.tool_call_id) toolMsg.tool_call_id = m.tool_call_id;
+      return toolMsg;
     }
     if (m.tool_calls?.length) {
-      // Ollama's Go server rejects `function.arguments` as an object — its
-      // struct expects a JSON-encoded string ("json: cannot unmarshal object
-      // into Go struct field .messages.tool_calls.function.arguments of type
-      // string"). The OpenAI spec also defines arguments as a string. Some
-      // models (qwen3-coder via huihui-abliterated, etc.) round-trip the field
-      // as an object; normalize before send.
-      // Cloud-routing models (kimi-k2.6:cloud, deepseek-v4-pro:cloud,
-       // …) re-parse `arguments` strictly. If the previous-turn stream
-       // produced a partial / truncated JSON (model paused mid-thought
-       // before finishing the close brace), passing the raw string back
-       // returns 400 "Value looks like object, but can't find closing
-       // '}' symbol". Validate + repair: if the string isn't parseable
-       // JSON, replace with "{}" so the round-trip works. We log the
-       // repair via diagnostics so the loop can recover gracefully.
+      // Ollama's `/api/chat` expects `tool_calls[].function.arguments` as a
+      // PARSED JSON OBJECT, not a JSON-encoded string. Passing the string
+      // form (which is what the OpenAI spec defines) triggers the cryptic
+      // 400 "Value looks like object, but can't find closing '}' symbol":
+      // Ollama's parser sees a string that looks like an object literal,
+      // tries to re-parse it, and the single-pass scan fails when escapes
+      // confuse its delimiter tracking.
+      //
+      // Refs: openclaw/openclaw#46679 + #50689 — the upstream fix that
+      // landed for this exact error in another OpenAI-compatible gateway.
       const normalized = m.tool_calls
-        // Drop any tool_call that lacks a function name — cloud routing
-        // refuses the whole request on a single empty-name entry.
+        // Drop any tool_call that lacks a function name — Ollama refuses
+        // the whole request on a single empty-name entry.
         .filter((tc) => tc.function && typeof tc.function.name === "string" && tc.function.name.length > 0)
         .map((tc) => {
-          const raw =
-            typeof tc.function.arguments === "string"
-              ? tc.function.arguments
-              : JSON.stringify(tc.function.arguments ?? {});
-          let safe = raw;
-          if (raw && raw !== "{}") {
+          // Coerce arguments to an object. If we already have an object
+          // (some streaming paths deliver the parsed form), pass it
+          // through. If we have a string, JSON.parse it; on parse failure
+          // fall back to `{}` so the round-trip stays well-formed.
+          let argsObj: Record<string, unknown> = {};
+          const raw = tc.function.arguments;
+          if (raw && typeof raw === "object") {
+            argsObj = raw as Record<string, unknown>;
+          } else if (typeof raw === "string" && raw.trim().length > 0) {
             try {
-              JSON.parse(raw);
+              const parsed = JSON.parse(raw);
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                argsObj = parsed as Record<string, unknown>;
+              }
             } catch {
-              safe = "{}";
+              argsObj = {};
             }
           }
+          // Do NOT random-backfill `id` here — `finalizeToolCalls` mints a
+          // stable id at stream-finalize time and `runner.pushToolResult`
+          // copies it into the matching `tool_call_id` on the tool result
+          // message. Generating a fresh random id per-serialize would break
+          // that pairing (assistant tc.id would never match the stored tool
+          // message's tool_call_id).
           return {
             ...tc,
-            // Ensure id is present — cloud routers require it.
-            id: tc.id || `call_${Math.random().toString(36).slice(2, 10)}`,
-            function: { ...tc.function, arguments: safe },
+            function: { ...tc.function, arguments: argsObj },
           };
         });
       // If every tool_call was filtered out as invalid, fall through to
@@ -104,7 +133,23 @@ export async function streamOllamaChat(
     signal: to.signal,
   });
   if (!res.ok) {
-    throw new Error(`Ollama ${res.status}: ${await res.text().catch(() => "")}`);
+    const errText = await res.text().catch(() => "");
+    // Cloud routing (kimi-k2.6:cloud, deepseek-v4-pro:cloud, …) re-validates
+    // the body strictly and returns 400 with cryptic JSON-shape errors. Dump
+    // the exact outgoing payload so the failure is reproducible without
+    // guessing which field tripped the validator. Routes through the Rust
+    // `append_diag_log` command — WKWebView console is not user-accessible.
+    if (res.status === 400) {
+      try {
+        const dump = JSON.stringify({ url, err: errText, body });
+        // eslint-disable-next-line no-console
+        console.error("[ollama-400] body =", dump);
+        void invoke("append_diag_log", { line: `[ollama-400] ${dump}` });
+      } catch {
+        /* ignore */
+      }
+    }
+    throw new Error(`Ollama ${res.status}: ${errText}`);
   }
   if (!res.body) {
     throw new Error("Ollama response has no body");

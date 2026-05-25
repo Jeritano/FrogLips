@@ -53,7 +53,11 @@ export function finalizeToolCalls(acc: PartialToolCall[]): ToolCall[] {
     // Drop slots whose name never arrived — a nameless tool_call is
     // unroutable and would crash dispatch / pollute the audit log.
     if (!slot.function.name) continue;
-    let args: Record<string, unknown> | string = "";
+    // Default to an empty-object literal (string form) when no arguments
+    // arrived. Downstream serializers (toOllamaMessages, MLX, native) all
+    // need a valid JSON object string; an empty `""` would re-trip cloud
+    // routing's "Value looks like object, but can't find closing '}'" reject.
+    let args: Record<string, unknown> | string = "{}";
     if (slot.function._argStr !== undefined) {
       // String form — try to JSON.parse, fall back to raw string (dispatch.parseArgs handles both).
       const s = slot.function._argStr;
@@ -66,8 +70,26 @@ export function finalizeToolCalls(acc: PartialToolCall[]): ToolCall[] {
     } else if (slot.function.arguments && typeof slot.function.arguments === "object") {
       args = slot.function.arguments as Record<string, unknown>;
     }
+    // Mint a stable, schema-safe id. Two failure modes drove this:
+    //   1. Empty id — Ollama cloud routing enforces OpenAI's pairing rule
+    //      that each `role:"tool"` result reference the assistant's
+    //      `tool_calls[].id`; an empty id makes the linkage ambiguous and
+    //      trips "Value looks like object, but can't find closing '}'".
+    //   2. Funky id from the upstream model — e.g. kimi-k2.6:cloud returns
+    //      ids like `functions.web_search:0`. Cloud routers tokenize ids
+    //      and reject anything outside `[A-Za-z0-9_-]`; the dot+colon body
+    //      gets reflected back as the same opaque 400. Replace any id with
+    //      disallowed characters with a fresh `call_<8>`. The matching
+    //      `role:"tool"` result message is pushed *after* this finalize
+    //      step (in `runner.pushToolResult`), copying `tc.id` directly —
+    //      so the sanitized id round-trips on both sides.
+    const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+    const id =
+      slot.id && SAFE_ID.test(slot.id)
+        ? slot.id
+        : `call_${Math.random().toString(36).slice(2, 10)}`;
     out.push({
-      id: slot.id ?? "",
+      id,
       type: "function",
       function: {
         name: slot.function.name,

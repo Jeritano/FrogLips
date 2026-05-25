@@ -13,7 +13,19 @@ export interface WorkflowTriggerPayload {
 export function parseWorkflowTrigger(payload: unknown): WorkflowTriggerPayload | null {
   if (!payload || typeof payload !== "object") return null;
   const p = payload as Record<string, unknown>;
-  if (typeof p.workflow_id !== "number" || typeof p.card_id !== "string") {
+  // `typeof number` is true for NaN, ±Infinity, floats, and negatives — none
+  // of which are valid SQLite rowids. Require a positive integer and reject
+  // anything else. Same idea on card_id: an empty string passes the type
+  // check but produces a misleading "Start card "" is not in the workflow
+  // graph." error downstream.
+  if (
+    typeof p.workflow_id !== "number" ||
+    !Number.isInteger(p.workflow_id) ||
+    p.workflow_id <= 0
+  ) {
+    return null;
+  }
+  if (typeof p.card_id !== "string" || p.card_id.length === 0) {
     return null;
   }
   return { workflow_id: p.workflow_id, card_id: p.card_id };

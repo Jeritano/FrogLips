@@ -4,6 +4,46 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+### Workflow + agent hardening (2026-05-24, 5-round audit cycle)
+
+**Ollama cloud (`*:cloud`) tool-calling round-trip — root-caused and fixed.** Persistent `Ollama 400: "Value looks like object, but can't find closing '}' symbol"` traced to the wire format Ollama's cloud router expects:
+
+- `tool_calls[].function.arguments` now passed as a **parsed JSON object** (was JSON-encoded string). Refs: `openclaw/openclaw#46679`, `#50689`.
+- `name` field stripped from `role:"tool"` messages (legacy OpenAI field, current spec only `{role, content, tool_call_id}`).
+- `tool_call_id` forwarded on tool result messages.
+- `finalizeToolCalls` sanitizes unsafe ids (anything outside `[A-Za-z0-9_-]`) into `call_<8 hex>`. Empty arguments default to `{}`.
+- `:cloud` models skip the Ollama `options` payload (per-request `num_ctx` / `num_predict` rejected by cloud passthrough).
+- `:cloud` models execute one tool_call per turn (cloud router rejects multiple parallel calls in one assistant turn). System reminder injected after the tool result lets the model reissue dropped intents on the next turn.
+- Tool result content prefixed with `\n` when it begins with `{` so the cloud router's "string-that-looks-like-an-object" heuristic doesn't try to parse it.
+
+**Workflow runner safety.** Handoff `<untrusted-data>` fence regex tolerates whitespace + attributes + ChatML/Llama/Mistral special tokens (`<|im_start|>`, `[INST]`, `<<SYS>>`, etc.) — adversarial card output from a web fetch can no longer escape the fence or inject role-framing tokens. `HANDOFF_OUTPUT_CAP` (64 KiB) capped via `safeTruncate` that trims back from a lone high surrogate so emoji/CJK never break mid-character. Every UI hook (`onCardStart` / `onCardOutput` / `onCardDone` / `onCardError` / `onWorkflowDone`) wrapped in `safeHook` so a throwing subscriber can't take down a card or the run. `parseWorkflowTrigger` rejects NaN / Infinity / floats / negatives / zero / empty `card_id`. Unknown preset now refuses to run instead of silently broadening to "all tools allowed". `card.model === ""` falls back to `opts.model` (was passing the empty string straight through).
+
+**Unattended scheduled-run auto-approve.** `UNATTENDED_NEVER_AUTO` now also blocks `applescript_run`, `delete_path`, `kill_process`, `agent_undo`, `http_request`, `spawn_subagent`. MCP tools blocked via `isMcpToolName(...)` (a previous literal `"mcp_call_tool"` entry was dead — names are minted at runtime as `mcp__<server>__<tool>`). Auto-approve now also requires `risk === "normal"` — anything escalated by `classifyToolRisk` falls through to the explicit gate.
+
+**Per-call risk classifier.** `classifyToolRisk` is now path-aware for `write_file` / `edit_file` / `multi_edit` / `move_path` / `copy_path` / `make_dir`. Writes targeting `/etc/`, `/Library/Launch{Agents,Daemons}/`, shell rc files (`.zshrc`, `.bashrc`, …), `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, or any `*.app`/`*.command`/`*.terminal`/`*.workflow`/`*.tool` bundle (root OR internal writes) escalate to `destructive` so `approveAllWrite` cannot wave them through. `move_path` / `copy_path` inspect BOTH `args.from` and `args.to`. Lexical `..`-collapse runs before the prefix check so `~/foo/../../etc/hosts` doesn't slip past as "normal" risk. The Rust write layer remains the authoritative gate; this keeps the UX promise of the in-app toggle honest.
+
+**Approval modal in workflows.** Interactive workflow runs now surface a `ConfirmDialog` for every dangerous tool (was: default `denyAll` → models silently knew they couldn't write, abandoned the work). The Promise resolver wires the AbortSignal so clicking Stop while a modal is open resolves as `{approve:false, reason:"aborted"}` and unwinds the runner cleanly. Unmount cleanup aborts the whole run (no more "completed" runs with empty outputs because navigation silently auto-denied a pending approval). Deny taxonomy expanded — `ConfirmDecision.reason` records `"user_deny"` / `"user_allow"` / `"aborted"` / `"unattended_denied"` distinctly in the audit row, while the model-facing tool body collapses to a single learnable `kind:"permission_denied"`. New per-run **"Auto-approve file writes"** checkbox in RunPanel — covers only actual fs writes (`write_file`/`edit_file`/`multi_edit`/`make_dir`/`move_path`/`copy_path`); `http_request`, `clipboard_set`, `applescript_run`, `git_commit` always gate explicitly. Reset to `false` on every workflow open.
+
+**WorkflowsPage state lifecycle.** Synchronous `runningRef` guards all three run entry points (Run workflow / Run card alone / `workflow-trigger` event). `aborted` and `error` card statuses now transition the card badge out of "running" (was stuck). `stopRun` no longer nulls `abortRef.current` synchronously (a second Stop click is now a safe no-op rather than dropping the controller mid-teardown). `ensureCardModelLoaded` pre-loads each card's pinned model up front, deduped by model name. Single-card runs clear all stale state from prior full-workflow runs. Scheduled-trigger handler scopes the model-coverage check to the cards from `startCardId` onward instead of the whole graph. Edge-click on the canvas now prompts to disconnect (React Flow's select+Delete doesn't survive the re-render reconcile). In-progress banner displayed while a run is live (`"● Run in progress — leaving this view will cancel it."`).
+
+**Workflow editor save semantics.** `loadedSnapshotRef` + `loadedWorkflowIdRef` baseline-track the workflow open state; the debounced auto-save only fires when the in-memory state genuinely diverges from the loaded baseline. Prevents unrelated re-renders (status update, user-profile load) from clobbering concurrent external DB edits. Revert-to-baseline clears `pendingSave.current` so an unmount flush can't re-apply abandoned edits. `openWorkflow` resets per-session state (`approveAllWrite`, `formCard`, error banner).
+
+**Agent system prompt.** Now injects current ISO date + locale time per run — models no longer fabricate filenames from training-data cutoff dates. Path conventions block anchors common shorthands ("desktop" → `~/Desktop/`, "documents" → `~/Documents/`, "downloads" → `~/Downloads/`) and instructs the model to honor literal filenames + file extensions verbatim. Research-budget nudge fires at 10 successful external research calls (`web_search` / `web_fetch` / `read_pdf`) without writes when the card can produce a deliverable — breaks the "model spins forever on search without ever calling `write_file`" failure mode. Local filesystem reads (`read_file` / `list_dir` / `search_files`) don't count toward the nudge so Coder-style codebase exploration isn't punished.
+
+**Researcher preset.** Now read AND write (added `write_file`, `edit_file`, `multi_edit` to the allowlist; `run_shell` stays off). System prompt mandates `write_file` for any "report/summary/document" request and forbids deferring to chat-only output. `userProfile` (About You block) is no longer injected into workflow agent runs — kimi-k2.6:cloud was picking the user's first name as the literal filename.
+
+**Schedule grammar parity.** Form regex `scheduleError` and Rust `parse_schedule` now agree on whitespace tolerance (`^every[ \t]+(\d+)[ \t]*([mh])$`) — restricted to ASCII whitespace only so Unicode (NBSP, ZWSP, ideographic space) that JS `\s` would accept but Rust `strip_prefix("every ")` rejects can't slip through and silently never fire.
+
+**parseWorkflow hardening.** Card ids deduplicated on load. `x` / `y` coordinates must be finite + within ±1e6 (Round 1 fix; NaN/Infinity would have broken React Flow viewport math).
+
+**`approveAllWrite` plumbing.** Threaded `RunWorkflowOptions.approveAllWrite` + `RunWorkflowOptions.approveAllShell` through to `AgentRunOptions`; `APPROVE_ALL_WRITE_FS` set defined at module scope.
+
+**Audit log linkage.** `recordAuditSafe` failures now flow through `logDiag` (was `console.warn` — invisible to the user since WKWebView devtools aren't exposed).
+
+**Tests.** 444 vitest tests + 27 Rust workflow tests pass after 5 rounds of remediation. New test files: `src/lib/workflow/__tests__/edge-cases.test.ts` (73 tests across structural, dedup, parseWorkflow, runner, hook safety, handoff sanitization, recording, trigger payload narrowing) and `src/lib/workflow/__tests__/stress.test.ts` (17 tests covering 10 000-card graph resolve, concurrent runs, abort-boundary timing).
+
+**Diagnostic tooling.** New `append_diag_log` Tauri command writes to `~/.local-llm-app/diag.log`. Used by `ollama-client` to dump the full outgoing body whenever a 400 fires — the cloud-route round-trip diagnosis above is what surfaced the actual root cause.
+
 ### Licensing
 - The project is **open source under the MIT License** — Copyright (c) 2026 Joseph D Eriano. Anyone may use, modify, and distribute Froglips provided the copyright notice and license text are retained. `package.json` and the Rust crate declare `MIT`. (An earlier proprietary / all-rights-reserved phase and its EULA have been dropped.)
 

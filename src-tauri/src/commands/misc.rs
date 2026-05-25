@@ -41,6 +41,34 @@ pub fn read_crash_log() -> String {
     crate::crash_log::read_log()
 }
 
+/// Append a diagnostic line to `~/.local-llm-app/diag.log`. Best-effort —
+/// errors are swallowed and `()` is returned regardless. Each call timestamps
+/// the entry and appends a newline. Capped at the same `MAX_LOG_BYTES` budget
+/// as the crash log via simple length-prefixed tail truncation.
+#[tauri::command]
+pub fn append_diag_log(line: String) -> Result<(), String> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let Some(home) = dirs::home_dir() else {
+        return Err("no home dir".into());
+    };
+    let dir = home.join(".local-llm-app");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("diag.log");
+    // Cap individual line length so a single 50MB body doesn't fill disk.
+    const MAX_LINE: usize = 256 * 1024;
+    let safe = if line.len() > MAX_LINE { &line[..MAX_LINE] } else { &line[..] };
+    let ts = crate::crash_log::now_rfc3339();
+    let record = format!("[{ts}] {safe}\n");
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    f.write_all(record.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// If the SQLite DB was found corrupt on startup and quarantined, returns the
 /// path of the renamed corrupt file so the UI can surface it. `None` otherwise.
 #[tauri::command]

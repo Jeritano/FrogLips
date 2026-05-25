@@ -79,18 +79,41 @@ describe("finalizeToolCalls", () => {
     expect(finalizeToolCalls(acc)[0].function.arguments).toBe("not-json");
   });
 
-  it("uses empty-string arguments when no fragment ever arrived", () => {
+  it("defaults arguments to '{}' when no fragment ever arrived", () => {
+    // Cloud routing parses `arguments` as JSON, so an empty string would
+    // trip "Value looks like object, but can't find closing '}'". `"{}"`
+    // is the safe well-formed-empty default.
     const acc: PartialToolCall[] = [];
     mergeToolCallChunk(acc, 0, { function: { name: "noargs" } as { name: string; arguments: string } });
-    expect(finalizeToolCalls(acc)[0].function.arguments).toBe("");
+    expect(finalizeToolCalls(acc)[0].function.arguments).toBe("{}");
   });
 
-  it("defaults a missing id to an empty string and forces type 'function'", () => {
+  it("mints a stable id when none arrived and forces type 'function'", () => {
+    // Ollama's cloud passthrough pairs each `role:"tool"` result with the
+    // assistant's `tool_calls[].id` and rejects the request when the linkage
+    // is empty. `finalizeToolCalls` mints `call_<8>` so the result message
+    // (which copies tc.id into `tool_call_id`) round-trips correctly.
     const acc: PartialToolCall[] = [];
     mergeToolCallChunk(acc, 0, chunk("t", "{}"));
     const out = finalizeToolCalls(acc)[0];
-    expect(out.id).toBe("");
+    expect(out.id).toMatch(/^call_[0-9a-z]{8}$/);
     expect(out.type).toBe("function");
+  });
+
+  it("preserves a safe upstream-provided id verbatim", () => {
+    const acc: PartialToolCall[] = [];
+    mergeToolCallChunk(acc, 0, chunk("t", "{}", { id: "given_42" }));
+    expect(finalizeToolCalls(acc)[0].id).toBe("given_42");
+  });
+
+  it("replaces upstream ids with disallowed characters", () => {
+    // kimi-k2.6:cloud occasionally emits ids like `functions.web_search:0`
+    // and then rejects that same id on the round-trip with the cryptic
+    // "Value looks like object, but can't find closing '}' symbol" 400.
+    // Anything outside `[A-Za-z0-9_-]` is replaced with a minted `call_<8>`.
+    const acc: PartialToolCall[] = [];
+    mergeToolCallChunk(acc, 0, chunk("t", "{}", { id: "functions.web_search:0" }));
+    expect(finalizeToolCalls(acc)[0].id).toMatch(/^call_[0-9a-z]{8}$/);
   });
 
   it("returns an empty array for an empty accumulator", () => {

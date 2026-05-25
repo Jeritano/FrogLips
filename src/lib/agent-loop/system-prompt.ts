@@ -55,7 +55,31 @@ export function buildSystemPrompt(
     ? `Workspace root: ${workspaceRoot} — all file access is confined to this directory.`
     : "No workspace root set — you have full filesystem access (within OS permissions).";
   const mcpBlock = mcp.length ? `\nMCP tools: ${mcp.join("; ")}` : "";
-  const env = `${ws}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}`;
+  // Inject the real wall-clock so the model doesn't fabricate dates from
+  // its training-data cutoff. Without this an agent asked to write a
+  // "summary for the last 48 hours" picks the year it saw most often in
+  // training, names files `Summary_July2025.md` in 2026, and produces
+  // queries scoped to the wrong window. ISO 8601 with timezone offset
+  // keeps the format unambiguous; the locale string is added for
+  // human-friendly natural-language references.
+  const now = new Date();
+  const isoNow = now.toISOString();
+  const localeNow = now.toString();
+  const dateBlock = `Current date/time: ${isoNow} (${localeNow}). Use THIS date for any filename, query, or relative-time reference — do not rely on your training-data cutoff.`;
+  // Anchor common-shorthand locations so the model doesn't drop the prefix
+  // and write to $HOME by accident. Same idea covers `Documents/`,
+  // `Downloads/`, etc. — the model otherwise frequently strips path
+  // prefixes when the user phrases the location in natural language
+  // ("place a file on the desktop" → `~/Filename.md` instead of
+  // `~/Desktop/Filename.md`).
+  const paths =
+    "Path conventions:\n" +
+    "- \"desktop\" / \"on my desktop\" → write to `~/Desktop/`\n" +
+    "- \"documents\" → write to `~/Documents/`\n" +
+    "- \"downloads\" → write to `~/Downloads/`\n" +
+    "- Honour an explicit file extension verbatim (`.txt` stays `.txt`, do not silently upgrade to `.md`).\n" +
+    "- When the user gives a filename in quotes, backticks, or as a literal token (e.g. \"DemReport\", `report.txt`, file named X), use that EXACT name as the basename. Do NOT paraphrase, expand, prefix with dates, or rewrite it. Only add the extension if one wasn't supplied AND the format is implied.";
+  const env = `${ws}\n${dateBlock}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\n${paths}\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}`;
   if (override && override.trim()) {
     return `${override.trim()}\n\n${env}`;
   }

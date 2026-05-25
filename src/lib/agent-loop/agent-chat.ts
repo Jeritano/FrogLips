@@ -66,16 +66,21 @@ export async function streamAgentChat(
       // params override individual fields (resolveAgentChatConfig handles the
       // null-fallthrough). Applied uniformly with the mlx/native paths.
       const cfg = resolveAgentChatConfig(params);
-      // Strip null/undefined entries — Ollama's cloud-routing backend
-      // (kimi-k2.6:cloud, deepseek-v4-pro:cloud, etc.) rejects
-      // `num_ctx: null` etc. with "Value looks like object, but can't
-      // find closing '}' symbol". Local Ollama is fine with nulls; the
-      // cloud passthrough re-validates the JSON more strictly.
+      // Cloud-routing models (kimi-k2.6:cloud, deepseek-v4-pro:cloud, …) run
+      // on the provider's own infra with server-side defaults. The cloud
+      // passthrough re-validates each request strictly and has been observed
+      // to reject Ollama's `options` payload outright with the cryptic
+      // "Value looks like object, but can't find closing '}' symbol" 400 —
+      // even when every value is well-formed. Skip per-request tuning on
+      // those routes; local-only Ollama models still honour it.
+      const isCloud = typeof opts.model === "string" && opts.model.endsWith(":cloud");
       const ollamaOptions: Record<string, unknown> = {};
-      if (cfg.temperature != null) ollamaOptions.temperature = cfg.temperature;
-      if (cfg.top_p != null) ollamaOptions.top_p = cfg.top_p;
-      if (cfg.max_tokens != null) ollamaOptions.num_predict = cfg.max_tokens;
-      if (cfg.context_size != null) ollamaOptions.num_ctx = cfg.context_size;
+      if (!isCloud) {
+        if (cfg.temperature != null) ollamaOptions.temperature = cfg.temperature;
+        if (cfg.top_p != null) ollamaOptions.top_p = cfg.top_p;
+        if (cfg.max_tokens != null) ollamaOptions.num_predict = cfg.max_tokens;
+        if (cfg.context_size != null) ollamaOptions.num_ctx = cfg.context_size;
+      }
       // Same trick on the top-level body: a cloud passthrough that sees
       // `tools: []` for a model that doesn't support tools also barfs
       // on the schema check. Only include `tools` when we have any.

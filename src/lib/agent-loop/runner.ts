@@ -188,6 +188,36 @@ export function policyDecisionFor(
 }
 
 const MAX_ITERATIONS = 40;
+
+/**
+ * `approveAllWrite` is a UX shortcut for "I trust this run to produce
+ * files without a modal per write". It covers ONLY actual filesystem
+ * writes — not other WRITE_TOOLS entries that happen to share the bucket.
+ * `http_request`, `clipboard_set`, `applescript_run`, `git_commit` ride a
+ * different risk profile; the user's mental model when they tick
+ * "Auto-approve file writes" does NOT include them.
+ */
+const APPROVE_ALL_WRITE_FS = new Set([
+  "write_file",
+  "edit_file",
+  "multi_edit",
+  "make_dir",
+  "move_path",
+  "copy_path",
+]);
+
+/** Reasons valid on a deny-path `ConfirmDecision`. Anything else is normalised
+ * to `"user_deny"` for both the model-facing message body and the audit row. */
+const VALID_DENY_REASONS = new Set(["user_deny", "aborted", "unattended_denied"]);
+
+/** Per-reason text shown to the model in the rejection body. */
+const DENY_MESSAGE_BY_REASON: Record<string, string> = {
+  user_deny: "User denied this tool call.",
+  aborted: "Run was aborted before this tool call could complete.",
+  unattended_denied:
+    "Tool call denied by the default unattended gate. " +
+    "Enable the card's `unattended` flag and ensure the tool name is in the card's allowlist.",
+};
 // Stall detection: if agent reads the same path > this many times in
 // monotonically-advancing tiny chunks, abort the loop with an explanatory msg.
 const STALL_SAME_PATH_LIMIT = 6;
@@ -467,6 +497,41 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     ? allTools.filter((t) => toolAllowlist.includes(t.function.name))
     : allTools;
 
+  // Track "research without writing" so we can nudge the model when it
+  // spins on web_search/web_fetch and never delivers the file the user
+  // asked for. The set below is intentionally narrow: only the pure
+  // read-only research tools count toward the budget. The threshold is
+  // intentionally generous — a real research task may need 8+ searches
+  // — but past that we inject one synthetic system reminder, AND just
+  // before the iteration cap we inject a stronger one.
+  const RESEARCH_NUDGE_THRESHOLD = 10;
+  // External-only research surface. Filesystem inspection (read_file,
+  // list_dir, search_files) is intentionally NOT counted — a Coder
+  // agent doing focused codebase exploration is doing exactly what it
+  // should be, and nudging it to write before it understands the
+  // problem is counterproductive.
+  const RESEARCH_TOOLS = new Set([
+    "web_search",
+    "web_fetch",
+    "read_pdf",
+  ]);
+  // Nudge fires when the card has SOME way to commit the deliverable.
+  // edit_file and multi_edit count too — a Coder-style card may prefer
+  // edit_file over write_file, but it still needs to land its work on
+  // disk eventually.
+  const canWriteFile =
+    !toolAllowlist.length
+    || toolAllowlist.includes("write_file")
+    || toolAllowlist.includes("edit_file")
+    || toolAllowlist.includes("multi_edit");
+  // Narrow RESEARCH_TOOLS to *external* research so local read_file /
+  // list_dir / search_files don't trip the nudge for Coder agents that
+  // legitimately read many files before issuing the first edit. Pure
+  // codebase exploration without web access never fires the nudge.
+  let researchCallCount = 0;
+  let writeCallCount = 0;
+  let researchNudgeFired = false;
+
   try {
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     if (signal.aborted) return null;
@@ -544,7 +609,25 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     if (typeof evalTok === "number") metrics.completionTokens += evalTok;
     onMetrics?.({ ...metrics });
 
-    const toolCalls = result.tool_calls;
+    // Cloud-routing Ollama models (kimi-k2.6:cloud, deepseek-v4-pro:cloud, …)
+    // have been observed to reject the next request with the cryptic
+    // "Value looks like object, but can't find closing '}' symbol" 400
+    // when an assistant turn carries multiple parallel tool_calls. Force
+    // serial execution on those routes: keep only the first tool_call,
+    // and the model will re-issue any remaining intent on the next turn
+    // (the prompt loop is unchanged — agent loops are designed to handle
+    // one-tool-per-turn flows transparently). Local Ollama + MLX + native
+    // backends keep full parallel tool-call support.
+    let toolCalls = result.tool_calls;
+    let droppedParallelCount = 0;
+    if (
+      typeof opts.model === "string" &&
+      opts.model.endsWith(":cloud") &&
+      toolCalls.length > 1
+    ) {
+      droppedParallelCount = toolCalls.length - 1;
+      toolCalls = [toolCalls[0]];
+    }
     const preludeText = result.content;
     // Pop the streaming placeholder; the loop below re-pushes the canonical
     // message (final reply OR assistant-with-tool-calls) using makeTmpKey.
@@ -701,19 +784,37 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
           (policyVerdict === "auto" ||
             prefixApproved ||
             (fnName === SHELL_TOOL && approveAllShell && risk === "normal") ||
-            // Blanket write-approval only covers normal-risk writes — an
-            // elevated call (e.g. an http_request carrying a body, or a
-            // destructive method) always needs an explicit confirmation.
-            (WRITE_TOOLS.has(fnName) && approveAllWrite && risk === "normal"));
+            // Blanket write-approval only covers normal-risk *filesystem*
+            // writes — an elevated call (sensitive-path-classified write,
+            // http_request, etc.) always needs explicit confirmation.
+            (APPROVE_ALL_WRITE_FS.has(fnName) && approveAllWrite && risk === "normal"));
         if (sessionApproved) {
           auditApproval = "session_allowed";
         }
         if (!sessionApproved) {
           const decision = await requestConfirmation(fnName, args, risk);
           if (!decision.approve) {
+            // Three deny paths the audit log must distinguish:
+            //   - human clicked Deny       → reason: "user_deny"
+            //   - run was cancelled        → reason: "aborted"
+            //   - default deny-all fired   → reason: "unattended_denied"
+            // Anything outside the allowed set (including a stray
+            // "user_allow" that callers must never produce on a deny
+            // path) is normalised to "user_deny" so the audit row +
+            // tool body stay coherent.
+            const rawReason = decision.reason ?? "user_deny";
+            const auditReason = VALID_DENY_REASONS.has(rawReason) ? rawReason : "user_deny";
+            // Model-facing `kind`: collapse to a single learnable error
+            // class ("permission_denied"). Models trained on standard
+            // permission errors recognise this; the internal taxonomy
+            // (user_deny / aborted / unattended_denied) lives ONLY in
+            // the audit row so post-hoc reviewers retain full fidelity.
             pushToolResult(msgs, opts.conversationId, onUpdate, tc,
-              rejectionBody("user_denied", "User denied this tool call."),
-              { approval: "denied", outcome: "denied", errorKind: "user_denied", args });
+              rejectionBody(
+                "permission_denied",
+                DENY_MESSAGE_BY_REASON[auditReason] ?? DENY_MESSAGE_BY_REASON.user_deny,
+              ),
+              { approval: "denied", outcome: "denied", errorKind: auditReason, args });
             continue;
           }
           auditApproval = "user_allowed";
@@ -838,6 +939,19 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         durationMs,
       });
 
+      // Track research-vs-write balance so the post-turn block below can
+      // inject a "stop researching, write the file" nudge before the
+      // iteration budget is exhausted. `outcome` of `error` is not
+      // counted — only successful research calls accumulate. (Denied
+      // calls short-circuited earlier via `continue` and never reach
+      // this point in the loop.)
+      if (outcome !== "error") {
+        if (RESEARCH_TOOLS.has(fnName)) researchCallCount++;
+        if (fnName === "write_file" || fnName === "edit_file" || fnName === "multi_edit") {
+          writeCallCount++;
+        }
+      }
+
       // Consecutive-error budget: a real failure (error outcome) bumps the
       // counter; any non-error outcome resets it. Dry-run results count as
       // successes — they're a deliberate suppression, not a failure.
@@ -859,13 +973,39 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       }
     }
 
+    // Surface dropped parallel tool_calls (cloud-route truncation) as a
+    // synthetic system reminder for the NEXT turn. Pushed AFTER the tool
+    // result(s) so the assistant↔tool message pairing stays adjacent —
+    // some cloud gateways (Ollama `*:cloud`) re-validate body shape and
+    // reject any system message interleaved between an assistant tool_calls
+    // turn and its tool result. The model sees this reminder when it
+    // composes its NEXT response, prompting it to reissue the dropped
+    // calls instead of assuming they ran.
+    if (droppedParallelCount > 0) {
+      msgs.push({
+        _tmpKey: makeTmpKey(),
+        conversation_id: opts.conversationId,
+        role: "system",
+        content:
+          `[agent-loop] Cloud-route only executes ONE tool call per turn. ` +
+          `${droppedParallelCount} additional tool call(s) you issued in the previous turn were dropped — ` +
+          `reissue any that still matter on your next turn.`,
+      });
+      onUpdate([...msgs]);
+      // No explicit reset — `droppedParallelCount` is a per-iteration
+      // `let` declared at the top of the for-body and re-initialises
+      // to 0 each turn.
+    }
+
     // After a run of consecutive tool failures, inject a system hint so the
     // model stops retrying and reports the blocker to the user. This is an
     // additional guard layered on top of the dedupe / stall / MAX_ITERATIONS
     // logic — the dedupe window only catches IDENTICAL repeated calls.
+    let stopAndReportInjectedThisIter = false;
     if (stopAndReportHintPending) {
       stopAndReportHintPending = false;
       consecutiveToolErrors = 0;
+      stopAndReportInjectedThisIter = true;
       msgs.push({
         _tmpKey: makeTmpKey(),
         conversation_id: opts.conversationId,
@@ -874,6 +1014,40 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
           `[agent-loop] ${MAX_CONSECUTIVE_TOOL_ERRORS} tool calls in a row failed. ` +
           "Stop retrying tools. Report to the user what you were trying to do, " +
           "what failed, and the error messages — then ask how to proceed.",
+      });
+      onUpdate([...msgs]);
+    }
+
+    // Research-budget nudge: if the agent has done a lot of read-only
+    // research without producing a file (despite write_file being in
+    // its allowlist), inject a one-time strong reminder. Many models —
+    // kimi-k2.6:cloud in particular — happily spin on web_search and
+    // never get around to the write step the user asked for. This nudge
+    // breaks the loop. Fires once per run.
+    //
+    // Skip the nudge on a turn where the stop-and-report hint already
+    // fired — the two messages give conflicting instructions ("stop
+    // retrying, report the blocker" vs "stop researching, write the
+    // file") and the model gets muddled. Stop-and-report wins because
+    // it indicates the runner is in a failure mode, not just spinning.
+    if (
+      !researchNudgeFired &&
+      !stopAndReportInjectedThisIter &&
+      canWriteFile &&
+      writeCallCount === 0 &&
+      researchCallCount >= RESEARCH_NUDGE_THRESHOLD
+    ) {
+      researchNudgeFired = true;
+      msgs.push({
+        _tmpKey: makeTmpKey(),
+        conversation_id: opts.conversationId,
+        role: "system",
+        content:
+          `[agent-loop] You have already made ${researchCallCount} research calls without committing a file. ` +
+          "STOP RESEARCHING. On your next turn, call `write_file` (or `edit_file` / `multi_edit` for existing " +
+          "files) with the deliverable using the information you already have. The user is waiting for the " +
+          "file — not more research. " +
+          `Remaining turn budget: ${MAX_ITERATIONS - (i + 1)}.`,
       });
       onUpdate([...msgs]);
     }

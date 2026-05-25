@@ -175,10 +175,15 @@ describe("runWorkflow — unattended opt-in", () => {
     await runWorkflow(single(unattendedCard()), {}, { model: "m", scheduled: true });
 
     expect(gate).toBeDefined();
-    // A tool in the card's allowlist is auto-approved.
-    expect(await gate!("read_file", {}, "normal")).toEqual({ approve: true });
-    // A tool NOT in the allowlist falls through to the deny-all default gate.
-    expect(await gate!("run_shell", {}, "destructive")).toEqual({ approve: false });
+    // A tool in the card's allowlist is auto-approved. No `reason` tag —
+    // auto-approves don't need to distinguish themselves the way denies do.
+    expect((await gate!("read_file", {}, "normal")).approve).toBe(true);
+    // A tool NOT in the allowlist falls through to the deny-all default
+    // gate. The deny carries `reason: "unattended_denied"` so the audit
+    // log can tell apart a human Deny from a default-policy deny.
+    const r1 = await gate!("run_shell", {}, "destructive");
+    expect(r1.approve).toBe(false);
+    expect(r1.reason).toBe("unattended_denied");
   });
 
   it("uses the normal gate for an unattended card on a MANUAL run", async () => {
@@ -191,7 +196,9 @@ describe("runWorkflow — unattended opt-in", () => {
     // scheduled omitted → manual run; unattended must NOT auto-approve.
     await runWorkflow(single(unattendedCard()), {}, { model: "m" });
 
-    expect(await gate!("read_file", {}, "normal")).toEqual({ approve: false });
+    const r = await gate!("read_file", {}, "normal");
+    expect(r.approve).toBe(false);
+    expect(r.reason).toBe("unattended_denied");
   });
 
   it("still denies for a non-unattended card on a scheduled run", async () => {
@@ -204,7 +211,9 @@ describe("runWorkflow — unattended opt-in", () => {
     const plain = { ...card("p"), tools: ["read_file"], unattended: false };
     await runWorkflow(single(plain), {}, { model: "m", scheduled: true });
 
-    expect(await gate!("read_file", {}, "normal")).toEqual({ approve: false });
+    const r = await gate!("read_file", {}, "normal");
+    expect(r.approve).toBe(false);
+    expect(r.reason).toBe("unattended_denied");
   });
 });
 

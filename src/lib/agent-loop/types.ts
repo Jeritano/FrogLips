@@ -46,6 +46,18 @@ export interface AgentMetrics {
 export interface ConfirmDecision {
   approve: boolean;
   remember?: boolean;
+  /**
+   * Optional reason tag — distinguishes an explicit user click from an
+   * abort-driven synthetic deny or a deny-all default. Recorded in the
+   * agent audit log so a reviewer can tell the difference between "the
+   * human said no" and "the run was cancelled before the gate fired".
+   *   - "user_allow"        : human clicked Allow
+   *   - "user_deny"         : human clicked Deny
+   *   - "aborted"           : run-level abort fired while the modal was open
+   *                           OR before the gate had a chance to render
+   *   - "unattended_denied" : default deny-all gate fired (no UI involved)
+   */
+  reason?: "user_allow" | "user_deny" | "aborted" | "unattended_denied";
 }
 
 export interface AgentRunOptions {

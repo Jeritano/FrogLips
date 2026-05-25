@@ -4,10 +4,12 @@ import "@xyflow/react/dist/style.css";
 import { api } from "../../lib/tauri-api";
 import { runWorkflow, validateGraph, handleWorkflowTrigger } from "../../lib/workflow";
 import type { WorkflowHooks, RunWorkflowOptions } from "../../lib/workflow";
+import type { ConfirmDecision } from "../../lib/agent-loop";
 import { logDiag } from "../../lib/diagnostics";
 import { announce } from "../../lib/announce";
 import { useTauriEvent } from "../../hooks/useTauriEvent";
 import { BUILTIN_PRESETS } from "../../lib/agent-presets";
+import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
 import {
   parseWorkflow,
@@ -53,7 +55,98 @@ export function WorkflowsPage({ status }: Props) {
   const [cardStates, setCardStates] = useState<Record<string, CardRunState>>({});
   const [outputs, setOutputs] = useState<Record<string, { output: string; error?: string }>>({});
   const [running, setRunning] = useState(false);
+  // `running` is React state — captured by closures and only updated on the
+  // next render. The three entry points into a workflow run (Run, Run-card,
+  // and the workflow-trigger event handler) all gate on `running`, but in a
+  // single event-loop tick two of them may see the same `false` and both
+  // start a run. `runningRef` mirrors the state synchronously so every
+  // entry point reads the same source of truth and the second caller is
+  // refused without racing on React's batching.
+  const runningRef = useRef(false);
   const [err, setErr] = useState<string | null>(null);
+  // Per-run "approve all writes" toggle — when checked, the runner skips
+  // the confirm modal for every `write_file` / `edit_file` / `multi_edit`
+  // / `make_dir` call whose risk is `normal`. Long workflows that legitimately
+  // produce several files (research → summary → report) become one-click
+  // instead of one-modal-per-card. Destructive risks (delete_path,
+  // kill_process, run_shell) still gate explicitly.
+  const [approveAllWrite, setApproveAllWrite] = useState(false);
+  // Per-call approval modal state. The agent runner calls
+  // `requestConfirmation(toolName, args, risk)` for any dangerous tool;
+  // the returned promise resolves when the user clicks Allow/Deny here.
+  // Without this gate the runner defaults to `denyAll`, which silently
+  // refuses every write_file / edit_file etc. and the model just narrates
+  // around the missing capability.
+  const [confirmState, setConfirmState] = useState<{
+    toolName: string;
+    args: Record<string, unknown>;
+    risk: string;
+  } | null>(null);
+  const confirmResolveRef = useRef<((v: ConfirmDecision) => void) | null>(null);
+  const requestConfirmation = useCallback(
+    (
+      toolName: string,
+      args: Record<string, unknown>,
+      risk: string,
+    ): Promise<ConfirmDecision> =>
+      new Promise<ConfirmDecision>((resolve) => {
+        // If the user already clicked Stop before the gate fired, deny
+        // synchronously — the loop's next iteration boundary will read
+        // signal.aborted and bail out cleanly. The `reason` field lets
+        // the downstream audit row + tool-result body distinguish an
+        // explicit-user-deny from an abort-driven deny.
+        const signal = abortRef.current?.signal;
+        if (signal?.aborted) {
+          resolve({ approve: false, reason: "aborted" });
+          return;
+        }
+        const onAbort = () => {
+          confirmResolveRef.current = null;
+          setConfirmState(null);
+          resolve({ approve: false, reason: "aborted" });
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        confirmResolveRef.current = (v) => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve(v);
+        };
+        setConfirmState({ toolName, args, risk });
+      }),
+    [],
+  );
+  const resolveConfirmation = useCallback((approve: boolean) => {
+    setConfirmState(null);
+    confirmResolveRef.current?.({ approve, reason: approve ? "user_allow" : "user_deny" });
+    confirmResolveRef.current = null;
+  }, []);
+  // Unmount safety: a navigate-away mid-run used to silently auto-deny
+  // any pending approval, producing a "completed" run record whose
+  // cards have empty outputs and downstream cards complaining that a
+  // promised file is missing. The honest behaviour is to abort the
+  // ENTIRE run on unmount — the agent loop exits cleanly at its next
+  // iteration boundary, the recorded run reflects the abort, and the
+  // user knows their navigation cancelled the work.
+  //
+  // The confirm-modal resolver is also denied here as the very last
+  // thing so any in-flight `await requestConfirmation(...)` unblocks
+  // and lets the runner notice the abort signal.
+  useEffect(() => {
+    return () => {
+      // Abort first; this fires the signal listener that resolves any
+      // open confirmation Promise as `{approve:false, reason:"aborted"}`
+      // and synchronously nulls `confirmResolveRef.current`.
+      abortRef.current?.abort();
+      // Belt-and-suspenders for the (currently impossible) case where
+      // the abort listener was async-detached BEFORE running. Check the
+      // ref again: if `onAbort` already cleared it, do nothing — a
+      // double-resolve would race two distinct denial paths.
+      const resolver = confirmResolveRef.current;
+      if (resolver) {
+        confirmResolveRef.current = null;
+        resolver({ approve: false, reason: "aborted" });
+      }
+    };
+  }, []);
   // Pre-formatted "About You" block, shared by every card's agent run so
   // workflow agents know who the user is. Refreshed on mount.
   const [userProfile, setUserProfile] = useState<string | null>(null);
@@ -123,17 +216,53 @@ export function WorkflowsPage({ status }: Props) {
   // `name` is the local-state input mirror so a rename survives an interleaved
   // refreshList() — previously, setSelected({...selected, name}) was overwritten
   // when refreshList() rehydrated `selected` from the DB.
+  //
+  // The dirty-gate matters: this effect re-runs on EVERY render, including
+  // renders triggered by unrelated state (status changes, userProfile loads,
+  // approveAllWrite toggles). Without the gate, the auto-save would clobber
+  // any concurrent DB edit (an external migration, another window) with the
+  // in-memory state — which may itself be stale from the original load.
+  // Only schedule a flush when something genuinely changed since open.
+  const loadedSnapshotRef = useRef<string>("");
+  const loadedWorkflowIdRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!selected) return;
+    if (!selected) {
+      loadedSnapshotRef.current = "";
+      loadedWorkflowIdRef.current = null;
+      return;
+    }
+    // Re-baseline whenever the workflow id changes. Without this, a
+    // workflow switch (A → picker → B, OR a future direct-switch path)
+    // would carry A's snapshot into B's lifecycle and immediately fire a
+    // spurious "B is dirty" save.
+    if (loadedWorkflowIdRef.current !== selected.id) {
+      loadedSnapshotRef.current = JSON.stringify({ name, cards, edges });
+      loadedWorkflowIdRef.current = selected.id;
+      // Reset any stale pending entry queued under the previous workflow.
+      pendingSave.current = null;
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      return;
+    }
+    const currentSnapshot = JSON.stringify({ name, cards, edges });
+    if (loadedSnapshotRef.current === currentSnapshot) {
+      // No user edit since open — skip the save so unrelated renders don't
+      // overwrite externally-applied DB changes. ALSO clear any stale
+      // pendingSave from a prior dirty cycle that the user has since
+      // reverted: without this, a `flushSave` from the unmount path would
+      // re-apply the abandoned edit and lose the user's revert.
+      pendingSave.current = null;
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      return;
+    }
     pendingSave.current = { id: selected.id, name, graph: { cards, edges } };
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 600);
-    // Cleanup only cancels the in-flight timer — it MUST NOT flush. This
-    // effect re-runs on every keystroke in `name` (and every card/edge
-    // change), so flushing here would collapse the debounce into a
-    // per-keystroke save. The dedicated unmount-flush effect below handles
-    // the component-unmount case, and the "← Workflows" handler explicitly
-    // flushes before clearing `selected`.
     return () => {
       if (saveTimer.current) {
         clearTimeout(saveTimer.current);
@@ -154,6 +283,18 @@ export function WorkflowsPage({ status }: Props) {
     setEdges(w.graph.edges);
     setCardStates({});
     setOutputs({});
+    // Reset any open card-edit form left over from a prior workflow; the
+    // formCard would otherwise point at an id absent from the new graph
+    // and any save would silently no-op.
+    setFormCard(null);
+    setFormIsNew(false);
+    setFormOrigin(null);
+    // Reset the per-session auto-approve toggle on every workflow open so
+    // a stale `true` from workflow A doesn't carry into workflow B. The
+    // user must explicitly re-opt-in per workflow open.
+    setApproveAllWrite(false);
+    // Clear any sticky error banner from a prior workflow's run.
+    setErr(null);
   }
 
   async function createWorkflow() {
@@ -258,8 +399,17 @@ export function WorkflowsPage({ status }: Props) {
           [id]: { output: (o[id]?.output ?? "") + text, error: o[id]?.error },
         })),
       onCardDone: (id, result) => {
+        // Every terminal status must transition the card out of "running".
+        // Previously only `ok` and `skipped` were handled, leaving the badge
+        // stuck on "Running" after an abort or after a downstream-of-error
+        // skip resolved. `error` is also covered here as defence-in-depth —
+        // onCardError fires first for that path but a missed event would
+        // otherwise leave the card visibly running.
         if (result.status === "ok") setState(id, "done");
         else if (result.status === "skipped") setState(id, "idle");
+        else if (result.status === "aborted" || result.status === "error") {
+          setState(id, "failed");
+        }
       },
       onCardError: (id, message) => {
         setState(id, "failed");
@@ -267,6 +417,7 @@ export function WorkflowsPage({ status }: Props) {
       },
       onWorkflowDone: (results) => {
         setRunning(false);
+        runningRef.current = false;
         abortRef.current = null;
         announce(
           results.status === "ok" ? "Workflow run finished" : "Workflow run failed",
@@ -288,6 +439,11 @@ export function WorkflowsPage({ status }: Props) {
       cardSubset?: WorkflowCard[],
     ): Omit<RunWorkflowOptions, "model"> & { model: string } | null => {
       const subset = cardSubset ?? cards;
+      // A card "needs" the fallback (loaded chat model) only when its own
+      // `model` is unset. Cards with an explicit `*:cloud` model already
+      // satisfy the gate — the Ollama daemon routes those without a local
+      // server load. Cards with an explicit local model satisfy it too;
+      // `ensureCardModelLoaded` brings up the right server before the run.
       const missing = subset.filter((c) => !c.model);
       const fallbackModel = status?.model ?? "";
       if (missing.length > 0 && !fallbackModel) {
@@ -304,9 +460,20 @@ export function WorkflowsPage({ status }: Props) {
         defaultBackend: (status?.backend as RunWorkflowOptions["defaultBackend"]) ?? undefined,
         serverStatus: status,
         userProfile: userProfile ?? undefined,
+        // Interactive workflow runs surface a confirmation modal for every
+        // dangerous tool call. Without this the runner's default `denyAll`
+        // would refuse `write_file` / `edit_file` / `run_shell` silently
+        // and a "write the summary to disk" prompt would never write
+        // anything. Scheduled (unattended) runs still bypass this for
+        // cards that have explicitly opted in via `card.unattended`.
+        requestConfirmation,
+        // Per-run auto-approve for normal-risk writes. Surfaced as a
+        // checkbox in RunPanel — flips false on every page mount so the
+        // user has to opt in for each session.
+        approveAllWrite,
       };
     },
-    [status, userProfile, cards],
+    [status, userProfile, cards, requestConfirmation, approveAllWrite],
   );
 
   /**
@@ -350,34 +517,55 @@ export function WorkflowsPage({ status }: Props) {
       setErr("Fix the chain warning before running.");
       return;
     }
-    if (running) {
+    // Synchronous ref check — `running` state may still read false here if
+    // a near-simultaneous click + workflow-trigger event both land in the
+    // same tick. The ref is flipped *before* the await, claiming the slot.
+    if (runningRef.current || running) {
       setErr("A run is already in progress.");
       return;
     }
     const opts = baseRunOpts();
     if (!opts) return;
-    // Best-effort: ensure each card's pinned model is loadable. Cloud
-    // models are no-ops here. Sequential to avoid hammering the server.
-    void (async () => {
-      for (const c of cards) {
-        await ensureCardModelLoaded(c);
-      }
-    })();
+    runningRef.current = true;
+    // Pre-load each card's model BEFORE the runner starts. Native + MLX
+    // backends have 10-30s cold starts; without this the first card hits
+    // "connection refused" before its model is ready. Cloud models no-op
+    // inside `ensureCardModelLoaded`. De-duped by model name so two cards
+    // pinned to the same model share a single load. Sequential to avoid
+    // hammering the daemon.
     const ac = new AbortController();
     abortRef.current = ac;
     setRunning(true);
     setOutputs({});
     setCardStates({});
     announce("Workflow run started");
-    void runWorkflow({ cards, edges }, makeHooks(() => {}), {
-      ...opts,
-      workflowId: selected.id,
-      signal: ac.signal,
-    }).catch((e) => {
-      setRunning(false);
-      abortRef.current = null;
-      setErr(`Workflow run failed: ${e}`);
-    });
+    void (async () => {
+      const loaded = new Set<string>();
+      for (const c of cards) {
+        if (ac.signal.aborted) break;
+        if (c.model && loaded.has(c.model)) continue;
+        await ensureCardModelLoaded(c);
+        if (c.model) loaded.add(c.model);
+      }
+      if (ac.signal.aborted) {
+        setRunning(false);
+        runningRef.current = false;
+        abortRef.current = null;
+        return;
+      }
+      try {
+        await runWorkflow({ cards, edges }, makeHooks(() => {}), {
+          ...opts,
+          workflowId: selected.id,
+          signal: ac.signal,
+        });
+      } catch (e) {
+        setRunning(false);
+        runningRef.current = false;
+        abortRef.current = null;
+        setErr(`Workflow run failed: ${e}`);
+      }
+    })();
   }
 
   function runSingleCard(id: string) {
@@ -385,7 +573,7 @@ export function WorkflowsPage({ status }: Props) {
     setErr(null);
     const card = cards.find((c) => c.id === id);
     if (!card || !selected) return;
-    if (running) {
+    if (runningRef.current || running) {
       setErr("A run is already in progress.");
       return;
     }
@@ -393,26 +581,50 @@ export function WorkflowsPage({ status }: Props) {
     // workflow with other un-modeled cards still succeeds.
     const opts = baseRunOpts([card]);
     if (!opts) return;
-    // Auto-load the card's pinned model if it isn't already the
-    // current server.model. Cloud Ollama models route via the daemon
-    // without needing a local "Start" — startServer no-ops gracefully
-    // when the daemon already serves the model. Best-effort; log on
-    // failure but don't block the run.
-    void ensureCardModelLoaded(card);
+    // Claim the slot AFTER the gate has been validated — otherwise an
+    // early-return from `baseRunOpts` would leave the ref pinned `true`
+    // and the next legitimate run would be refused.
+    runningRef.current = true;
+    // Clear ALL prior states + outputs before starting the single-card
+    // run — leaving stale `done`/`failed` badges from a previous full
+    // workflow run makes the canvas falsely suggest those agents just
+    // executed. Persisted run records still hold the history.
     const ac = new AbortController();
     abortRef.current = ac;
     setRunning(true);
-    setCardStates((s) => ({ ...s, [id]: "running" }));
-    setOutputs((o) => ({ ...o, [id]: { output: "" } }));
-    void runWorkflow(
-      { cards: [card], edges: [] },
-      makeHooks(() => {}),
-      { ...opts, workflowId: selected.id, signal: ac.signal },
-    ).catch((e) => {
-      setRunning(false);
-      abortRef.current = null;
-      setErr(`Card run failed: ${e}`);
-    });
+    setCardStates({ [id]: "running" });
+    setOutputs({ [id]: { output: "" } });
+    announce("Card run started");
+    void (async () => {
+      if (ac.signal.aborted) {
+        setRunning(false);
+        runningRef.current = false;
+        abortRef.current = null;
+        return;
+      }
+      // AWAIT the load before kicking the runner. Cloud routes no-op
+      // inside ensureCardModelLoaded so this is fast for `*:cloud`
+      // models.
+      await ensureCardModelLoaded(card);
+      if (ac.signal.aborted) {
+        setRunning(false);
+        runningRef.current = false;
+        abortRef.current = null;
+        return;
+      }
+      try {
+        await runWorkflow(
+          { cards: [card], edges: [] },
+          makeHooks(() => {}),
+          { ...opts, workflowId: selected.id, signal: ac.signal },
+        );
+      } catch (e) {
+        setRunning(false);
+        runningRef.current = false;
+        abortRef.current = null;
+        setErr(`Card run failed: ${e}`);
+      }
+    })();
   }
 
   function stopRun() {
@@ -421,8 +633,13 @@ export function WorkflowsPage({ status }: Props) {
     // the runner's onWorkflowDone could spawn a parallel run. Leave `running`
     // true; the runner's onWorkflowDone (always invoked, even on abort) flips
     // it back to false.
+    //
+    // Also DO NOT null-out abortRef.current here. A second Stop click while
+    // the runner is still tearing down would then become a no-op (the new
+    // ref is null), and any subsystem still polling abortRef in flight loses
+    // its handle. `onWorkflowDone` is responsible for clearing the ref once
+    // the run actually resolves; until then keep the live controller.
     abortRef.current?.abort();
-    abortRef.current = null;
     announce("Workflow run stopped");
   }
 
@@ -437,7 +654,7 @@ export function WorkflowsPage({ status }: Props) {
     "workflow-trigger",
     useCallback(
       (e) => {
-        if (running) {
+        if (runningRef.current || running) {
           logDiag({
             level: "warn",
             source: "workflows",
@@ -445,18 +662,41 @@ export function WorkflowsPage({ status }: Props) {
           });
           return;
         }
-        const opts = baseRunOpts();
-        if (!opts) return;
-        const p = e.payload as { workflow_id?: unknown } | null;
+        const p = e.payload as { workflow_id?: unknown; card_id?: unknown } | null;
         const targetsOpen =
           !!selected && !!p && p.workflow_id === selected.id;
+        // Model-coverage check is scoped to the cards that will actually
+        // run (start card onward). A scheduled trigger that starts mid-
+        // chain should not fail the gate over un-modeled cards EARLIER in
+        // the same workflow that won't be executed. When the trigger is
+        // for a workflow OTHER than the open one we don't have its graph
+        // here, so fall back to whatever the open editor knows — the
+        // schedule glue revalidates via its own runner.
+        const triggerCardId = typeof p?.card_id === "string" ? p.card_id : null;
+        let subset: WorkflowCard[] | undefined = undefined;
+        if (targetsOpen && triggerCardId) {
+          const idx = cards.findIndex((c) => c.id === triggerCardId);
+          if (idx >= 0) subset = cards.slice(idx);
+        }
+        const opts = baseRunOpts(subset);
+        if (!opts) return;
+        // Claim the slot AFTER the gate has been validated — leaves the ref
+        // clean if `baseRunOpts` short-circuits on missing model.
+        runningRef.current = true;
         const hooks = targetsOpen
           ? makeHooks(() => void refreshList())
-          : { onWorkflowDone: () => { setRunning(false); void refreshList(); } };
+          : {
+              onWorkflowDone: () => {
+                setRunning(false);
+                runningRef.current = false;
+                void refreshList();
+              },
+            };
         setRunning(true);
         void handleWorkflowTrigger(e.payload, hooks, { ...opts, scheduled: true }).catch(
           (err) => {
             setRunning(false);
+            runningRef.current = false;
             logDiag({
               level: "warn",
               source: "workflows",
@@ -466,7 +706,7 @@ export function WorkflowsPage({ status }: Props) {
           },
         );
       },
-      [baseRunOpts, makeHooks, refreshList, running, selected],
+      [baseRunOpts, makeHooks, refreshList, running, selected, cards],
     ),
   );
 
@@ -550,6 +790,16 @@ export function WorkflowsPage({ status }: Props) {
             ⚠ {warning}
           </span>
         )}
+        {running && (
+          <span
+            className="wf-warning"
+            role="status"
+            data-testid="wf-run-warning"
+            style={{ color: "var(--accent, #6c8eff)" }}
+          >
+            ● Run in progress — leaving this view will cancel it.
+          </span>
+        )}
       </div>
       {err && <div className="wf-error" onClick={() => setErr(null)}>{err}</div>}
       <div className="wf-editor-body">
@@ -573,6 +823,8 @@ export function WorkflowsPage({ status }: Props) {
           cards={runInfo}
           onRun={runWorkflowNow}
           onStop={stopRun}
+          approveAllWrite={approveAllWrite}
+          onApproveAllWriteChange={setApproveAllWrite}
         />
       </div>
       {formCard && (
@@ -583,6 +835,39 @@ export function WorkflowsPage({ status }: Props) {
           onSave={saveCard}
           onClose={closeForm}
         />
+      )}
+      {confirmState && (
+        <ConfirmDialog
+          ariaLabel={`Confirm tool ${confirmState.toolName}`}
+          data-testid="workflow-confirm-modal"
+          boxClassName={`risk-${confirmState.risk}`}
+          onDismiss={() => resolveConfirmation(false)}
+          title={
+            <span>
+              Allow <code>{confirmState.toolName}</code>?
+              {confirmState.risk !== "normal" && (
+                <span className={`agent-risk-badge risk-${confirmState.risk}`}>
+                  {confirmState.risk}
+                </span>
+              )}
+            </span>
+          }
+          actions={
+            <>
+              <button onClick={() => resolveConfirmation(false)}>Deny</button>
+              <button
+                className="primary"
+                onClick={() => resolveConfirmation(true)}
+              >
+                Allow
+              </button>
+            </>
+          }
+        >
+          <pre className="agent-confirm-args">
+            {JSON.stringify(confirmState.args, null, 2)}
+          </pre>
+        </ConfirmDialog>
       )}
     </div>
   );

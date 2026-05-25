@@ -1008,4 +1008,453 @@ mod tests {
         // Last fired was yesterday: due again today.
         assert!(schedule_is_due(s, day + 40_000, Some(day - 1_000)));
     }
+
+    /* ─────────────────────────────────────────────────────────────────────
+     * Stress tests — persistence + scheduler dedup + size caps.
+     *
+     * Each test owns its own in-memory `Connection` (via `fresh_db()`) and
+     * replicates the SQL the public functions run, mirroring the pattern in
+     * `save_into` above. This keeps the global rusqlite pool out of the loop
+     * so the tests are hermetic and parallel-safe.
+     * ───────────────────────────────────────────────────────────────────── */
+
+    /// Insert a workflow_run row exactly the way `record_run` would, but on a
+    /// caller-owned Connection. Mirrors the production INSERT.
+    fn record_run_into(conn: &Connection, workflow_id: i64, status: &str, results_json: &str, ts: i64) {
+        conn.execute(
+            "INSERT INTO workflow_runs (workflow_id, started_at, status, results_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![workflow_id, ts, status, results_json],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_runs_query_uses_index_for_workflow_id() {
+        // EXPLAIN QUERY PLAN should show `USING INDEX idx_workflow_runs_wf`
+        // for the WHERE workflow_id = ?1 lookup. Without the index, a list
+        // call on a fat workflow_runs table would be O(N) scan.
+        let conn = fresh_db();
+        // Seed one row to make the optimizer pick the index (a totally empty
+        // table sometimes plans a full scan).
+        record_run_into(&conn, 1, "ok", r#"{"status":"ok","cards":[]}"#, 1);
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id, workflow_id, started_at, status, results_json
+                 FROM workflow_runs WHERE workflow_id = ?1
+                 ORDER BY started_at DESC, id DESC LIMIT 100",
+            )
+            .unwrap();
+        let plans: Vec<String> = stmt
+            .query_map(params![1_i64], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let joined = plans.join("\n");
+        assert!(
+            joined.contains("idx_workflow_runs_wf"),
+            "expected list_runs plan to use idx_workflow_runs_wf; got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn insert_10000_runs_then_list_is_fast_and_bounded() {
+        // Smoke test that the run-list query stays well-bounded even when a
+        // workflow has accumulated 10k recorded runs. RUNS_LIMIT caps the
+        // returned rows at 100; the index + LIMIT must keep the wall-clock
+        // negligible on this hardware.
+        use std::time::Instant;
+        let conn = fresh_db();
+        let tx = conn.unchecked_transaction().unwrap();
+        for i in 0..10_000 {
+            tx.execute(
+                "INSERT INTO workflow_runs (workflow_id, started_at, status, results_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![1_i64, i, "ok", "{}"],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        let t0 = Instant::now();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, workflow_id, started_at, status, results_json
+                 FROM workflow_runs WHERE workflow_id = ?1
+                 ORDER BY started_at DESC, id DESC LIMIT 100",
+            )
+            .unwrap();
+        let rows: Vec<i64> = stmt
+            .query_map(params![1_i64], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let dt = t0.elapsed();
+        assert_eq!(rows.len(), 100, "RUNS_LIMIT caps the returned rows at 100");
+        assert!(
+            dt.as_millis() < 200,
+            "list_runs over 10k rows took {dt:?}, expected < 200ms"
+        );
+    }
+
+    #[test]
+    fn record_run_layer_has_no_size_cap_only_command_does() {
+        // FINDING: the `MAX_RESULTS_BYTES` cap lives in
+        // `commands/workflows.rs`, NOT in `workflows::record_run`. A direct
+        // call to the latter (e.g. an internal scheduler glue path) will
+        // happily insert a 2 MiB JSON. This is the documented boundary.
+        let conn = fresh_db();
+        let huge = "x".repeat(2 * 1024 * 1024); // 2 MiB
+        record_run_into(&conn, 1, "ok", &huge, 100);
+        let stored_len: i64 = conn
+            .query_row(
+                "SELECT length(results_json) FROM workflow_runs WHERE workflow_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_len as usize, huge.len());
+        // Sanity-check the cap constant lives where we think it lives.
+        assert_eq!(MAX_GRAPH_BYTES, 1_048_576);
+    }
+
+    #[test]
+    fn validate_graph_accepts_just_under_1_mib_and_handles_just_over() {
+        // Build graph_json strings exactly straddling MAX_GRAPH_BYTES so the
+        // 1 MiB boundary in `commands/workflows.rs` is exercised in spirit
+        // (the validator itself has no cap — it just parses JSON).
+        let make = |prompt_len: usize| {
+            let prompt = "a".repeat(prompt_len);
+            format!(
+                r#"{{"cards":[{{"id":"a","name":"n","preset":"p","prompt":"{prompt}","tools":[],"schedule":null,"backend":null,"x":0,"y":0}}],"edges":[]}}"#
+            )
+        };
+        let under = make(1_048_000);
+        let over = make(1_200_000);
+        assert!(under.len() < MAX_GRAPH_BYTES);
+        assert!(over.len() > MAX_GRAPH_BYTES);
+        // The validator parses both successfully — the byte cap is a SEPARATE
+        // gate at the command layer. Documenting the split.
+        assert!(validate_graph_json(&under).is_ok());
+        assert!(validate_graph_json(&over).is_ok());
+    }
+
+    #[test]
+    fn dedup_gate_prevents_double_fire_within_one_window() {
+        // Simulates the `Every(60)` (one-minute) card across two consecutive
+        // scheduler ticks 30s apart. The dedup gate is the `last_fired` map
+        // + `schedule_is_due`: a card must NOT fire twice within one window.
+        let s = Schedule::Every(60);
+        let mut last_fired: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+
+        let key = "1:a".to_string();
+        let mut now = 1_000_000_i64;
+
+        // First scan: never-seen interval card is SEEDED, not fired.
+        let seed_first = matches!(s, Schedule::Every(_)) && !last_fired.contains_key(&key);
+        assert!(seed_first);
+        last_fired.insert(key.clone(), now);
+
+        // Tick + 30s: not due yet (interval is 60s).
+        now += 30;
+        assert!(!schedule_is_due(s, now, last_fired.get(&key).copied()));
+
+        // Tick + 60s past seed: due. Fire and record.
+        now += 30;
+        assert!(schedule_is_due(s, now, last_fired.get(&key).copied()));
+        last_fired.insert(key.clone(), now);
+
+        // Same minute window, +5s later: dedup must hold.
+        now += 5;
+        assert!(!schedule_is_due(s, now, last_fired.get(&key).copied()));
+    }
+
+    #[test]
+    fn dedup_gate_handles_many_cards_independently() {
+        // 50 cards each with its own `Every(60)` schedule and own key. Ticking
+        // the scheduler once must seed all 50; ticking again past the window
+        // must fire all 50. The scan itself is O(N) over cards.
+        use std::time::Instant;
+        let s = Schedule::Every(60);
+        let mut last_fired: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        let keys: Vec<String> = (0..50).map(|i| format!("1:c{i}")).collect();
+        let mut now = 1_000_000_i64;
+
+        // Seed pass.
+        let t0 = Instant::now();
+        for k in &keys {
+            if !last_fired.contains_key(k) {
+                last_fired.insert(k.clone(), now);
+            }
+        }
+        let seed = t0.elapsed();
+        assert!(seed.as_millis() < 50);
+
+        // Advance past the window — every key is due once.
+        now += 61;
+        let mut fired = 0;
+        for k in &keys {
+            if schedule_is_due(s, now, last_fired.get(k).copied()) {
+                fired += 1;
+                last_fired.insert(k.clone(), now);
+            }
+        }
+        assert_eq!(fired, 50);
+
+        // Immediately re-scan — dedup must hold for every key.
+        for k in &keys {
+            assert!(!schedule_is_due(s, now, last_fired.get(k).copied()));
+        }
+    }
+
+    #[test]
+    fn delete_workflow_cleans_up_card_fired_rows() {
+        // Simulates a workflow with active scheduled cards being deleted:
+        // workflow_runs AND workflow_card_fired rows for that workflow must
+        // disappear, while sibling workflows' rows must survive.
+        let conn = fresh_db();
+        // Seed two workflows in `workflow_card_fired`.
+        for (k, wid) in [("1:a", 1_i64), ("1:b", 1_i64), ("2:a", 2_i64)] {
+            conn.execute(
+                "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
+                 VALUES (?1, ?2, 100)",
+                params![k, wid],
+            )
+            .unwrap();
+        }
+        // Also seed `workflow_runs` and `workflows` so the transactional
+        // delete has rows to remove on every table.
+        conn.execute(
+            "INSERT INTO workflows (id, name, graph_json, created_at, updated_at)
+             VALUES (1, 'W1', '{\"cards\":[],\"edges\":[]}', 0, 0),
+                    (2, 'W2', '{\"cards\":[],\"edges\":[]}', 0, 0)",
+            [],
+        )
+        .unwrap();
+        record_run_into(&conn, 1, "ok", "{}", 100);
+        record_run_into(&conn, 2, "ok", "{}", 100);
+
+        // The production `delete_workflow` runs three statements in one tx —
+        // do the same here against the in-memory connection.
+        let tx = conn.unchecked_transaction().unwrap();
+        tx.execute("DELETE FROM workflow_runs WHERE workflow_id = ?1", params![1_i64])
+            .unwrap();
+        tx.execute(
+            "DELETE FROM workflow_card_fired WHERE workflow_id = ?1",
+            params![1_i64],
+        )
+        .unwrap();
+        tx.execute("DELETE FROM workflows WHERE id = ?1", params![1_i64])
+            .unwrap();
+        tx.commit().unwrap();
+
+        // Workflow 1 totally gone.
+        let n_runs1: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workflow_runs WHERE workflow_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let n_fired1: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workflow_card_fired WHERE workflow_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n_runs1, 0);
+        assert_eq!(n_fired1, 0);
+        // Workflow 2 untouched.
+        let n_fired2: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workflow_card_fired WHERE workflow_id = 2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n_fired2, 1);
+    }
+
+    #[test]
+    fn renaming_a_card_id_orphans_old_card_fired_row_until_prune() {
+        // FINDING: `workflow_card_fired` keys by `"<workflow_id>:<card_id>"`.
+        // Renaming a card changes its card_id, so the old row is left behind
+        // until the next scheduler scan calls `prune_card_last_fired` with a
+        // `keep` set that no longer contains the old key. This test simulates
+        // both halves of that flow.
+        let conn = fresh_db();
+        conn.execute(
+            "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
+             VALUES ('1:old', 1, 100)",
+            [],
+        )
+        .unwrap();
+
+        // Renaming: a new row is upserted under the new key — the old one
+        // sticks around because the rename path doesn't know to delete it
+        // (it's keyed by frontend-supplied card id).
+        conn.execute(
+            "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
+             VALUES ('1:new', 1, 200)
+             ON CONFLICT(card_key) DO UPDATE SET last_fired = excluded.last_fired",
+            [],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workflow_card_fired", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "old row is orphaned by a rename");
+
+        // Prune emulating the scheduler pass with the new keep-set.
+        let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
+        keep.insert("1:new".to_string());
+        // Public prune_card_last_fired uses the global pool, so emulate it
+        // here against this connection.
+        let existing: Vec<String> = {
+            let mut s = conn
+                .prepare("SELECT card_key FROM workflow_card_fired")
+                .unwrap();
+            s.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        for k in existing {
+            if !keep.contains(&k) {
+                conn.execute(
+                    "DELETE FROM workflow_card_fired WHERE card_key = ?1",
+                    params![k],
+                )
+                .unwrap();
+            }
+        }
+        let remaining: Vec<String> = {
+            let mut s = conn
+                .prepare("SELECT card_key FROM workflow_card_fired ORDER BY card_key")
+                .unwrap();
+            s.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(remaining, vec!["1:new".to_string()]);
+    }
+
+    #[test]
+    fn prune_card_last_fired_keeps_table_bounded_under_churn() {
+        // Simulate scheduler activity that churns many keys then prunes. The
+        // table must converge to the size of the `keep` set on each pass.
+        let conn = fresh_db();
+        // Insert 1000 keys for workflow 1.
+        let tx = conn.unchecked_transaction().unwrap();
+        for i in 0..1000 {
+            tx.execute(
+                "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
+                 VALUES (?1, 1, ?2)",
+                params![format!("1:c{i}"), i as i64],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        // Keep only 5 of them.
+        let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for i in 0..5 {
+            keep.insert(format!("1:c{i}"));
+        }
+        // Inline emulation of `prune_card_last_fired`.
+        let existing: Vec<String> = {
+            let mut s = conn
+                .prepare("SELECT card_key FROM workflow_card_fired")
+                .unwrap();
+            s.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        for k in existing {
+            if !keep.contains(&k) {
+                conn.execute(
+                    "DELETE FROM workflow_card_fired WHERE card_key = ?1",
+                    params![k],
+                )
+                .unwrap();
+            }
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workflow_card_fired", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 5, "prune must bound the table at keep.len()");
+    }
+
+    #[test]
+    fn parse_schedule_rejects_cron_expression_every_minute() {
+        // The brief mentions a card with `"* * * * *"` (every-minute cron).
+        // The current parser does NOT understand cron syntax — it returns
+        // None, which the scheduler treats as "never fire". This is a
+        // CORRECTNESS guard (a misinterpreted cron field would fire all the
+        // wrong times). Documenting the behavior so a future cron rollout
+        // doesn't accidentally regress it.
+        assert_eq!(parse_schedule("* * * * *"), None);
+        // A few other cron-ish strings also rejected.
+        assert_eq!(parse_schedule("0 * * * *"), None);
+        assert_eq!(parse_schedule("@hourly"), None);
+        assert_eq!(parse_schedule("@every 1m"), None);
+    }
+
+    #[test]
+    fn workflow_runs_inserts_under_a_single_tx_are_atomic() {
+        // Bulk insert pattern used in stress test above — must roll back
+        // cleanly if a constraint blows mid-tx. workflow_runs has no UNIQUE
+        // constraints aside from `id`, so simulate failure by deliberately
+        // re-using an id within the tx.
+        let conn = fresh_db();
+        let tx = conn.unchecked_transaction().unwrap();
+        tx.execute(
+            "INSERT INTO workflow_runs (id, workflow_id, started_at, status, results_json)
+             VALUES (1, 1, 100, 'ok', '{}')",
+            [],
+        )
+        .unwrap();
+        // Duplicate id: should error.
+        let dup = tx.execute(
+            "INSERT INTO workflow_runs (id, workflow_id, started_at, status, results_json)
+             VALUES (1, 1, 200, 'ok', '{}')",
+            [],
+        );
+        assert!(dup.is_err(), "duplicate id must fail");
+        // Roll back and confirm the first insert is gone too.
+        tx.rollback().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workflow_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn schedule_parser_accepts_lite_minute_grammar_only() {
+        // Lock in the supported grammar in one place so regressions show up
+        // immediately. Adding new shapes is fine — silently dropping support
+        // for one of these is not.
+        for (input, expected) in [
+            ("every 1m", Schedule::Every(60)),
+            ("every 1h", Schedule::Every(3600)),
+            ("every 60m", Schedule::Every(3600)),
+            ("Every 24H", Schedule::Every(86_400)),
+            ("daily 00:00", Schedule::Daily(0)),
+            ("daily 23:59", Schedule::Daily(1439)),
+        ] {
+            assert_eq!(
+                parse_schedule(input),
+                Some(expected),
+                "input {input:?}"
+            );
+        }
+        // Saturation check: very large interval must not panic.
+        assert!(parse_schedule("every 99999999h").is_some());
+    }
 }

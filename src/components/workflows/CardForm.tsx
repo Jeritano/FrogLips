@@ -27,12 +27,47 @@ interface Props {
   onClose: () => void;
 }
 
-/** All tool ids surfaced across the built-in presets — the explicit picker. */
+/**
+ * Curated picker — the SAFE-to-pick tool ids surfaced as checkboxes. NOT
+ * every tool the runner can dispatch (see `agent-loop/tools.ts` for the
+ * full list); the picker intentionally omits irreversible / destructive
+ * tools (delete_path, kill_process, agent_undo) and out-of-process glue
+ * (spawn_subagent, await_subagents, mcp__*) so the UI can't accidentally
+ * grant a card high-blast-radius capability with a single click.
+ *
+ * Important: `draft.tools` may contain entries OUTSIDE this list (set via
+ * direct DB edit, migrated from a future schema, etc.). The save path
+ * MUST preserve those — see `toggleTool` and the picker's `ALL_TOOLS`
+ * iteration below. Wiping unknown entries would silently downgrade a
+ * card's permissions.
+ */
 const ALL_TOOLS = [
+  // Filesystem read
   "read_file", "list_dir", "search_files", "file_exists",
-  "edit_file", "multi_edit", "write_file", "run_shell",
+  // Filesystem mutate
+  "edit_file", "multi_edit", "write_file", "make_dir", "move_path", "copy_path",
+  // Diff / hash inspection
+  "diff_files", "hash_file",
+  // Shell + automation
+  "run_shell", "applescript_run", "open_app", "show_notification",
+  // Git
   "git_status", "git_diff", "git_log", "git_show", "git_branches", "git_commit",
-  "read_pdf", "web_fetch", "web_search",
+  // Knowledge / project search
+  "find_definition", "find_references", "format_code", "search_project_knowledge",
+  // PDF / web
+  "read_pdf", "web_fetch", "web_search", "http_request",
+  // UI / clipboard
+  "screenshot", "clipboard_get", "clipboard_set",
+  // Process inspection (kill_process intentionally omitted)
+  "list_processes",
+  // Filesystem watch
+  "watch_path", "poll_watch", "stop_watch", "list_watches",
+  // Image gen
+  "generate_image",
+  // Task management
+  "task_create", "task_status", "task_list",
+  // Interaction
+  "ask_user",
 ];
 
 /**
@@ -42,11 +77,23 @@ const ALL_TOOLS = [
 const HINT = "Use 'every 30m', 'every 2h', or 'daily 09:00'.";
 
 function scheduleError(value: string): string | null {
+  // Mirror Rust `parse_schedule` (workflows.rs:423) — it strips the
+  // literal `every ` prefix THEN `trim()`s the remainder, so any extra
+  // whitespace between `every` and the number is collapsed. The form
+  // must match that tolerance to avoid blocking edits on legacy data.
+  //
+  // Restrict separators to ASCII whitespace ONLY (`[ \t]`) — JS `\s`
+  // also matches NBSP, en/em spaces, line separators, and ideographic
+  // space, all of which Rust's `strip_prefix("every ")` rejects.
+  // Without this restriction a value pasted from a word processor
+  // (smart-quote whitespace) saves cleanly through the form, the
+  // scheduler reads it, returns `None`, and the card silently never
+  // fires. Strict ASCII keeps the two parsers in lockstep.
   const v = value.trim().toLowerCase();
   if (v === "") return null;
-  const every = v.match(/^every\s+(\d+)\s*([mh])$/);
+  const every = v.match(/^every[ \t]+(\d+)[ \t]*([mh])$/);
   if (every) return Number(every[1]) > 0 ? null : HINT;
-  const daily = v.match(/^daily\s+(\d{1,2}):(\d{2})$/);
+  const daily = v.match(/^daily[ \t]+(\d{1,2}):(\d{2})$/);
   if (daily) {
     const hh = Number(daily[1]);
     const mm = Number(daily[2]);

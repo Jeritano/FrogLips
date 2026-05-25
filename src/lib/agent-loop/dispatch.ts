@@ -326,12 +326,23 @@ export function recordAuditSafe(input: AuditInput): void {
           input.conversationId == null ? null : String(input.conversationId),
       })
       .catch((e) => {
-        // eslint-disable-next-line no-console
-        console.warn("[audit] record failed:", e);
+        // The WKWebView console is not user-accessible; route audit
+        // failures through the in-app diagnostic ring buffer so the
+        // DiagnosticsPanel surfaces the gap.
+        logDiag({
+          level: "warn",
+          source: "audit",
+          message: `agent_audit_record failed for ${input.toolName}`,
+          detail: redactDiagDetail(e),
+        });
       });
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn("[audit] record sync error:", e);
+    logDiag({
+      level: "warn",
+      source: "audit",
+      message: `agent_audit_record sync error for ${input.toolName}`,
+      detail: redactDiagDetail(e),
+    });
   }
 }
 
@@ -358,9 +369,103 @@ export async function classifyToolRisk(
     // delete: bound it to `destructive` so the modal shows the loud badge.
     return "destructive";
   }
-  // delete_path with recursive=true → already covered above; the special
-  // case here is a NON-recursive delete still being shown as destructive
-  // (we collapse them; the modal copy explains the difference).
+  // File-write / file-mutation tools default to `normal`, but if the target
+  // path falls inside a sensitive system / auto-launch / config location
+  // we escalate to `destructive` so the `approveAllWrite` blanket-approve
+  // CANNOT silently waive it. This complements the Rust-side path safety
+  // checks: even if the FS write would be allowed, the user still sees a
+  // loud-badge modal.
+  if (
+    fnName === "write_file"
+    || fnName === "edit_file"
+    || fnName === "multi_edit"
+    || fnName === "move_path"
+    || fnName === "copy_path"
+    || fnName === "make_dir"
+  ) {
+    // Collect every plausible path argument. write_file/edit_file/
+    // multi_edit/make_dir use `path`. move_path/copy_path use `{from, to}`
+    // — both sides matter: the `to` is the place data lands (privilege
+    // escalation vector); the `from` is the source (sensitive read /
+    // exfiltration). Checking each prevents the model from sliding a
+    // copy_path into ~/Library/LaunchAgents/ past the approveAllWrite
+    // blanket-approve.
+    const candidates: string[] = [];
+    if (typeof args.path === "string") candidates.push(args.path);
+    if (typeof args.from === "string") candidates.push(args.from);
+    if (typeof args.to === "string") candidates.push(args.to);
+    // Lexically collapse `/segment/../` so a model can't sidestep the
+    // classifier with `/Users/me/../../etc/hosts` → `/etc/hosts`. Rust's
+    // canonicalize is the authoritative gate, but if it failed AFTER the
+    // user clicked through `approveAllWrite`, the UX promise of the
+    // toggle is broken. Keep risk-classification honest at the lexical
+    // layer too.
+    const normalizePath = (p: string): string => {
+      const parts = p.split("/");
+      const out: string[] = [];
+      for (const seg of parts) {
+        if (seg === "..") {
+          const top = out.length > 0 ? out[out.length - 1] : undefined;
+          if (top === undefined || top === "~") {
+            // Above the home fence or an empty buffer — preserve the `..`
+            // as a literal so a relative-path call (e.g. `../foo`) stays
+            // recognizable.
+            out.push(seg);
+          } else if (top === "") {
+            // Past-root `..` (`/foo/../../etc/...`). On a POSIX filesystem
+            // `/..` resolves to `/` itself; absorb the segment instead of
+            // pushing it. Without this, `/foo/../../etc/hosts` lexically
+            // becomes `/../etc/hosts` and the `startsWith("/etc/")` check
+            // misses, letting a sensitive write slip past the risk
+            // escalation. Rust's canonicalize would still block the actual
+            // write — this keeps `approveAllWrite`'s UX promise honest.
+            // Do nothing — `..` is absorbed against the root.
+          } else {
+            out.pop();
+          }
+        } else if (seg !== "." || out.length === 0) {
+          out.push(seg);
+        }
+      }
+      return out.join("/");
+    };
+    // Match each candidate path independently. Lexical only — the Rust
+    // write layer does the authoritative check. `startsWith` anchors to
+    // the path beginning so it isn't tricked by an arbitrary substring.
+    const isSensitive = (raw: string): boolean => {
+      const lower = normalizePath(raw).toLowerCase();
+      return (
+        // System dirs
+        lower.startsWith("/etc/")
+        || lower.startsWith("/system/")
+        || lower.startsWith("/usr/")
+        || lower.startsWith("/bin/")
+        || lower.startsWith("/sbin/")
+        || lower.startsWith("/private/etc/")
+        || lower.startsWith("/private/var/")
+        // macOS auto-launch locations — writing a plist here is a
+        // privilege-escalation pivot.
+        || lower.includes("/library/launchagents/")
+        || lower.includes("/library/launchdaemons/")
+        || lower.includes("/library/startupitems/")
+        // Dotfiles + shell rc — match `/.foo` style so we don't pick up
+        // user files like `notes.zshrc.md`.
+        || /(^|\/)\.(zshrc|bashrc|bash_profile|zprofile|profile|zshenv)$/.test(lower)
+        || /(^|\/)\.ssh\//.test(lower)
+        || /(^|\/)\.aws\//.test(lower)
+        || /(^|\/)\.gnupg\//.test(lower)
+        // Executable-bound extensions that the user might double-click.
+        // The `(\/|$)` boundary catches both the bundle root (`foo.app`)
+        // and writes INSIDE the bundle (`foo.app/Contents/Info.plist`)
+        // — modifying internals can break Gatekeeper, hijack the
+        // executable, or persist arbitrary code through an app launch.
+        || /\.(command|terminal|workflow|tool|app)(\/|$)/.test(lower)
+      );
+    };
+    if (candidates.some(isSensitive)) {
+      return "destructive";
+    }
+  }
   // CRITICAL: Fail CLOSED. If any classifier RPC throws, we MUST NOT return
   // `"normal"` — a broken classifier combined with `approveAllShell` /
   // `approveAllWrite` would otherwise let a dangerous call slide past

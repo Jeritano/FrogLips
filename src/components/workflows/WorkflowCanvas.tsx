@@ -246,6 +246,27 @@ export function WorkflowCanvas({
     [flowEdges, onEdgesChange],
   );
 
+  // Click an edge to delete it. React Flow's built-in "select + Delete"
+  // dance doesn't survive our re-render cycle (the parent rebuilds the
+  // edge array from `{from,to}` shape, losing internal `selected` state)
+  // so this is the only reliable disconnect affordance. Confirm only if
+  // the edge connects two real cards — accidental misclicks are common
+  // and re-drawing requires a drag from the source handle.
+  const handleEdgeClick = useCallback(
+    (_evt: React.MouseEvent, edge: Edge) => {
+      const ok = window.confirm(
+        `Disconnect ${edge.source} → ${edge.target}?`,
+      );
+      if (!ok) return;
+      onEdgesChange(
+        flowEdges
+          .filter((e) => e.id !== edge.id)
+          .map((e) => ({ from: e.source, to: e.target })),
+      );
+    },
+    [flowEdges, onEdgesChange],
+  );
+
   return (
     <div className="wf-canvas" data-testid="wf-canvas" ref={wrapRef}>
       <ReactFlow
@@ -255,6 +276,7 @@ export function WorkflowCanvas({
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
+        onEdgeClick={handleEdgeClick}
         fitView
         proOptions={{ hideAttribution: true }}
         defaultEdgeOptions={{ className: "wf-edge" }}

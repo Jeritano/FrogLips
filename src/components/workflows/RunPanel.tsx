@@ -14,6 +14,9 @@ interface Props {
   cards: CardRunInfo[];
   onRun: () => void;
   onStop: () => void;
+  /** Auto-approve every write_file/edit_file/multi_edit/make_dir whose risk is normal. */
+  approveAllWrite: boolean;
+  onApproveAllWriteChange: (next: boolean) => void;
 }
 
 const STATE_ICON: Record<CardRunState, string> = {
@@ -24,7 +27,15 @@ const STATE_ICON: Record<CardRunState, string> = {
 };
 
 /** Side panel: run/stop controls + live per-card state and output. */
-export function RunPanel({ running, canRun, cards, onRun, onStop }: Props) {
+export function RunPanel({
+  running,
+  canRun,
+  cards,
+  onRun,
+  onStop,
+  approveAllWrite,
+  onApproveAllWriteChange,
+}: Props) {
   return (
     <aside className="wf-run-panel" data-testid="wf-run-panel">
       <div className="wf-run-head">
@@ -45,6 +56,19 @@ export function RunPanel({ running, canRun, cards, onRun, onStop }: Props) {
           </button>
         )}
       </div>
+      <label
+        className="wf-run-option"
+        title="Skip the approval modal for write_file / edit_file / multi_edit / make_dir whose risk is normal. Destructive paths and shell commands still gate."
+      >
+        <input
+          type="checkbox"
+          checked={approveAllWrite}
+          onChange={(e) => onApproveAllWriteChange(e.target.checked)}
+          disabled={running}
+          data-testid="wf-approve-all-write"
+        />
+        <span>Auto-approve file writes</span>
+      </label>
       <div className="wf-run-list">
         {cards.length === 0 && (
           <p className="wf-run-empty">No cards on the canvas yet.</p>
