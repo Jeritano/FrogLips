@@ -223,6 +223,44 @@ const approveAll: AgentRunOptions["requestConfirmation"] = async () => ({
   approve: true,
 });
 
+/**
+ * Pre-substitute date placeholders in a card prompt with the actual current
+ * date. Workflow cards routinely contain instructions like
+ *   `write_file path: ~/Desktop/Report_YYYY-MM-DD.txt`
+ * and rely on the model to read the date from the system prompt and
+ * substitute it. Models drop the substitution often enough — both abliterated
+ * locals and frontier cloud (kimi-k2.6:cloud was observed writing
+ * `Report.md` instead of `Report_2026-05-25.txt`) — that doing it at the
+ * runner level removes a reliability cliff. Downstream cards that read the
+ * file by a glob like `Report_*.txt` then actually find it.
+ *
+ * Replaced tokens:
+ *   - `YYYY-MM-DD`       → `2026-05-25`
+ *   - `YYYYMMDD`         → `20260525`
+ *   - `{TODAY}` / `{DATE}` / `{NOW_DATE}` → `2026-05-25` (explicit template form)
+ *
+ * The `YYYY-MM-DD` literal substitution is aggressive — if a user genuinely
+ * wants the model to discuss the literal format string, they should phrase
+ * it as "the format `YYYY-MM-DD`" inside a code fence (the substitution
+ * runs over the raw prompt regardless, so even fenced text gets replaced;
+ * the trade-off is intentional for filename reliability).
+ */
+function substituteDatePlaceholders(prompt: string): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const yyyy = now.getFullYear();
+  const mm = pad(now.getMonth() + 1);
+  const dd = pad(now.getDate());
+  const iso = `${yyyy}-${mm}-${dd}`;
+  const compact = `${yyyy}${mm}${dd}`;
+  return prompt
+    .replace(/\bYYYY-MM-DD\b/g, iso)
+    .replace(/\bYYYYMMDD\b/g, compact)
+    .replace(/\{TODAY\}/g, iso)
+    .replace(/\{DATE\}/g, iso)
+    .replace(/\{NOW_DATE\}/g, iso);
+}
+
 /** Resolve agent-run options for a single card, given upstream context text. */
 function buildCardOptions(
   card: WorkflowCard,
@@ -266,7 +304,10 @@ function buildCardOptions(
   messages.push({
     conversation_id: 0,
     role: "user",
-    content: card.prompt,
+    // Pre-substitute date placeholders so the model never has to do the
+    // "read system prompt date, format it, substitute it" dance. See
+    // `substituteDatePlaceholders` for the supported tokens.
+    content: substituteDatePlaceholders(card.prompt),
   });
 
   const backend = (card.backend ?? opts.defaultBackend ?? "ollama") as
