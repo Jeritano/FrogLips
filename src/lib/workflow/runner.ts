@@ -231,23 +231,26 @@ const denyAll: AgentRunOptions["requestConfirmation"] = async () => ({
 });
 
 /**
- * Tools that are NEVER auto-approved on a scheduled-unattended run, even
- * when the card explicitly lists them in its `tools` allowlist. Module-
- * scope so the Set isn't reconstructed for every `buildCardOptions` call
- * (every card per scheduler tick).
+ * Tools that are NEVER auto-approved on an unattended card, even when the
+ * card explicitly lists them in its `tools` allowlist. Module-scope so the
+ * Set isn't reconstructed for every `buildCardOptions` call.
  *
- *   - run_shell, applescript_run            : arbitrary shell / AppleScript
  *   - delete_path, kill_process, agent_undo : irreversible / destructive
  *   - http_request                          : data exfiltration vector
  *   - spawn_subagent                        : tool-budget bypass via fanout
  *
- * MCP tools are blocked separately via `isMcpToolName(...)` — their
- * names are minted at runtime (`mcp__<server>__<tool>`) so a static set
- * can never enumerate them.
+ * `run_shell` and `applescript_run` are NOT in this list — they have their
+ * own risk classifier (see `classify_shell_risk` in Rust). Destructive
+ * shapes (`rm -rf`, `sudo`, `kill`, pipe-from-network, etc.) escalate to
+ * `dangerous`/`destructive` risk and fall through to the explicit gate;
+ * benign enumeration shapes (`find`, `ls`, `grep`) classify as `normal`
+ * and may auto-approve under the unattended flag.
+ *
+ * MCP tools are blocked separately via `isMcpToolName(...)` — their names
+ * are minted at runtime (`mcp__<server>__<tool>`) so a static set can
+ * never enumerate them.
  */
 const UNATTENDED_NEVER_AUTO = new Set([
-  "run_shell",
-  "applescript_run",
   "delete_path",
   "kill_process",
   "agent_undo",
@@ -304,31 +307,36 @@ function buildCardOptions(
   const backend = (card.backend ?? opts.defaultBackend ?? "ollama") as
     AgentRunOptions["backend"];
 
-  // On a scheduled run, a card opted into `unattended` auto-approves tool
-  // calls — but ONLY for tool names in its own declared allowlist AND only
-  // when the tool itself appears on the curated safe-list (see the
-  // `UNATTENDED_NEVER_AUTO` constant at module scope). Every other case
-  // keeps the caller's gate (default deny-all).
+  // Cards opted into `unattended` auto-approve their own tool calls on
+  // BOTH manual and scheduled runs. Originally this gate was scoped to
+  // scheduled-only, but the workflow UX is to let each agent declare its
+  // own approval posture once at edit time — having the user re-tick
+  // sidebar toggles + re-approve every shell call on top of that defeats
+  // the point of the per-card flag. The safety constraints stay:
+  //   1. Tool must be in the card's effective allowlist (card.tools when
+  //      non-empty, else preset.allowedTools; empty allowlist = ALL tools
+  //      allowed, matching the agent-loop convention).
+  //   2. Tool is not on the never-auto deny list (run_shell of a
+  //      destructive shape never auto-approves regardless of risk
+  //      because the classifier may not catch every adversarial form).
+  //   3. Tool is not MCP-routed (third-party code, no local risk
+  //      taxonomy).
+  //   4. Dispatch-time risk classification is `normal`. Anything
+  //      escalated to `dangerous` / `destructive` (rm -rf, kill, sudo,
+  //      delete_path, etc.) MUST fall through to the explicit approval
+  //      gate regardless of the flag.
   const baseGate = opts.requestConfirmation ?? denyAll;
-  const requestConfirmation: AgentRunOptions["requestConfirmation"] =
-    opts.scheduled && card.unattended
-      ? async (toolName, args, risk) =>
-          // Three conditions must all hold for auto-approval:
-          //   1. The card declared this tool in its own allowlist.
-          //   2. The tool is not on the never-auto deny list.
-          //   3. The tool is not MCP-routed (third-party code, no
-          //      local risk taxonomy).
-          //   4. The dispatch-time risk classification is `normal`.
-          //      Anything escalated to `dangerous` / `destructive` MUST
-          //      fall through to the explicit approval gate even on an
-          //      unattended scheduled run.
-          card.tools.includes(toolName)
-            && !UNATTENDED_NEVER_AUTO.has(toolName)
-            && !isMcpToolName(toolName)
-            && risk === "normal"
-            ? { approve: true }
-            : baseGate(toolName, args, risk)
-      : baseGate;
+  const allowlistAllows = (toolName: string): boolean =>
+    toolAllowlist.length === 0 || toolAllowlist.includes(toolName);
+  const requestConfirmation: AgentRunOptions["requestConfirmation"] = card.unattended
+    ? async (toolName, args, risk) =>
+        allowlistAllows(toolName)
+          && !UNATTENDED_NEVER_AUTO.has(toolName)
+          && !isMcpToolName(toolName)
+          && risk === "normal"
+          ? { approve: true }
+          : baseGate(toolName, args, risk)
+    : baseGate;
 
   // A card may pin its own model; null/absent/empty-string all fall back to
   // the run default. `??` alone would let `""` through and the agent loop

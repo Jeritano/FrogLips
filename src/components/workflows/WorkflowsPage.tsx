@@ -64,13 +64,11 @@ export function WorkflowsPage({ status }: Props) {
   // refused without racing on React's batching.
   const runningRef = useRef(false);
   const [err, setErr] = useState<string | null>(null);
-  // Per-run "approve all writes" toggle — when checked, the runner skips
-  // the confirm modal for every `write_file` / `edit_file` / `multi_edit`
-  // / `make_dir` call whose risk is `normal`. Long workflows that legitimately
-  // produce several files (research → summary → report) become one-click
-  // instead of one-modal-per-card. Destructive risks (delete_path,
-  // kill_process, run_shell) still gate explicitly.
-  const [approveAllWrite, setApproveAllWrite] = useState(false);
+  // Note: per-run auto-approve sidebar toggles were removed. Approval posture
+  // is owned by each card via `unattended` — checking that flag in the card's
+  // Edit form auto-approves the agent's tool calls on every run (manual or
+  // scheduled), subject to the never-auto deny list and the normal-risk
+  // requirement enforced in `buildCardOptions`.
   // Per-call approval modal state. The agent runner calls
   // `requestConfirmation(toolName, args, risk)` for any dangerous tool;
   // the returned promise resolves when the user clicks Allow/Deny here.
@@ -289,10 +287,6 @@ export function WorkflowsPage({ status }: Props) {
     setFormCard(null);
     setFormIsNew(false);
     setFormOrigin(null);
-    // Reset the per-session auto-approve toggle on every workflow open so
-    // a stale `true` from workflow A doesn't carry into workflow B. The
-    // user must explicitly re-opt-in per workflow open.
-    setApproveAllWrite(false);
     // Clear any sticky error banner from a prior workflow's run.
     setErr(null);
   }
@@ -493,13 +487,13 @@ export function WorkflowsPage({ status }: Props) {
         // anything. Scheduled (unattended) runs still bypass this for
         // cards that have explicitly opted in via `card.unattended`.
         requestConfirmation,
-        // Per-run auto-approve for normal-risk writes. Surfaced as a
-        // checkbox in RunPanel — flips false on every page mount so the
-        // user has to opt in for each session.
-        approveAllWrite,
+        // Workflow-level auto-approve toggles were removed; approval posture
+        // is owned per-card via `unattended`. The runner reads that flag in
+        // `buildCardOptions` and auto-approves normal-risk tool calls for
+        // cards that have opted in.
       };
     },
-    [status, userProfile, cards, requestConfirmation, approveAllWrite],
+    [status, userProfile, cards, requestConfirmation],
   );
 
   /**
@@ -849,8 +843,6 @@ export function WorkflowsPage({ status }: Props) {
           cards={runInfo}
           onRun={runWorkflowNow}
           onStop={stopRun}
-          approveAllWrite={approveAllWrite}
-          onApproveAllWriteChange={setApproveAllWrite}
         />
       </div>
       {formCard && (

@@ -429,8 +429,17 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                 checked={draft.unattended === true}
                 onChange={(e) => set("unattended", e.target.checked)}
               />
-              <span>Auto-approve this card's tools on scheduled runs.</span>
+              <span>
+                Auto-approve this agent's tool calls (normal-risk only).
+              </span>
             </label>
+            <p className="wf-field-hint" style={{ marginTop: "-4px" }}>
+              Skips the approval modal for tools in this agent's list when the
+              shell-risk classifier rates the call as normal. Destructive shapes
+              (<code>rm&nbsp;-rf</code>, <code>sudo</code>, <code>kill</code>,{" "}
+              <code>delete_path</code>, etc.) and MCP-routed tools still
+              gate. Applies to manual <em>and</em> scheduled runs.
+            </p>
             <div className="wf-field">
               <span>Tools</span>
               <div className="wf-tool-grid">
