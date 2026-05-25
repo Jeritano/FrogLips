@@ -51,10 +51,6 @@ export function RunPanel({
           </button>
         )}
       </div>
-      <p className="wf-run-hint">
-        Approval is set per-agent in the card's Edit form. Cards with
-        Auto-approve checked run their normal-risk tools without prompts.
-      </p>
       <div className="wf-run-list">
         {cards.length === 0 && (
           <p className="wf-run-empty">No cards on the canvas yet.</p>

@@ -1,7 +1,6 @@
 import type { Message, WorkflowCard, WorkflowGraph } from "../../types";
 import type { AgentRunOptions } from "../agent-loop";
 import { runAgentLoop } from "../agent-loop";
-import { isMcpToolName } from "../agent-loop/mcp-tools";
 import { loadAllPresets } from "../agent-presets";
 import { logDiag } from "../diagnostics";
 import { api } from "../tauri-api";
@@ -128,17 +127,6 @@ export interface RunWorkflowOptions {
    */
   requestConfirmation?: AgentRunOptions["requestConfirmation"];
   /**
-   * Per-run "approve all writes" / "approve all shell" toggles. When true,
-   * the runner auto-approves every `write_file` / `edit_file` / `multi_edit`
-   * / `make_dir` (and `run_shell`) call whose risk is `normal`. Dangerous
-   * or destructive risk levels still fall through to the explicit gate.
-   * Defaults to false. UI exposes this as a per-run "Auto-approve file
-   * writes" checkbox so a long workflow doesn't punish the user with one
-   * modal per card.
-   */
-  approveAllWrite?: boolean;
-  approveAllShell?: boolean;
-  /**
    * Pre-formatted "About You" profile block. When set, it is prepended as a
    * system message to every card's agent run so workflow agents share the
    * same user context as normal chat. Built by `formatUserProfile`.
@@ -224,39 +212,16 @@ function buildHandoffMessage(previousOutput: string): Message {
   };
 }
 
-/** Default confirmation gate for unattended runs: deny every dangerous call. */
+/** Default confirmation gate for cards that have NOT opted into unattended: deny every dangerous call. */
 const denyAll: AgentRunOptions["requestConfirmation"] = async () => ({
   approve: false,
   reason: "unattended_denied",
 });
 
-/**
- * Tools that are NEVER auto-approved on an unattended card, even when the
- * card explicitly lists them in its `tools` allowlist. Module-scope so the
- * Set isn't reconstructed for every `buildCardOptions` call.
- *
- *   - delete_path, kill_process, agent_undo : irreversible / destructive
- *   - http_request                          : data exfiltration vector
- *   - spawn_subagent                        : tool-budget bypass via fanout
- *
- * `run_shell` and `applescript_run` are NOT in this list — they have their
- * own risk classifier (see `classify_shell_risk` in Rust). Destructive
- * shapes (`rm -rf`, `sudo`, `kill`, pipe-from-network, etc.) escalate to
- * `dangerous`/`destructive` risk and fall through to the explicit gate;
- * benign enumeration shapes (`find`, `ls`, `grep`) classify as `normal`
- * and may auto-approve under the unattended flag.
- *
- * MCP tools are blocked separately via `isMcpToolName(...)` — their names
- * are minted at runtime (`mcp__<server>__<tool>`) so a static set can
- * never enumerate them.
- */
-const UNATTENDED_NEVER_AUTO = new Set([
-  "delete_path",
-  "kill_process",
-  "agent_undo",
-  "http_request",
-  "spawn_subagent",
-]);
+/** Approve everything, no questions. Used for cards with `unattended === true`. */
+const approveAll: AgentRunOptions["requestConfirmation"] = async () => ({
+  approve: true,
+});
 
 /** Resolve agent-run options for a single card, given upstream context text. */
 function buildCardOptions(
@@ -307,36 +272,17 @@ function buildCardOptions(
   const backend = (card.backend ?? opts.defaultBackend ?? "ollama") as
     AgentRunOptions["backend"];
 
-  // Cards opted into `unattended` auto-approve their own tool calls on
-  // BOTH manual and scheduled runs. Originally this gate was scoped to
-  // scheduled-only, but the workflow UX is to let each agent declare its
-  // own approval posture once at edit time — having the user re-tick
-  // sidebar toggles + re-approve every shell call on top of that defeats
-  // the point of the per-card flag. The safety constraints stay:
-  //   1. Tool must be in the card's effective allowlist (card.tools when
-  //      non-empty, else preset.allowedTools; empty allowlist = ALL tools
-  //      allowed, matching the agent-loop convention).
-  //   2. Tool is not on the never-auto deny list (run_shell of a
-  //      destructive shape never auto-approves regardless of risk
-  //      because the classifier may not catch every adversarial form).
-  //   3. Tool is not MCP-routed (third-party code, no local risk
-  //      taxonomy).
-  //   4. Dispatch-time risk classification is `normal`. Anything
-  //      escalated to `dangerous` / `destructive` (rm -rf, kill, sudo,
-  //      delete_path, etc.) MUST fall through to the explicit approval
-  //      gate regardless of the flag.
-  const baseGate = opts.requestConfirmation ?? denyAll;
-  const allowlistAllows = (toolName: string): boolean =>
-    toolAllowlist.length === 0 || toolAllowlist.includes(toolName);
-  const requestConfirmation: AgentRunOptions["requestConfirmation"] = card.unattended
-    ? async (toolName, args, risk) =>
-        allowlistAllows(toolName)
-          && !UNATTENDED_NEVER_AUTO.has(toolName)
-          && !isMcpToolName(toolName)
-          && risk === "normal"
-          ? { approve: true }
-          : baseGate(toolName, args, risk)
-    : baseGate;
+  // Approval gate. Per the workflow UX contract, the per-card `unattended`
+  // checkbox in the CardForm is the SOLE approval surface. When checked, the
+  // card runs every tool call it issues without prompting — no risk-class
+  // carve-outs, no never-auto deny list, no MCP exclusion. The user opted in
+  // explicitly at edit time on their own machine; the workflow does not
+  // second-guess that decision at run time.
+  //
+  // When unchecked, the card uses the caller-supplied gate (default deny-all),
+  // so a card without the checkbox NEVER auto-runs a dangerous tool.
+  const requestConfirmation: AgentRunOptions["requestConfirmation"] =
+    card.unattended ? approveAll : (opts.requestConfirmation ?? denyAll);
 
   // A card may pin its own model; null/absent/empty-string all fall back to
   // the run default. `??` alone would let `""` through and the agent loop
@@ -362,8 +308,10 @@ function buildCardOptions(
         ? card.systemPrompt
         : preset?.systemPromptOverride,
     toolAllowlist,
-    approveAllShell: opts.approveAllShell === true,
-    approveAllWrite: opts.approveAllWrite === true,
+    // approveAllShell / approveAllWrite are intentionally not threaded: per-card
+    // `unattended` is the sole approval surface for workflows. AgentRunOptions
+    // still accepts these for non-workflow callers (e.g. the chat-window agent
+    // mode) but the workflow runner does not set them.
     onUpdate: () => {},
     onStatusChange: () => {},
     onAssistantDelta: (text) => {

@@ -4,12 +4,10 @@ import "@xyflow/react/dist/style.css";
 import { api } from "../../lib/tauri-api";
 import { runWorkflow, validateGraph, handleWorkflowTrigger } from "../../lib/workflow";
 import type { WorkflowHooks, RunWorkflowOptions } from "../../lib/workflow";
-import type { ConfirmDecision } from "../../lib/agent-loop";
 import { logDiag } from "../../lib/diagnostics";
 import { announce } from "../../lib/announce";
 import { useTauriEvent } from "../../hooks/useTauriEvent";
 import { BUILTIN_PRESETS } from "../../lib/agent-presets";
-import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
 import {
   parseWorkflow,
@@ -64,85 +62,19 @@ export function WorkflowsPage({ status }: Props) {
   // refused without racing on React's batching.
   const runningRef = useRef(false);
   const [err, setErr] = useState<string | null>(null);
-  // Note: per-run auto-approve sidebar toggles were removed. Approval posture
-  // is owned by each card via `unattended` — checking that flag in the card's
-  // Edit form auto-approves the agent's tool calls on every run (manual or
-  // scheduled), subject to the never-auto deny list and the normal-risk
-  // requirement enforced in `buildCardOptions`.
-  // Per-call approval modal state. The agent runner calls
-  // `requestConfirmation(toolName, args, risk)` for any dangerous tool;
-  // the returned promise resolves when the user clicks Allow/Deny here.
-  // Without this gate the runner defaults to `denyAll`, which silently
-  // refuses every write_file / edit_file etc. and the model just narrates
-  // around the missing capability.
-  const [confirmState, setConfirmState] = useState<{
-    toolName: string;
-    args: Record<string, unknown>;
-    risk: string;
-  } | null>(null);
-  const confirmResolveRef = useRef<((v: ConfirmDecision) => void) | null>(null);
-  const requestConfirmation = useCallback(
-    (
-      toolName: string,
-      args: Record<string, unknown>,
-      risk: string,
-    ): Promise<ConfirmDecision> =>
-      new Promise<ConfirmDecision>((resolve) => {
-        // If the user already clicked Stop before the gate fired, deny
-        // synchronously — the loop's next iteration boundary will read
-        // signal.aborted and bail out cleanly. The `reason` field lets
-        // the downstream audit row + tool-result body distinguish an
-        // explicit-user-deny from an abort-driven deny.
-        const signal = abortRef.current?.signal;
-        if (signal?.aborted) {
-          resolve({ approve: false, reason: "aborted" });
-          return;
-        }
-        const onAbort = () => {
-          confirmResolveRef.current = null;
-          setConfirmState(null);
-          resolve({ approve: false, reason: "aborted" });
-        };
-        signal?.addEventListener("abort", onAbort, { once: true });
-        confirmResolveRef.current = (v) => {
-          signal?.removeEventListener("abort", onAbort);
-          resolve(v);
-        };
-        setConfirmState({ toolName, args, risk });
-      }),
-    [],
-  );
-  const resolveConfirmation = useCallback((approve: boolean) => {
-    setConfirmState(null);
-    confirmResolveRef.current?.({ approve, reason: approve ? "user_allow" : "user_deny" });
-    confirmResolveRef.current = null;
-  }, []);
-  // Unmount safety: a navigate-away mid-run used to silently auto-deny
-  // any pending approval, producing a "completed" run record whose
-  // cards have empty outputs and downstream cards complaining that a
-  // promised file is missing. The honest behaviour is to abort the
-  // ENTIRE run on unmount — the agent loop exits cleanly at its next
-  // iteration boundary, the recorded run reflects the abort, and the
-  // user knows their navigation cancelled the work.
+  // Approval policy: per-card `unattended` checkbox is the SOLE approval
+  // surface. Cards with the box checked auto-approve every tool call.
+  // Cards without it use the runner's default deny-all gate. Either way
+  // no modal opens during a workflow run — the user already declared
+  // their intent at card-edit time.
   //
-  // The confirm-modal resolver is also denied here as the very last
-  // thing so any in-flight `await requestConfirmation(...)` unblocks
-  // and lets the runner notice the abort signal.
+  // Unmount safety: a navigate-away mid-run aborts the in-flight controller
+  // so the agent loop exits at its next iteration boundary. There is no
+  // pending approval Promise to resolve any more (no modal exists), so the
+  // single concern is: kill the run cleanly.
   useEffect(() => {
     return () => {
-      // Abort first; this fires the signal listener that resolves any
-      // open confirmation Promise as `{approve:false, reason:"aborted"}`
-      // and synchronously nulls `confirmResolveRef.current`.
       abortRef.current?.abort();
-      // Belt-and-suspenders for the (currently impossible) case where
-      // the abort listener was async-detached BEFORE running. Check the
-      // ref again: if `onAbort` already cleared it, do nothing — a
-      // double-resolve would race two distinct denial paths.
-      const resolver = confirmResolveRef.current;
-      if (resolver) {
-        confirmResolveRef.current = null;
-        resolver({ approve: false, reason: "aborted" });
-      }
     };
   }, []);
   // Pre-formatted "About You" block, shared by every card's agent run so
@@ -217,7 +149,7 @@ export function WorkflowsPage({ status }: Props) {
   //
   // The dirty-gate matters: this effect re-runs on EVERY render, including
   // renders triggered by unrelated state (status changes, userProfile loads,
-  // approveAllWrite toggles). Without the gate, the auto-save would clobber
+  // confirm-modal lifecycle). Without the gate, the auto-save would clobber
   // any concurrent DB edit (an external migration, another window) with the
   // in-memory state — which may itself be stale from the original load.
   // Only schedule a flush when something genuinely changed since open.
@@ -480,20 +412,14 @@ export function WorkflowsPage({ status }: Props) {
         defaultBackend: (status?.backend as RunWorkflowOptions["defaultBackend"]) ?? undefined,
         serverStatus: status,
         userProfile: userProfile ?? undefined,
-        // Interactive workflow runs surface a confirmation modal for every
-        // dangerous tool call. Without this the runner's default `denyAll`
-        // would refuse `write_file` / `edit_file` / `run_shell` silently
-        // and a "write the summary to disk" prompt would never write
-        // anything. Scheduled (unattended) runs still bypass this for
-        // cards that have explicitly opted in via `card.unattended`.
-        requestConfirmation,
-        // Workflow-level auto-approve toggles were removed; approval posture
-        // is owned per-card via `unattended`. The runner reads that flag in
-        // `buildCardOptions` and auto-approves normal-risk tool calls for
-        // cards that have opted in.
+        // No `requestConfirmation` is passed: approval is owned by the
+        // per-card `unattended` checkbox. Cards with the box checked
+        // approve their own tool calls; cards without it fall through to
+        // the runner's default deny-all gate, which refuses every
+        // dangerous tool without ever opening a modal.
       };
     },
-    [status, userProfile, cards, requestConfirmation],
+    [status, userProfile, cards],
   );
 
   /**
@@ -853,39 +779,6 @@ export function WorkflowsPage({ status }: Props) {
           onSave={saveCard}
           onClose={closeForm}
         />
-      )}
-      {confirmState && (
-        <ConfirmDialog
-          ariaLabel={`Confirm tool ${confirmState.toolName}`}
-          data-testid="workflow-confirm-modal"
-          boxClassName={`risk-${confirmState.risk}`}
-          onDismiss={() => resolveConfirmation(false)}
-          title={
-            <span>
-              Allow <code>{confirmState.toolName}</code>?
-              {confirmState.risk !== "normal" && (
-                <span className={`agent-risk-badge risk-${confirmState.risk}`}>
-                  {confirmState.risk}
-                </span>
-              )}
-            </span>
-          }
-          actions={
-            <>
-              <button onClick={() => resolveConfirmation(false)}>Deny</button>
-              <button
-                className="primary"
-                onClick={() => resolveConfirmation(true)}
-              >
-                Allow
-              </button>
-            </>
-          }
-        >
-          <pre className="agent-confirm-args">
-            {JSON.stringify(confirmState.args, null, 2)}
-          </pre>
-        </ConfirmDialog>
       )}
     </div>
   );
