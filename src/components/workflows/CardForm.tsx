@@ -173,6 +173,24 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
     };
   }, []);
 
+  // Auto-heal: once the installed-models list lands, if the draft has a model
+  // pinned but no backend (legacy cards, pre-fix data), look up the model's
+  // backend and copy it onto the draft. Without this, opening + saving an
+  // existing card keeps `backend=null`, which forces the runner to fall back
+  // to the default backend at run time — fine for Ollama, broken for MLX.
+  // The dropdown's `onChange` already does this for fresh picks; this covers
+  // the "saved a long time ago, never re-picked" case.
+  useEffect(() => {
+    if (modelsState !== "ok") return;
+    if (!draft.model || draft.backend) return;
+    const inferred = findModelBackend(models, draft.model);
+    if (inferred) {
+      setDraft((d) =>
+        d.model && !d.backend ? { ...d, backend: inferred } : d,
+      );
+    }
+  }, [modelsState, models, draft.model, draft.backend]);
+
   useEffect(() => {
     const id = requestAnimationFrame(() => setEntered(true));
     return () => cancelAnimationFrame(id);
