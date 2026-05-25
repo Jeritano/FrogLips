@@ -226,7 +226,7 @@ The in-flight generation state (`running` / `progress` / `error` / `generate`) l
 
 ### `components/AboutYouModal.tsx` + `lib/user-profile.ts`
 
-Local-only structured user profile (name / occupation / location / about / response-style + an enabled toggle). `formatUserProfile` renders the enabled profile as a system-prompt block (framed as context the model has, not something to repeat back) which `useChatSend` prepends to every chat and the workflow runner prepends to every agent run. Stored under `settings.user_profile`; never leaves the device. Saving with any field filled auto-enables the profile (foot-gun fix — the original required two clicks).
+Local-only structured user profile (name / occupation / location / about / response-style + an enabled toggle). `formatUserProfile` renders the enabled profile as a system-prompt block (framed as context the model has, not something to repeat back) which `useChatSend` prepends to every chat. The workflow runner **intentionally does NOT inject** the profile — workflow agents are task-focused and some models (kimi-k2.6:cloud in particular) were observed picking the profile's name as a literal filename when the card prompt mentioned a file destination. Stored under `settings.user_profile`; never leaves the device. Saving with any field filled auto-enables the profile (foot-gun fix — the original required two clicks).
 
 ### `lib/auto-continue.ts` + `components/ContextRolloverBanner.tsx`
 

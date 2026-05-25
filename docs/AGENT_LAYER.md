@@ -356,7 +356,38 @@ Beyond the path sandbox, the agent's authorization layer enforces:
 - **MCP tools are risk-classified and always require confirmation.** An MCP
   server's tools are treated as untrusted: every MCP tool call is
   confirmation-gated and can never be auto-approved, even under session
-  approvals or a project policy.
+  approvals or a project policy. Identified via `isMcpToolName(...)` (names
+  are minted at runtime as `mcp__<server>__<tool>`; static deny lists alone
+  could never enumerate them).
+- **Path-aware risk escalation for writes.** `classifyToolRisk` inspects
+  the `path` / `from` / `to` arguments of `write_file` / `edit_file` /
+  `multi_edit` / `make_dir` / `move_path` / `copy_path` and escalates the
+  call to `destructive` when the target lands in a sensitive location —
+  `/etc/`, `/Library/Launch{Agents,Daemons}/`, shell rc files (`.zshrc`,
+  `.bashrc`, …), `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, or any `*.app` /
+  `*.command` / `*.terminal` / `*.workflow` / `*.tool` bundle (root or
+  internal writes). Lexical `..`-collapse runs before the prefix check so
+  `~/foo/../../etc/hosts` doesn't slip through as "normal". The session
+  blanket `approveAllWrite` cannot waive a `destructive` risk — the
+  confirmation modal still fires.
+- **Deny reason taxonomy.** `ConfirmDecision.reason` carries one of
+  `"user_allow"` (human clicked Allow), `"user_deny"` (human clicked Deny),
+  `"aborted"` (run-level abort fired while the modal was open), or
+  `"unattended_denied"` (default deny-all gate). The taxonomy is preserved
+  in the audit row's `errorKind`; the model-facing tool body collapses all
+  deny paths to a single learnable `kind: "permission_denied"`.
+- **Workflow unattended auto-approve** (scheduled runs only) requires four
+  conditions: tool listed in `card.tools`, tool NOT in `UNATTENDED_NEVER_AUTO`
+  (`run_shell`, `applescript_run`, `delete_path`, `kill_process`,
+  `agent_undo`, `http_request`, `spawn_subagent`), tool is NOT MCP-routed,
+  and the dispatch-time `classifyToolRisk` returns `"normal"`.
+- **Research-budget nudge.** After 10 successful external research calls
+  (`web_search` / `web_fetch` / `read_pdf` only — local fs reads excluded
+  so codebase exploration isn't punished) without any write, the agent loop
+  injects a one-time system reminder telling the model to stop researching
+  and produce the deliverable via `write_file` / `edit_file` / `multi_edit`.
+  Fires only when the card has a write tool in scope; mutex'd with the
+  consecutive-tool-error stop hint to avoid contradictory messages.
 
 ## Adding a tool
 
@@ -403,12 +434,17 @@ Empty `allowedTools` means "all enabled". The preset's `systemPromptOverride` re
 | Constant | Default | What |
 |---|---|---|
 | `OLLAMA_BASE` | `http://127.0.0.1:11434` | Ollama URL |
-| `MAX_ITERATIONS` | 20 | Loop budget |
+| `MAX_ITERATIONS` | 40 | Loop budget |
+| `MAX_CONSECUTIVE_TOOL_ERRORS` | 5 | Trip "stop retrying, report" hint |
+| `RESEARCH_NUDGE_THRESHOLD` | 10 | External research calls without writes → one-time nudge |
 | `DEDUPE_WINDOW` | 3 | How many recent calls to track for repeat detection |
+| `STALL_SAME_PATH_LIMIT` | 6 | `read_file` repeat-cap before stall hint |
 | `RETRY_MAX` | 2 | Ollama retry count |
 | `RETRY_BACKOFF_MS` | 500 | Initial backoff (multiplied by attempt+1) |
 | `OLLAMA_REQUEST_TIMEOUT_MS` | 120 000 | Per-request timeout combined with caller's signal |
 | `MAX_SUBAGENT_DEPTH` | 3 | Recursion cap for `spawn_subagent` |
+| `HANDOFF_OUTPUT_CAP` | 65 536 | Workflow card→card output cap (surrogate-safe) |
+| `RECORD_OUTPUT_CAP` | 6 144 | Workflow run-record per-card output cap |
 
 `src-tauri/src/agent/`:
 

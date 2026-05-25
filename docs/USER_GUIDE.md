@@ -159,19 +159,20 @@ Next to the Agent toggle is a dropdown of presets:
 |---|---|---|
 | **General** | All tools | Mixed tasks |
 | **Coder** | FS + shell + multi_edit + full git | Software work |
-| **Researcher** | Read-only FS + git + web + read_pdf | Investigation without writes |
+| **Researcher** | FS read + write_file/edit_file/multi_edit + git + web + read_pdf | Investigation + reports/summaries |
 | **Shell** | run_shell, list, exists, read | Terminal-style tasks |
 
 Each preset comes with a system prompt tailored to its purpose. Switching presets mid-conversation changes the prompt for the next turn.
 
 ### Safety
 
-- Every `run_shell`, `write_file`, `edit_file`, `applescript_run`, `clipboard_set`, `open_app`, `git_commit`, and `spawn_subagent` call requires explicit user approval. An `http_request` carrying a request body always asks for confirmation too, even when you've approved a session.
+- Every `run_shell`, `write_file`, `edit_file`, `multi_edit`, `make_dir`, `move_path`, `copy_path`, `delete_path`, `applescript_run`, `clipboard_set`, `open_app`, `git_commit`, `kill_process`, `agent_undo`, and `spawn_subagent` call requires explicit user approval. An `http_request` carrying a request body always asks for confirmation too, even when you've approved a session.
 - The confirm dialog shows a `destructive` / `privileged` / `pipe-from-network` badge for risky patterns (e.g. `rm -rf /`, `sudo`, `curl … | sh`).
-- Path traversal (`..`), symlink escape, and reads/writes to `~/.ssh`, `~/.aws`, `~/Library/Keychains`, `.env*`, sudoers, browser profiles, `.netrc`, `gh`/`gcloud` config, etc. are blocked by the Rust side.
+- **Path-aware risk escalation** — writes targeting `/etc/`, `/Library/Launch{Agents,Daemons}/`, shell rc files (`.zshrc`, `.bashrc`, …), `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, or any `.app` / `.command` / `.terminal` / `.workflow` / `.tool` bundle (root OR internal) are automatically classified `destructive`. The "Auto-approve file writes" toggle CANNOT waive these — they always show the explicit confirmation modal with the loud red badge.
+- Path traversal (`..`) is collapsed before risk classification so `~/foo/../../etc/hosts` doesn't slip through as "normal". Symlink escape, reads/writes to `~/.ssh`, `~/.aws`, `~/Library/Keychains`, `.env*`, sudoers, browser profiles, `.netrc`, `gh`/`gcloud` config, etc. are blocked by the Rust side regardless of UI risk.
 - Content the agent reads from outside the model — files, PDFs, the clipboard, web pages, and git output — is scanned for prompt-injection before it reaches the model.
 - Subagents do not inherit your session-wide "approve all" choices; their shell and write calls each ask again.
-- **MCP server tools always require confirmation** — they can't be auto-approved, even with a session "approve all" active.
+- **MCP server tools always require confirmation** — they can't be auto-approved, even with a session "approve all" active, and they're explicitly excluded from the unattended scheduled-workflow auto-approve.
 - The agent loop manages the model's context window for you: on long runs it trims oversized tool results and summarizes the oldest turns so a small-context model doesn't overflow and forget its tools mid-task.
 - If tool calls keep failing turn after turn, the agent stops with a clear message rather than burning its whole iteration budget retrying.
 - Optional **workspace root** confines all filesystem operations to a chosen directory. Set in agent settings (⚙).
@@ -212,9 +213,35 @@ sidebar (the 🧩 Workflows entry).
 - **Run** — **Run workflow** runs the whole chain; a single card's **Run**
   button runs just that card (disabled for mid-chain cards, which have no
   upstream input on their own).
+- **Disconnect cards** — click any edge line between two cards to disconnect
+  them (a confirmation prompts before removing). React Flow's select+Delete
+  doesn't survive the editor's re-render, so click-to-disconnect is the
+  reliable affordance.
+- **Approval modals** — every dangerous tool call during a manual run
+  surfaces the same confirmation dialog you see in chat agent mode. Click
+  **Allow** or **Deny**. Clicking **Stop** while a modal is open cancels the
+  whole run and unblocks the agent loop cleanly.
+- **Auto-approve file writes** — the **"Auto-approve file writes"** checkbox
+  in the run panel skips the modal for normal-risk `write_file` / `edit_file`
+  / `multi_edit` / `make_dir` / `move_path` / `copy_path` calls so a multi-card
+  research → summary → report chain isn't punished with one modal per card.
+  `run_shell`, `applescript_run`, `http_request`, `delete_path`,
+  `kill_process`, and any write to a sensitive system / launch / dotfile path
+  still gate explicitly. The toggle resets to off on every workflow open.
+- **Navigation cancels runs** — leaving the Workflows view while a run is in
+  progress aborts it cleanly (you'll see the run recorded as failed with the
+  remaining cards skipped). A blue banner warns while a run is live. Future
+  releases will lift run state above the page so navigation is non-destructive.
 - **Schedule** — a card with a schedule triggers the workflow unattended. A
   card must explicitly opt into `unattended` for its declared tools to
   auto-approve on a scheduled run; everything else still hits the deny-all gate.
+  Even with `unattended`, the curated never-auto list (`run_shell`,
+  `applescript_run`, `delete_path`, `kill_process`, `agent_undo`,
+  `http_request`, `spawn_subagent`, MCP tools) ALWAYS requires explicit
+  confirmation — they're refused on scheduled runs with no UI involved.
+- **Schedule grammar** — `every <n>m`, `every <n>h`, or `daily HH:MM` (UTC).
+  The form validator matches what the Rust scheduler actually accepts; an
+  invalid schedule disables Save with an inline hint.
 
 ## 7b. Images
 
@@ -315,7 +342,11 @@ menu (☰ → 👤 About You).
   how you want the AI to respond.
 - Tick **Use my profile** to enable it.
 - When enabled, the profile is formatted into a system-prompt block injected
-  into **every chat and every workflow agent run**, so responses fit you.
+  into **every chat session** so responses fit you.
+- **Workflows intentionally do NOT inject the profile.** Workflow agents are
+  task-focused; some models were observed picking the profile's name as a
+  literal filename when the workflow prompt also mentioned a file. Workflow
+  cards rely on their own prompt for any user context.
 - It is stored locally in `settings.json`, never auto-populated, and never sent
   anywhere except to the model you are already chatting with.
 
