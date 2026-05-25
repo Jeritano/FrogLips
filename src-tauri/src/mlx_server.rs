@@ -15,6 +15,11 @@ pub const MLX_HOST: &str = "127.0.0.1";
 pub const MLX_PORT: u16 = 8080;
 pub const OLLAMA_HOST: &str = "127.0.0.1";
 pub const OLLAMA_PORT: u16 = 11434;
+/// Pseudo-host for cloud backends — frontend ignores host/port for these and
+/// uses the provider's HTTPS endpoint instead. Kept non-empty so callers that
+/// log `host:port` produce a recognizable string.
+pub const NOVITA_HOST: &str = "api.novita.ai";
+pub const NOVITA_PORT: u16 = 443;
 
 const STDERR_RING_LINES: usize = 64;
 
@@ -116,6 +121,19 @@ impl ServerState {
                 .await
                 .map_err(|_| anyhow!("ollama daemon probe timed out at {addr}"))?
                 .map_err(|e| anyhow!("ollama daemon not reachable at {addr}: {e}"))?;
+            *guard = Some(RunningServer {
+                child: None,
+                model: model.clone(),
+                backend: backend.clone(),
+            });
+            self.ready.store(true, Ordering::Release);
+            return Ok(self.live_status(&model, &backend));
+        }
+
+        if backend == "novita" {
+            // Cloud backend — no local process. The API key probe was already
+            // done in lib.rs::start_server before we got here, so we just
+            // record the active selection and mark ready.
             *guard = Some(RunningServer {
                 child: None,
                 model: model.clone(),
@@ -252,10 +270,10 @@ impl ServerState {
     }
 
     fn live_status(&self, model: &str, backend: &str) -> ServerStatus {
-        let (host, port) = if backend == "ollama" {
-            (OLLAMA_HOST, OLLAMA_PORT)
-        } else {
-            (MLX_HOST, MLX_PORT)
+        let (host, port) = match backend {
+            "ollama" => (OLLAMA_HOST, OLLAMA_PORT),
+            "novita" => (NOVITA_HOST, NOVITA_PORT),
+            _ => (MLX_HOST, MLX_PORT),
         };
         ServerStatus {
             running: true,

@@ -1,14 +1,18 @@
+export type Backend = "mlx" | "ollama" | "novita";
+
 export interface ModelEntry {
   id: string;
   size_bytes: number;
-  backend: "mlx" | "ollama";
+  backend: Backend;
 }
 
 export interface AllModels {
   mlx: ModelEntry[];
   ollama: ModelEntry[];
+  novita: ModelEntry[];
   mlx_error?: string | null;
   ollama_error?: string | null;
+  novita_error?: string | null;
 }
 
 export interface ServerStatus {

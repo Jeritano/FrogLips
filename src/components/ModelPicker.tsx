@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/tauri-api";
 import type { AllModels, ModelEntry, ServerStatus } from "../types";
 import { ModelBrowser } from "./ModelBrowser";
+import { NovitaSettings } from "./NovitaSettings";
 
 interface Props {
   status: ServerStatus | null;
@@ -18,9 +19,10 @@ function formatSize(bytes: number) {
 }
 
 export function ModelPicker({ status, onStatusChange }: Props) {
-  const [models, setModels] = useState<AllModels>({ mlx: [], ollama: [] });
+  const [models, setModels] = useState<AllModels>({ mlx: [], ollama: [], novita: [] });
   const [selected, setSelected] = useState<ModelEntry | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
+  const [novitaSettingsOpen, setNovitaSettingsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -30,10 +32,16 @@ export function ModelPicker({ status, onStatusChange }: Props) {
     try {
       const m = await api.listAllModels();
       setModels(m);
-      // Surface backend-specific list errors as a short hint, not a hard error
+      // Surface backend-specific list errors as a short hint, not a hard error.
+      // Novita's "not configured" message is intentionally suppressed here —
+      // showing a red error before the user has had a chance to add their key
+      // is just noise.
       const hints: string[] = [];
       if (m.ollama_error) hints.push(`Ollama: ${m.ollama_error}`);
       if (m.mlx_error) hints.push(`MLX: ${m.mlx_error}`);
+      if (m.novita_error && !/not configured/i.test(m.novita_error)) {
+        hints.push(`Novita: ${m.novita_error}`);
+      }
       setErr(hints.length ? hints.join(" · ") : null);
     } catch (e) {
       setErr(String(e));
@@ -42,7 +50,7 @@ export function ModelPicker({ status, onStatusChange }: Props) {
 
   useEffect(() => {
     if (status?.model && status?.backend && !selected) {
-      const all = [...models.mlx, ...models.ollama];
+      const all = [...models.mlx, ...models.ollama, ...models.novita];
       const match = all.find(m => m.id === status.model && m.backend === status.backend);
       if (match) setSelected(match);
     }
@@ -51,9 +59,10 @@ export function ModelPicker({ status, onStatusChange }: Props) {
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const v = e.target.value;
     if (v === "__browse__") { setBrowserOpen(true); return; }
+    if (v === "__novita_settings__") { setNovitaSettingsOpen(true); return; }
     const [backend, ...rest] = v.split(":");
     const id = rest.join(":");
-    const all = [...models.mlx, ...models.ollama];
+    const all = [...models.mlx, ...models.ollama, ...models.novita];
     const entry = all.find(m => m.id === id && m.backend === backend);
     setSelected(entry ?? null);
   }
@@ -99,8 +108,16 @@ export function ModelPicker({ status, onStatusChange }: Props) {
               ))}
             </optgroup>
           )}
+          {models.novita.length > 0 && (
+            <optgroup label="Novita (cloud)">
+              {models.novita.map((m) => (
+                <option key={`novita:${m.id}`} value={`novita:${m.id}`}>{m.id}</option>
+              ))}
+            </optgroup>
+          )}
           <optgroup label="Add model">
             <option value="__browse__">⬇ Browse &amp; download models…</option>
+            <option value="__novita_settings__">☁ Configure Novita (cloud)…</option>
           </optgroup>
         </select>
 
@@ -124,6 +141,13 @@ export function ModelPicker({ status, onStatusChange }: Props) {
         <ModelBrowser
           onClose={() => setBrowserOpen(false)}
           onPulled={() => { loadModels(); setBrowserOpen(false); }}
+        />
+      )}
+
+      {novitaSettingsOpen && (
+        <NovitaSettings
+          onClose={() => setNovitaSettingsOpen(false)}
+          onSaved={() => { loadModels(); }}
         />
       )}
     </>

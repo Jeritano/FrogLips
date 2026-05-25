@@ -133,4 +133,12 @@ export const api = {
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsSet: (patch: Partial<AppSettings>) =>
     invoke<AppSettings>("settings_set", { patch }),
+
+  // Novita (cloud) — API key lives in the OS keychain; never in JS storage.
+  novitaSetKey: (key: string) => invoke<void>("novita_set_key", { key }),
+  novitaClearKey: () => invoke<void>("novita_clear_key"),
+  novitaHasKey: () => invoke<boolean>("novita_has_key"),
+  /** Fetch the key just-in-time for a single request. Do not cache. */
+  novitaGetKey: () => invoke<string | null>("novita_get_key"),
+  novitaTestConnection: () => invoke<void>("novita_test_connection"),
 };

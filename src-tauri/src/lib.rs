@@ -1,8 +1,10 @@
 mod agent;
 mod history;
+mod keychain;
 mod memory;
 mod mlx_server;
 mod models;
+mod novita;
 mod settings;
 
 use once_cell::sync::Lazy;
@@ -80,11 +82,20 @@ async fn start_server(
     state: State<'_, ServerHandle>,
     app: tauri::AppHandle,
 ) -> Result<ServerStatus, String> {
-    if backend != "mlx" && backend != "ollama" {
+    if backend != "mlx" && backend != "ollama" && backend != "novita" {
         return Err(format!("invalid backend: {backend}"));
     }
     if model.trim().is_empty() {
         return Err("model id must not be empty".into());
+    }
+    // For Novita we probe the API key BEFORE marking the server ready, so
+    // the user gets immediate feedback if the key is missing/invalid rather
+    // than discovering it on the first chat send.
+    if backend == "novita" {
+        let key = keychain::get_key("novita")
+            .map_err(map_err)?
+            .ok_or_else(|| "novita api key not configured".to_string())?;
+        novita::probe(&key).await.map_err(map_err)?;
     }
     let status = state.start(model, backend).await.map_err(map_err)?;
     let _ = app.emit("server-status", &status);
@@ -107,23 +118,74 @@ async fn server_status(state: State<'_, ServerHandle>) -> Result<ServerStatus, S
 struct AllModels {
     mlx: Vec<ModelEntry>,
     ollama: Vec<ModelEntry>,
+    novita: Vec<ModelEntry>,
     mlx_error: Option<String>,
     ollama_error: Option<String>,
+    novita_error: Option<String>,
 }
 
 #[tauri::command]
 async fn list_all_models() -> Result<AllModels, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let lists = models::list_all_models().map_err(map_err)?;
-        Ok(AllModels {
-            mlx: lists.mlx,
-            ollama: lists.ollama,
-            mlx_error: lists.mlx_error,
-            ollama_error: lists.ollama_error,
-        })
+    // mlx + ollama lookups are blocking (filesystem + child process), so they
+    // go on spawn_blocking. Novita is async (HTTP), so it runs on the runtime
+    // in parallel with the blocking task.
+    let local_task = tauri::async_runtime::spawn_blocking(models::list_all_models);
+
+    let novita_task = async {
+        match keychain::get_key("novita") {
+            Ok(Some(key)) => match novita::list_models(&key).await {
+                Ok(v) => (v, None),
+                Err(e) => (vec![], Some(e.to_string())),
+            },
+            Ok(None) => (vec![], Some("novita api key not configured".to_string())),
+            Err(e) => (vec![], Some(e.to_string())),
+        }
+    };
+
+    let (local_res, (novita_models, novita_error)) = tokio::join!(local_task, novita_task);
+    let lists = local_res.map_err(map_err)?.map_err(map_err)?;
+
+    Ok(AllModels {
+        mlx: lists.mlx,
+        ollama: lists.ollama,
+        novita: novita_models,
+        mlx_error: lists.mlx_error,
+        ollama_error: lists.ollama_error,
+        novita_error,
     })
-    .await
-    .map_err(map_err)?
+}
+
+/* ── Novita key management ── */
+
+#[tauri::command]
+fn novita_set_key(key: String) -> Result<(), String> {
+    keychain::set_key("novita", key.trim()).map_err(map_err)
+}
+
+#[tauri::command]
+fn novita_clear_key() -> Result<(), String> {
+    keychain::clear_key("novita").map_err(map_err)
+}
+
+#[tauri::command]
+fn novita_has_key() -> bool {
+    keychain::has_key("novita")
+}
+
+/// Returns the API key to the frontend on demand. The frontend uses this
+/// just-in-time when initiating a chat request and discards the key after
+/// the request completes — it is never persisted in JS storage or settings.
+#[tauri::command]
+fn novita_get_key() -> Result<Option<String>, String> {
+    keychain::get_key("novita").map_err(map_err)
+}
+
+#[tauri::command]
+async fn novita_test_connection() -> Result<(), String> {
+    let key = keychain::get_key("novita")
+        .map_err(map_err)?
+        .ok_or_else(|| "novita api key not configured".to_string())?;
+    novita::probe(&key).await.map_err(map_err)
 }
 
 #[tauri::command]
@@ -180,7 +242,8 @@ fn open_external(url: String, app: tauri::AppHandle) -> Result<(), String> {
         host.as_str(),
         "civitai.com" | "www.civitai.com" |
         "huggingface.co" | "www.huggingface.co" |
-        "ollama.com" | "www.ollama.com"
+        "ollama.com" | "www.ollama.com" |
+        "novita.ai" | "www.novita.ai"
     );
     if !allowed {
         return Err(format!("host not allowed: {host}"));
@@ -711,6 +774,11 @@ pub fn run() {
             agent_git_diff,
             settings_get,
             settings_set,
+            novita_set_key,
+            novita_clear_key,
+            novita_has_key,
+            novita_get_key,
+            novita_test_connection,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
-import { streamChat } from "../lib/mlx-client";
+import { streamChat as streamChatLocal } from "../lib/mlx-client";
+import { streamChat as streamChatNovita } from "../lib/novita-client";
 import { runAgentLoop, cancelActiveShell } from "../lib/agent-loop";
 import type { AgentMetrics, AgentStatus, ConfirmDecision } from "../lib/agent-loop";
 import {
@@ -350,6 +351,10 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     }
 
     /* ── Regular streaming mode ── */
+    // Pick the right transport. Local backends (MLX, Ollama) share the same
+    // OpenAI-compatible loopback endpoint; Novita is HTTPS + bearer auth.
+    const streamChat =
+      status.backend === "novita" ? streamChatNovita : streamChatLocal;
     if (isStreamConvActive()) setStreaming("");
     let acc = "";
     let aborted = false;
