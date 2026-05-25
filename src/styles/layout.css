@@ -340,6 +340,28 @@ body {
 /* Theme toggle pinned to far right of the model picker bar. */
 .topbar-theme { margin-left: auto; }
 
+/* Portal target for view-specific top-bar controls. WorkflowsPage renders
+   its picker title / editor controls here so the chrome height stays at
+   parity with chat's ModelPicker (one row, 10px+content+10px padding).
+   Filling the row with flex:1 lets `.topbar-theme { margin-left: auto }`
+   keep the theme toggle pinned right. */
+.topbar-slot {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Tighten action buttons rendered in the top-bar (e.g. "+ New workflow")
+   so they line up vertically with the title + the rest of the header
+   chrome instead of pushing the row taller. */
+.topbar-action {
+  padding: 4px 10px;
+  font-size: 13px;
+  line-height: 1;
+}
+
 /* UI review U-C2: per-view title that fills the header on non-chat views
    so the user always knows where they are. Sized to sit at parity with
    the ModelPicker (Chat's header) so the chrome height is constant. */

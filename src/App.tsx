@@ -964,13 +964,27 @@ function App() {
               theme button on Workflows / Images. Users lost orientation
               when switching views. Render a view-title placeholder for
               non-chat views so the header always carries the active view
-              name + theme control. */}
-          {view !== "chat" && (
+              name + theme control.
+
+              For workflows, the page renders into `#workflow-topbar-slot`
+              via createPortal so the editor controls (back button, name
+              input, warnings) sit in the SAME header row as the chat
+              ModelPicker. Without the slot, the workflows view used to
+              show two stacked bars (global h1 + page-level wf-editor-bar)
+              which read as visually heavier than chat's single-row header. */}
+          {view === "workflows" && (
+            <div
+              id="workflow-topbar-slot"
+              className="topbar-slot"
+              data-testid="workflow-topbar-slot"
+            />
+          )}
+          {view === "images" && (
             // UI re-review L3: label syncs with the sidebar entry. Was
             // "Image generation" in the header but "Images" in the
             // sidebar — pick one.
             <h1 className="topbar-view-title" data-testid="topbar-view-title">
-              {view === "workflows" ? "Workflows" : "Images"}
+              Images
             </h1>
           )}
           <button

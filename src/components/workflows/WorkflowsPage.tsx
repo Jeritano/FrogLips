@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api } from "../../lib/tauri-api";
@@ -675,15 +676,34 @@ export function WorkflowsPage({ status }: Props) {
     [cards, cardStates],
   );
 
+  // The portal slot inside App.tsx's <header> where this page renders its
+  // top-bar controls. Reading it on every render is cheap (just a DOM ref
+  // lookup) and lets the page mount its header chrome into the same row
+  // as the chat ModelPicker — keeping the chrome height constant across
+  // views. `null` until App mounts the slot, which is true on the very
+  // first render in dev w/ Strict Mode; the page degrades to no top bar
+  // until the next paint, which is harmless.
+  const topbarSlot =
+    typeof document !== "undefined"
+      ? document.getElementById("workflow-topbar-slot")
+      : null;
+
   if (!selected) {
+    const pickerHeader = (
+      <>
+        <h1 className="topbar-view-title">Workflows</h1>
+        <button
+          type="button"
+          className="wf-btn wf-btn-primary topbar-action"
+          onClick={createWorkflow}
+        >
+          + New workflow
+        </button>
+      </>
+    );
     return (
       <div className="wf-page wf-picker" data-testid="workflows-page">
-        <div className="wf-picker-head">
-          <h2>Workflows</h2>
-          <button type="button" className="wf-btn wf-btn-primary" onClick={createWorkflow}>
-            + New workflow
-          </button>
-        </div>
+        {topbarSlot && createPortal(pickerHeader, topbarSlot)}
         {err && <div className="wf-error" onClick={() => setErr(null)}>{err}</div>}
         {list.length === 0 ? (
           <EmptyState
@@ -715,38 +735,42 @@ export function WorkflowsPage({ status }: Props) {
     );
   }
 
+  const editorHeader = (
+    <>
+      <button
+        type="button"
+        className="wf-btn"
+        onClick={() => { flushSave(); setSelected(null); }}
+      >
+        ← Workflows
+      </button>
+      <input
+        className="wf-name-input"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        aria-label="Workflow name"
+      />
+      {warning && (
+        <span className="wf-warning" role="status" data-testid="wf-warning">
+          ⚠ {warning}
+        </span>
+      )}
+      {running && (
+        <span
+          className="wf-warning"
+          role="status"
+          data-testid="wf-run-warning"
+          style={{ color: "var(--accent, #6c8eff)" }}
+        >
+          ● Run in progress — leaving this view will cancel it.
+        </span>
+      )}
+    </>
+  );
+
   return (
     <div className="wf-page wf-editor" data-testid="workflows-page">
-      <div className="wf-editor-bar">
-        <button
-          type="button"
-          className="wf-btn"
-          onClick={() => { flushSave(); setSelected(null); }}
-        >
-          ← Workflows
-        </button>
-        <input
-          className="wf-name-input"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          aria-label="Workflow name"
-        />
-        {warning && (
-          <span className="wf-warning" role="status" data-testid="wf-warning">
-            ⚠ {warning}
-          </span>
-        )}
-        {running && (
-          <span
-            className="wf-warning"
-            role="status"
-            data-testid="wf-run-warning"
-            style={{ color: "var(--accent, #6c8eff)" }}
-          >
-            ● Run in progress — leaving this view will cancel it.
-          </span>
-        )}
-      </div>
+      {topbarSlot && createPortal(editorHeader, topbarSlot)}
       {err && <div className="wf-error" onClick={() => setErr(null)}>{err}</div>}
       <div className="wf-editor-body">
         <ReactFlowProvider>
