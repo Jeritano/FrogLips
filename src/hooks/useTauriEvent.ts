@@ -25,7 +25,14 @@ export function useTauriEvent<T>(
   useEffect(() => {
     let cancelled = false;
     let off: UnlistenFn | undefined;
-    listen<T>(eventName, (event) => handlerRef.current(event))
+    listen<T>(eventName, (event) => {
+      // Block invocation after unmount. The previous `cancelled` flag
+      // gated registration but not delivery — a high-frequency event
+      // that fired between the unmount cleanup and the unlisten fn
+      // resolving could still reach the handler with stale state.
+      if (cancelled) return;
+      handlerRef.current(event);
+    })
       .then((fn) => {
         if (cancelled) fn();
         else off = fn;

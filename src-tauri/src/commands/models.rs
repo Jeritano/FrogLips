@@ -225,9 +225,23 @@ pub async fn native_load_model(
         );
     }
     let _ = app.emit("native-loading", &model_id);
-    let rt = native_inference::NativeRuntime::load(model_id.clone())
-        .await
-        .map_err(|e| e.to_string())?;
+    let rt = match native_inference::NativeRuntime::load(model_id.clone()).await {
+        Ok(rt) => rt,
+        Err(e) => {
+            // Emit `native-error` so the frontend's loading spinner stops.
+            // Previously `native-loading` was emitted but no terminating
+            // event fired on failure — the UI sat in 'Loading' forever
+            // and a subsequent retry that succeeded confused the state
+            // machine because both `native-loading` (old) and
+            // `native-loaded` (new) were in flight.
+            let msg = e.to_string();
+            let _ = app.emit(
+                "native-error",
+                serde_json::json!({ "model": model_id, "error": msg }),
+            );
+            return Err(msg);
+        }
+    };
     let mut g = state.lock().await;
     *g = Some(rt);
     let _ = app.emit("native-loaded", &model_id);

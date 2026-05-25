@@ -302,11 +302,22 @@ impl ServerState {
                     .and_then(|r| r.ok())
                     .is_some()
                 {
-                    // Re-check generation after the network round-trip
+                    // Three generation re-checks bracket the flip:
+                    //   (1) before ready.store — already present
+                    //   (2) AFTER ready.store but before emit — closes the
+                    //       window where a competing `start(modelB)` lands
+                    //       between (1) and the emit, which would otherwise
+                    //       broadcast `ready=true` for the old model.
+                    //   (3) the lifetime watcher in status() also re-checks
+                    //       via the inner.lock state.
                     if generation.load(Ordering::Acquire) != my_generation {
                         return;
                     }
                     ready.store(true, Ordering::Release);
+                    // (2) Post-store, pre-emit re-check.
+                    if generation.load(Ordering::Acquire) != my_generation {
+                        return;
+                    }
                     if let Some(app) = app {
                         let _ = app.emit(
                             "server-status",
