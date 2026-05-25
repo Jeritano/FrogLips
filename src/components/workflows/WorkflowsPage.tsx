@@ -422,6 +422,32 @@ export function WorkflowsPage({ status }: Props) {
         announce(
           results.status === "ok" ? "Workflow run finished" : "Workflow run failed",
         );
+        // Surface in-card errors as a top-level banner. The runner records
+        // each per-card failure as `CardResult.status = "error"` with an
+        // `error` message and never throws back to the caller. Previously
+        // the only visible signal was a small "Failed" badge in the run
+        // panel, leaving users staring at a "Run finished" announcement
+        // with no obvious reason WHY their files never got written. List
+        // up to 3 failing cards by name + first 200 chars of their error.
+        if (results.status === "failed") {
+          const failed = results.cards.filter((c) => c.status === "error");
+          if (failed.length > 0) {
+            const sample = failed.slice(0, 3).map((c) => {
+              const errMsg = (c.error ?? "unknown error").slice(0, 200);
+              return `${c.name}: ${errMsg}`;
+            });
+            const more = failed.length > 3 ? ` (+${failed.length - 3} more)` : "";
+            setErr(
+              `Workflow failed — ${failed.length} card(s) errored:\n${sample.join("\n")}${more}`,
+            );
+          } else {
+            // status=failed with no per-card errors means the run was aborted.
+            const aborted = results.cards.filter((c) => c.status === "aborted");
+            if (aborted.length > 0) {
+              setErr(`Run stopped during "${aborted[0].name}".`);
+            }
+          }
+        }
         onDone();
       },
     }),

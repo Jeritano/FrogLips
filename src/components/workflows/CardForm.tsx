@@ -76,6 +76,20 @@ const ALL_TOOLS = [
  */
 const HINT = "Use 'every 30m', 'every 2h', or 'daily 09:00'.";
 
+/**
+ * Look up a model's backend by id. Used by the Model dropdown when the card's
+ * `backend` field is null but the model still happens to be in the installed
+ * list — picking the model alone should imply its backend rather than leaving
+ * `backend` null and letting the runner guess (the old behaviour would route
+ * an MLX-only model to Ollama and "model not found"). Returns null if the
+ * model isn't installed locally (e.g. a `*:cloud` Ollama tag or a model the
+ * user typed via DB edit).
+ */
+function findModelBackend(models: ModelEntry[], id: string): string | null {
+  const hit = models.find((m) => m.id === id);
+  return hit ? hit.backend : null;
+}
+
 function scheduleError(value: string): string | null {
   // Mirror Rust `parse_schedule` (workflows.rs:423) — it strips the
   // literal `every ` prefix THEN `trim()`s the remainder, so any extra
@@ -122,6 +136,10 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   const [fadeOut, setFadeOut] = useState(false);
   // Installed local models for the Model dropdown — blank = system default.
   const [models, setModels] = useState<ModelEntry[]>([]);
+  // Loading state for the model dropdown. `null` = settled; string = error.
+  // Without this, a slow / failed `listAllModels` shows an empty dropdown with
+  // no signal whether models are loading, missing, or the call simply failed.
+  const [modelsState, setModelsState] = useState<"loading" | "ok" | "error">("loading");
 
   useModalA11y({ open: true, onClose, containerRef: ref });
   // Re-seed the draft only when the form opens on a DIFFERENT card. Without
@@ -133,15 +151,26 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   }, [card]);
 
   useEffect(() => {
+    let cancelled = false;
+    setModelsState("loading");
     api
       .listAllModels()
       .then((m) => {
+        if (cancelled) return;
         // Strip image-gen weight sets + their dep encoders even if the
         // Rust filter is missing. See src/lib/chat-model-filter.ts.
         const mlx = m.mlx.filter((e) => !isNonChatRepo(e.id));
         setModels([...mlx, ...m.ollama]);
+        setModelsState("ok");
       })
-      .catch(() => setModels([]));
+      .catch(() => {
+        if (cancelled) return;
+        setModels([]);
+        setModelsState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -274,21 +303,70 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
             <label className="wf-field">
               <span>Model</span>
               <select
-                value={draft.model ?? ""}
-                onChange={(e) => set("model", e.target.value || null)}
+                // Option values are encoded as `${backend}::${id}` so picking a
+                // model also pins its backend in one step. Previously the
+                // dropdown only saved `id`, leaving `card.backend` untouched —
+                // a card switched from an Ollama model to an MLX model kept
+                // backend=ollama and the run would hit "model not found" on
+                // the wrong daemon. The `::` separator avoids the `:` used
+                // inside Ollama tag suffixes (e.g. `model:q4_K`, `model:cloud`).
+                value={
+                  draft.model
+                    ? `${draft.backend ?? findModelBackend(models, draft.model) ?? ""}::${draft.model}`
+                    : ""
+                }
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") {
+                    // "System default" — clear both pins; runtime falls back.
+                    setDraft((d) => ({ ...d, model: null, backend: null }));
+                    return;
+                  }
+                  const sep = v.indexOf("::");
+                  if (sep < 0) {
+                    // Defensive: a malformed value shouldn't corrupt draft. Just
+                    // accept it as a model id and leave backend untouched.
+                    set("model", v);
+                    return;
+                  }
+                  const backend = v.slice(0, sep) || null;
+                  const id = v.slice(sep + 2);
+                  setDraft((d) => ({ ...d, model: id, backend }));
+                }}
+                disabled={modelsState === "loading"}
               >
-                <option value="">System default</option>
+                <option value="">
+                  {modelsState === "loading"
+                    ? "Loading models…"
+                    : modelsState === "error"
+                      ? "System default (model list failed to load)"
+                      : "System default"}
+                </option>
                 {models.map((m) => (
-                  <option key={`${m.backend}:${m.id}`} value={m.id}>
-                    {m.id}
+                  <option key={`${m.backend}::${m.id}`} value={`${m.backend}::${m.id}`}>
+                    {m.id} ({m.backend})
                   </option>
                 ))}
-                {/* Keep a pinned model selectable even if it's no longer
-                    in the installed list. */}
+                {/* Keep a pinned model selectable even if it's no longer in
+                    the installed list (e.g. a `*:cloud` tag, an MLX model
+                    that was deleted, or a Novita-only model on a feature
+                    branch). Encode with the card's existing backend so save
+                    is non-destructive. */}
                 {draft.model && !models.some((m) => m.id === draft.model) && (
-                  <option value={draft.model}>{draft.model}</option>
+                  <option
+                    value={`${draft.backend ?? ""}::${draft.model}`}
+                  >
+                    {draft.model}
+                    {draft.backend ? ` (${draft.backend})` : " (pinned)"}
+                  </option>
                 )}
               </select>
+              {modelsState === "error" && (
+                <small className="wf-field-hint" style={{ color: "var(--danger, #d33)" }}>
+                  Could not load the installed-models list. Check that Ollama is
+                  running and MLX is set up, then reopen this dialog.
+                </small>
+              )}
             </label>
             <label className="wf-field">
               <span>System prompt (optional)</span>

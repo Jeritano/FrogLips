@@ -268,6 +268,32 @@ pub fn validate_graph_json(graph_json: &str) -> Result<()> {
             Some(v) if v.is_boolean() => {}
             _ => return Err(anyhow::anyhow!("card {i} field 'placed' must be a boolean")),
         }
+        // Optional per-card system-prompt override: `systemPrompt: string | null`.
+        // When non-empty, the runner uses this instead of the role/preset's
+        // systemPromptOverride for that card only. The frontend normalizer
+        // (`normalizeWorkflowCard`) hard-caps the string at 16 KiB; we mirror
+        // a much-looser cap here so a malformed IPC can't push hundreds of KiB
+        // of system-prompt into the graph_json and bloat every run's context.
+        match c.get("systemPrompt") {
+            None => {}
+            Some(v) if v.is_null() => {}
+            Some(v) if v.is_string() => {
+                let len = v.as_str().map(|s| s.len()).unwrap_or(0);
+                // Hard cap mirrors `SYSTEM_PROMPT_MAX` on the JS side, plus a
+                // little headroom for the JSON-encoded form. Reject anything
+                // wildly larger — the frontend would have already truncated.
+                if len > 32_768 {
+                    return Err(anyhow::anyhow!(
+                        "card {i} field 'systemPrompt' exceeds 32 KiB ({len} bytes)"
+                    ));
+                }
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "card {i} field 'systemPrompt' must be a string or null"
+                ))
+            }
+        }
     }
 
     for (i, edge) in edges.iter().enumerate() {
@@ -672,6 +698,41 @@ mod tests {
             r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"placed":"yes"}],"edges":[]}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn validate_graph_accepts_optional_system_prompt() {
+        // Present + string → accepted.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"systemPrompt":"Be terse."}],"edges":[]}"#
+        )
+        .is_ok());
+        // Null → accepted (means: fall back to preset).
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"systemPrompt":null}],"edges":[]}"#
+        )
+        .is_ok());
+        // Absent → accepted (legacy graphs).
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0}],"edges":[]}"#
+        )
+        .is_ok());
+        // Wrong type → rejected.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"systemPrompt":42}],"edges":[]}"#
+        )
+        .is_err());
+        // Object (would otherwise pass JSON shape) → rejected.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"systemPrompt":{"foo":"bar"}}],"edges":[]}"#
+        )
+        .is_err());
+        // Oversized (> 32 KiB) → rejected. Build a 33 KiB string body.
+        let huge = "a".repeat(33 * 1024);
+        let graph = format!(
+            r#"{{"cards":[{{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"systemPrompt":"{huge}"}}],"edges":[]}}"#
+        );
+        assert!(validate_graph_json(&graph).is_err());
     }
 
     #[test]
