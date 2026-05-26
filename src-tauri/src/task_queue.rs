@@ -9,8 +9,8 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tauri::async_runtime::JoinHandle;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 
 use crate::agent::{run_shell, ShellOpts, ShellResult};
 
@@ -114,7 +114,14 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
     let id_for_task = id.clone();
     let cmd_for_task = command;
     let cwd_for_task = cwd;
-    let handle = tokio::spawn(async move {
+    // Crash fix (0.11.0 prod crash report 2BED87A8-FA96-...):
+    // `task_create` is registered as a sync `#[tauri::command]` so it runs
+    // on the main thread without a tokio runtime context. `tokio::spawn`
+    // panics outside a runtime → abort() → SIGABRT crash on the very
+    // first agent `task_create` call. Use `tauri::async_runtime::spawn`
+    // instead — it's a thin wrapper that grabs Tauri's managed runtime
+    // handle and works from both sync and async command contexts.
+    let handle = tauri::async_runtime::spawn(async move {
         // Flip to Running
         entry_for_task.lock().info.status = TaskStatus::Running;
 
