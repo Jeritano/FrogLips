@@ -35,15 +35,17 @@ databases converge on the same schema.
 
 - Rust: `cargo fmt`. Prefer explicit error types over `anyhow` in library code that's tested.
 - TypeScript: no formatter enforced, but match the existing 2-space, semicolons-on style.
-- Commits: imperative mood, prefix with `vX.Y.Z:` if it's a release commit. Detail in body.
+- **Commits: [Conventional Commits](https://www.conventionalcommits.org/)** — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, etc. `release-please` (see `.github/workflows/release-please.yml`) reads commit prefixes to draft the next release PR + auto-update `CHANGELOG.md` and the three version files. `feat:` → minor bump, `fix:` → patch bump, `feat!:` / `BREAKING CHANGE:` → major.
+- Imperative mood for commit subjects. Detail in body.
 - Do not credit AI assistants in commit messages (no `Co-Authored-By` for any model / tool).
 
 ## Pull requests
 
 - One concern per PR.
+- Use the `.github/pull_request_template.md` form — required test plan + security checklist when touching `src-tauri/src/{approval,policy,agent,mcp}`.
 - Include a test for any new agent tool or path-validation change.
-- Update `CHANGELOG.md` under `[Unreleased]`.
-- Update relevant docs (`docs/USER_GUIDE.md`, `docs/AGENT_LAYER.md`, etc.) when behaviour changes.
+- `release-please` will pick up `CHANGELOG.md` entries from your Conventional Commit subjects — you DON'T need to hand-edit `[Unreleased]` if you committed `fix: ...` / `feat: ...`. Edit by hand only for entries you want to phrase differently.
+- Update relevant docs (`docs/USER_GUIDE.md`, `docs/AGENT_LAYER.md`, `docs/adr/`, etc.) when behaviour changes. Architectural choices that constrain the codebase go in [`docs/adr/`](docs/adr/) — see the seed records for the format.
 
 ## Security issues
 

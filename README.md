@@ -92,6 +92,13 @@ Then upload `src-tauri/target/release/bundle/macos/Froglips.app.tar.gz{,.sig}` a
 - [Architecture](docs/ARCHITECTURE.md) — how the pieces fit together
 - [Agent Layer](docs/AGENT_LAYER.md) — tools, security, sandboxing, presets
 - [Release Process](docs/RELEASE_PROCESS.md) — versioning, signing, publishing
+- [Architecture Decision Records](docs/adr/) — permanent record of architectural choices (Tauri 2 stack, macOS-only, local-only no telemetry, MCP-as-extension-story, etc.)
+
+## Contributing
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) and the relevant ADR(s) before opening a PR.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, `docs:`) so [release-please](https://github.com/googleapis/release-please) can draft the next release automatically.
+- Security issues: do NOT file in the public tracker. Use GitHub's private vulnerability reporting flow — see [SECURITY.md](SECURITY.md).
 
 ## Data locations
 

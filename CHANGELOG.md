@@ -4,6 +4,29 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+### Maturity scaffolding (2026-05-26)
+
+- **ADR folder + 5 seed records** at `docs/adr/`: Tauri 2 + Rust + React stack, macOS-only-for-1.x, local-first no-telemetry, interim `Result<T,String>` error model, MCP as the extension story. Permanent record of architectural choices that constrain future contributors.
+- **`.github/` process scaffolding**: CODEOWNERS (default + path-scoped to security-sensitive directories), pull-request template with required test plan / security checklist, issue templates (bug / feature / config) with a private security-disclosure link.
+- **Accessibility floor**: `e2e/a11y-smoke.spec.ts` runs axe-core against the cold-start chat surface with a WCAG 2.1 AA gate. `MessageList.tsx StreamingMessage` now exposes `aria-live="polite"` + `aria-atomic="false"` so screen readers announce streamed tokens as queued deltas. `@axe-core/playwright` added.
+- **Release-please automation**: Conventional-Commits-driven CHANGELOG generation + version-bump PR via `googleapis/release-please-action@v4`. `release-please-config.json` keeps `package.json` / `tauri.conf.json` / `Cargo.toml` versions in lockstep so the existing version-sync CI gate stays green. Tag-push to actual release still handled by `release.yml`.
+- **`agent/fs.rs WORKSPACE_ROOT`**: `std::sync::RwLock` → `parking_lot::RwLock`. Eliminates the poison-on-panic hazard the senior SE review flagged. `parking_lot` was already in the dep tree.
+
+### Senior SE review remediation — round 2 (2026-05-26)
+
+- **`history.rs` migration `ROLLBACK` silent failure**: `let _ = conn.execute_batch("ROLLBACK")` now routes both the rollback error and the original migration error through `diagnostics::error_with` so a half-migrated DB surfaces in the rolling log instead of staying invisible.
+- **`mcp/mod.rs` per-server tool cap** at `MAX_TOOLS_PER_SERVER = 256`. Clipping logged via diagnostics so the operator sees the truncation. `shrink_to_fit` after `.take()`. Defends against a malicious or buggy MCP server returning million-entry tool lists and bloating the REGISTRY RwLock for the process lifetime.
+- **`useChatSend.ts getCachedSettings` boot race**: `listen("settings-changed")` registration now awaited before the settings fetch fires, so a `settings_set` emitted during boot can no longer slip past an un-bound invalidator and leave the cache forever stale.
+- **`conversation-params.ts` max_tokens**: 0 / negative now returns `null` instead of silently clamping to 1 (some backends reject as too small). Positive fractional still clamps up to 1.
+- **`diagnostics.ts` hydrate**: pre-slice persisted entries to `CAP_ENTRIES` before pushing, so a localStorage > 500 entries doesn't momentarily double the ring buffer.
+- **`memory.rs` recall**: `search_keyword` + `search_vector` now `touch_memories()` on returned hits so `last_used_at` reflects recency (future LRU policy now has correct data).
+- **`workflows.rs parse_schedule`** enforces `MIN_INTERVAL_SECS = 60`. The scheduler tick is 30s; sub-minute intervals previously resolved to fire-every-tick and could DoS the task pool.
+- **Dead code removed**: `--z-modal-stack` / `--z-wizard` / `--z-confirm` / `--z-drag-strip` / `--radius-xl` CSS vars, `taskPrune` + `listOpenConversationWindows` IPCs (Rust handler retained for tests behind `#[allow(dead_code)]`).
+
+### Senior SE review remediation — round 1 (2026-05-25)
+
+- Earlier surgical fixes: ChatWindow stop-watcher (UI unstick on backend kill mid-send), diagnostic logging of outbound chat history manifest for verification, plus the round-1 batch noted in `08d9ca2`.
+
 ## [0.11.1] — 2026-05-25
 
 ### Crash fix
