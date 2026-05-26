@@ -420,6 +420,16 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     retries: 0,
     promptTokens: 0,
     completionTokens: 0,
+    toolStats: {},
+  };
+  /** Maturity review P1 #23: increment per-tool stats after each call. */
+  const recordToolStat = (name: string, ms: number, ok: boolean): void => {
+    if (!metrics.toolStats) metrics.toolStats = {};
+    const slot = metrics.toolStats[name] ?? { count: 0, totalMs: 0, errors: 0 };
+    slot.count += 1;
+    slot.totalMs += Math.max(0, ms);
+    if (!ok) slot.errors += 1;
+    metrics.toolStats[name] = slot;
   };
   // Signatures of the immediately-prior turn's tool calls. Per-turn multiset
   // comparison (see `isDuplicateTurn`) restricts dedupe to "the model just
@@ -913,6 +923,15 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       const durationMs = performance.now() - toolStart;
       metrics.totalToolMs += durationMs;
       metrics.toolCalls++;
+      // P1 #23: per-tool breakdown. ok flag flipped from toolErrorKind
+      // since it isn't computed until a few lines below — but a tool
+      // that *threw* always sets toolErrorKind in the catch block above,
+      // so checking it here is correct for the catch path. For the
+      // success branch we'll record ok=true; the post-parse outcome
+      // re-classification below (which may flip a returned-but-failed
+      // result to "error") is recorded against errorKind in the audit
+      // log, not in metrics.
+      recordToolStat(fnName, durationMs, !toolErrorKind);
       onMetrics?.({ ...metrics });
 
       // Determine final outcome by sniffing the result body — many tool

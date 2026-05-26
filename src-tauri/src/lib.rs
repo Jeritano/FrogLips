@@ -124,13 +124,31 @@ pub fn run() {
             // Each task is wrapped in a 15-second timeout so a wedged
             // server can't keep its task pinned forever — the autostart
             // pass logs + moves on.
+            // Maturity review P1 #36: cap concurrency at 8. With 50+
+            // configured servers (rare but possible for power users) the
+            // prior code would `tokio::spawn` 50 tasks simultaneously —
+            // each holding a 15-second timeout — saturating the runtime's
+            // worker pool while every server raced for fs/proc fds.
+            // Bounded via a Semaphore so at most 8 spawns are in flight
+            // at any time; the remaining tasks queue and pick up workers
+            // as earlier ones complete.
             use futures::future::join_all;
+            use std::sync::Arc;
             use std::time::Duration;
+            use tokio::sync::Semaphore;
+            const MCP_AUTOSTART_PARALLEL: usize = 8;
+            let limiter = Arc::new(Semaphore::new(MCP_AUTOSTART_PARALLEL));
             let tasks = configured_mcp
                 .into_iter()
                 .filter(|c| c.enabled)
                 .map(|cfg| {
+                    let limiter = Arc::clone(&limiter);
                     tokio::spawn(async move {
+                        // permit released on drop at end of task
+                        let _permit = limiter
+                            .acquire_owned()
+                            .await
+                            .expect("mcp autostart semaphore closed");
                         let name = cfg.name.clone();
                         let env_opt = if cfg.env.is_empty() { None } else { Some(cfg.env) };
                         let fut = mcp::start_server(cfg.name, cfg.command, cfg.args, env_opt);

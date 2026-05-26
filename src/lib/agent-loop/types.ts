@@ -33,6 +33,15 @@ export type ToolResult = ToolResultOk | ToolResultFail;
 /** Backends the agent loop can run a tool-calling chat against. */
 export type AgentBackend = "ollama" | "mlx" | "native";
 
+/** Per-tool execution stats. Maturity review P1 #23 — was previously only
+ *  recorded as a total, so a chatty `web_fetch` dominating the run was
+ *  invisible. Populated by the agent loop; exposed via AgentMetrics. */
+export interface ToolStat {
+  count: number;
+  totalMs: number;
+  errors: number;
+}
+
 export interface AgentMetrics {
   iterations: number;
   toolCalls: number;
@@ -41,6 +50,8 @@ export interface AgentMetrics {
   retries: number;
   promptTokens: number;
   completionTokens: number;
+  /** Per-tool breakdown. Tool name → stats. */
+  toolStats?: Record<string, ToolStat>;
 }
 
 export interface ConfirmDecision {
