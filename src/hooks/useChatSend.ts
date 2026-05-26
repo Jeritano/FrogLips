@@ -315,6 +315,19 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     }
     const historyForApi: Message[] = [...systemPreamble, ...baseHistory];
 
+    // 2026-05-25 user-reported "model doesn't see history across a stop/start"
+    // verification log. Records the full message manifest sent to the model
+    // on every send so a reviewer can confirm the prior turns are present
+    // in the outbound payload (DB-backed; survives backend stop/start since
+    // React state in ChatWindow.tsx:130 is keyed on conversation.id, not
+    // on `status.running`). Cheap one-line diagnostic; logs to the rolling
+    // ring + ~/.local-llm-app/diag.log via append_diag_log when present.
+    logDiag({
+      level: "info",
+      source: "chat-send",
+      message: `outbound history conv=${conv.id} msgs=${historyForApi.length} roles=[${historyForApi.map((m) => m.role).join(",")}]`,
+    });
+
     // Numeric params threaded into the backend request. The system prompt is
     // already injected above, so only the numeric fields go to the clients.
     const chatParams = {
