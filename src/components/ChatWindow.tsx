@@ -320,6 +320,24 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     if (!agentAvailable && agentMode) setAgentMode(false);
   }, [agentAvailable, agentMode]);
 
+  // 2026-05-25 user-reported "Stop model didn't unstick the spinner". When
+  // `status.running` flips false while a send is in flight, abort the
+  // outbound controller so the UI returns to idle. Without this the
+  // streaming fetch sits waiting for bytes from a server that's now dead
+  // and the spinner stays on "thinking" until the fetch eventually
+  // errors out (which can take a long time on a graceful TCP close).
+  const wasRunningRef = useRef<boolean>(false);
+  useEffect(() => {
+    const wasRunning = wasRunningRef.current;
+    const nowRunning = !!status?.running;
+    wasRunningRef.current = nowRunning;
+    if (wasRunning && !nowRunning && isWorking) {
+      abort();
+      setStreaming(undefined);
+      setAgentStatus("idle");
+    }
+  }, [status?.running, isWorking, abort]);
+
   // Stable handler identity for MessageRow's React.memo — `useEvent` keeps the
   // reference fixed while the body always sees the latest state.
   const onRegenerate = useEvent(async () => {
