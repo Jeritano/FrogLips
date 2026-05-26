@@ -320,13 +320,13 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     // on every send so a reviewer can confirm the prior turns are present
     // in the outbound payload (DB-backed; survives backend stop/start since
     // React state in ChatWindow.tsx:130 is keyed on conversation.id, not
-    // on `status.running`). Cheap one-line diagnostic; logs to the rolling
-    // ring + ~/.local-llm-app/diag.log via append_diag_log when present.
-    logDiag({
-      level: "info",
-      source: "chat-send",
-      message: `outbound history conv=${conv.id} msgs=${historyForApi.length} roles=[${historyForApi.map((m) => m.role).join(",")}]`,
-    });
+    // on `status.running`). Flushed to BOTH the in-memory ring + disk
+    // (~/.local-llm-app/diag.log via append_diag_log) so it's recoverable
+    // after a process restart.
+    const rolesSummary = historyForApi.map((m) => m.role).join(",");
+    const manifestLine = `outbound history conv=${conv.id} msgs=${historyForApi.length} roles=[${rolesSummary}] running=${!!status.running} ready=${!!status.ready}`;
+    logDiag({ level: "info", source: "chat-send", message: manifestLine });
+    void api.appendDiagLog(`[chat-send] ${manifestLine}`).catch(() => undefined);
 
     // Numeric params threaded into the backend request. The system prompt is
     // already injected above, so only the numeric fields go to the clients.

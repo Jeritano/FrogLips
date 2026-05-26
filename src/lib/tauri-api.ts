@@ -105,6 +105,10 @@ export const api = {
     invoke<ServerStatus>("start_server", { model, backend }),
   stopServer: () => invoke<void>("stop_server"),
   serverStatus: () => invoke<ServerStatus>("server_status"),
+  /** Append a single line to ~/.local-llm-app/diag.log. Best-effort —
+   *  callers should `.catch(() => undefined)`. Used for on-disk
+   *  diagnostic capture (in-memory ring is volatile across restart). */
+  appendDiagLog: (line: string) => invoke<void>("append_diag_log", { line }),
   pullOllamaModel: (name: string) => invoke<string>("pull_ollama_model", { name }),
   pullHfModel: (repoId: string) => invoke<string>("pull_hf_model", { repoId }),
   // Scrape + parse <https://ollama.com/library>. Cached server-side for 10
