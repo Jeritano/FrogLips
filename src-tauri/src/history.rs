@@ -372,7 +372,25 @@ fn run_migrations(conn: &Connection) -> Result<()> {
                 current = m.version;
             }
             Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                // 2026-05-25 SE review: silent rollback failure could leave
+                // the DB in a half-migrated state with no operator signal.
+                // Route through diagnostics so a partial-migration
+                // corruption risk surfaces in the rolling log + UI panel.
+                if let Err(rb_err) = conn.execute_batch("ROLLBACK") {
+                    crate::diagnostics::error_with(
+                        "migration",
+                        &format!(
+                            "ROLLBACK after failed migration to v{} ALSO failed: {} \
+                             (DB may be in a partially-migrated state)",
+                            m.version, rb_err
+                        ),
+                        serde_json::json!({
+                            "version": m.version,
+                            "rollback_error": rb_err.to_string(),
+                            "original_error": e.to_string(),
+                        }),
+                    );
+                }
                 return Err(e.context(format!("migration to v{} failed", m.version)));
             }
         }

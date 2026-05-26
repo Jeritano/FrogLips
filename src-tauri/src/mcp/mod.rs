@@ -521,16 +521,44 @@ pub async fn start_server(
         .send_rpc("tools/list", json!({}))
         .await
         .context("tools/list failed")?;
-    let tools: Vec<ToolDescriptor> = tools_resp
+    // 2026-05-25 SE review: cap accepted tool count to prevent a hostile
+    // (or buggy) MCP server from returning millions of entries and bloating
+    // the registry's RwLock for the lifetime of the process. 256 tools per
+    // server is generous — the well-known servers (filesystem, github, etc.)
+    // expose < 30 each.
+    const MAX_TOOLS_PER_SERVER: usize = 256;
+    let mut tools: Vec<ToolDescriptor> = tools_resp
         .get("tools")
         .and_then(|t| t.as_array())
         .map(|arr| {
             arr.iter()
+                .take(MAX_TOOLS_PER_SERVER)
                 .filter_map(|t| serde_json::from_value::<ToolDescriptor>(t.clone()).ok())
                 .map(sanitize_mcp_tool_descriptor)
                 .collect()
         })
         .unwrap_or_default();
+    // Log if the cap actually clipped something — operator should know.
+    if let Some(arr) = tools_resp.get("tools").and_then(|t| t.as_array()) {
+        if arr.len() > MAX_TOOLS_PER_SERVER {
+            crate::diagnostics::warn_with(
+                "mcp",
+                &format!(
+                    "server '{}' returned {} tools — clipped to {} (per-server cap)",
+                    &handle.name,
+                    arr.len(),
+                    MAX_TOOLS_PER_SERVER,
+                ),
+                serde_json::json!({
+                    "server": &handle.name,
+                    "reported": arr.len(),
+                    "accepted": MAX_TOOLS_PER_SERVER,
+                }),
+            );
+        }
+    }
+    // Trim allocation since `take()` may leave capacity over.
+    tools.shrink_to_fit();
 
     *handle.tools.write() = tools.clone();
     *handle.status.write() = "running".into();

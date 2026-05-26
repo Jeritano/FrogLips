@@ -38,6 +38,26 @@ let invalidatorBound = false;
 async function getCachedSettings(): Promise<AppSettings> {
   if (cachedSettings) return cachedSettings;
   if (cacheInFlight) return cacheInFlight;
+  // 2026-05-25 SE review: register the invalidator listener BEFORE
+  // kicking off the fetch. The previous fire-and-forget pattern had a
+  // race window during boot: a `settings_set` emitted between the
+  // settingsGet() resolving and the listen() promise settling would be
+  // lost, leaving the cache forever stale until the user reloaded.
+  // Now the listener is awaited synchronously on first call so any
+  // subsequent settings-changed event is guaranteed to reach us.
+  if (!invalidatorBound) {
+    try {
+      await listen("settings-changed", () => {
+        cachedSettings = null;
+      });
+      invalidatorBound = true;
+    } catch {
+      // Registration failed — leave invalidatorBound=false so the next
+      // getCachedSettings() call retries it. The cache will not
+      // auto-invalidate this round; the user must navigate away or
+      // reload before stale settings flush.
+    }
+  }
   cacheInFlight = api
     .settingsGet()
     .then((s) => {
@@ -49,23 +69,6 @@ async function getCachedSettings(): Promise<AppSettings> {
       cacheInFlight = null;
       throw err;
     });
-  if (!invalidatorBound) {
-    // Settings IPC emits this event after a successful settings_set.
-    // Drop the cache so the next read goes to disk again.
-    // Code re-review M-5: only flip the bound flag on REGISTRATION
-    // SUCCESS so a transient `listen` failure during boot doesn't
-    // permanently leave us with a cache that never invalidates.
-    listen("settings-changed", () => {
-      cachedSettings = null;
-    })
-      .then(() => {
-        invalidatorBound = true;
-      })
-      .catch(() => {
-        // Listener registration failed — leave invalidatorBound=false so
-        // the next getCachedSettings() call retries the registration.
-      });
-  }
   return cacheInFlight;
 }
 
@@ -326,7 +329,14 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     const rolesSummary = historyForApi.map((m) => m.role).join(",");
     const manifestLine = `outbound history conv=${conv.id} msgs=${historyForApi.length} roles=[${rolesSummary}] running=${!!status.running} ready=${!!status.ready}`;
     logDiag({ level: "info", source: "chat-send", message: manifestLine });
-    void api.appendDiagLog(`[chat-send] ${manifestLine}`).catch(() => undefined);
+    try {
+      // Wrapped: api.appendDiagLog is absent in some test mocks. Disk
+      // write is best-effort — the in-memory ring above is the canonical
+      // record.
+      void api.appendDiagLog?.(`[chat-send] ${manifestLine}`).catch(() => undefined);
+    } catch {
+      /* swallow — diag write is observational only */
+    }
 
     // Numeric params threaded into the backend request. The system prompt is
     // already injected above, so only the numeric fields go to the clients.
