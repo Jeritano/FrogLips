@@ -829,7 +829,11 @@ describe("runner — buildCardOptions paths", () => {
     expect(r.reason).toBe("unattended_denied");
   });
 
-  it("unattended + scheduled + run_shell in tools allowlist → STILL denied (security)", async () => {
+  // Approval-surface unification (2026-05-25): `card.unattended` is now
+  // a BLANKET approve. The Rust write-layer protected-prefix list and
+  // the shell-risk classifier are the authoritative gates beyond the
+  // JS layer. Tests below were updated to match.
+  it("unattended + scheduled + run_shell → approved at JS layer (Rust gate is authoritative)", async () => {
     let gate: AgentRunOptions["requestConfirmation"] | undefined;
     runAgentLoopMock.mockImplementation(async (opts) => {
       gate = opts.requestConfirmation;
@@ -841,15 +845,15 @@ describe("runner — buildCardOptions paths", () => {
       {},
       { model: "m", scheduled: true },
     );
-    // run_shell is explicitly excluded from unattended auto-approve.
-    const shellDeny = await gate!("run_shell", { cmd: "ls" }, "destructive");
-    expect(shellDeny.approve).toBe(false);
-    expect(shellDeny.reason).toBe("unattended_denied");
-    // read_file is auto-approved.
+    // run_shell is approved at the JS layer; the Rust shell-risk
+    // classifier still enforces the destructive-pattern denylist on
+    // the actual exec call.
+    const shellApprove = await gate!("run_shell", { cmd: "ls" }, "destructive");
+    expect(shellApprove.approve).toBe(true);
     expect((await gate!("read_file", {}, "normal")).approve).toBe(true);
   });
 
-  it("scheduled + unattended: tool NOT in card.tools falls through to caller's gate", async () => {
+  it("unattended approves regardless of allowlist (allowlist enforced elsewhere)", async () => {
     let gate: AgentRunOptions["requestConfirmation"] | undefined;
     const callerGate = vi.fn(async () => ({ approve: true as const }));
     runAgentLoopMock.mockImplementation(async (opts) => {
@@ -862,10 +866,13 @@ describe("runner — buildCardOptions paths", () => {
       {},
       { model: "m", scheduled: true, requestConfirmation: callerGate },
     );
-    // write_file is not in the card's allowlist → falls through to callerGate.
+    // Under the unified policy `unattended` short-circuits to approve
+    // for every tool; the per-card allowlist is enforced by the agent
+    // loop BEFORE the confirmation gate is hit (see runner.ts:716).
     const decision = await gate!("write_file", {}, "destructive");
-    expect(decision).toEqual({ approve: true });
-    expect(callerGate).toHaveBeenCalledWith("write_file", {}, "destructive");
+    expect(decision.approve).toBe(true);
+    // callerGate is never reached under unattended.
+    expect(callerGate).not.toHaveBeenCalled();
   });
 });
 

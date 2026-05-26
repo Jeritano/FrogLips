@@ -165,7 +165,14 @@ describe("runWorkflow — unattended opt-in", () => {
   }
   const single = (c: WorkflowCard): WorkflowGraph => ({ cards: [c], edges: [] });
 
-  it("auto-approves only listed tools for an unattended card on a scheduled run", async () => {
+  // Approval-surface unification (2026-05-25, commit 53fca1c + follow-ups):
+  // `card.unattended` is now a BLANKET approval bypass for that card,
+  // regardless of `scheduled` and regardless of allowlist membership.
+  // The Rust write-layer protected-prefix list + the shell-risk
+  // classifier are the authoritative gates beyond this point. The two
+  // tests below were written against the OLD semantics (UNATTENDED_NEVER_AUTO
+  // carve-out + manual/scheduled split) and have been updated.
+  it("auto-approves every tool for an unattended card (scheduled run)", async () => {
     let gate: AgentRunOptions["requestConfirmation"] | undefined;
     runAgentLoopMock.mockImplementation(async (opts) => {
       gate = opts.requestConfirmation;
@@ -175,30 +182,25 @@ describe("runWorkflow — unattended opt-in", () => {
     await runWorkflow(single(unattendedCard()), {}, { model: "m", scheduled: true });
 
     expect(gate).toBeDefined();
-    // A tool in the card's allowlist is auto-approved. No `reason` tag —
-    // auto-approves don't need to distinguish themselves the way denies do.
+    // Tool in allowlist → approved.
     expect((await gate!("read_file", {}, "normal")).approve).toBe(true);
-    // A tool NOT in the allowlist falls through to the deny-all default
-    // gate. The deny carries `reason: "unattended_denied"` so the audit
-    // log can tell apart a human Deny from a default-policy deny.
-    const r1 = await gate!("run_shell", {}, "destructive");
-    expect(r1.approve).toBe(false);
-    expect(r1.reason).toBe("unattended_denied");
+    // Tool NOT in allowlist → still approved. The Rust-side
+    // protected-prefix list + shell-risk classifier remain the
+    // authoritative gates; the JS layer trusts the unattended opt-in.
+    expect((await gate!("run_shell", {}, "destructive")).approve).toBe(true);
   });
 
-  it("uses the normal gate for an unattended card on a MANUAL run", async () => {
+  it("auto-approves on a MANUAL run too — unattended is unconditional", async () => {
     let gate: AgentRunOptions["requestConfirmation"] | undefined;
     runAgentLoopMock.mockImplementation(async (opts) => {
       gate = opts.requestConfirmation;
       return "ok";
     });
 
-    // scheduled omitted → manual run; unattended must NOT auto-approve.
+    // scheduled omitted → manual run; unattended still blanket-approves.
     await runWorkflow(single(unattendedCard()), {}, { model: "m" });
 
-    const r = await gate!("read_file", {}, "normal");
-    expect(r.approve).toBe(false);
-    expect(r.reason).toBe("unattended_denied");
+    expect((await gate!("read_file", {}, "normal")).approve).toBe(true);
   });
 
   it("still denies for a non-unattended card on a scheduled run", async () => {

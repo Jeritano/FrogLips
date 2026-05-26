@@ -21,7 +21,12 @@ export default defineConfig({
     baseURL: "http://localhost:1420",
     actionTimeout: 5_000,
     navigationTimeout: 10_000,
-    trace: "retain-on-failure",
+    // Maturity review P2 #49: `retain-on-failure` stored full traces
+    // for every failing spec — at 12 specs and 2 retries that can
+    // produce GB-scale artifacts. `on-first-retry` keeps the trace
+    // only when a retry is needed, which is exactly when you want it
+    // for diagnosing flake.
+    trace: "on-first-retry",
   },
   webServer: {
     command: "npm run dev",

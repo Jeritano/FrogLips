@@ -1,0 +1,62 @@
+# cargo-deny config — maturity review P2 #46.
+#
+# Complements `cargo audit` (which only flags advisories) with:
+#   - [bans]      stop a problematic crate (typosquat, abandoned, etc.)
+#   - [licenses]  refuse GPL-family pull-in via a transitive without us
+#                 noticing
+#   - [sources]   reject crates from unexpected registries / git remotes
+#                 so a typo'd Cargo.toml can't silently grab from the
+#                 wrong place
+#
+# Wired up in .github/workflows/ci.yml. Soft-gate (continue-on-error) at
+# first so we can baseline the current dep tree before promoting to
+# blocking.
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+version = 2
+yanked = "warn"
+ignore = []
+
+[licenses]
+version = 2
+# Allowed licenses. MIT/Apache/BSD-family + Unicode + Zlib + 0BSD cover
+# the entire current dependency closure. Add to this list deliberately
+# rather than wildcarding.
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "ISC",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "MPL-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+# Crates intentionally not allowed. Empty for now; populate as the
+# need arises (e.g. an abandoned crate replaced by a fork).
+deny = []
+# Allow these duplicates — common transitive-version drift that isn't
+# worth a hard error.
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Allowed git sources — list known direct git deps if any (none today).
+allow-git = []

@@ -11,6 +11,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Maturity review P2 #48: version must stay in lockstep across three
+  # files. A drifted release lands the user a binary whose Info plist,
+  # bundle, and crate version disagree — auto-updater handshake fails
+  # and the "About" dialog lies. Cheap pre-build gate.
+  version-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify package.json / tauri.conf.json / Cargo.toml versions agree
+        run: |
+          set -euo pipefail
+          PKG=$(jq -r .version package.json)
+          TAURI=$(jq -r .version src-tauri/tauri.conf.json)
+          CARGO=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')
+          echo "package.json     : $PKG"
+          echo "tauri.conf.json  : $TAURI"
+          echo "Cargo.toml       : $CARGO"
+          if [ "$PKG" != "$TAURI" ] || [ "$PKG" != "$CARGO" ]; then
+            echo "::error::Version drift detected — all three must match before release."
+            exit 1
+          fi
+
   rust:
     runs-on: macos-latest
     steps:
@@ -90,6 +112,19 @@ jobs:
       - name: cargo audit
         working-directory: src-tauri
         run: cargo audit
+
+      # Maturity review P2 #46: cargo-deny adds bans / license / source
+      # gates on top of the advisory-only `cargo audit`. Non-blocking
+      # at first (continue-on-error) so we can baseline the dep tree
+      # before promoting to a hard gate; the run still publishes its
+      # findings in CI logs for triage.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo deny check
+        working-directory: src-tauri
+        continue-on-error: true
+        run: cargo deny check
 
   frontend:
     runs-on: ubuntu-latest

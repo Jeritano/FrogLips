@@ -97,6 +97,12 @@ gh release create v${VERSION} \
 
 The auto-updater queries `https://github.com/Jeritano/FrogLips/releases/latest/download/latest.json`. GitHub redirects `latest/download/<filename>` to the asset on the most-recent release — so as long as you upload `latest.json` to every release, the URL stays stable.
 
+### Downgrade prevention (known limitation)
+
+The Tauri updater compares `latest.json`'s `version` to the running binary's `tauri.conf.json` version with a semver-greater check, so the in-app **Agent settings → Check now** flow will refuse to install an older version. **The same protection does not exist for a manual install:** a user who downloads an older DMG from a prior release page and replaces `/Applications/Froglips.app` will end up on the older binary regardless of the auto-updater. If a release ever needs to be redacted (e.g. a security regression), the only authoritative remediation is to **delete the affected release** on GitHub — `latest.json` updates automatically because we publish a fresh one with every release, but the older DMG asset will stay reachable until the release itself is removed.
+
+This is documented behaviour, not a bug. The minisign signature on every DMG protects against a *tampered* binary; it cannot retroactively expire a *legitimate older* binary.
+
 The tagged `release.yml` CI workflow additionally publishes a `SHA256SUMS`
 file alongside the binaries so downloads can be integrity-verified, plus a
 detached minisign signature `SHA256SUMS.minisig` over that manifest (signed
