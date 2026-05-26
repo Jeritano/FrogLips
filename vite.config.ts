@@ -29,4 +29,21 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  // Maturity review P1 #20: split the heavy markdown/syntax-highlight +
+  // sanitization deps into their own chunks. They're not on the cold-
+  // start critical path (the empty chat shell renders before any
+  // markdown ever needs to highlight), so isolating them lets the
+  // main chunk land faster on first paint. React-flow is similarly
+  // workflow-only — chunk it separately so chat-only sessions never
+  // download it.
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          markdown: ["marked", "highlight.js", "dompurify"],
+          reactflow: ["@xyflow/react"],
+        },
+      },
+    },
+  },
 }));
