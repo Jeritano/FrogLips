@@ -57,7 +57,11 @@ pub fn append_diag_log(line: String) -> Result<(), String> {
     let path = dir.join("diag.log");
     // Cap individual line length so a single 50MB body doesn't fill disk.
     const MAX_LINE: usize = 256 * 1024;
-    let safe = if line.len() > MAX_LINE { &line[..MAX_LINE] } else { &line[..] };
+    let safe = if line.len() > MAX_LINE {
+        &line[..MAX_LINE]
+    } else {
+        &line[..]
+    };
     let ts = crate::crash_log::now_rfc3339();
     let record = format!("[{ts}] {safe}\n");
     let mut f = OpenOptions::new()

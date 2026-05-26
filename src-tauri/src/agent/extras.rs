@@ -61,8 +61,8 @@ pub async fn move_path(from: String, to: String, overwrite: bool) -> Result<File
     // the directory shape of a moved tree, but we can at least save the
     // single-file move (the common case).
     let src_snap = src.clone();
-    let _ = tokio::task::spawn_blocking(move || super::snapshot::capture(&src_snap, "move_path"))
-        .await;
+    let _ =
+        tokio::task::spawn_blocking(move || super::snapshot::capture(&src_snap, "move_path")).await;
     tokio::fs::rename(&src, &dst)
         .await
         .map_err(|e| ok_err("io", e.to_string()))?;
@@ -108,8 +108,8 @@ pub async fn copy_path(from: String, to: String, overwrite: bool) -> Result<File
     // agent_undo can put the original back. Source is unchanged by copy
     // and doesn't need a snapshot.
     let dst_snap = dst.clone();
-    let _ = tokio::task::spawn_blocking(move || super::snapshot::capture(&dst_snap, "copy_path"))
-        .await;
+    let _ =
+        tokio::task::spawn_blocking(move || super::snapshot::capture(&dst_snap, "copy_path")).await;
     tokio::fs::copy(&src, &dst)
         .await
         .map_err(|e| ok_err("io", e.to_string()))?;
@@ -129,7 +129,8 @@ pub struct DeleteResult {
 /// `recursive=true` (which itself caps at 1000 entries to bound blast
 /// radius — past that the model should be using a shell with approval).
 pub async fn delete_path(path: String, recursive: bool) -> Result<DeleteResult, String> {
-    let resolved = validate_for_write(&path).map_err(|e| ok_err("invalid_argument", e.to_string()))?;
+    let resolved =
+        validate_for_write(&path).map_err(|e| ok_err("invalid_argument", e.to_string()))?;
     let meta = tokio::fs::symlink_metadata(&resolved)
         .await
         .map_err(|e| ok_err("not_found", e.to_string()))?;
@@ -152,8 +153,8 @@ pub async fn delete_path(path: String, recursive: bool) -> Result<DeleteResult, 
             // single-file delete (modulo the per-entry size cap inside
             // `snapshot::capture`).
             let walk_root = resolved.clone();
-            let (count, files_to_snapshot) =
-                tokio::task::spawn_blocking(move || -> Result<(usize, Vec<PathBuf>), std::io::Error> {
+            let (count, files_to_snapshot) = tokio::task::spawn_blocking(
+                move || -> Result<(usize, Vec<PathBuf>), std::io::Error> {
                     let mut count: usize = 0;
                     let mut files: Vec<PathBuf> = Vec::new();
                     let mut stack: Vec<PathBuf> = vec![walk_root];
@@ -176,10 +177,11 @@ pub async fn delete_path(path: String, recursive: bool) -> Result<DeleteResult, 
                         }
                     }
                     Ok((count, files))
-                })
-                .await
-                .map_err(|e| ok_err("io", e.to_string()))?
-                .map_err(|e| ok_err("io", e.to_string()))?;
+                },
+            )
+            .await
+            .map_err(|e| ok_err("io", e.to_string()))?
+            .map_err(|e| ok_err("io", e.to_string()))?;
             if count > 1000 {
                 return Err(ok_err(
                     "too_large",
@@ -205,8 +207,10 @@ pub async fn delete_path(path: String, recursive: bool) -> Result<DeleteResult, 
         // agent_undo can restore. Best-effort; large files (>MAX_PER_ENTRY
         // _BYTES) silently skip the snapshot and lose undo coverage.
         let snap_path = resolved.clone();
-        let _ = tokio::task::spawn_blocking(move || super::snapshot::capture(&snap_path, "delete_path"))
-            .await;
+        let _ = tokio::task::spawn_blocking(move || {
+            super::snapshot::capture(&snap_path, "delete_path")
+        })
+        .await;
         tokio::fs::remove_file(&resolved)
             .await
             .map_err(|e| ok_err("io", e.to_string()))?;
@@ -226,7 +230,8 @@ pub struct MakeDirResult {
 /// Create a directory and any missing parents. Idempotent — returns
 /// `created=false` if the directory already existed.
 pub async fn make_dir(path: String) -> Result<MakeDirResult, String> {
-    let resolved = validate_for_write(&path).map_err(|e| ok_err("invalid_argument", e.to_string()))?;
+    let resolved =
+        validate_for_write(&path).map_err(|e| ok_err("invalid_argument", e.to_string()))?;
     let existed = resolved.exists();
     tokio::fs::create_dir_all(&resolved)
         .await
@@ -251,7 +256,8 @@ const MAX_HASH_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
 /// Compute a SHA-2 hash of a file's contents. Streamed in 64 KiB chunks so
 /// large files don't blow up memory. Caps source size at 1 GiB.
 pub async fn hash_file(path: String, algorithm: String) -> Result<HashResult, String> {
-    let resolved = validate_for_read(&path).map_err(|e| ok_err("invalid_argument", e.to_string()))?;
+    let resolved =
+        validate_for_read(&path).map_err(|e| ok_err("invalid_argument", e.to_string()))?;
     let algo = algorithm.to_lowercase();
     if algo != "sha256" && algo != "sha512" {
         return Err(ok_err(
@@ -263,7 +269,10 @@ pub async fn hash_file(path: String, algorithm: String) -> Result<HashResult, St
         .await
         .map_err(|e| ok_err("not_found", e.to_string()))?;
     if !meta.file_type().is_file() {
-        return Err(ok_err("invalid_argument", "hash_file targets a regular file"));
+        return Err(ok_err(
+            "invalid_argument",
+            "hash_file targets a regular file",
+        ));
     }
     if meta.len() > MAX_HASH_BYTES {
         return Err(ok_err(
@@ -413,8 +422,14 @@ pub async fn list_processes(filter: Option<String>) -> Result<Vec<ProcessRow>, S
         let Some(ppid) = parts.next().and_then(|s| s.parse::<i32>().ok()) else {
             continue;
         };
-        let cpu_pct = parts.next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-        let rss_kib = parts.next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+        let cpu_pct = parts
+            .next()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.0);
+        let rss_kib = parts
+            .next()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.0);
         let cmd_name: String = parts.collect::<Vec<_>>().join(" ");
         if let Some(f) = &lower_filter {
             if !cmd_name.to_lowercase().contains(f) {
@@ -454,10 +469,7 @@ pub struct KillResult {
 /// dangerous-tool approval — gate is enforced in the IPC wrapper.
 pub async fn kill_process(req: KillRequest) -> Result<KillResult, String> {
     if req.pid <= 1 {
-        return Err(ok_err(
-            "invalid_argument",
-            "refusing to signal pid <= 1",
-        ));
+        return Err(ok_err("invalid_argument", "refusing to signal pid <= 1"));
     }
     let sig = req
         .signal
@@ -483,10 +495,7 @@ pub async fn kill_process(req: KillRequest) -> Result<KillResult, String> {
     };
     if exit != 0 {
         let stderr = String::from_utf8_lossy(&err).into_owned();
-        return Err(ok_err(
-            "io",
-            format!("kill exit {exit}: {}", stderr.trim()),
-        ));
+        return Err(ok_err("io", format!("kill exit {exit}: {}", stderr.trim())));
     }
     Ok(KillResult {
         pid: req.pid,

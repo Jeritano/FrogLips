@@ -263,10 +263,7 @@ pub fn add_memory(
     Ok(id)
 }
 
-pub fn list_memories(
-    status_filter: Option<&str>,
-    ctx: &MemoryContext,
-) -> Result<Vec<Memory>> {
+pub fn list_memories(status_filter: Option<&str>, ctx: &MemoryContext) -> Result<Vec<Memory>> {
     // Two-tier limit: HARD_LIMIT is the largest result set we'll ever
     // return to the renderer (UI safeguard), OVER_FETCH is what we pull
     // from disk before the scope filter prunes it. Without over-fetching,
@@ -278,9 +275,7 @@ pub fn list_memories(
     let sql_with = format!(
         "SELECT {MEM_COLS} FROM memories WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2"
     );
-    let sql_all = format!(
-        "SELECT {MEM_COLS} FROM memories ORDER BY created_at DESC LIMIT ?1"
-    );
+    let sql_all = format!("SELECT {MEM_COLS} FROM memories ORDER BY created_at DESC LIMIT ?1");
     let sql: &str = match status_filter {
         Some(_) => &sql_with,
         None => &sql_all,
@@ -300,10 +295,7 @@ pub fn list_memories(
     // honors the caller's MemoryContext. Pass MemoryContext::default() to
     // recover the legacy behaviour (returns only global-scoped memories +
     // any project/conversation that explicitly matches the empty context).
-    let mut filtered: Vec<Memory> = raw
-        .into_iter()
-        .filter(|m| scope_matches(m, ctx))
-        .collect();
+    let mut filtered: Vec<Memory> = raw.into_iter().filter(|m| scope_matches(m, ctx)).collect();
     if filtered.len() > HARD_LIMIT {
         filtered.truncate(HARD_LIMIT);
     }

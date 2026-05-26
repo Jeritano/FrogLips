@@ -655,8 +655,7 @@ fn sanitize_schema_strings(v: &mut serde_json::Value) {
             for (k, sub) in map.iter_mut() {
                 if (k == "description" || k == "title") && sub.is_string() {
                     if let Some(s) = sub.as_str() {
-                        let mut cleaned = strip_for_prompt(s)
-                            .replace(['\r', '\n'], " ");
+                        let mut cleaned = strip_for_prompt(s).replace(['\r', '\n'], " ");
                         while cleaned.contains("  ") {
                             cleaned = cleaned.replace("  ", " ");
                         }

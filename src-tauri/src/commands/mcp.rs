@@ -1,6 +1,10 @@
 //! Model Context Protocol server management commands.
 
-use crate::{approval, commands::agent::{binding_for, ApprovalPayload}, mcp};
+use crate::{
+    approval,
+    commands::agent::{binding_for, ApprovalPayload},
+    mcp,
+};
 
 #[tauri::command]
 pub async fn mcp_start_server(

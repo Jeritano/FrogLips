@@ -863,8 +863,7 @@ const GALLERY_BYTES_CAP: u64 = 2 * 1024 * 1024 * 1024;
 /// because the critical section is fast (filesystem syscalls, no
 /// awaits); the IPC layer already serializes per-image at the agent
 /// loop, so contention is rare even under bursts.
-static GALLERY_WRITE_LOCK: Lazy<std::sync::Mutex<()>> =
-    Lazy::new(|| std::sync::Mutex::new(()));
+static GALLERY_WRITE_LOCK: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
 
 /// Inventory entry: (path, size in bytes, modified time). Type alias
 /// extracted to silence `clippy::type_complexity` on the rust-1.95 CI

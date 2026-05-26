@@ -477,8 +477,7 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
                 // (line ~516) still runs as a second layer for chunks that
                 // slipped past these heuristics; pairing both makes
                 // attacker-controlled docs harder to weaponize.
-                let (_wrapped, hits) =
-                    crate::agent::injection_scan::scan_and_wrap(chunk);
+                let (_wrapped, hits) = crate::agent::injection_scan::scan_and_wrap(chunk);
                 if hits > 0 {
                     crate::diagnostics::warn_with(
                         "rag-ingest",

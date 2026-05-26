@@ -1092,7 +1092,13 @@ mod tests {
 
     /// Insert a workflow_run row exactly the way `record_run` would, but on a
     /// caller-owned Connection. Mirrors the production INSERT.
-    fn record_run_into(conn: &Connection, workflow_id: i64, status: &str, results_json: &str, ts: i64) {
+    fn record_run_into(
+        conn: &Connection,
+        workflow_id: i64,
+        status: &str,
+        results_json: &str,
+        ts: i64,
+    ) {
         conn.execute(
             "INSERT INTO workflow_runs (workflow_id, started_at, status, results_json)
              VALUES (?1, ?2, ?3, ?4)",
@@ -1312,8 +1318,11 @@ mod tests {
         // The production `delete_workflow` runs three statements in one tx —
         // do the same here against the in-memory connection.
         let tx = conn.unchecked_transaction().unwrap();
-        tx.execute("DELETE FROM workflow_runs WHERE workflow_id = ?1", params![1_i64])
-            .unwrap();
+        tx.execute(
+            "DELETE FROM workflow_runs WHERE workflow_id = ?1",
+            params![1_i64],
+        )
+        .unwrap();
         tx.execute(
             "DELETE FROM workflow_card_fired WHERE workflow_id = ?1",
             params![1_i64],
@@ -1520,11 +1529,7 @@ mod tests {
             ("daily 00:00", Schedule::Daily(0)),
             ("daily 23:59", Schedule::Daily(1439)),
         ] {
-            assert_eq!(
-                parse_schedule(input),
-                Some(expected),
-                "input {input:?}"
-            );
+            assert_eq!(parse_schedule(input), Some(expected), "input {input:?}");
         }
         // Saturation check: very large interval must not panic.
         assert!(parse_schedule("every 99999999h").is_some());

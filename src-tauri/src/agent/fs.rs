@@ -545,7 +545,11 @@ pub async fn list_dir(path: String) -> Result<DirListing, String> {
 ///     want true create-only behavior; we don't currently rely on it).
 ///   - `false` → truncate-or-create existing regular files. Combined with
 ///     `O_NOFOLLOW` this still rejects symlink leaves.
-pub(crate) fn write_nofollow_sync(resolved: &Path, bytes: &[u8], must_be_new: bool) -> std::io::Result<()> {
+pub(crate) fn write_nofollow_sync(
+    resolved: &Path,
+    bytes: &[u8],
+    must_be_new: bool,
+) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut opts = std::fs::OpenOptions::new();

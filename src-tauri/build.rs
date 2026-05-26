@@ -15,8 +15,7 @@ fn main() {
     // not loaded. Path is relative to the crate root (`src-tauri/`).
     #[cfg(target_os = "macos")]
     {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .expect("CARGO_MANIFEST_DIR not set");
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
         let plist_path = format!("{}/Info.plist", manifest_dir);
         println!("cargo:rerun-if-changed={plist_path}");
         println!("cargo:rustc-link-arg=-Wl,-sectcreate,__TEXT,__info_plist,{plist_path}");

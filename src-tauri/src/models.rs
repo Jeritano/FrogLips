@@ -101,7 +101,9 @@ mod chat_picker_filter_tests {
 
     #[test]
     fn keeps_real_chat_models() {
-        assert!(!is_non_chat_repo("mlx-community/Llama-3.2-3B-Instruct-4bit"));
+        assert!(!is_non_chat_repo(
+            "mlx-community/Llama-3.2-3B-Instruct-4bit"
+        ));
         assert!(!is_non_chat_repo("mlx-community/Qwen3-7B-Instruct"));
         assert!(!is_non_chat_repo("microsoft/phi-2"));
     }

@@ -198,7 +198,8 @@ pub fn scan(text: &str) -> Vec<InjectionFinding> {
     if matches!(normalized, std::borrow::Cow::Owned(_)) && out.len() < MAX_FINDINGS {
         out.push(InjectionFinding {
             pattern: "invisible formatting chars (zero-width / bidi / control)".to_string(),
-            snippet: "\"(content contained chars the scanner stripped before matching)\"".to_string(),
+            snippet: "\"(content contained chars the scanner stripped before matching)\""
+                .to_string(),
         });
     }
     out
@@ -383,7 +384,9 @@ mod tests {
             "expected ignore-previous-instructions match after zero-width strip"
         );
         // We also surface the invisible-chars finding to alert the agent.
-        assert!(f.iter().any(|x| x.pattern.starts_with("invisible formatting")));
+        assert!(f
+            .iter()
+            .any(|x| x.pattern.starts_with("invisible formatting")));
     }
 
     #[test]
@@ -394,7 +397,9 @@ mod tests {
         // tells the agent the content carries reorder controls.
         let smuggled = "hello\u{202E}olleh";
         let f = scan(smuggled);
-        assert!(f.iter().any(|x| x.pattern.starts_with("invisible formatting")));
+        assert!(f
+            .iter()
+            .any(|x| x.pattern.starts_with("invisible formatting")));
     }
 
     #[test]

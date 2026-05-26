@@ -150,7 +150,11 @@ pub fn run() {
                             .await
                             .expect("mcp autostart semaphore closed");
                         let name = cfg.name.clone();
-                        let env_opt = if cfg.env.is_empty() { None } else { Some(cfg.env) };
+                        let env_opt = if cfg.env.is_empty() {
+                            None
+                        } else {
+                            Some(cfg.env)
+                        };
                         let fut = mcp::start_server(cfg.name, cfg.command, cfg.args, env_opt);
                         match tokio::time::timeout(Duration::from_secs(15), fut).await {
                             Ok(Ok(_)) => {}

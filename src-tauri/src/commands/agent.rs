@@ -88,7 +88,10 @@ pub fn mint_tool_approval(
 /// the actual boundary.
 pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
     match tool {
-        "agent_run_shell" => Some(sha256_hex(&kv(&[("command", p.command.as_deref().unwrap_or(""))]))),
+        "agent_run_shell" => Some(sha256_hex(&kv(&[(
+            "command",
+            p.command.as_deref().unwrap_or(""),
+        )]))),
         // Path-family: write / edit / multi_edit / make_dir / delete /
         // open_in_editor / format_code all bind to a single path.
         "agent_write_file"
@@ -97,7 +100,10 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
         | "agent_make_dir"
         | "agent_delete_path"
         | "agent_open_path_in_editor"
-        | "agent_format_code" => Some(sha256_hex(&kv(&[("path", p.path.as_deref().unwrap_or(""))]))),
+        | "agent_format_code" => Some(sha256_hex(&kv(&[(
+            "path",
+            p.path.as_deref().unwrap_or(""),
+        )]))),
         // Two-path family: move + copy.
         "agent_move_path" | "agent_copy_path" => Some(sha256_hex(&kv(&[
             ("from", p.from.as_deref().unwrap_or("")),
@@ -115,9 +121,15 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
             Some(sha256_hex(&kv(&[("pid", &pid_str), ("signal", &signal)])))
         }
         // Clipboard write — bound to the exact text the user confirmed.
-        "agent_clipboard_set" => Some(sha256_hex(&kv(&[("text", p.text.as_deref().unwrap_or(""))]))),
+        "agent_clipboard_set" => Some(sha256_hex(&kv(&[(
+            "text",
+            p.text.as_deref().unwrap_or(""),
+        )]))),
         // App-launch — bound to the bundle id / app name.
-        "agent_open_app" => Some(sha256_hex(&kv(&[("app", p.bundle_id.as_deref().unwrap_or(""))]))),
+        "agent_open_app" => Some(sha256_hex(&kv(&[(
+            "app",
+            p.bundle_id.as_deref().unwrap_or(""),
+        )]))),
         // Notification — bound to BOTH title + body as independent fields.
         // Old `text="${title}\x1f${body}"` was collision-prone (M-NEW-1).
         "agent_show_notification" => Some(sha256_hex(&kv(&[
@@ -128,12 +140,16 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
         // is strictly more powerful than agent_run_shell (it can issue
         // `do shell script` plus drive any scriptable app), so it
         // absolutely needs payload binding.
-        "agent_applescript_run" => Some(sha256_hex(&kv(&[
-            ("script", p.script.as_deref().unwrap_or("")),
-        ]))),
+        "agent_applescript_run" => Some(sha256_hex(&kv(&[(
+            "script",
+            p.script.as_deref().unwrap_or(""),
+        )]))),
         // Screenshot: bind to a path target so a token issued for
         // "save to ~/Desktop/x.png" can't be reused for a different dest.
-        "agent_screenshot" => Some(sha256_hex(&kv(&[("path", p.path.as_deref().unwrap_or(""))]))),
+        "agent_screenshot" => Some(sha256_hex(&kv(&[(
+            "path",
+            p.path.as_deref().unwrap_or(""),
+        )]))),
         // HTTP + browser — URL-bound.
         "agent_http_request" | "agent_web_fetch" | "agent_browser_navigate" => {
             Some(sha256_hex(&kv(&[("url", p.url.as_deref().unwrap_or(""))])))
@@ -143,12 +159,18 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
         // click/fill/screenshot/get_text/close is now bound to its target
         // selector + value where applicable so the user explicitly
         // approves each on-page action, not just the navigation.
-        "agent_browser_click" => Some(sha256_hex(&kv(&[("selector", p.text.as_deref().unwrap_or(""))]))),
+        "agent_browser_click" => Some(sha256_hex(&kv(&[(
+            "selector",
+            p.text.as_deref().unwrap_or(""),
+        )]))),
         "agent_browser_fill" => Some(sha256_hex(&kv(&[
             ("selector", p.text.as_deref().unwrap_or("")),
             ("value", p.body.as_deref().unwrap_or("")),
         ]))),
-        "agent_browser_get_text" => Some(sha256_hex(&kv(&[("selector", p.text.as_deref().unwrap_or(""))]))),
+        "agent_browser_get_text" => Some(sha256_hex(&kv(&[(
+            "selector",
+            p.text.as_deref().unwrap_or(""),
+        )]))),
         "agent_browser_screenshot" => Some(sha256_hex(&kv(&[("op", "screenshot")]))),
         "agent_browser_close" => Some(sha256_hex(&kv(&[("op", "close")]))),
         // MCP server spawn — bind to command + args + env keys (NOT values,
@@ -207,7 +229,6 @@ pub(crate) fn sha256_hex(s: &str) -> String {
     }
     hex
 }
-
 
 /* ── Agent tool commands ── */
 
@@ -694,11 +715,7 @@ pub async fn agent_browser_get_text(
 
 #[tauri::command]
 pub async fn agent_browser_close(approval: String) -> Result<agent::BrowserOkResult, String> {
-    verify_bound(
-        "agent_browser_close",
-        &approval,
-        ApprovalPayload::default(),
-    )?;
+    verify_bound("agent_browser_close", &approval, ApprovalPayload::default())?;
     agent::browser::close().await
 }
 
