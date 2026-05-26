@@ -5,6 +5,7 @@ import { loadAllPresets } from "../agent-presets";
 import { logDiag } from "../diagnostics";
 import { api } from "../tauri-api";
 import { resolveLinearOrder } from "./graph";
+import { beginRun as beginScratchpadRun, endRun as endScratchpadRun } from "./scratchpad";
 
 /**
  * Per-card outcome.
@@ -349,6 +350,18 @@ function buildCardOptions(
         ? card.systemPrompt
         : preset?.systemPromptOverride,
     toolAllowlist,
+    // Phase 1.3: per-card model params override the backend default
+    // when present. `params` is already on AgentRunOptions; the
+    // backend client (ollama-client, mlx-client, native-client) reads
+    // temperature / top_p / max_tokens from it. Null/absent fields
+    // fall through to backend default.
+    params: card.params
+      ? {
+          temperature: card.params.temperature ?? undefined,
+          top_p: card.params.top_p ?? undefined,
+          max_tokens: card.params.max_tokens ?? undefined,
+        }
+      : undefined,
     // approveAllShell / approveAllWrite are intentionally not threaded: per-card
     // `unattended` is the sole approval surface for workflows. AgentRunOptions
     // still accepts these for non-workflow callers (e.g. the chat-window agent
@@ -385,11 +398,20 @@ export async function runWorkflow(
   const order = resolveLinearOrder(graph);
   const signal = opts.signal ?? new AbortController().signal;
 
+  // Phase 1.1: initialize the workflow scratchpad for this run. Any
+  // card that calls workflow_set / workflow_get / workflow_keys hits
+  // this scoped instance. Cleared at the very end so a chat-mode agent
+  // calling the same tool gets {ok:false, not_in_workflow}.
+  if (opts.workflowId != null) {
+    beginScratchpadRun(opts.workflowId);
+  }
+
   // Optional start-card offset (scheduler triggers a workflow from one card).
   let cards = order;
   if (opts.startCardId) {
     const idx = order.findIndex((c) => c.id === opts.startCardId);
     if (idx < 0) {
+      endScratchpadRun();
       throw new Error(`Start card "${opts.startCardId}" is not in the workflow graph.`);
     }
     cards = order.slice(idx);
@@ -415,7 +437,51 @@ export async function runWorkflow(
     safeHook("onCardStart", () => hooks.onCardStart?.(card.id));
     try {
       const cardOpts = buildCardOptions(card, previousOutput, opts, hooks, signal);
-      const final = await runAgentLoop(cardOpts);
+      // Phase 1.6: per-card retry. `card.retry.max` extra attempts on
+      // a thrown error; on each attempt the abort signal is re-checked
+      // so a Stop click during backoff exits cleanly. NOT retried:
+      // signal.aborted (user wanted out) and any non-thrown error
+      // path (agent loop's own retry inside runAgentLoop already
+      // handles transient stream failures).
+      const retryMax = card.retry?.max ?? 0;
+      const retryBackoff = card.retry?.backoff_ms ?? 1000;
+      let final: string | null = null;
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt <= retryMax; attempt++) {
+        if (signal.aborted) break;
+        try {
+          final = await runAgentLoop(cardOpts);
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (attempt < retryMax && !signal.aborted) {
+            logDiag({
+              level: "warn",
+              source: "workflow-retry",
+              message: `card "${card.name}" attempt ${attempt + 1}/${retryMax + 1} failed, retrying in ${retryBackoff}ms`,
+              detail: e instanceof Error ? e.message : String(e),
+            });
+            await new Promise<void>((resolve) => {
+              const t = setTimeout(resolve, retryBackoff);
+              // Abort during backoff: bail out immediately.
+              signal.addEventListener(
+                "abort",
+                () => {
+                  clearTimeout(t);
+                  resolve();
+                },
+                { once: true },
+              );
+            });
+          }
+        }
+      }
+      if (lastErr) {
+        // Exhausted retries; rethrow into the existing catch arm
+        // so error reporting + onCardError stays in one place.
+        throw lastErr;
+      }
 
       if (signal.aborted) {
         // User stopped the run while THIS card was active. Distinguish abort
@@ -515,5 +581,10 @@ export async function runWorkflow(
   }
 
   safeHook("onWorkflowDone", () => hooks.onWorkflowDone?.(runResult));
+  // Phase 1.1: release the scratchpad. The workflow_* tools will now
+  // return {ok:false, kind:"not_in_workflow"} for any subsequent
+  // chat-mode call, which is the correct posture (they're workflow-
+  // scoped by design).
+  endScratchpadRun();
   return runResult;
 }

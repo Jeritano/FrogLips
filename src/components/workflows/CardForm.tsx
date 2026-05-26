@@ -438,6 +438,96 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
               prompting. Applies to manual and scheduled runs. Leave unchecked
               if you want to review each tool call before it executes.
             </p>
+            {/* Phase 1.3 — per-card model params. Three optional inputs;
+                blank = backend default. Kept in a single row so the form
+                doesn't sprawl. */}
+            <div className="wf-field" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              <label>
+                <span>Temperature (0–2)</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  min={0}
+                  max={2}
+                  placeholder="default"
+                  value={draft.params?.temperature ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? null : Number(e.target.value);
+                    set("params", { ...(draft.params ?? {}), temperature: Number.isFinite(v) ? v : null });
+                  }}
+                />
+              </label>
+              <label>
+                <span>Top-p (0–1)</span>
+                <input
+                  type="number"
+                  step="0.05"
+                  min={0}
+                  max={1}
+                  placeholder="default"
+                  value={draft.params?.top_p ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? null : Number(e.target.value);
+                    set("params", { ...(draft.params ?? {}), top_p: Number.isFinite(v) ? v : null });
+                  }}
+                />
+              </label>
+              <label>
+                <span>Max tokens</span>
+                <input
+                  type="number"
+                  step="64"
+                  min={1}
+                  placeholder="default"
+                  value={draft.params?.max_tokens ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? null : Number(e.target.value);
+                    set("params", { ...(draft.params ?? {}), max_tokens: Number.isFinite(v) && v! > 0 ? Math.floor(v!) : null });
+                  }}
+                />
+              </label>
+            </div>
+            {/* Phase 1.6 — retry policy. Two inputs; max=0 (default)
+                disables retries. */}
+            <div className="wf-field" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <label>
+                <span>Retry on error (0–5)</span>
+                <input
+                  type="number"
+                  step="1"
+                  min={0}
+                  max={5}
+                  placeholder="0 (no retry)"
+                  value={draft.retry?.max ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? 0 : Math.max(0, Math.min(5, Math.floor(Number(e.target.value) || 0)));
+                    if (v === 0) {
+                      set("retry", null);
+                    } else {
+                      set("retry", { max: v, backoff_ms: draft.retry?.backoff_ms ?? 1000 });
+                    }
+                  }}
+                />
+              </label>
+              <label>
+                <span>Backoff ms</span>
+                <input
+                  type="number"
+                  step="100"
+                  min={0}
+                  max={60000}
+                  placeholder="1000"
+                  value={draft.retry?.backoff_ms ?? ""}
+                  disabled={!draft.retry || draft.retry.max === 0}
+                  onChange={(e) => {
+                    const v = e.target.value === "" ? 1000 : Math.max(0, Math.min(60_000, Math.floor(Number(e.target.value) || 0)));
+                    if (draft.retry && draft.retry.max > 0) {
+                      set("retry", { ...draft.retry, backoff_ms: v });
+                    }
+                  }}
+                />
+              </label>
+            </div>
             <div className="wf-field">
               <span>Tools</span>
               <div className="wf-tool-grid">

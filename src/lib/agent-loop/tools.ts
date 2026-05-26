@@ -859,4 +859,73 @@ export const TOOLS = [
       parameters: { type: "object", properties: {} },
     },
   },
+  /* ── Workflow-only tools (Phase 1.1 + 1.2). Only meaningful inside a
+       running workflow card — outside that scope they return
+       {ok:false, kind:"not_in_workflow"}. Add to the card's `tools`
+       allowlist to make them callable. ──────────────────────────── */
+  {
+    type: "function",
+    function: {
+      name: "workflow_set",
+      description:
+        "Write a value to the workflow scratchpad — a shared blob other cards in the same run can read. Use for structured state (counts, decisions, intermediate JSON) that doesn't belong in the user-facing prose handoff. Total scratchpad capped at 64 KiB across all keys. Value must be JSON-serializable.",
+      parameters: {
+        type: "object",
+        properties: {
+          key: {
+            type: "string",
+            description: "Identifier within this run's scratchpad. Use snake_case names like 'research_summary' or 'urls_to_visit'.",
+          },
+          value: {
+            description: "Anything JSON-serializable (string, number, boolean, null, object, array).",
+          },
+        },
+        required: ["key", "value"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "workflow_get",
+      description:
+        "Read a value the current workflow run previously stored via workflow_set. Returns {ok:true, value} on hit, {ok:false, kind:'missing_key'} when no such key exists in this run.",
+      parameters: {
+        type: "object",
+        properties: { key: { type: "string" } },
+        required: ["key"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "workflow_keys",
+      description:
+        "List the keys currently in the workflow scratchpad for THIS run. Use to discover what an upstream card wrote without trial-and-error workflow_get calls.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "workflow_get_prior_run",
+      description:
+        "Read the recorded output of a card from a PRIOR run of the same workflow (i.e. last week's run of this card). Returns the most recent matching run by default. Use to chain a daily workflow off the previous day's findings.",
+      parameters: {
+        type: "object",
+        properties: {
+          card_id: {
+            type: "string",
+            description: "Card id whose recorded output you want.",
+          },
+          run_id: {
+            type: "number",
+            description: "Optional specific workflow_runs.id. If omitted, returns the most recent successful run that contains this card.",
+          },
+        },
+        required: ["card_id"],
+      },
+    },
+  },
 ] as const;

@@ -994,6 +994,70 @@ export async function executeTool(
       const r = await api.agentListUndo();
       return JSON.stringify({ ok: true, rows: r });
     }
+    /* ── Workflow scratchpad + cross-run artifacts (Phase 1.1 + 1.2) ── */
+    case "workflow_set": {
+      const { setEntry } = await import("../workflow/scratchpad");
+      const r = setEntry(String(args.key ?? ""), args.value as never);
+      return JSON.stringify(r);
+    }
+    case "workflow_get": {
+      const { getEntry } = await import("../workflow/scratchpad");
+      const r = getEntry(String(args.key ?? ""));
+      return JSON.stringify(r);
+    }
+    case "workflow_keys": {
+      const { listKeys } = await import("../workflow/scratchpad");
+      const r = listKeys();
+      return JSON.stringify(r);
+    }
+    case "workflow_get_prior_run": {
+      // Defers to the Tauri-side workflow_runs query. Returns the most
+      // recent run unless an explicit run_id is provided. Searches the
+      // run's recorded card list for the requested card_id and returns
+      // its output blob.
+      try {
+        const cardId = String(args.card_id ?? "");
+        if (!cardId) {
+          return JSON.stringify({ ok: false, kind: "bad_args", message: "card_id required" });
+        }
+        // Walk back through workflow_runs to find one containing this card.
+        // The workflow_id must be the *current* run's workflow_id — we
+        // read it from the active scratchpad so a card can't accidentally
+        // peek into a different workflow's history.
+        const { snapshot } = await import("../workflow/scratchpad");
+        const snap = snapshot();
+        if (!snap) {
+          return JSON.stringify({ ok: false, kind: "not_in_workflow" });
+        }
+        const runs = await api.workflowRunsList(snap.workflowId);
+        const explicit = args.run_id != null ? Number(args.run_id) : null;
+        const candidates = explicit != null
+          ? runs.filter((r) => r.id === explicit)
+          : runs.filter((r) => r.status === "ok");
+        for (const r of candidates) {
+          try {
+            const parsed = JSON.parse(r.results_json) as {
+              cards?: Array<{ cardId: string; output?: string; status?: string }>;
+            };
+            const hit = parsed.cards?.find((c) => c.cardId === cardId && c.status === "ok");
+            if (hit) {
+              return JSON.stringify({
+                ok: true,
+                run_id: r.id,
+                created_at: r.created_at,
+                output: hit.output ?? "",
+              });
+            }
+          } catch {
+            /* skip malformed row */
+          }
+        }
+        return JSON.stringify({ ok: false, kind: "no_prior_output", message: `No prior run found containing card "${cardId}".` });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return JSON.stringify({ ok: false, kind: "io_error", message });
+      }
+    }
     default:
       return JSON.stringify({ ok: false, kind: "unknown_tool", message: `Unknown tool: ${name}` });
   }

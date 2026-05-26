@@ -625,6 +625,21 @@ export interface WorkflowCard {
   placed?: boolean;
   x: number;
   y: number;
+  /**
+   * Phase 1.6 retry policy. When set, the runner re-invokes the agent
+   * loop up to `max` additional times if the card returns `status:
+   * error`. Each retry sleeps `backoff_ms` (default 1000) — backoff is
+   * NOT exponential by default to keep the UX predictable.
+   *
+   * Null/absent = no retries (default; matches v1 behavior).
+   */
+  retry?: { max: number; backoff_ms?: number } | null;
+  /**
+   * Phase 1.3 per-card model parameters. Threaded through to the
+   * agent-loop `params` field which the backend client honors.
+   * Null/absent fields fall back to the backend default.
+   */
+  params?: { temperature?: number | null; top_p?: number | null; max_tokens?: number | null } | null;
 }
 
 /** Directed link between two cards (card ids). Linear chains only in v1. */
@@ -718,6 +733,36 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
     // 1e308. A finite range of ±1e6 covers every reasonable canvas position.
     x: typeof c.x === "number" && Number.isFinite(c.x) && Math.abs(c.x) <= 1e6 ? c.x : 0,
     y: typeof c.y === "number" && Number.isFinite(c.y) && Math.abs(c.y) <= 1e6 ? c.y : 0,
+    // Phase 1.6 retry policy. Caps: max ≤ 5 retries (anything higher
+    // is almost always a config mistake), backoff_ms ≤ 60s.
+    retry: (() => {
+      const r = c.retry as Record<string, unknown> | null | undefined;
+      if (!r || typeof r !== "object") return null;
+      const max = typeof r.max === "number" && Number.isFinite(r.max) ? Math.max(0, Math.min(5, Math.floor(r.max))) : null;
+      if (max === null || max === 0) return null;
+      const rawBackoff = typeof r.backoff_ms === "number" && Number.isFinite(r.backoff_ms) ? r.backoff_ms : 1000;
+      const backoff = Math.max(0, Math.min(60_000, Math.floor(rawBackoff)));
+      return { max, backoff_ms: backoff };
+    })(),
+    // Phase 1.3 per-card model params. Each field independently
+    // clamped; null/absent falls through to backend defaults.
+    params: (() => {
+      const p = c.params as Record<string, unknown> | null | undefined;
+      if (!p || typeof p !== "object") return null;
+      const clamp = (v: unknown, lo: number, hi: number): number | null => {
+        if (typeof v !== "number" || !Number.isFinite(v)) return null;
+        return Math.max(lo, Math.min(hi, v));
+      };
+      const temperature = clamp(p.temperature, 0, 2);
+      const top_p = clamp(p.top_p, 0, 1);
+      const max_tokens = (() => {
+        if (typeof p.max_tokens !== "number" || !Number.isFinite(p.max_tokens)) return null;
+        if (p.max_tokens <= 0) return null;
+        return Math.max(1, Math.min(131072, Math.floor(p.max_tokens)));
+      })();
+      if (temperature == null && top_p == null && max_tokens == null) return null;
+      return { temperature, top_p, max_tokens };
+    })(),
   };
 }
 
