@@ -398,7 +398,6 @@ pub fn run() {
             commands::agent::agent_set_workspace,
             commands::agent::agent_get_workspace,
             commands::misc::open_conversation_window,
-            commands::misc::list_open_conversation_windows,
             commands::agent::agent_cancel_shell,
             commands::agent::agent_multi_edit,
             commands::agent::agent_git_status,
@@ -435,7 +434,8 @@ pub fn run() {
             commands::agent::task_status,
             commands::agent::task_list,
             commands::agent::task_cancel,
-            commands::agent::task_prune,
+            // task_prune IPC removed 2026-05-26 SE review — no consumer.
+            // Internal prune runs from task_queue::create (AUTO_PRUNE_AFTER_SECS).
             commands::agent::agent_ask_user,
             commands::agent::agent_ask_user_reply,
             commands::agent::agent_ask_user_cancel,

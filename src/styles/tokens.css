@@ -47,7 +47,6 @@
   --radius: 8px;
   --radius-md: 10px;
   --radius-lg: 14px;
-  --radius-xl: 18px;
   --radius-full: 999px;
 
   /* Type scale */
@@ -63,10 +62,9 @@
   --z-popover: 50;
   --z-toast: 60;
   --z-modal: 100;
-  --z-modal-stack: 200;
-  --z-wizard: 300;
-  --z-confirm: 400;
-  --z-drag-strip: 9999;
+  /* Removed 2026-05-26 SE review: --z-modal-stack/--z-wizard/--z-confirm/
+     --z-drag-strip never referenced. If a future modal needs above-100,
+     reintroduce inline. */
 
   /* Caret SVG for select / dropdown — re-themed in light mode below */
   --caret-svg: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'><polyline points='6 9 12 15 18 9'/></svg>");

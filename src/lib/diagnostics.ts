@@ -53,7 +53,12 @@ function hydrate(): void {
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return;
-    for (const item of parsed) {
+    // 2026-05-26 SE review round 2: pre-slice to CAP_ENTRIES so we don't
+    // momentarily bloat the ring buffer during hydration. The prior
+    // push-then-shift loop is functionally correct but doubles peak
+    // memory on a localStorage with > CAP_ENTRIES entries.
+    const window = parsed.slice(-CAP_ENTRIES);
+    for (const item of window) {
       if (!item || typeof item !== "object") continue;
       const ts = typeof item.ts === "number" ? item.ts : Date.now();
       const level = item.level === "error" || item.level === "warn" || item.level === "info"
@@ -62,7 +67,6 @@ function hydrate(): void {
       const source = typeof item.source === "string" ? item.source : "unknown";
       const message = typeof item.message === "string" ? item.message : "";
       entries.push({ ts, level, source, message, detail: item.detail });
-      if (entries.length > CAP_ENTRIES) entries.shift();
     }
   } catch {/* hydration failure is non-fatal — start with empty buffer */}
 }

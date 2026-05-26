@@ -43,10 +43,26 @@ export function parseConversationParams(
   return {
     temperature: clampNum(obj.temperature, 0, 2),
     top_p: clampNum(obj.top_p, 0, 1),
-    max_tokens:
-      typeof obj.max_tokens === "number" && Number.isFinite(obj.max_tokens)
-        ? Math.max(1, Math.floor(obj.max_tokens))
-        : null,
+    // 2026-05-26 SE review round 2: a manually-edited localStorage with
+    // max_tokens=0 or a negative int would slip past the prior
+    // `Math.max(1, Math.floor(...))` because the user's value bypassed
+    // the typeof gate (typeof is fine; Math.max clamps). But
+    // Math.floor(-50) → -50 → Math.max(1,-50) → 1 was correct already.
+    // The real gap is non-positive ints reaching the backend with
+    // max_tokens=1 (some models reject as too small). Floor first,
+    // require > 0, else treat as missing.
+    max_tokens: (() => {
+      // 2026-05-26 SE review round 2: localStorage edited to
+      // max_tokens=0 or negative previously slipped past the type
+      // guard and reached the backend with max_tokens=1 (some models
+      // reject as too small). Reject ≤0 outright; positive fractional
+      // (e.g. 0.5) clamps up to 1 to preserve prior semantics for
+      // round-trip with floor.
+      const v = obj.max_tokens;
+      if (typeof v !== "number" || !Number.isFinite(v)) return null;
+      if (v <= 0) return null;
+      return Math.max(1, Math.floor(v));
+    })(),
     system_prompt: typeof sys === "string" && sys.trim() !== "" ? sys : null,
   };
 }

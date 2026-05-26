@@ -520,8 +520,8 @@ export const api = {
   taskStatus: (id: string) => invoke<TaskInfo>("task_status", { id }),
   taskList: () => invoke<TaskInfo[]>("task_list"),
   taskCancel: (id: string) => invoke<void>("task_cancel", { id }),
-  taskPrune: (olderThanSecs?: number) =>
-    invoke<number>("task_prune", { olderThanSecs: olderThanSecs ?? null }),
+  // task_prune binding deleted 2026-05-26 SE review round 2 — no FE
+  // consumer; opportunistic prune already runs inside task_queue::create.
 
   // ask_user
   agentAskUser: (question: string, hint?: string) =>
@@ -547,8 +547,8 @@ export const api = {
       conversationId,
       title: title ?? null,
     }),
-  listOpenConversationWindows: () =>
-    invoke<string[]>("list_open_conversation_windows"),
+  // listOpenConversationWindows binding deleted 2026-05-26 SE review
+  // round 2 — no FE consumer. Rust IPC + handler removed in same wave.
 
   // Per-project policy (`.froglips/policy.json`)
   policyLoad: (cwd: string) =>

@@ -421,6 +421,14 @@ pub fn search_keyword(query: &str, limit: i64, ctx: &MemoryContext) -> Result<Ve
         .filter(|m| scope_matches(m, ctx))
         .take(limit as usize)
         .collect();
+    // 2026-05-26 SE review round 2: bump last_used_at on returned hits so a
+    // future LRU eviction policy (or even a "recently recalled" UI sort)
+    // sees true recency. Best-effort — DB failure here shouldn't mask a
+    // successful recall.
+    if !filtered.is_empty() {
+        let ids: Vec<i64> = filtered.iter().map(|m| m.id).collect();
+        let _ = touch_memories(&ids);
+    }
     Ok(filtered)
 }
 
@@ -459,6 +467,11 @@ pub fn search_vector(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     mems.truncate(limit);
+    // Touch returned hits (see search_keyword for rationale).
+    if !mems.is_empty() {
+        let touch_ids: Vec<i64> = mems.iter().map(|m| m.id).collect();
+        let _ = touch_memories(&touch_ids);
+    }
     Ok(mems)
 }
 

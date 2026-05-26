@@ -464,7 +464,18 @@ pub fn parse_schedule(raw: &str) -> Option<Schedule> {
         if n <= 0 {
             return None;
         }
-        return Some(Schedule::Every(n.saturating_mul(unit_secs)));
+        let interval = n.saturating_mul(unit_secs);
+        // 2026-05-26 SE review round 2 (security): enforce a minimum
+        // interval of 60 seconds. The scheduler tick polls every 30 s
+        // (see RECONCILE_INTERVAL); intervals below that resolve to
+        // fire-every-tick which DoS-es the task pool. Even at 1 min an
+        // unattended workflow runs 1440x/day — high enough that we should
+        // at least refuse sub-minute grain at the parse layer.
+        const MIN_INTERVAL_SECS: i64 = 60;
+        if interval < MIN_INTERVAL_SECS {
+            return None;
+        }
+        return Some(Schedule::Every(interval));
     }
     if let Some(rest) = s.strip_prefix("daily ") {
         let rest = rest.trim();

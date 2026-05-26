@@ -516,11 +516,11 @@ fn open_conversation_window_impl<R: tauri::Runtime>(
     Ok(label)
 }
 
-#[tauri::command]
-pub fn list_open_conversation_windows(app: tauri::AppHandle) -> Vec<String> {
-    list_open_conversation_windows_impl(&app)
-}
-
+// `list_open_conversation_windows` IPC removed 2026-05-26 SE review
+// round 2 — no FE consumer. The impl below is retained because the
+// test at line ~658 still drives it (it validates the conv- label
+// filter convention so future re-exposures are correct).
+#[allow(dead_code)]
 fn list_open_conversation_windows_impl<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Vec<String> {

@@ -754,10 +754,10 @@ pub fn task_cancel(id: String) -> Result<(), String> {
     task_queue::cancel(&id)
 }
 
-#[tauri::command]
-pub fn task_prune(older_than_secs: Option<u64>) -> usize {
-    task_queue::prune(older_than_secs.unwrap_or(3600))
-}
+// task_prune IPC removed 2026-05-26 SE review round 2 — no FE consumer.
+// The opportunistic prune that actually runs lives at
+// task_queue::create (AUTO_PRUNE_AFTER_SECS = 30 min). Re-add only if a
+// user-facing "Clear finished tasks" button materializes.
 
 /* ── ask_user ────────────────────────────────────────────────────────────── */
 
