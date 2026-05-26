@@ -1,7 +1,12 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+// Maturity dim 4 (security defense-in-depth): parking_lot::RwLock has
+// no poisoning. The previous std::sync::RwLock would, on a panic while
+// the write lock was held, leave WORKSPACE_ROOT permanently in an
+// Err-returning state — every future workspace set/get would fail.
+// parking_lot recovers cleanly.
+use parking_lot::RwLock;
 
 /// `O_NOFOLLOW` open flag. Defined per-target to avoid pulling in `libc` as a
 /// direct dependency. The values match the platforms' `<fcntl.h>`:
@@ -49,21 +54,19 @@ pub fn set_workspace_root(path: Option<String>) -> Result<Option<String>, String
     let display = normalized
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned());
-    *WORKSPACE_ROOT
-        .write()
-        .map_err(|_| "workspace lock poisoned")? = normalized;
+    *WORKSPACE_ROOT.write() = normalized;
     Ok(display)
 }
 
 pub fn get_workspace_root() -> Option<String> {
     WORKSPACE_ROOT
         .read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|p| p.to_string_lossy().into_owned()))
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 pub(super) fn workspace_root_clone() -> Option<PathBuf> {
-    WORKSPACE_ROOT.read().ok().and_then(|g| g.clone())
+    WORKSPACE_ROOT.read().clone()
 }
 
 /* ── Path validation w/ canonicalization + sandbox ─────────────────────────── */

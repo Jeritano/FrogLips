@@ -1,0 +1,19 @@
+# Default owner — all paths require review from Joseph until contributors
+# come online. Refine per-directory when team grows.
+*       @Jeritano
+
+# Security-sensitive — paths that admit untrusted input or touch the
+# approval/IPC trust boundary. Future security council should be added
+# here before merge.
+/src-tauri/src/approval.rs           @Jeritano
+/src-tauri/src/policy.rs             @Jeritano
+/src-tauri/src/agent/                @Jeritano
+/src-tauri/src/mcp/                  @Jeritano
+/src-tauri/tauri.conf.json           @Jeritano
+/src-tauri/Info.plist                @Jeritano
+
+# Release machinery — accidental edits here can break the updater
+# handshake or sign with the wrong key.
+/scripts/release.sh                  @Jeritano
+/.github/workflows/                  @Jeritano
+/docs/RELEASE_PROCESS.md             @Jeritano

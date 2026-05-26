@@ -335,8 +335,14 @@ function PinControl({ msg, rowKey, isPinned, isPinning, onPin, canPinProject, ca
 const MessageRow = memo(MessageRowImpl);
 
 const StreamingMessage = memo(function StreamingMessage({ text }: { text: string }) {
+  // Maturity dim 10 (a11y): announce streaming text to assistive
+  // tech. `aria-live="polite"` instructs the screen reader to
+  // queue updates rather than interrupting other speech;
+  // `aria-atomic="false"` so only the delta is re-read, not the
+  // entire growing bubble. Screen readers throttle naturally so
+  // 100+ tok/s emit doesn't cause a torrent.
   return (
-    <div className="message assistant" data-testid="streaming-bubble">
+    <div className="message assistant" data-testid="streaming-bubble" aria-live="polite" aria-atomic="false">
       <div className="content markdown" dangerouslySetInnerHTML={{ __html: cachedMarkdown(text) + '<span class="cursor">▍</span>' }} />
     </div>
   );
