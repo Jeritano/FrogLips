@@ -11,7 +11,7 @@
 
 Froglips ships its own **native backend** — an in-process engine (`mistralrs` + candle + Metal) that runs models directly on Apple Silicon with zero install — alongside agent mode, agent-orchestration workflows, vector-recall memory, and signed auto-updates.
 
-![version](https://img.shields.io/badge/version-0.11.0-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
+![version](https://img.shields.io/badge/version-0.11.1-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
 
 ## What it does
 

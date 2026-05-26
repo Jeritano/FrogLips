@@ -1,6 +1,6 @@
 [package]
 name = "local-llm-app"
-version = "0.11.0"
+version = "0.11.1"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["Joseph D Eriano"]
 edition = "2021"

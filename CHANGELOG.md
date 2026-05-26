@@ -4,6 +4,12 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-05-25
+
+### Crash fix
+
+- **`task_create` SIGABRT on first call** (crash report 2BED87A8-FA96-...): `commands::agent::task_create` is a sync `#[tauri::command]` running on the main thread without a tokio runtime context, so its `tokio::spawn` call panicked → `abort()`. Replaced with `tauri::async_runtime::spawn` which grabs Tauri's managed runtime handle correctly from sync command contexts. Audited the 14 other `tokio::spawn` call sites in the codebase — all are inside `async fn` callers and remain correct.
+
 ### Novita.ai cloud backend (2026-05-25)
 
 New `novita` backend alongside the existing `mlx` / `ollama` / `native` providers — pure REST passthrough to Novita's OpenAI-compatible router. API keys are stored in the macOS Keychain (`com.froglips.novita`) via the `keyring` crate; the JS layer never caches the key, fetching it just-in-time per request and stripping it from logged bodies. Settings modal (NovitaSettings.tsx) surfaces Save / Test / Remove. `start_server` short-circuits novita branch (no subprocess to launch). `list_all_models` fetches in parallel with mlx + ollama. `open_external` allowlists `novita.ai`.
