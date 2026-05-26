@@ -57,6 +57,14 @@ const RECALL_THRESHOLD_MAX = 0.95;
 
 export function configureMemory(opts: { embeddingModel?: string | null; recallThreshold?: number | null }) {
   if (opts.embeddingModel && typeof opts.embeddingModel === "string") {
+    // Maturity review P0 #10: previously the embed LRU survived a model
+    // change, so cached vectors from the OLD model (different dimension)
+    // were silently compared against NEW-model embeddings — dedup
+    // (0.85 cosine) failed nonsensically. Drop the cache when the model
+    // identity changes so the next call refills with consistent vectors.
+    if (opts.embeddingModel !== _embedModel) {
+      embedLru.clear();
+    }
     _embedModel = opts.embeddingModel;
   }
   if (typeof opts.recallThreshold === "number" && Number.isFinite(opts.recallThreshold)) {
@@ -107,7 +115,10 @@ export function setMemoryMode(m: MemoryMode) {
 const EMBED_READY_TTL_MS = 60_000;
 const EMBED_NEGATIVE_TTL_MS = 5_000; // recheck quickly when Ollama is down
 const MAX_EMBED_INPUT = 4096;
-const EMBED_LRU_SIZE = 16;
+// Maturity review P0 #2: was 16, too small — every unique recall query hit
+// Ollama (50–500ms RTT). Bumped to 256 so a 50-turn chat with typical
+// repeated phrases keeps a hot cache.
+const EMBED_LRU_SIZE = 256;
 
 let embeddingAvailable: boolean | null = null;
 let embeddingCheckedAt = 0;
@@ -403,9 +414,15 @@ export interface ExtractedFact {
 }
 
 // Patterns that look like credentials — never persist as memories.
+// Maturity review P0 #11: expanded coverage. Original patterns missed
+// several common formats — GCP service-account JSON, Stripe underscore
+// keys, Postgres/MySQL connection URLs w/ passwords, RSA/SSH PEM blocks,
+// Twilio Account SIDs, Firebase FCM tokens. Each addition cited in the
+// 2026-05-25 maturity review.
 const SECRET_PATTERNS: RegExp[] = [
   /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b/, // AWS access key
-  /\b(?:sk|pk)-[A-Za-z0-9]{20,}\b/,                                    // OpenAI/Stripe-style
+  /\b(?:sk|pk)-[A-Za-z0-9]{20,}\b/,                                    // OpenAI-style dash form
+  /\b(?:sk|pk|rk)_(?:test|live)_[A-Za-z0-9]{20,}\b/,                   // Stripe underscore form (added)
   /\bghp_[A-Za-z0-9]{30,}\b/,                                          // GitHub personal token
   /\bgh[oprs]_[A-Za-z0-9]{30,}\b/,                                     // GitHub other tokens
   /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,                                  // Slack token
@@ -415,6 +432,13 @@ const SECRET_PATTERNS: RegExp[] = [
   /password\s*[:=]/i,
   /api[_-]?key\s*[:=]/i,
   /bearer\s+[A-Za-z0-9._-]{20,}/i,
+  // Added 2026-05-25 maturity review:
+  /"type"\s*:\s*"service_account"/i,                                  // GCP service-account JSON
+  /\bAC[a-f0-9]{32}\b/,                                                // Twilio Account SID
+  /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s]+:[^@\s]+@/i, // DB URL w/ creds
+  /-----BEGIN(?:\s+(?:RSA|EC|OPENSSH|DSA|PGP))?\s+PRIVATE\s+KEY-----/,// PEM private key
+  /\bAAAA[A-Za-z0-9_-]{60,}\b/,                                        // Firebase FCM-style long token
+  /xoxb-[A-Za-z0-9-]{20,}/,                                            // Slack bot token (precise)
 ];
 
 /** Exported for unit tests. */

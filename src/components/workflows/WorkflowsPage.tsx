@@ -696,6 +696,7 @@ export function WorkflowsPage({ status }: Props) {
           type="button"
           className="wf-btn wf-btn-primary topbar-action"
           onClick={createWorkflow}
+          style={{ marginLeft: "auto" }}
         >
           + New workflow
         </button>

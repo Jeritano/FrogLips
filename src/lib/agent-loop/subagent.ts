@@ -6,6 +6,10 @@ export const MAX_SUBAGENT_DEPTH = 3;
 
 /** How long a finished/errored subagent stays visible to `list_subagents`. */
 const COMPLETED_TTL_MS = 60_000;
+/** Hard cap: any handle older than this is evicted regardless of status —
+ * defends against a stuck "running" handle leaking memory across a session.
+ * Maturity review P1 #33. */
+const HARD_TTL_MS = 5 * 60_000;
 
 export type SubagentStatus = "running" | "done" | "error" | "cancelled";
 
@@ -29,7 +33,19 @@ const registry = new Map<string, SubagentHandle>();
 function pruneOldHandles(): void {
   const now = Date.now();
   for (const [id, h] of registry) {
-    if (h.status !== "running" && h.finished_at != null && now - h.finished_at > COMPLETED_TTL_MS) {
+    // Two eviction triggers.
+    //   1) Finished handle past its COMPLETED_TTL_MS — original behavior.
+    //   2) ANY handle (running OR stuck "error"/"done" without finished_at)
+    //      older than HARD_TTL_MS — covers the case the maturity review
+    //      called out: a subagent that crashed before recording its
+    //      finished_at, or one whose await never resolved, otherwise
+    //      lived in the map forever.
+    const finishedExpired =
+      h.status !== "running" &&
+      h.finished_at != null &&
+      now - h.finished_at > COMPLETED_TTL_MS;
+    const hardExpired = now - h.started_at > HARD_TTL_MS;
+    if (finishedExpired || hardExpired) {
       registry.delete(id);
     }
   }

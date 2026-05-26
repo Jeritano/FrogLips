@@ -21,8 +21,24 @@ impl ManageConnection for SqliteManager {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
-             PRAGMA busy_timeout=5000;",
+             PRAGMA busy_timeout=5000;
+             -- Maturity review P0 #6 + P1 #19. cache_size negative value
+             -- is KiB rather than pages (here ~16 MiB resident per conn);
+             -- mmap_size 256 MiB lets large `messages`/`memories` scans
+             -- read pages without the syscall ping-pong; synchronous=NORMAL
+             -- is safe under WAL (FULL only differs on crash semantics
+             -- around the journal checkpoint, not durability of committed
+             -- txns); temp_store=MEMORY skips disk for sort/group temp.
+             PRAGMA cache_size=-16000;
+             PRAGMA mmap_size=268435456;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA temp_store=MEMORY;",
         )?;
+        // P0 #6: bump prepared-statement cache so the busy code paths
+        // (list_messages, search_text, memory recall) don't reparse SQL
+        // every call. Default cap is 16; bumping to 64 covers every hot
+        // query without eating much RAM.
+        conn.set_prepared_statement_cache_capacity(64);
         Ok(conn)
     }
 
@@ -283,6 +299,46 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 10,
         apply: ensure_images_table,
+    },
+    // v11 — maturity-review indexing pass. Adds the indexes the
+    // 2026-05-25 review flagged as missing on hot read paths: composite
+    // index on (conversation_id, created_at DESC) for messages so the
+    // chat scroll-back doesn't re-sort post-read; (status, content) on
+    // memories for the LIKE fallback path; (last_used_at DESC) on
+    // memories for future LRU policy; (conversation_id, ts DESC) on
+    // agent_audit so the per-conversation tool-history slide-out
+    // doesn't full-scan the audit log. All `IF NOT EXISTS` so re-running
+    // is a no-op.
+    Migration {
+        version: 11,
+        apply: |conn| {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_messages_conv_created
+                    ON messages(conversation_id, created_at DESC);
+                 CREATE INDEX IF NOT EXISTS idx_memories_status_content
+                    ON memories(status, content);
+                 CREATE INDEX IF NOT EXISTS idx_memories_last_used
+                    ON memories(last_used_at DESC);",
+            )?;
+            // agent_audit may not exist yet on a brand-new DB if the
+            // first audit row hasn't been written; guard with table
+            // existence so the migration doesn't error.
+            let has_audit: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type='table' AND name='agent_audit'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if has_audit == 1 {
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_audit_conv_ts
+                        ON agent_audit(conversation_id, ts DESC);",
+                )?;
+            }
+            Ok(())
+        },
     },
 ];
 

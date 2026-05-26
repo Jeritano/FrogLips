@@ -8,11 +8,25 @@
 // complete. Strict v1.3: no images, no history, no memory, no model picker.
 
 use anyhow::{anyhow, Context, Result};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::settings;
+
+// Maturity review P0 #3: previously every quick-prompt submit built a fresh
+// `reqwest::Client` (TLS handshake + new connection pool). Hoisted to a
+// process-static client — same timeout (180s) + redirect policy as before.
+// One client for both MLX and Ollama backends; both are loopback so the
+// connection pool is small and shared safely.
+static QUICK_HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build quick-prompt http client")
+});
 
 /// Quick-prompt window logical size. Frameless, always-on-top, centered.
 /// Width holds a comfortable prompt; height fits the textarea + a single
@@ -218,16 +232,10 @@ async fn stream_mlx(
         "max_tokens": 1024,
         "messages": [{ "role": "user", "content": prompt }],
     });
-    // Disable redirect-following: a misconfigured local MLX server returning a
-    // 30x to an attacker-controlled URL would otherwise have its body streamed
-    // back to the UI as if it were the LLM reply. Local backends never need
-    // redirect-following for their streaming endpoint.
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(180))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .context("build http client")?;
-    let resp = client
+    // P0 #3: use the process-static client (QUICK_HTTP). Redirect-disable
+    // + 180s timeout baked into the builder; rationale preserved at the
+    // QUICK_HTTP definition site.
+    let resp = QUICK_HTTP
         .post(&url)
         .json(&body)
         .send()
@@ -308,13 +316,9 @@ async fn stream_ollama(
         "stream": true,
         "messages": [{ "role": "user", "content": prompt }],
     });
-    // Disable redirect-following — see `stream_mlx` for rationale.
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(180))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .context("build http client")?;
-    let resp = client
+    // P0 #3: use the process-static client (QUICK_HTTP). Same redirect /
+    // timeout settings as the MLX path; see QUICK_HTTP definition.
+    let resp = QUICK_HTTP
         .post(&url)
         .json(&body)
         .send()

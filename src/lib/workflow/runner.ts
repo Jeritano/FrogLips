@@ -485,8 +485,13 @@ export async function runWorkflow(
       const recorded: WorkflowRunResult = {
         status: runResult.status,
         cards: runResult.cards.map((c) =>
+          // Maturity review P1 #16: explicit marker disambiguates the
+          // record-cap (6 KiB) from the in-memory handoff cap (64 KiB).
+          // A reviewer replaying from the audit row knows the persisted
+          // text is a SHORTER SUMMARY of what the next card actually
+          // received — not the whole thing.
           c.output.length > RECORD_OUTPUT_CAP
-            ? { ...c, output: `${safeTruncate(c.output, RECORD_OUTPUT_CAP)}… [truncated]` }
+            ? { ...c, output: `${safeTruncate(c.output, RECORD_OUTPUT_CAP)}… [truncated for storage; full output was passed to next card]` }
             : c,
         ),
       };

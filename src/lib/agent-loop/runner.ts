@@ -498,8 +498,13 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     ...TOOLS,
     ...mcpTools,
   ] as unknown as typeof TOOLS;
-  const tools = toolAllowlist.length
-    ? allTools.filter((t) => toolAllowlist.includes(t.function.name))
+  // Maturity review P0 #5: precompute allowlist Set once. The original
+  // `.filter(... .includes(...))` was O(n×m) and ran every agent iteration
+  // when re-deriving the tool list. The allowlist is run-scoped + immutable
+  // so the Set hoists fine.
+  const allowlistSet = toolAllowlist.length ? new Set(toolAllowlist) : null;
+  const tools = allowlistSet
+    ? allTools.filter((t) => allowlistSet.has(t.function.name))
     : allTools;
 
   // Track "research without writing" so we can nudge the model when it
@@ -707,8 +712,8 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
 
       const fnName = tc.function?.name ?? "";
 
-      // Allowlist gate
-      if (toolAllowlist.length && !toolAllowlist.includes(fnName)) {
+      // Allowlist gate — uses the precomputed Set (P0 #5).
+      if (allowlistSet && !allowlistSet.has(fnName)) {
         const naParsed = parseArgs(tc.function?.arguments);
         pushToolResult(msgs, opts.conversationId, onUpdate, tc,
           rejectionBody("tool_not_allowed", `Tool '${fnName}' is not enabled for this conversation.`),
