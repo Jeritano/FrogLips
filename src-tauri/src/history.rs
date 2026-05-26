@@ -1175,19 +1175,50 @@ pub(crate) fn fork_conversation_in(
 
     // Look up the source row. Bail loudly if it doesn't exist — silently
     // creating an orphan fork would just hide caller bugs.
-    let (title, model): (String, Option<String>) = tx
+    // P2 #52: fork now also copies tags, pinned, and params so a forked
+    // conversation isn't a stripped-down clone — the user expects "give
+    // me a branch from here, same project context" not "give me a blank
+    // chat with the same model". Each column is nullable on older DBs,
+    // so the query tolerates missing-column shape via COALESCE-style
+    // optional get; a fresh DB has all four.
+    let (title, model, tags, pinned, params_json): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+    ) = tx
         .query_row(
-            "SELECT title, model FROM conversations WHERE id = ?1",
+            "SELECT title, model, tags, pinned, params FROM conversations WHERE id = ?1",
             params![source_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            },
         )
         .context("source conversation not found")?;
 
     let fork_title = format!("{title} (fork)");
     tx.execute(
-        "INSERT INTO conversations (title, model, created_at, parent_conv_id, parent_message_id)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![fork_title, model, now_unix(), source_id, at_message_id],
+        "INSERT INTO conversations
+            (title, model, created_at, parent_conv_id, parent_message_id,
+             tags, pinned, params)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            fork_title,
+            model,
+            now_unix(),
+            source_id,
+            at_message_id,
+            tags,
+            pinned.unwrap_or(0),
+            params_json,
+        ],
     )?;
     let new_id = tx.last_insert_rowid();
 

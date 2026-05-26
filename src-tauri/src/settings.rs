@@ -108,9 +108,14 @@ fn keychain_set(account: &str, key: &str) {
     use security_framework::passwords::set_generic_password;
     if let Err(e) = set_generic_password(KEYCHAIN_SERVICE, account, key.as_bytes()) {
         // Non-fatal — settings::save still persists the redacted shape.
-        // Log the failure so a missing keychain doesn't silently lose the
-        // user's keys forever.
-        eprintln!("[settings] keychain_set({account}): {e}");
+        // P1 #34: structured diagnostic so a missing keychain doesn't
+        // silently lose the user's keys forever (stderr-only was
+        // invisible to non-dev users).
+        crate::diagnostics::warn_with(
+            "settings",
+            &format!("keychain_set({account}): {e}"),
+            serde_json::json!({ "account": account, "error": e.to_string() }),
+        );
     }
 }
 

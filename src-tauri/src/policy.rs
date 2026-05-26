@@ -81,20 +81,30 @@ pub fn load_for_cwd(cwd: &Path) -> Option<ProjectPolicy> {
             // (not the repo) authored. Absence = the policy is parsed
             // for diagnostics only, NOT honored as auto-approval.
             if !is_owned_by_current_user(&candidate) {
-                eprintln!(
-                    "[policy] refusing {} — file is not owned by the current user",
-                    candidate.display()
+                // Maturity review P1 #34: routed through diagnostics so
+                // policy-load failures surface in the rolling log + UI
+                // diagnostics panel, not just stderr (which on macOS is
+                // captured only by Console.app — invisible to non-dev
+                // users investigating "why isn't my policy in effect?").
+                crate::diagnostics::warn_with(
+                    "policy",
+                    &format!(
+                        "refusing {} — file is not owned by the current user",
+                        candidate.display()
+                    ),
+                    serde_json::json!({ "path": candidate.to_string_lossy() }),
                 );
                 return None;
             }
             if !user_trusts_policy_dir(dir) {
-                eprintln!(
-                    "[policy] {} found but project is not user-trusted — \
-                     policy will be ignored until the user creates \
-                     `{}/.froglips/.trusted` (or runs the upcoming \
-                     `froglips trust .` command)",
-                    candidate.display(),
-                    dir.display()
+                crate::diagnostics::info(
+                    "policy",
+                    &format!(
+                        "{} found but project is not user-trusted — policy will be ignored \
+                         until the user creates `{}/.froglips/.trusted`",
+                        candidate.display(),
+                        dir.display()
+                    ),
                 );
                 return None;
             }
@@ -105,19 +115,25 @@ pub fn load_for_cwd(cwd: &Path) -> Option<ProjectPolicy> {
                         return Some(p);
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[policy] failed to parse {}: {} — ignoring",
-                            candidate.display(),
-                            e
+                        crate::diagnostics::warn_with(
+                            "policy",
+                            &format!("failed to parse {}: {} — ignoring", candidate.display(), e),
+                            serde_json::json!({
+                                "path": candidate.to_string_lossy(),
+                                "error": e.to_string(),
+                            }),
                         );
                         return None;
                     }
                 },
                 Err(e) => {
-                    eprintln!(
-                        "[policy] failed to read {}: {} — ignoring",
-                        candidate.display(),
-                        e
+                    crate::diagnostics::warn_with(
+                        "policy",
+                        &format!("failed to read {}: {} — ignoring", candidate.display(), e),
+                        serde_json::json!({
+                            "path": candidate.to_string_lossy(),
+                            "error": e.to_string(),
+                        }),
                     );
                     return None;
                 }

@@ -134,8 +134,13 @@ fn is_denied(resolved: &std::path::Path) -> bool {
         // Sec re-review M-2: when $HOME is unset, the entire per-user
         // denylist disappears and any path under /Users or /home becomes
         // writable. Fail closed — refuse the IPC entirely instead of
-        // leaking attack surface.
-        eprintln!("[path_safety] home_dir() unavailable — denying by default");
+        // leaking attack surface. P1 #34: route through diagnostics so
+        // a failed-closed call surfaces in the rolling log, not stderr.
+        crate::diagnostics::warn_with(
+            "path_safety",
+            "home_dir() unavailable — denying by default",
+            serde_json::json!({}),
+        );
         return true;
     };
     {

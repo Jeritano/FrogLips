@@ -311,7 +311,12 @@ pub fn run() {
                     };
                     let sc = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyL);
                     if let Err(e) = app.global_shortcut().register(sc) {
-                        eprintln!("[quick-prompt] failed to register Cmd+Shift+L: {e}");
+                        // P1 #34: structured diagnostic instead of stderr.
+                        diagnostics::warn_with(
+                            "quick-prompt",
+                            &format!("failed to register Cmd+Shift+L: {e}"),
+                            serde_json::json!({ "shortcut": "Cmd+Shift+L", "error": e.to_string() }),
+                        );
                     }
                 }
 
