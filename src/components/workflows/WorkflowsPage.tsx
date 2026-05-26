@@ -3,8 +3,9 @@ import { createPortal } from "react-dom";
 import { ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api } from "../../lib/tauri-api";
-import { runWorkflow, validateGraph, handleWorkflowTrigger } from "../../lib/workflow";
-import type { WorkflowHooks, RunWorkflowOptions } from "../../lib/workflow";
+import { validateGraph, parseWorkflowTrigger } from "../../lib/workflow";
+import type { RunWorkflowOptions } from "../../lib/workflow";
+import { useWorkflowRun } from "../../lib/workflow/run-context";
 import { logDiag } from "../../lib/diagnostics";
 import { announce } from "../../lib/announce";
 import { useTauriEvent } from "../../hooks/useTauriEvent";
@@ -51,17 +52,13 @@ export function WorkflowsPage({ status }: Props) {
   const [formCard, setFormCard] = useState<WorkflowCard | null>(null);
   const [formIsNew, setFormIsNew] = useState(false);
   const [formOrigin, setFormOrigin] = useState<FormOrigin | null>(null);
-  const [cardStates, setCardStates] = useState<Record<string, CardRunState>>({});
-  const [outputs, setOutputs] = useState<Record<string, { output: string; error?: string }>>({});
-  const [running, setRunning] = useState(false);
-  // `running` is React state — captured by closures and only updated on the
-  // next render. The three entry points into a workflow run (Run, Run-card,
-  // and the workflow-trigger event handler) all gate on `running`, but in a
-  // single event-loop tick two of them may see the same `false` and both
-  // start a run. `runningRef` mirrors the state synchronously so every
-  // entry point reads the same source of truth and the second caller is
-  // refused without racing on React's batching.
-  const runningRef = useRef(false);
+  // 2026-05-26 Option-A lift: workflow run state now lives in the
+  // App-level WorkflowRunProvider so a navigate-away no longer aborts
+  // the run. `cardStates`, `outputs`, and `running` are derived here
+  // from the provider's `cardStates` snapshot (see below). The
+  // provider also owns the AbortController + synchronous running-id
+  // ref so the entry-point gating semantics are preserved.
+  const run = useWorkflowRun();
   const [err, setErr] = useState<string | null>(null);
   // Approval policy: per-card `unattended` checkbox is the SOLE approval
   // surface. Cards with the box checked auto-approve every tool call.
@@ -69,19 +66,42 @@ export function WorkflowsPage({ status }: Props) {
   // no modal opens during a workflow run — the user already declared
   // their intent at card-edit time.
   //
-  // Unmount safety: a navigate-away mid-run aborts the in-flight controller
-  // so the agent loop exits at its next iteration boundary. There is no
-  // pending approval Promise to resolve any more (no modal exists), so the
-  // single concern is: kill the run cleanly.
+  // Unmount no longer aborts: the WorkflowRunProvider owns the
+  // AbortController, so navigating to Chat / Images / etc. keeps the
+  // run alive. The user gets a sidebar badge to navigate back. Run
+  // dies only on full app reload or explicit Stop.
+
+  // Mirror provider's lastSummary.errorBanner into the page's `err`
+  // banner whenever a finished run's banner changes — preserves the
+  // previous UX where in-card errors surface as a top banner.
   useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, []);
+    if (run.lastSummary?.errorBanner) {
+      setErr(run.lastSummary.errorBanner);
+    }
+  }, [run.lastSummary]);
+
+  // Provider's per-card snapshot → legacy local-state shape that the
+  // rest of this file (RunPanel, AgentCardNode badges, etc.) consumes.
+  // Derived (not duplicated) so an in-flight run's tokens paint in the
+  // canvas the instant the user returns to the Workflows view.
+  const cardStates: Record<string, CardRunState> = useMemo(() => {
+    const out: Record<string, CardRunState> = {};
+    for (const [id, snap] of Object.entries(run.cardStates)) {
+      out[id] = snap.state;
+    }
+    return out;
+  }, [run.cardStates]);
+  const outputs: Record<string, { output: string; error?: string }> = useMemo(() => {
+    const out: Record<string, { output: string; error?: string }> = {};
+    for (const [id, snap] of Object.entries(run.cardStates)) {
+      out[id] = { output: snap.output, error: snap.error };
+    }
+    return out;
+  }, [run.cardStates]);
+  const running = run.runningWorkflowId !== null;
   // Pre-formatted "About You" block, shared by every card's agent run so
   // workflow agents know who the user is. Refreshed on mount.
   const [userProfile, setUserProfile] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshList = useCallback(async () => {
@@ -212,8 +232,15 @@ export function WorkflowsPage({ status }: Props) {
     setName(w.name);
     setCards(w.graph.cards);
     setEdges(w.graph.edges);
-    setCardStates({});
-    setOutputs({});
+    // Card states are owned by the provider now; when a different
+    // workflow is opened we clear the lastSummary banner so a stale
+    // failure message doesn't carry over. If this workflow is the
+    // currently-running one, the provider's cardStates intentionally
+    // remain — user returning to a running workflow should see the
+    // live state.
+    if (run.runningWorkflowId !== w.id) {
+      run.clearSummary();
+    }
     // Reset any open card-edit form left over from a prior workflow; the
     // formCard would otherwise point at an id absent from the new graph
     // and any save would silently no-op.
@@ -312,74 +339,10 @@ export function WorkflowsPage({ status }: Props) {
     closeForm();
   }
 
-  const setState = useCallback((id: string, state: CardRunState) => {
-    setCardStates((s) => ({ ...s, [id]: state }));
-  }, []);
-
-  // Lifecycle hooks shared by full-workflow and single-card runs.
-  const makeHooks = useCallback(
-    (onDone: () => void): WorkflowHooks => ({
-      onCardStart: (id) => setState(id, "running"),
-      onCardOutput: (id, text) =>
-        setOutputs((o) => ({
-          ...o,
-          [id]: { output: (o[id]?.output ?? "") + text, error: o[id]?.error },
-        })),
-      onCardDone: (id, result) => {
-        // Every terminal status must transition the card out of "running".
-        // Previously only `ok` and `skipped` were handled, leaving the badge
-        // stuck on "Running" after an abort or after a downstream-of-error
-        // skip resolved. `error` is also covered here as defence-in-depth —
-        // onCardError fires first for that path but a missed event would
-        // otherwise leave the card visibly running.
-        if (result.status === "ok") setState(id, "done");
-        else if (result.status === "skipped") setState(id, "idle");
-        else if (result.status === "aborted" || result.status === "error") {
-          setState(id, "failed");
-        }
-      },
-      onCardError: (id, message) => {
-        setState(id, "failed");
-        setOutputs((o) => ({ ...o, [id]: { output: o[id]?.output ?? "", error: message } }));
-      },
-      onWorkflowDone: (results) => {
-        setRunning(false);
-        runningRef.current = false;
-        abortRef.current = null;
-        announce(
-          results.status === "ok" ? "Workflow run finished" : "Workflow run failed",
-        );
-        // Surface in-card errors as a top-level banner. The runner records
-        // each per-card failure as `CardResult.status = "error"` with an
-        // `error` message and never throws back to the caller. Previously
-        // the only visible signal was a small "Failed" badge in the run
-        // panel, leaving users staring at a "Run finished" announcement
-        // with no obvious reason WHY their files never got written. List
-        // up to 3 failing cards by name + first 200 chars of their error.
-        if (results.status === "failed") {
-          const failed = results.cards.filter((c) => c.status === "error");
-          if (failed.length > 0) {
-            const sample = failed.slice(0, 3).map((c) => {
-              const errMsg = (c.error ?? "unknown error").slice(0, 200);
-              return `${c.name}: ${errMsg}`;
-            });
-            const more = failed.length > 3 ? ` (+${failed.length - 3} more)` : "";
-            setErr(
-              `Workflow failed — ${failed.length} card(s) errored:\n${sample.join("\n")}${more}`,
-            );
-          } else {
-            // status=failed with no per-card errors means the run was aborted.
-            const aborted = results.cards.filter((c) => c.status === "aborted");
-            if (aborted.length > 0) {
-              setErr(`Run stopped during "${aborted[0].name}".`);
-            }
-          }
-        }
-        onDone();
-      },
-    }),
-    [setState],
-  );
+  // Lifecycle hooks lived here in pre-Option-A code; they're now owned
+  // by `WorkflowRunProvider.start()` so navigating away doesn't strand
+  // the per-card delta stream. Page-level error banner picks up
+  // `lastSummary.errorBanner` via the useEffect above.
 
   /**
    * Build the per-run options. `cardSubset` restricts the model-coverage
@@ -456,137 +419,59 @@ export function WorkflowsPage({ status }: Props) {
   }
 
   function runWorkflowNow() {
-    // Clear any sticky banner from a prior attempt — without this,
-    // fixing the issue and clicking Run again leaves the old red error
-    // text on screen as if the new run also failed.
     setErr(null);
     if (!selected || !validation.ok) {
       setErr("Fix the chain warning before running.");
       return;
     }
-    // Synchronous ref check — `running` state may still read false here if
-    // a near-simultaneous click + workflow-trigger event both land in the
-    // same tick. The ref is flipped *before* the await, claiming the slot.
-    if (runningRef.current || running) {
-      setErr("A run is already in progress.");
-      return;
-    }
     const opts = baseRunOpts();
     if (!opts) return;
-    runningRef.current = true;
-    // Pre-load each card's model BEFORE the runner starts. Native + MLX
-    // backends have 10-30s cold starts; without this the first card hits
-    // "connection refused" before its model is ready. Cloud models no-op
-    // inside `ensureCardModelLoaded`. De-duped by model name so two cards
-    // pinned to the same model share a single load. Sequential to avoid
-    // hammering the daemon.
-    const ac = new AbortController();
-    abortRef.current = ac;
-    setRunning(true);
-    setOutputs({});
-    setCardStates({});
-    announce("Workflow run started");
-    void (async () => {
-      const loaded = new Set<string>();
-      for (const c of cards) {
-        if (ac.signal.aborted) break;
-        if (c.model && loaded.has(c.model)) continue;
-        await ensureCardModelLoaded(c);
-        if (c.model) loaded.add(c.model);
-      }
-      if (ac.signal.aborted) {
-        setRunning(false);
-        runningRef.current = false;
-        abortRef.current = null;
-        return;
-      }
-      try {
-        await runWorkflow({ cards, edges }, makeHooks(() => {}), {
-          ...opts,
-          workflowId: selected.id,
-          signal: ac.signal,
-        });
-      } catch (e) {
-        setRunning(false);
-        runningRef.current = false;
-        abortRef.current = null;
-        setErr(`Workflow run failed: ${e}`);
-      }
-    })();
+    // Provider owns the gating + AbortController. `start()` returns
+    // false synchronously when a run is already in flight, so two
+    // near-simultaneous entry points can't both spawn.
+    const accepted = run.start({
+      workflowId: selected.id,
+      graph: { cards, edges },
+      opts,
+      preflight: async (signal) => {
+        // Pre-load each card's model under the abort signal. Native +
+        // MLX cold-starts can be 10-30s; cloud paths no-op.
+        const loaded = new Set<string>();
+        for (const c of cards) {
+          if (signal.aborted) break;
+          if (c.model && loaded.has(c.model)) continue;
+          await ensureCardModelLoaded(c);
+          if (c.model) loaded.add(c.model);
+        }
+      },
+    });
+    if (!accepted) {
+      setErr("A run is already in progress.");
+    }
   }
 
   function runSingleCard(id: string) {
-    // Clear stale banner first — see runWorkflowNow for context.
     setErr(null);
     const card = cards.find((c) => c.id === id);
     if (!card || !selected) return;
-    if (runningRef.current || running) {
-      setErr("A run is already in progress.");
-      return;
-    }
-    // Scope the model check to JUST this card so a one-card run from a
-    // workflow with other un-modeled cards still succeeds.
     const opts = baseRunOpts([card]);
     if (!opts) return;
-    // Claim the slot AFTER the gate has been validated — otherwise an
-    // early-return from `baseRunOpts` would leave the ref pinned `true`
-    // and the next legitimate run would be refused.
-    runningRef.current = true;
-    // Clear ALL prior states + outputs before starting the single-card
-    // run — leaving stale `done`/`failed` badges from a previous full
-    // workflow run makes the canvas falsely suggest those agents just
-    // executed. Persisted run records still hold the history.
-    const ac = new AbortController();
-    abortRef.current = ac;
-    setRunning(true);
-    setCardStates({ [id]: "running" });
-    setOutputs({ [id]: { output: "" } });
-    announce("Card run started");
-    void (async () => {
-      if (ac.signal.aborted) {
-        setRunning(false);
-        runningRef.current = false;
-        abortRef.current = null;
-        return;
-      }
-      // AWAIT the load before kicking the runner. Cloud routes no-op
-      // inside ensureCardModelLoaded so this is fast for `*:cloud`
-      // models.
-      await ensureCardModelLoaded(card);
-      if (ac.signal.aborted) {
-        setRunning(false);
-        runningRef.current = false;
-        abortRef.current = null;
-        return;
-      }
-      try {
-        await runWorkflow(
-          { cards: [card], edges: [] },
-          makeHooks(() => {}),
-          { ...opts, workflowId: selected.id, signal: ac.signal },
-        );
-      } catch (e) {
-        setRunning(false);
-        runningRef.current = false;
-        abortRef.current = null;
-        setErr(`Card run failed: ${e}`);
-      }
-    })();
+    const accepted = run.start({
+      workflowId: selected.id,
+      graph: { cards: [card], edges: [] },
+      opts,
+      preflight: async (signal) => {
+        if (signal.aborted) return;
+        await ensureCardModelLoaded(card);
+      },
+    });
+    if (!accepted) {
+      setErr("A run is already in progress.");
+    }
   }
 
   function stopRun() {
-    // Don't clear `running` here — the in-flight run hasn't actually resolved
-    // yet, so a `workflow-trigger` arriving in the window between abort() and
-    // the runner's onWorkflowDone could spawn a parallel run. Leave `running`
-    // true; the runner's onWorkflowDone (always invoked, even on abort) flips
-    // it back to false.
-    //
-    // Also DO NOT null-out abortRef.current here. A second Stop click while
-    // the runner is still tearing down would then become a no-op (the new
-    // ref is null), and any subsystem still polling abortRef in flight loses
-    // its handle. `onWorkflowDone` is responsible for clearing the ref once
-    // the run actually resolves; until then keep the live controller.
-    abortRef.current?.abort();
+    run.stop();
     announce("Workflow run stopped");
   }
 
@@ -601,7 +486,7 @@ export function WorkflowsPage({ status }: Props) {
     "workflow-trigger",
     useCallback(
       (e) => {
-        if (runningRef.current || running) {
+        if (run.runningWorkflowId !== null) {
           logDiag({
             level: "warn",
             source: "workflows",
@@ -609,51 +494,42 @@ export function WorkflowsPage({ status }: Props) {
           });
           return;
         }
-        const p = e.payload as { workflow_id?: unknown; card_id?: unknown } | null;
-        const targetsOpen =
-          !!selected && !!p && p.workflow_id === selected.id;
-        // Model-coverage check is scoped to the cards that will actually
-        // run (start card onward). A scheduled trigger that starts mid-
-        // chain should not fail the gate over un-modeled cards EARLIER in
-        // the same workflow that won't be executed. When the trigger is
-        // for a workflow OTHER than the open one we don't have its graph
-        // here, so fall back to whatever the open editor knows — the
-        // schedule glue revalidates via its own runner.
-        const triggerCardId = typeof p?.card_id === "string" ? p.card_id : null;
-        let subset: WorkflowCard[] | undefined = undefined;
-        if (targetsOpen && triggerCardId) {
-          const idx = cards.findIndex((c) => c.id === triggerCardId);
-          if (idx >= 0) subset = cards.slice(idx);
-        }
+        const trigger = parseWorkflowTrigger(e.payload);
+        if (!trigger) return;
+        const targetsOpen = !!selected && trigger.workflow_id === selected.id;
+        const subset: WorkflowCard[] | undefined =
+          targetsOpen && trigger.card_id
+            ? cards.slice(Math.max(0, cards.findIndex((c) => c.id === trigger.card_id)))
+            : undefined;
         const opts = baseRunOpts(subset);
         if (!opts) return;
-        // Claim the slot AFTER the gate has been validated — leaves the ref
-        // clean if `baseRunOpts` short-circuits on missing model.
-        runningRef.current = true;
-        const hooks = targetsOpen
-          ? makeHooks(() => void refreshList())
-          : {
-              onWorkflowDone: () => {
-                setRunning(false);
-                runningRef.current = false;
-                void refreshList();
-              },
-            };
-        setRunning(true);
-        void handleWorkflowTrigger(e.payload, hooks, { ...opts, scheduled: true }).catch(
-          (err) => {
-            setRunning(false);
-            runningRef.current = false;
+        // Route the scheduled trigger through the provider too. Fetches
+        // the workflow graph from DB (same as the old
+        // handleWorkflowTrigger did internally) then hands off. If the
+        // user navigates away mid-trigger the run survives — same as
+        // the manual path.
+        void (async () => {
+          try {
+            const raw = await api.workflowGet(trigger.workflow_id);
+            if (!raw) return;
+            const wf = parseWorkflow(raw);
+            run.start({
+              workflowId: wf.id,
+              graph: wf.graph,
+              opts: { ...opts, scheduled: true, startCardId: trigger.card_id },
+            });
+            void refreshList();
+          } catch (err) {
             logDiag({
               level: "warn",
               source: "workflows",
               message: "workflow-trigger handling failed",
               detail: err,
             });
-          },
-        );
+          }
+        })();
       },
-      [baseRunOpts, makeHooks, refreshList, running, selected, cards],
+      [baseRunOpts, refreshList, run, selected, cards],
     ),
   );
 

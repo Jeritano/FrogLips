@@ -4,6 +4,18 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+### Workflow run survives page navigation (2026-05-26)
+
+Workflow runs now survive a navigate-away from the Workflows view. Previously the run was scoped to `WorkflowsPage` state — leaving the view aborted the run mid-flight, and the workflows UI carried a banner warning the user not to leave. That's gone.
+
+- New **`<WorkflowRunProvider>`** at App.tsx root (see `src/lib/workflow/run-context.tsx`). Provider owns the `AbortController`, per-card live `cardStates`, `lastSummary`, and the synchronous `runningIdRef` gate.
+- **`WorkflowsPage`** is now a view that reads from the provider via `useWorkflowRun()`. Removed local `runningRef`/`abortRef`/`cardStates`/`outputs` state — the unmount-abort effect is gone.
+- **Scheduled `workflow-trigger` path** also routes through the provider, so a scheduled run firing while the user is in Chat is captured + visible when they return to Workflows.
+- **Sidebar "● running" badge** on the Workflows entry while a run is live. Pulsing dot, accent-green; user can be anywhere in the app and click it to return to the run's live view. Respects `prefers-reduced-motion`.
+- **Single-run invariant** preserved: provider refuses a second `start()` while one is in flight. Two near-simultaneous entry points (manual click + scheduled trigger in the same tick) still resolve to one winner.
+- **Full app reload** still kills the run — only Option 3 in [ADR 0006](docs/adr/0006-workflow-run-state-lifted-to-app.md) fixes that, deferred until users actually ask for it.
+- New [ADR 0006](docs/adr/0006-workflow-run-state-lifted-to-app.md) records the three options considered + the deferral criteria for moving to a Rust-side runner.
+
 ### Maturity scaffolding (2026-05-26)
 
 - **ADR folder + 5 seed records** at `docs/adr/`: Tauri 2 + Rust + React stack, macOS-only-for-1.x, local-first no-telemetry, interim `Result<T,String>` error model, MCP as the extension story. Permanent record of architectural choices that constrain future contributors.

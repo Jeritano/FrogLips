@@ -27,6 +27,25 @@
   color: var(--text);
 }
 
+/* Live-run badge: small pulsing dot next to "Workflows" in the sidebar
+ * when a workflow run is in flight. User can be elsewhere in the app
+ * (Chat / Images) and still see at a glance that a run is going.
+ * Click anywhere on the entry returns to the Workflows view. */
+.workflows-running-badge {
+  margin-left: auto;
+  color: #10b981;
+  font-size: 14px;
+  line-height: 1;
+  animation: workflows-running-pulse 1.6s ease-in-out infinite;
+}
+@keyframes workflows-running-pulse {
+  0%, 100% { opacity: 1.0; }
+  50%      { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workflows-running-badge { animation: none; }
+}
+
 /* ── Page shell ── */
 .wf-page {
   display: flex;

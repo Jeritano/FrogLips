@@ -38,3 +38,4 @@ What that buys us. What we give up. What's hard to change later.
 - [0003](0003-local-first-no-telemetry.md) — Local-only, no telemetry
 - [0004](0004-result-string-error-model.md) — Status quo `Result<T, String>` IPC errors
 - [0005](0005-mcp-as-extension-mechanism.md) — MCP servers as the extension story
+- [0006](0006-workflow-run-state-lifted-to-app.md) — Workflow run state lifted to App-level context

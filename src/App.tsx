@@ -18,6 +18,44 @@ import { EmptyState } from "./components/EmptyState";
 import { Toast } from "./components/Toast";
 import { ErrorBar } from "./components/ErrorBar";
 import { LiveRegion } from "./components/LiveRegion";
+import { WorkflowRunProvider, useWorkflowRun } from "./lib/workflow/run-context";
+
+/**
+ * Sidebar entry for the Workflows view. Wrapped in its own component so
+ * the running-badge subscribes to `useWorkflowRun()` without forcing the
+ * entire App to re-render on every cardStates delta during a live run.
+ */
+function WorkflowsEntryButton({
+  active,
+  onClick,
+}: {
+  active: boolean;
+  onClick: () => void;
+}) {
+  const { runningWorkflowId } = useWorkflowRun();
+  const isRunning = runningWorkflowId !== null;
+  return (
+    <button
+      type="button"
+      className="workflows-entry"
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      aria-pressed={active}
+      data-testid="workflows-entry-btn"
+    >
+      <span aria-hidden="true">🧩</span> Workflows
+      {isRunning && (
+        <span
+          className="workflows-running-badge"
+          title="A workflow run is in progress — click to return."
+          aria-label="Workflow run in progress"
+        >
+          ●
+        </span>
+      )}
+    </button>
+  );
+}
 import { announce } from "./lib/announce";
 import { parseTags, encodeTags, tagsFromInput } from "./lib/conversation-tags";
 import "./App.css";
@@ -760,20 +798,10 @@ function App() {
             button below for chat creation). */}
         <div className="sidebar-view-group" role="navigation" aria-label="App views">
           <div className="sidebar-section-label" aria-hidden="true">VIEWS</div>
-          <button
-            type="button"
-            className="workflows-entry"
+          <WorkflowsEntryButton
+            active={view === "workflows"}
             onClick={() => setView("workflows")}
-            // UI re-review M7: these are navigation targets, not toggles;
-            // `aria-current="page"` is the semantically correct attribute.
-            // Retain `aria-pressed` for compatibility with the existing
-            // CSS selector — both set together.
-            aria-current={view === "workflows" ? "page" : undefined}
-            aria-pressed={view === "workflows"}
-            data-testid="workflows-entry-btn"
-          >
-            <span aria-hidden="true">🧩</span> Workflows
-          </button>
+          />
           <button
             type="button"
             className="images-entry"
@@ -1144,4 +1172,25 @@ function App() {
   );
 }
 
-export default App;
+/**
+ * Root export wraps `<App>` with the workflow-run provider so workflow
+ * runs survive page navigation. The provider owns the AbortController
+ * and per-card live state; `<WorkflowsPage>` consumes via
+ * `useWorkflowRun()`. Unmounting WorkflowsPage no longer cancels a
+ * running workflow — only an App-level remount (full reload) does.
+ *
+ * `<App>` itself can call `useWorkflowRun()` because it renders below
+ * the provider; the small sidebar "● running" badge that points users
+ * back to a live workflow run is the planned consumer.
+ */
+function AppWithProviders() {
+  return (
+    <WorkflowRunProvider>
+      <App />
+    </WorkflowRunProvider>
+  );
+}
+
+export default AppWithProviders;
+// Named export kept for tests that import the inner component directly.
+export { App };
