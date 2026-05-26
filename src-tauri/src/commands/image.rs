@@ -866,12 +866,18 @@ const GALLERY_BYTES_CAP: u64 = 2 * 1024 * 1024 * 1024;
 static GALLERY_WRITE_LOCK: Lazy<std::sync::Mutex<()>> =
     Lazy::new(|| std::sync::Mutex::new(()));
 
+/// Inventory entry: (path, size in bytes, modified time). Type alias
+/// extracted to silence `clippy::type_complexity` on the rust-1.95 CI
+/// gate which trips on the 3-element tuple inside the Vec inside the
+/// Result.
+type GalleryEntry = (PathBuf, u64, SystemTime);
+
 /// Walk `root` recursively summing regular-file sizes. Symlinks are NOT
 /// followed (defense against a symlink pointing outside the gallery
 /// skewing the budget). Returns (total_bytes, files_sorted_by_mtime_asc).
-fn gallery_inventory(root: &std::path::Path) -> Result<(u64, Vec<(PathBuf, u64, SystemTime)>), String> {
+fn gallery_inventory(root: &std::path::Path) -> Result<(u64, Vec<GalleryEntry>), String> {
     let mut total: u64 = 0;
-    let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
+    let mut files: Vec<GalleryEntry> = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let read = match std::fs::read_dir(&dir) {
