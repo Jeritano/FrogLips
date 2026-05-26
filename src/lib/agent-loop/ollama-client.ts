@@ -144,7 +144,15 @@ export async function streamOllamaChat(
         const dump = JSON.stringify({ url, err: errText, body });
         // eslint-disable-next-line no-console
         console.error("[ollama-400] body =", dump);
-        void invoke("append_diag_log", { line: `[ollama-400] ${dump}` });
+        // 2026-05-26 CI fix: `void invoke(...)` doesn't catch the
+        // promise rejection. In vitest (no Tauri runtime, mocked
+        // window.__TAURI__) the invoke throws "Cannot read properties
+        // of undefined (reading 'invoke')" and bubbles as an unhandled
+        // rejection — Vitest then fails the whole run even when every
+        // test passed. `.catch(() => undefined)` keeps the call truly
+        // best-effort.
+        void invoke("append_diag_log", { line: `[ollama-400] ${dump}` })
+          .catch(() => undefined);
       } catch {
         /* ignore */
       }
