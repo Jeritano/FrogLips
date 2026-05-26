@@ -1,0 +1,43 @@
+# Jekyll config for GitHub Pages.
+# Serves /docs as the documentation site at
+# https://jeritano.github.io/FrogLips/
+
+title: Froglips
+description: Local-LLM power workstation — built-in native backend, agent mode, agent-orchestration workflows, vector-recall memory.
+url: https://jeritano.github.io
+baseurl: /FrogLips
+
+# Cayman theme is built into GitHub Pages — gives a clean docs landing
+# without us shipping a custom theme bundle.
+remote_theme: pages-themes/cayman@v0.2.0
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-default-layout
+  - jekyll-titles-from-headings
+
+# Make .md links between docs work without front-matter.
+relative_links:
+  enabled: true
+  collections: true
+
+# Treat plain .md files (ADRs etc) as content even when they lack
+# front-matter; auto-derive title from the first heading.
+optional_front_matter:
+  enabled: true
+defaults:
+  - scope: { path: "" }
+    values: { layout: default }
+
+titles_from_headings:
+  enabled: true
+
+# Hide README + workflow / config noise from the rendered site.
+exclude:
+  - "*.docx"
+  - IMAGE_GEN_REMEDIATION.md
+  - Gemfile
+  - Gemfile.lock
+  - vendor/
