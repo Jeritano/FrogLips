@@ -247,6 +247,17 @@ pub fn cosine_normalized(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
     }
+    // Zero vectors (empty / whitespace text → embed() returns all-zero)
+    // are well-defined: cosine(0, x) = 0. Short-circuit BEFORE the
+    // unit-length assert because `is_unit_length` considers a zero vector
+    // non-unit (sq=0, |sq-1|=1, > 1e-3). Without this skip, the
+    // legitimate "compare against empty embedding" path tripped the
+    // debug_assert in CI.
+    let a_is_zero = a.iter().all(|x| *x == 0.0);
+    let b_is_zero = b.iter().all(|x| *x == 0.0);
+    if a_is_zero || b_is_zero {
+        return 0.0;
+    }
     debug_assert!(
         is_unit_length(a) && is_unit_length(b),
         "rag::cosine_normalized called with un-normalized input"

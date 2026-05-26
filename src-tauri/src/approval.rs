@@ -87,7 +87,19 @@ const MAX_LIVE_TOKENS: usize = 256;
 /// per window. Recent mint timestamps live in a single Vec; expired
 /// entries are pruned on each mint so the vec stays bounded by RATE_MAX.
 const RATE_WINDOW: Duration = Duration::from_secs(10);
+// In production: 60 mints in a 10s window. In tests: bumped to 10_000
+// because `cargo test` runs in parallel and many test cases mint
+// against this same global Vec. Without the bump, ~5 parallel test
+// threads each minting in a loop exhaust the 60-mint cap and trip
+// other unrelated tests with a spurious "rate limit exceeded".
+// Rate-limit BEHAVIOR is currently NOT under test (no dedicated
+// `mint_rate_limit_trips` case exists). The production cap is
+// covered by manual review; add a serialized integration test if
+// the rate-limit code is ever changed.
+#[cfg(not(test))]
 const RATE_MAX: usize = 60;
+#[cfg(test)]
+const RATE_MAX: usize = 10_000;
 
 /// Mint a single-use approval token bound to `tool`. Returns the token
 /// string. Returns `Err` on entropy failure or store-at-capacity.
