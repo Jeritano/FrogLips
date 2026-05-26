@@ -168,7 +168,7 @@ Each preset comes with a system prompt tailored to its purpose. Switching preset
 
 - Every `run_shell`, `write_file`, `edit_file`, `multi_edit`, `make_dir`, `move_path`, `copy_path`, `delete_path`, `applescript_run`, `clipboard_set`, `open_app`, `git_commit`, `kill_process`, `agent_undo`, and `spawn_subagent` call requires explicit user approval. An `http_request` carrying a request body always asks for confirmation too, even when you've approved a session.
 - The confirm dialog shows a `destructive` / `privileged` / `pipe-from-network` badge for risky patterns (e.g. `rm -rf /`, `sudo`, `curl … | sh`).
-- **Path-aware risk escalation** — writes targeting `/etc/`, `/Library/Launch{Agents,Daemons}/`, shell rc files (`.zshrc`, `.bashrc`, …), `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, or any `.app` / `.command` / `.terminal` / `.workflow` / `.tool` bundle (root OR internal) are automatically classified `destructive`. The "Auto-approve file writes" toggle CANNOT waive these — they always show the explicit confirmation modal with the loud red badge.
+- **Path-aware risk escalation** — writes targeting `/etc/`, `/Library/Launch{Agents,Daemons}/`, shell rc files (`.zshrc`, `.bashrc`, …), `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, or any `.app` / `.command` / `.terminal` / `.workflow` / `.tool` bundle (root OR internal) are automatically classified `destructive`. The chat agent's session-level **Approve all this session → writes/edits** toggle CANNOT waive these — they always show the explicit confirmation modal with the loud red badge.
 - Path traversal (`..`) is collapsed before risk classification so `~/foo/../../etc/hosts` doesn't slip through as "normal". Symlink escape, reads/writes to `~/.ssh`, `~/.aws`, `~/Library/Keychains`, `.env*`, sudoers, browser profiles, `.netrc`, `gh`/`gcloud` config, etc. are blocked by the Rust side regardless of UI risk.
 - Content the agent reads from outside the model — files, PDFs, the clipboard, web pages, and git output — is scanned for prompt-injection before it reaches the model.
 - Subagents do not inherit your session-wide "approve all" choices; their shell and write calls each ask again.
@@ -182,7 +182,7 @@ Each preset comes with a system prompt tailored to its purpose. Switching preset
 The cog button next to the Agent toggle opens a panel:
 
 - **Workspace** — sets the sandbox root. Persisted across app restarts.
-- **Approve all this session** — bypass per-call confirmation for normal-risk shell or all writes.
+- **Approve all this session** — chat-mode only. Two checkboxes (shell normal-risk only / writes-and-edits) bypass per-call confirmation for the rest of the chat session. Destructive-risk calls and sensitive-path writes still gate explicitly (see *Path-aware risk escalation* above). Workflows use a different model — per-card `Unattended` checkbox, see §7 — and there is no equivalent session-level toggle on the Workflows surface.
 - **Allowed tools** — restrict tools per conversation (overridden by preset when preset has its own allowlist).
 - **Approved shell prefixes** — appears once you've checked "Also approve all `<cmd> *`" on a confirm dialog.
 - **Updates** — check for and install a new version.
@@ -205,29 +205,43 @@ sidebar (the 🧩 Workflows entry).
   the corner; the top card is the "new agent" affordance.
 - **Add an agent** — click the deck's top card. A centered form opens: pick a
   name (auto-generated, editable), a role/preset, a model (defaults to the
-  system default), a prompt, and an optional tool allowlist and schedule. Save
-  and the configured card lands on the canvas.
+  system default), an optional **System prompt** (overrides the role/preset's
+  system prompt for this card only — leave blank to inherit from the preset),
+  a prompt, and an optional tool allowlist and schedule. There's also an
+  **Unattended** checkbox — see *Approval* below. Save and the configured
+  card lands on the canvas.
+- **Per-card system prompt** — the role/preset (Researcher, Coder, etc.)
+  supplies a system prompt by default. When three cards share the same role
+  they share the same system prompt, which is sometimes wrong (e.g. you want
+  one Researcher to write a specific filename suffix and another to be terse).
+  Fill the per-card **System prompt** textarea to override the preset for that
+  card only. Whitespace-only falls back to the preset.
 - **Wire the chain** — drag from one card's right handle to the next card's
   left handle. The chain runs left→right; each card's final output is handed to
   the next card as its input.
-- **Run** — **Run workflow** runs the whole chain; a single card's **Run**
-  button runs just that card (disabled for mid-chain cards, which have no
-  upstream input on their own).
+- **Run** — the **Run workflow / Stop** button lives in the global top-bar
+  (next to the theme toggle, parity with the chat ModelPicker layout). It runs
+  the whole chain. A single card's **Run** button on the canvas runs just that
+  card (disabled for mid-chain cards, which have no upstream input on their
+  own). Per-card live status (`idle / running / done / failed`) renders in the
+  right-hand status panel.
 - **Disconnect cards** — click any edge line between two cards to disconnect
   them (a confirmation prompts before removing). React Flow's select+Delete
   doesn't survive the editor's re-render, so click-to-disconnect is the
   reliable affordance.
-- **Approval modals** — every dangerous tool call during a manual run
-  surfaces the same confirmation dialog you see in chat agent mode. Click
-  **Allow** or **Deny**. Clicking **Stop** while a modal is open cancels the
-  whole run and unblocks the agent loop cleanly.
-- **Auto-approve file writes** — the **"Auto-approve file writes"** checkbox
-  in the run panel skips the modal for normal-risk `write_file` / `edit_file`
-  / `multi_edit` / `make_dir` / `move_path` / `copy_path` calls so a multi-card
-  research → summary → report chain isn't punished with one modal per card.
-  `run_shell`, `applescript_run`, `http_request`, `delete_path`,
-  `kill_process`, and any write to a sensitive system / launch / dotfile path
-  still gate explicitly. The toggle resets to off on every workflow open.
+- **Approval — per-card Unattended** — each card has a single **Unattended**
+  checkbox in its form (no global session-level toggles, no run-panel
+  checkbox, no per-call modal stream). When the box is ticked the card
+  blanket-bypasses confirmation for every tool call it makes during this
+  workflow run — including `run_shell` and `applescript_run` — relying on the
+  Rust write-layer protected-prefix list and the shell-risk classifier as the
+  authoritative gates. When the box is NOT ticked, every dangerous tool call
+  on that card surfaces the same confirmation modal you'd see in chat agent
+  mode; click **Allow** / **Deny**, or click **Stop** to abort the whole run
+  cleanly. The Unattended flag is per-card and persists with the card; it is
+  not reset on workflow open. The unification means a research → summary →
+  report chain runs end-to-end on a single decision per card instead of one
+  modal per tool call.
 - **Navigation cancels runs** — leaving the Workflows view while a run is in
   progress aborts it cleanly (you'll see the run recorded as failed with the
   remaining cards skipped). A blue banner warns while a run is live. Future

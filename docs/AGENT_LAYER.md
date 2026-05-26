@@ -376,11 +376,16 @@ Beyond the path sandbox, the agent's authorization layer enforces:
   `"unattended_denied"` (default deny-all gate). The taxonomy is preserved
   in the audit row's `errorKind`; the model-facing tool body collapses all
   deny paths to a single learnable `kind: "permission_denied"`.
-- **Workflow unattended auto-approve** (scheduled runs only) requires four
-  conditions: tool listed in `card.tools`, tool NOT in `UNATTENDED_NEVER_AUTO`
-  (`run_shell`, `applescript_run`, `delete_path`, `kill_process`,
-  `agent_undo`, `http_request`, `spawn_subagent`), tool is NOT MCP-routed,
-  and the dispatch-time `classifyToolRisk` returns `"normal"`.
+- **Workflow approval — per-card `unattended` flag** is the only knob. The
+  run-panel "Auto-approve file writes" checkbox + the workflow's approval
+  modal have both been removed; per-call gating in workflows now collapses
+  to: if `card.unattended === true` the card blanket-approves its own tool
+  calls (relying on the Rust write-layer + shell-risk classifier as the
+  authoritative gates), otherwise dangerous calls follow the same agent-loop
+  confirm path as chat. Scheduled (unattended-trigger) runs additionally
+  apply the curated never-auto deny list — `run_shell`, `applescript_run`,
+  `delete_path`, `kill_process`, `agent_undo`, `http_request`,
+  `spawn_subagent`, MCP-routed tools — refused with no UI prompt at all.
 - **Research-budget nudge.** After 10 successful external research calls
   (`web_search` / `web_fetch` / `read_pdf` only — local fs reads excluded
   so codebase exploration isn't punished) without any write, the agent loop

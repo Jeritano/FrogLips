@@ -4,7 +4,93 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
-### Workflow + agent hardening (2026-05-24, 5-round audit cycle)
+### Novita.ai cloud backend (2026-05-25)
+
+New `novita` backend alongside the existing `mlx` / `ollama` / `native` providers — pure REST passthrough to Novita's OpenAI-compatible router. API keys are stored in the macOS Keychain (`com.froglips.novita`) via the `keyring` crate; the JS layer never caches the key, fetching it just-in-time per request and stripping it from logged bodies. Settings modal (NovitaSettings.tsx) surfaces Save / Test / Remove. `start_server` short-circuits novita branch (no subprocess to launch). `list_all_models` fetches in parallel with mlx + ollama. `open_external` allowlists `novita.ai`.
+
+### Workflow approval-surface unification (2026-05-25)
+
+**The whole approval surface for workflows is now a single per-card `Unattended` checkbox.** Removed in this pass:
+
+- The run-panel **"Auto-approve file writes"** checkbox — gone (`approveAllWrite` / `approveAllShell` removed from `RunWorkflowOptions`).
+- The session-level "Approve all" sidebar toggles for the workflow surface.
+- The `ConfirmDialog` modal + `ConfirmDecision` Promise wiring + `confirmState` / `requestConfirmation` / `resolveConfirmation` callbacks — entirely removed from `WorkflowsPage.tsx`.
+- The `UNATTENDED_NEVER_AUTO` carve-out for `run_shell` / `applescript_run` — now redundant because the shell-risk classifier + Rust write-layer protected-prefix list are the authoritative gates.
+
+When `card.unattended === true`, the card blanket-approves every tool call it makes during the workflow run. When `card.unattended === false`, dangerous calls still gate against the chat-agent-mode confirm path (the model-facing path), so nothing silently runs. The Unattended flag persists with the card (not reset on workflow open). Chat agent mode is unchanged — it still has its own session-level toggles and per-call modal.
+
+### Per-card system prompt override (2026-05-25)
+
+New optional `WorkflowCard.systemPrompt` (16 KiB JS cap, 32 KiB Rust validator cap in `validate_graph_json`). The workflow runner now prefers `card.systemPrompt` over `preset.systemPromptOverride` when non-empty + non-whitespace; whitespace-only falls through to the preset. `CardForm.tsx` exposes a `<textarea>` above "Instructions". Solves: three cards sharing the same role (e.g. Researcher) sharing the same system prompt — each can now diverge without forking the preset.
+
+### Workflow UI polish (2026-05-25)
+
+- **Run/Stop relocated to global top-bar**, next to the theme toggle (parity with chat's ModelPicker chrome). `WorkflowsPage` portals its editor header into a global `#workflow-topbar-slot`; the editor itself no longer renders its own `<h1>` for workflows.
+- **Status sidebar width 300 → 260px** (`wf-run-panel`). `RunPanel` simplified to status-only (no `running` / `canRun` / `onRun` / `onStop` props). In-card errors surface as a top banner instead of being buried in the per-card output box.
+- **Model dropdown encodes `${backend}::${id}`** so picking a model atomically pins both. New `findModelBackend()` helper + loading state. Auto-heal `useEffect` infers + sets backend on form-open when `modelsState==='ok'` and the draft has model but no backend.
+- **`*:cloud` model tags skip `ensureCardModelLoaded`** — they're routed, not loaded.
+- **`card.model === ""` falls back to `opts.model`** (was passing the empty string through).
+
+### Workflow runner correctness (2026-05-25)
+
+- **Pre-substitute date placeholders** in card prompts: `YYYY-MM-DD`, `YYYYMMDD`, `{TODAY}`, `{DATE}`, `{NOW_DATE}` are replaced with the current local date before the prompt is sent to the model — fixes "model writes `Report_<placeholder>.md` literally" failure mode.
+- **`spawn_subagent` `timeout_seconds` coerced via `Number(args.timeout_seconds ?? 600)`** with `Number.isFinite` check (was crashing when the model passed a string).
+
+### macOS TCC compliance for dev binary (2026-05-25)
+
+`src-tauri/build.rs` now embeds `Info.plist` into the binary's `__TEXT,__info_plist` section on macOS via `-Wl,-sectcreate`. Previously `cargo tauri dev` crashed with `Namespace TCC, Code 0` on any TCC-gated API (Speech Recognition, Microphone, Camera) because the raw dev binary has no `.app` bundle and macOS could not find `NSSpeechRecognitionUsageDescription` / `NSMicrophoneUsageDescription`. Voice input (`webkitSpeechRecognition`) now survives dev runs.
+
+### Full-codebase remediation waves (2026-05-25, 7 waves + post-review)
+
+Findings synthesized from 7 parallel Explore-agent passes across the 49,610 LOC codebase. Remediated in 8 commits (`53fca1c` → `b9d6c4a`):
+
+**Wave 1 — Security trust-boundary hardening.**
+- `mcp::mod.rs` clears env before applying user-supplied env (`cmd.env_clear()` + `SAFE_ENV_ALLOWLIST` of PATH/HOME/USER/LOGNAME/SHELL/TZ/LANG/LC_*/TERM/TMPDIR/PWD/OLDPWD/DISPLAY/XDG_*). Prevents a third-party MCP server from inheriting the parent's secret env.
+- `mcp::send_rpc` adds a fast-fail liveness check (`status.read()` before write) so a dead MCP server returns immediately instead of timing out.
+- `policy::is_owned_by_current_user` Windows branch now returns `false` (was `true` — accidentally accepted any `policy.json`). On Windows, `.froglips/policy.json` is refused outright pending a real ACL implementation.
+- `runner.ts isRepoLocalPolicy` does `.toLowerCase()` before `.includes("/.froglips/")` — case-mismatched paths no longer bypass the repo-policy auto-approve restriction.
+- `image_gen::metadata::sanitize_chunk_value` strips control codes / BOM / non-ASCII and caps at 4 KB; applied to every ZTXt chunk so PNG metadata can't carry injection payloads.
+- `approval::mint` sliding-window rate limit (`RECENT_MINTS` Vec, 10s window, 60 mints max). Continuous `retain` not discrete window.
+- `snapshot::undo_last` writes via `agent::fs::write_nofollow_sync` to close a symlink TOCTOU.
+
+**Wave 2 — DB / data integrity.**
+- `history::delete_conversation` transactional cascade — `UPDATE parent_conv_id = NULL` then `DELETE`, so deleting a parent of a forked conversation no longer leaves dangling refs.
+- `ensure_conversation_fork_columns` migration sweeps orphaned `parent_conv_id` refs to NULL.
+- `commands::image` adds `GALLERY_BYTES_CAP = 2 GiB`, `evict_until_under_cap` before each `write_atomic`, all guarded by `GALLERY_WRITE_LOCK` (std::sync::Mutex) around the eviction + write critical section.
+- `rag::ingest_folder` runs each chunk through `scan_and_wrap` before insertion (prompt-injection scanning on the vector-store ingress).
+- `cosine` renamed `cosine_normalized` with `debug_assert` + once-per-process release-mode log via `std::sync::Once` when a non-normalized vector is passed.
+- `memory::list_memories(status, ctx)` now accepts `MemoryContext`, applies `scope_matches` filter, over-fetches 4000 → filters → truncates to `HARD_LIMIT 1000` so a 1000-row global cap doesn't starve scoped recall.
+
+**Wave 3 — Agent loop + MCP correctness.**
+- `MCP_SCHEMA_MAX_REFS = 32` enforced in `mcp-tools.ts` via depth-capped (64) string-only `$ref` counting. Tighter server/tool name regex (`[A-Za-z0-9-]+`).
+- `validateMcpArgs` does light JSON-Schema validation client-side via `MCP_TOOL_SCHEMAS` cache cleared at top of `fetchMcpTools`.
+- `commands/models.rs::native_load_model` emits `native-error` on load failure (UI was getting no signal on failures).
+- `backend_process.rs` MLX readiness probe does two-stage generation re-check (pre-store and post-store/pre-emit).
+
+**Wave 4 — Async races + frontend shell.**
+- `useWindowGeometry.ts` `let cancelled = false` guard on async `settingsGet` + persistGeometry callback.
+- `useTauriEvent.ts` `cancelled` check inside the wrapped handler (not only at registration).
+- `stream-lines::readLines` logs a diagnostic on buffer overflow instead of silently dropping.
+
+**Wave 5 — Resource governance + UX.**
+- Light theme `--text-2: #3f3f46`, `--text-muted: #52525b` bumped for WCAG AAA contrast.
+- `memory-client::getDedupThreshold()` derived from `_recallThreshold + 0.3` floored at 0.8.
+
+**Wave 6 — CI.**
+- `.github/workflows/ci.yml` wires Playwright e2e into the main job — `npx playwright install --with-deps chromium` + `npx playwright test --reporter=line --retries=2`. Failure artifacts (`test-results/`, `playwright-report/`) uploaded on failure.
+
+**Wave 7 — Post-review second pass.**
+- `agent/fs.rs::write_nofollow_sync` made `pub(crate)` so it can be reused from `snapshot::undo_last`.
+- `mcp-tools.ts` `countRefs` refactor: discovered the WeakSet cycle guard undercounted when the same sub-object was shared under two paths; switched to a depth-cap (64) string-only `$ref` counter.
+
+### Bug fixes from the workflows debugging session
+
+- **Workflow trigger event with `card_id===""`** now refuses the trigger instead of running the whole workflow.
+- **`fetchMcpTools` clears `MCP_TOOL_SCHEMAS`** at the top of every call — stale schemas no longer slip through after a server restart.
+
+---
+
+
 
 **Ollama cloud (`*:cloud`) tool-calling round-trip — root-caused and fixed.** Persistent `Ollama 400: "Value looks like object, but can't find closing '}' symbol"` traced to the wire format Ollama's cloud router expects:
 
