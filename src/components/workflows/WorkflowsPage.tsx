@@ -640,7 +640,7 @@ export function WorkflowsPage({ status }: Props) {
           data-testid="wf-run-warning"
           style={{ color: "var(--accent, #6c8eff)" }}
         >
-          ● Run in progress — leaving this view will cancel it.
+          ● Run in progress — safe to navigate away.
         </span>
       )}
       {/* Run/Stop sits in the top bar, immediately left of the theme
