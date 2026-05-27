@@ -640,13 +640,17 @@ body {
 }
 
 .conv-list li {
+  /* `position: relative` anchors the absolute-positioned action buttons
+     (pin / tag / detach / delete) that fade in on hover. With the
+     buttons removed from the flex flow, the .conv-title spans the full
+     row width and the ellipsis truncates as late as possible. */
+  position: relative;
   display: flex;
   justify-content: space-between;
-  /* flex-start aligns the action buttons to the top of the row so a
-     wrapped 2-line title doesn't push the icons mid-row. */
-  align-items: flex-start;
-  /* Tightened from 7px 10px to claw back ~4px of title room after the
-     sidebar was narrowed. */
+  align-items: center;
+  /* Tightened padding reclaims ~4px after the -45px sidebar trim.
+     Right padding stays small (6px) because the action-button overlay
+     uses its own absolute right offsets. */
   padding: 6px 6px;
   border-radius: 6px;
   cursor: pointer;
@@ -672,6 +676,14 @@ body {
 }
 
 .conv-list .del {
+  /* Action buttons live in an overlay on the right edge of the row.
+     They take no flow space — the title gets the full row width.
+     Buttons fade in on hover / focus-within. The pinned-state pin
+     button stays visible always so the user can see at a glance which
+     conversations are pinned. */
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
   background: transparent;
   color: transparent;
   border: 0;
@@ -683,13 +695,40 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-xs);
-  flex-shrink: 0;
-  transition: color 0.1s, background 0.1s;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s, color 0.1s, background 0.1s;
 }
 
+/* Per-button right offsets — HTML order is (pin, tag, detach, delete),
+   so the rightmost button (delete = last-child) sits closest to the
+   row's right edge. Spacing keeps a 2px visual gap between buttons. */
+.conv-list .del.conv-pin     { right: calc(24px * 3 + 8px); }
+.conv-list .del.conv-tag-btn { right: calc(24px * 2 + 6px); }
+.conv-list .del.detach       { right: calc(24px * 1 + 4px); }
+.conv-list li > .del:last-child { right: 2px; }
+
+/* Reveal on row hover / keyboard focus. The pinned button stays
+   permanently visible when its conv is pinned (aria-pressed="true")
+   so the pinned state is at-a-glance discoverable. The armed delete
+   button also stays visible because the user is mid-confirmation. */
 .conv-list li:hover .del,
 .conv-list li:focus-within .del {
+  opacity: 1;
+  pointer-events: auto;
   color: var(--text-3);
+}
+.conv-list .del.conv-pin[aria-pressed="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  color: var(--accent);
+}
+/* Armed delete (mid-confirmation, "click again to confirm") must stay
+   visible even when the cursor briefly leaves the row, or the user
+   loses the click target. */
+.conv-list .del.armed {
+  opacity: 1;
+  pointer-events: auto;
 }
 /* UI re-review UX-H5: detach (⧉) and delete (×) historically sat
    adjacent in the row — easy to misclick the destructive one. Add a

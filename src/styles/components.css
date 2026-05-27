@@ -288,24 +288,17 @@
 .conv-title { display: flex; flex-direction: column; gap: 2px; }
 .conv-title-line {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   min-width: 0;
 }
 .conv-title-text {
-  /* Two-line clamp instead of single-line ellipsis. After the sidebar
-     was trimmed -45px the single-line layout cut titles after ~10
-     characters ('you are th…'). Two lines roughly doubles the visible
-     copy at the new sidebar width while still hard-capping row height
-     so the list density stays predictable. The existing title="..."
-     attribute on the title element surfaces full text on hover for
-     long-name cases (third+ line gets ellipsis'd). */
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  /* Single-line ellipsis. Trailing action buttons are absolute-positioned
+     so the title spans the full row width and ellipsis triggers as late
+     as possible. Buttons fade in over the title's right edge on hover —
+     see .conv-list .del position rules below. */
   overflow: hidden;
-  white-space: normal;
-  word-break: break-word;
-  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   flex: 1;
   min-width: 0;
 }
