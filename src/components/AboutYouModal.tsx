@@ -132,7 +132,7 @@ export function AboutYouModal({ onClose }: Props) {
                 maxLength={SHORT_MAX}
                 value={profile.name ?? ""}
                 onChange={(e) => set("name", e.target.value)}
-                placeholder="e.g. Joseph"
+                placeholder="e.g. Alex"
               />
             </label>
 

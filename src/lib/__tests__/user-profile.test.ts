@@ -11,7 +11,7 @@ describe("formatUserProfile", () => {
   it("returns null when disabled, even if every field is filled", () => {
     const p: UserProfile = {
       enabled: false,
-      name: "Joseph",
+      name: "Alice",
       occupation: "Engineer",
       location: "Ohio",
       about: "Builds things",
@@ -27,8 +27,8 @@ describe("formatUserProfile", () => {
   });
 
   it("renders only the fields that are present", () => {
-    const out = formatUserProfile({ enabled: true, name: "Joseph", occupation: "Engineer" });
-    expect(out).toContain("- Name: Joseph");
+    const out = formatUserProfile({ enabled: true, name: "Alice", occupation: "Engineer" });
+    expect(out).toContain("- Name: Alice");
     expect(out).toContain("- Occupation: Engineer");
     expect(out).not.toContain("Location");
     expect(out).not.toContain("About them");
@@ -40,8 +40,8 @@ describe("formatUserProfile", () => {
   });
 
   it("trims and collapses whitespace in short fields", () => {
-    const out = formatUserProfile({ enabled: true, name: "  Joseph   D  " });
-    expect(out).toContain("- Name: Joseph D");
+    const out = formatUserProfile({ enabled: true, name: "  Alice   D  " });
+    expect(out).toContain("- Name: Alice D");
   });
 
   it("caps an over-long short field", () => {
@@ -52,7 +52,7 @@ describe("formatUserProfile", () => {
   });
 
   it("frames the block as user-supplied context", () => {
-    const out = formatUserProfile({ enabled: true, name: "Joseph" });
+    const out = formatUserProfile({ enabled: true, name: "Alice" });
     expect(out).toMatch(/do not repeat it back/i);
   });
 });

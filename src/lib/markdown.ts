@@ -223,7 +223,7 @@ const CITATION_EXTS = "rs|ts|tsx|js|jsx|py|md|json|toml|yml|yaml|sh|html|css";
 
 // Citations are WORKSPACE-RELATIVE references only. We deliberately do NOT
 // match absolute (`/...`) or home-relative (`~/...`) paths: a model that
-// writes `` `/Users/joseph/.ssh/id_ed25519` `` must never become a one-click
+// writes `` `/Users/you/.ssh/id_ed25519` `` must never become a one-click
 // "open arbitrary file" chip. A leading `(?<![A-Za-z0-9_./~-])` boundary
 // rejects matches preceded by `/` or `~`, so an absolute path can't be
 // chip-ified by matching only its relative tail. The relative form still
