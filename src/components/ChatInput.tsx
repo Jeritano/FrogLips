@@ -420,7 +420,18 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
       {images.length > 0 && (
         <div className="image-chips" data-testid="image-chips">
           {images.map((img, i) => (
-            <div className="image-chip" key={img.base64.slice(0, 64)} data-testid="image-chip">
+            // Audit LOW (2026-05-27): key was `img.base64.slice(0, 64)`
+            // which collides for two PNGs sharing the same header (common
+            // for screenshots from the same source). Combine with the
+            // array index + (filename ?? "") so collisions can't reorder
+            // chips on add/remove. Index alone would be wrong (React
+            // re-uses DOM across rerenders); the hybrid stays stable for
+            // each chip's lifetime.
+            <div
+              className="image-chip"
+              key={`${i}-${img.filename ?? ""}-${img.base64.slice(0, 32)}`}
+              data-testid="image-chip"
+            >
               <img
                 src={`data:${img.mime};base64,${img.base64}`}
                 alt={img.filename ?? `image ${i + 1}`}

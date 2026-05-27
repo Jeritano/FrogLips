@@ -16,6 +16,7 @@ import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { EmptyState } from "./components/EmptyState";
 import { Toast } from "./components/Toast";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ErrorBar } from "./components/ErrorBar";
 import { LiveRegion } from "./components/LiveRegion";
 import { WorkflowRunProvider, useWorkflowRunControl } from "./lib/workflow/run-context";
@@ -1026,29 +1027,40 @@ function App() {
             {theme === "dark" ? "☀" : "☾"}
           </button>
         </header>
+        {/* Audit LOW (2026-05-27): per-view ErrorBoundary so a render
+            crash inside one view doesn't blank the sidebar — the user
+            needs the sidebar to switch away from the crashed view. The
+            root-level ErrorBoundary in main.tsx still catches anything
+            that escapes these (e.g. crash inside the header itself). */}
         {view === "workflows" ? (
-          <Suspense fallback={null}>
-            <WorkflowsPage status={status} />
-          </Suspense>
+          <ErrorBoundary label="Workflows">
+            <Suspense fallback={null}>
+              <WorkflowsPage status={status} />
+            </Suspense>
+          </ErrorBoundary>
         ) : view === "images" ? (
-          <Suspense fallback={null}>
-            <ImageView
-              conversationId={current?.id ?? null}
-              onSendToChat={onSendImageToChat}
-              running={imageGen.running}
-              progress={imageGen.progress}
-              error={imageGen.error}
-              generate={imageGen.generate}
-            />
-          </Suspense>
+          <ErrorBoundary label="Images">
+            <Suspense fallback={null}>
+              <ImageView
+                conversationId={current?.id ?? null}
+                onSendToChat={onSendImageToChat}
+                running={imageGen.running}
+                progress={imageGen.progress}
+                error={imageGen.error}
+                generate={imageGen.generate}
+              />
+            </Suspense>
+          </ErrorBoundary>
         ) : (
-          <ChatWindow
-            status={status}
-            conversation={current}
-            onConversationCreated={onConvCreated}
-            onMemoriesChanged={onMemoriesChanged}
-            onForked={onForked}
-          />
+          <ErrorBoundary label="Chat">
+            <ChatWindow
+              status={status}
+              conversation={current}
+              onConversationCreated={onConvCreated}
+              onMemoriesChanged={onMemoriesChanged}
+              onForked={onForked}
+            />
+          </ErrorBoundary>
         )}
       </main>
       {/*

@@ -43,12 +43,12 @@ pub async fn mcp_start_server(
     }
     mcp::start_server(name, command, args_vec, Some(env_map))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
 pub async fn mcp_stop_server(name: String) -> Result<(), String> {
-    mcp::stop_server(&name).await.map_err(|e| e.to_string())
+    mcp::stop_server(&name).await.map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -58,7 +58,7 @@ pub fn mcp_list_servers() -> Vec<mcp::ServerInfo> {
 
 #[tauri::command]
 pub fn mcp_list_tools(name: String) -> Result<Vec<mcp::ToolDescriptor>, String> {
-    mcp::list_tools(&name).map_err(|e| e.to_string())
+    mcp::list_tools(&name).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -87,7 +87,7 @@ pub async fn mcp_call_tool(
     let args = args.unwrap_or(serde_json::json!({}));
     mcp::call_tool(&server, &tool, args)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]

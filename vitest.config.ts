@@ -24,5 +24,12 @@ export default defineConfig({
         isolate: true,
       },
     },
+    // Audit LOW (2026-05-27): report slow tests so the dev loop has a
+    // visible signal when a single test starts dominating wall-clock.
+    // Threshold = 250ms slow / 500ms heavy. Local 461-test suite
+    // currently runs in ~1s, so anything >250ms is an outlier.
+    slowTestThreshold: 250,
+    reporters: process.env.CI ? ["default", "junit"] : ["default"],
+    outputFile: { junit: "test-results/junit.xml" },
   },
 });

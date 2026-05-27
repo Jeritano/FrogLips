@@ -55,7 +55,7 @@ async fn run_capped_pull(mut cmd: tokio::process::Command) -> Result<(bool, Stri
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut child = cmd.spawn().map_err(|e| format!("{e:#}"))?;
 
     async fn drain<R: tokio::io::AsyncRead + Unpin>(mut r: R, cap: usize) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -85,7 +85,7 @@ async fn run_capped_pull(mut cmd: tokio::process::Command) -> Result<(bool, Stri
         }
     };
     let (_out, err) = tokio::join!(out_fut, err_fut);
-    let status = child.wait().await.map_err(|e| e.to_string())?;
+    let status = child.wait().await.map_err(|e| format!("{e:#}"))?;
     let cleaned = strip_ansi_and_progress(&String::from_utf8_lossy(&err));
     Ok((status.success(), cleaned))
 }
@@ -321,7 +321,7 @@ pub async fn native_chat_stream(
         let final_text = rt
             .chat_stream(msgs, opts, Box::new(on_chunk))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("{e:#}"))?;
         let _ = app.emit(&format!("native-done:{}", args.op_id), &final_text);
         return Ok(final_text);
     }
@@ -350,7 +350,7 @@ pub async fn native_chat_stream(
     let turn =
         NativeBackend::chat_stream_tools(&rt, json_msgs, args.tools, opts, Box::new(on_chunk))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("{e:#}"))?;
     let _ = app.emit(
         &format!("native-toolcalls:{}", args.op_id),
         &turn.tool_calls,
