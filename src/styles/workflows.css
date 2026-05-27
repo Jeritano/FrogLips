@@ -600,9 +600,32 @@
   padding: 0 var(--space-2) var(--space-2);
 }
 .wf-tool-item {
+  /* Layout: tool name on the left of the cell, checkbox snug against
+     the right edge. `justify-content: space-between` was producing
+     mid-cell drift when used with the old [☐] name order; the explicit
+     `name [☐]` order + `padding-right: var(--space-1)` on the wrapper
+     keeps the checkbox visually near its label without filling the
+     entire cell width with whitespace. */
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 2px var(--space-1);
   font-size: var(--fs-xs);
   color: var(--text);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.wf-tool-item:hover {
+  background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
+}
+.wf-tool-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.wf-tool-item input[type="checkbox"] {
+  margin: 0;
+  flex: 0 0 auto;
 }

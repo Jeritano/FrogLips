@@ -647,13 +647,19 @@ function ToolPicker({
                   className="wf-tool-cat-body"
                 >
                   {cat.tools.map((tool) => (
+                    // Layout: tool name on the left, checkbox tight against
+                    // its right edge. Previously the checkbox sat on the
+                    // far left and the label drifted to the cell center,
+                    // making it visually unclear which control toggled
+                    // which tool. The new pairing reads as "tool_name [☑]"
+                    // with the click target wrapping both.
                     <label key={tool} className="wf-tool-item">
+                      <span className="wf-tool-item-name">{tool}</span>
                       <input
                         type="checkbox"
                         checked={selected.includes(tool)}
                         onChange={() => onToggleOne(tool)}
                       />
-                      {tool}
                     </label>
                   ))}
                 </div>
