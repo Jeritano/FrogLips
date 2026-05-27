@@ -305,6 +305,10 @@ export interface AuditInput {
   outcome: AuditOutcome;
   errorKind?: string | null;
   conversationId?: number | string | null;
+  /** Set by the workflow runner when this dispatch happened inside a run.
+   * Persisted to the audit row so the workflow UI can show "rows produced
+   * by this run" and the per-chat view can hide workflow noise. */
+  workflowRunId?: number | null;
 }
 
 /**
@@ -324,6 +328,7 @@ export function recordAuditSafe(input: AuditInput): void {
         error_kind: input.errorKind ?? null,
         conversation_id:
           input.conversationId == null ? null : String(input.conversationId),
+        workflow_run_id: input.workflowRunId ?? null,
       })
       .catch((e) => {
         // The WKWebView console is not user-accessible; route audit

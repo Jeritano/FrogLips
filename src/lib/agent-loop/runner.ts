@@ -300,6 +300,7 @@ function pushToolResult(
   tc: ToolCall,
   body: string,
   o: PushToolResultOpts,
+  workflowRunId: number | null = null,
 ): void {
   const fnName = tc.function?.name ?? "";
   msgs.push({
@@ -319,6 +320,7 @@ function pushToolResult(
     outcome: o.outcome,
     errorKind: o.errorKind ?? null,
     conversationId,
+    workflowRunId,
   });
   onUpdate([...msgs]);
 }
@@ -696,7 +698,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
           outcome: "duplicate",
           errorKind: "duplicate_call",
           args: dupParsed.ok ? dupParsed.args : {},
-        });
+        }, opts.workflowRunId ?? null);
       }
       // Update prev-turn sigs even on a dup so two-back→one-back→now also fires.
       prevTurnSigs = sigs;
@@ -732,7 +734,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
             outcome: "denied",
             errorKind: "tool_not_allowed",
             args: naParsed.ok ? naParsed.args : {},
-          });
+          }, opts.workflowRunId ?? null);
         continue;
       }
 
@@ -740,7 +742,8 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
       if (!parsed.ok) {
         pushToolResult(msgs, opts.conversationId, onUpdate, tc,
           rejectionBody("bad_arguments", parsed.err),
-          { approval: "auto", outcome: "error", errorKind: "bad_arguments" });
+          { approval: "auto", outcome: "error", errorKind: "bad_arguments" },
+          opts.workflowRunId ?? null);
         continue;
       }
       const args = parsed.args;
@@ -754,7 +757,8 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
             "stall_guard",
             `read_file has been called ${stall.count} times for '${stall.path}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`,
           ),
-          { approval: "auto", outcome: "stall_guard", errorKind: "stall_guard", args });
+          { approval: "auto", outcome: "stall_guard", errorKind: "stall_guard", args },
+          opts.workflowRunId ?? null);
         continue;
       }
 
@@ -779,7 +783,8 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
               "policy_denied",
               `Tool call denied by project policy${projectPolicy?.source_path ? ` (${projectPolicy.source_path})` : ""}.`,
             ),
-            { approval: "denied", outcome: "denied", errorKind: "policy_denied", args });
+            { approval: "denied", outcome: "denied", errorKind: "policy_denied", args },
+            opts.workflowRunId ?? null);
           continue;
         }
 
@@ -834,7 +839,8 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
                 "permission_denied",
                 DENY_MESSAGE_BY_REASON[auditReason] ?? DENY_MESSAGE_BY_REASON.user_deny,
               ),
-              { approval: "denied", outcome: "denied", errorKind: auditReason, args });
+              { approval: "denied", outcome: "denied", errorKind: auditReason, args },
+              opts.workflowRunId ?? null);
             continue;
           }
           auditApproval = "user_allowed";
@@ -971,7 +977,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         errorKind: toolErrorKind,
         args,
         durationMs,
-      });
+      }, opts.workflowRunId ?? null);
 
       // Track research-vs-write balance so the post-turn block below can
       // inject a "stop researching, write the file" nudge before the

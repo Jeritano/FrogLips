@@ -340,6 +340,44 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v12 — agent_audit gains a `workflow_run_id` column so workflow-driven
+    // tool calls can be filtered out of the per-conversation audit view and
+    // correlated back to the run that produced them. Older DBs need a
+    // schema-level ALTER; fresh DBs pick up the column via
+    // `agent_audit::ensure_schema`'s CREATE TABLE. (Tier 3 audit, 2026-05-26.)
+    Migration {
+        version: 12,
+        apply: |conn| {
+            let has_audit: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type='table' AND name='agent_audit'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if has_audit == 1 {
+                let already_has_col: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM pragma_table_info('agent_audit') \
+                         WHERE name='workflow_run_id'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                if already_has_col == 0 {
+                    conn.execute_batch(
+                        "ALTER TABLE agent_audit ADD COLUMN workflow_run_id INTEGER;",
+                    )?;
+                }
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_audit_workflow_run
+                        ON agent_audit(workflow_run_id);",
+                )?;
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// Target schema version — the highest rung of the ladder.

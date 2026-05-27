@@ -35,10 +35,12 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
             duration_ms INTEGER NOT NULL,
             approval TEXT NOT NULL,
             outcome TEXT NOT NULL,
-            error_kind TEXT
+            error_kind TEXT,
+            workflow_run_id INTEGER
          );
          CREATE INDEX IF NOT EXISTS idx_agent_audit_ts ON agent_audit(ts);
          CREATE INDEX IF NOT EXISTS idx_agent_audit_conv ON agent_audit(conversation_id);
+         CREATE INDEX IF NOT EXISTS idx_agent_audit_workflow_run ON agent_audit(workflow_run_id);
          CREATE TABLE IF NOT EXISTS agent_session_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts INTEGER NOT NULL,
@@ -73,6 +75,12 @@ pub struct AuditEntry {
     pub approval: String,
     pub outcome: String,
     pub error_kind: Option<String>,
+    /// Optional workflow_runs.id (NULL for ad-hoc chat tool calls). Lets the
+    /// audit log distinguish workflow-driven activity from interactive
+    /// turns, and the workflow UI link directly to the rows produced by a
+    /// given run. Schema v12.
+    #[serde(default)]
+    pub workflow_run_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -98,6 +106,7 @@ pub struct AuditRow {
     pub approval: String,
     pub outcome: String,
     pub error_kind: Option<String>,
+    pub workflow_run_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -179,8 +188,8 @@ pub fn record(entry: AuditEntry) -> Result<()> {
     conn.execute(
         "INSERT INTO agent_audit
             (ts, conversation_id, tool_name, args_json, result_hash, result_size,
-             duration_ms, approval, outcome, error_kind)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             duration_ms, approval, outcome, error_kind, workflow_run_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             ts,
             entry.conversation_id,
@@ -192,6 +201,7 @@ pub fn record(entry: AuditEntry) -> Result<()> {
             entry.approval,
             entry.outcome,
             entry.error_kind,
+            entry.workflow_run_id,
         ],
     )?;
     Ok(())
@@ -206,7 +216,8 @@ pub fn list(filter: AuditFilter) -> Result<Vec<AuditRow>> {
     // Build a dynamic WHERE while keeping all values parameterised.
     let mut sql = String::from(
         "SELECT id, ts, conversation_id, tool_name, args_json, result_hash,
-                result_size, duration_ms, approval, outcome, error_kind
+                result_size, duration_ms, approval, outcome, error_kind,
+                workflow_run_id
          FROM agent_audit",
     );
     let mut clauses: Vec<&'static str> = Vec::new();
@@ -254,6 +265,7 @@ pub fn list(filter: AuditFilter) -> Result<Vec<AuditRow>> {
                 approval: r.get(8)?,
                 outcome: r.get(9)?,
                 error_kind: r.get(10)?,
+                workflow_run_id: r.get(11)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -701,6 +713,7 @@ mod tests {
                 approval: "auto".into(),
                 outcome: "ok".into(),
                 error_kind: None,
+                workflow_run_id: None,
             },
         );
 

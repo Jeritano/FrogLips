@@ -133,6 +133,16 @@ export interface RunWorkflowOptions {
    * same user context as normal chat. Built by `formatUserProfile`.
    */
   userProfile?: string;
+  /**
+   * `workflow_runs.id` for the currently-executing run. Threaded into every
+   * card's `AgentRunOptions.workflowRunId` so audit rows produced by the
+   * card carry the correlation (schema v12). Null when the caller does not
+   * have the id yet (the frontend can't observe the row inserted by
+   * `workflows::record_run` until the Rust side exposes a start-pending
+   * IPC — until then audit rows for workflow tool calls stay NULL, which
+   * is still the correct value for "not associated with a run").
+   */
+  workflowRunId?: number | null;
 }
 
 /**
@@ -378,6 +388,7 @@ function buildCardOptions(
     },
     requestConfirmation,
     signal,
+    workflowRunId: opts.workflowRunId ?? null,
   };
 }
 

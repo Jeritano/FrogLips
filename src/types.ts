@@ -443,6 +443,10 @@ export interface AgentAuditEntry {
   approval: AuditApproval;
   outcome: AuditOutcome;
   error_kind?: string | null;
+  /** Optional workflow_runs.id — populated by the workflow runner so audit
+   * rows produced inside a workflow can be filtered out of the per-chat
+   * view and linked back to the run that created them. */
+  workflow_run_id?: number | null;
 }
 
 export interface AgentAuditFilter {
@@ -466,6 +470,7 @@ export interface AgentAuditRow {
   approval: AuditApproval;
   outcome: AuditOutcome;
   error_kind: string | null;
+  workflow_run_id: number | null;
 }
 
 export interface AgentAuditStats {

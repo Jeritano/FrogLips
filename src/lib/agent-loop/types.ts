@@ -143,6 +143,13 @@ export interface AgentRunOptions {
    * back to backend defaults.
    */
   params?: ChatParams | null;
+  /**
+   * Optional workflow_runs.id when this loop is invoked from a workflow
+   * card. Threaded into every `recordAuditSafe` call so the audit row can
+   * be correlated back to the run that produced it (schema v12). Null /
+   * omitted for interactive chat turns.
+   */
+  workflowRunId?: number | null;
 }
 
 /**
