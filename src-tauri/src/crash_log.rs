@@ -84,10 +84,23 @@ fn rotate_if_needed(path: &PathBuf) {
 }
 
 /// Append a single crash record. Best-effort; never panics.
+///
+/// Created with 0o600 (owner-only read/write) per infra audit M6: backtraces
+/// can carry incidental user data (panic message strings, thread names,
+/// expanded `Display` payloads from `format!` calls in error paths). On a
+/// shared-volume macOS install the default umask 022 would make crash.log
+/// world-readable.
 fn append_record(record: &str) {
     let Some(path) = crash_log_path() else { return };
     rotate_if_needed(&path);
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(&path) {
         let _ = f.write_all(record.as_bytes());
         let _ = f.flush();
     }

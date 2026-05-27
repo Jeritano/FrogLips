@@ -484,10 +484,28 @@ impl ServerState {
 }
 
 async fn kill_child(child: &mut Child) {
+    // `tokio::process::Child::kill()` already sends SIGKILL on Unix — no
+    // SIGTERM-first courtesy step. If the wait times out the process is in
+    // uninterruptible kernel state (Metal driver hang, FUSE blocked, etc.)
+    // and we can't reap it cleanly. Infra audit H3: log the PID so the
+    // next-launch port probe can detect "port still in use, kill by PID"
+    // and the user has a breadcrumb instead of a silent zombie.
+    let pid_for_log = child.id();
     let _ = child.kill().await;
-    // Bound the reap so a wedged child can't block status/start/stop forever —
-    // kill() was already sent, so proceeding without the reap is safe.
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
+    let reaped = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
+    if reaped.is_err() {
+        if let Some(pid) = pid_for_log {
+            crate::diagnostics::warn_with(
+                "backend",
+                &format!(
+                    "child pid {pid} did not reap within 3s of SIGKILL — \
+                     possible kernel-state hang; next-launch port probe may need to \
+                     reclaim the port manually"
+                ),
+                serde_json::json!({ "pid": pid }),
+            );
+        }
+    }
 }
 
 fn mlx_server_binary() -> Result<PathBuf> {

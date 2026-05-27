@@ -177,15 +177,25 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
         // since values may legitimately differ session to session but the
         // *capability* the user approves is the program + its arg vector).
         "mcp_start_server" => {
+            // argv is semantically ordered (do NOT sort).
             let args_joined = p
                 .mcp_args
                 .as_deref()
                 .map(|a| a.join("\u{1f}"))
                 .unwrap_or_default();
+            // env_keys MUST be sorted on BOTH sides — consume side
+            // (`mcp::start_server`) sorts before hashing, and serde-JSON
+            // round-trips can shuffle key order. Without symmetric sort
+            // here, legitimate MCP starts fail with "approval expired"
+            // on roughly half of calls. (Infra audit H1, 2026-05-24.)
             let env_joined = p
                 .mcp_env_keys
                 .as_deref()
-                .map(|k| k.join("\u{1f}"))
+                .map(|k| {
+                    let mut sorted: Vec<String> = k.to_vec();
+                    sorted.sort();
+                    sorted.join("\u{1f}")
+                })
                 .unwrap_or_default();
             Some(sha256_hex(&kv(&[
                 ("cmd", p.mcp_command.as_deref().unwrap_or("")),

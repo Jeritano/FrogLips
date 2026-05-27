@@ -143,12 +143,39 @@ fn hash_result(body: &str) -> String {
 
 /* ── Public API ── */
 
+/// Max bytes stored in `args_json` per audit row. Without a cap, a single
+/// `write_file` with a 200 KB body or a `multi_edit` with dozens of large
+/// edits balloons the audit table — the TS-side redactor already truncates
+/// well-known body fields, but unrecognised tools pass args verbatim.
+/// Truncated payloads carry a trailing marker so a reviewer knows the row
+/// is incomplete. Data-layer audit C4 (2026-05-24).
+pub const MAX_ARGS_JSON_BYTES: usize = 32 * 1024;
+
 /// Insert one audit row. Errors are returned (caller decides whether to swallow).
 pub fn record(entry: AuditEntry) -> Result<()> {
     let conn = get_db()?;
     let ts = if entry.ts > 0 { entry.ts } else { now_millis() };
     let hash = hash_result(&entry.result_body);
     let size = entry.result_body.len() as i64;
+    let args_capped = if entry.args_json.len() > MAX_ARGS_JSON_BYTES {
+        // Walk back to a UTF-8 char boundary so the trailing marker stays
+        // valid JSON-loadable text (the value is no longer parseable as
+        // JSON, but downstream consumers `SUBSTR` / display it as text).
+        let mut cut = MAX_ARGS_JSON_BYTES;
+        while cut > 0 && !entry.args_json.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let mut s = String::with_capacity(cut + 64);
+        s.push_str(&entry.args_json[..cut]);
+        s.push_str(&format!(
+            "…[truncated {} bytes from {}-byte args]",
+            entry.args_json.len() - cut,
+            entry.args_json.len()
+        ));
+        s
+    } else {
+        entry.args_json
+    };
     conn.execute(
         "INSERT INTO agent_audit
             (ts, conversation_id, tool_name, args_json, result_hash, result_size,
@@ -158,7 +185,7 @@ pub fn record(entry: AuditEntry) -> Result<()> {
             ts,
             entry.conversation_id,
             entry.tool_name,
-            entry.args_json,
+            args_capped,
             hash,
             size,
             entry.duration_ms,

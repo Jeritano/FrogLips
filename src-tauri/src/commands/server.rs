@@ -18,6 +18,16 @@ pub async fn start_server(
     if model.trim().is_empty() {
         return Err("model id must not be empty".into());
     }
+    // SWE-H5 (2026-05-24): the model string is forwarded as `--model <model>`
+    // argv to the spawned process. Without character validation a model id
+    // beginning with `--` (e.g. `--trust-remote-code`) is parsed by clap as
+    // a server flag rather than as the model name. The pull paths already
+    // validate via these regexes — do the same on start.
+    match backend.as_str() {
+        "ollama" => super::validate_ollama_name(&model)?,
+        "mlx" => super::validate_hf_repo(&model)?,
+        _ => unreachable!("backend already validated above"),
+    }
     let status = state.start(model, backend).await.map_err(map_err)?;
     let _ = app.emit("server-status", &status);
     Ok(status)

@@ -101,21 +101,28 @@ fn keychain_disabled() -> bool {
 /// process running `ps auxww` or `proc_pidinfo` could read it during the
 /// brief window. Now uses the native `security-framework` binding directly
 /// so the secret never crosses an argv boundary.
-fn keychain_set(account: &str, key: &str) {
+/// Returns true iff the key landed in Keychain. Caller MUST check the
+/// result before blanking the plaintext copy on disk — infra audit M11.
+fn keychain_set(account: &str, key: &str) -> bool {
     if keychain_disabled() {
-        return;
+        // Test mode treats success as "do nothing" so the disk path keeps
+        // its plaintext (which is the contract the test suite relies on).
+        return true;
     }
     use security_framework::passwords::set_generic_password;
-    if let Err(e) = set_generic_password(KEYCHAIN_SERVICE, account, key.as_bytes()) {
-        // Non-fatal — settings::save still persists the redacted shape.
-        // P1 #34: structured diagnostic so a missing keychain doesn't
-        // silently lose the user's keys forever (stderr-only was
-        // invisible to non-dev users).
-        crate::diagnostics::warn_with(
-            "settings",
-            &format!("keychain_set({account}): {e}"),
-            serde_json::json!({ "account": account, "error": e.to_string() }),
-        );
+    match set_generic_password(KEYCHAIN_SERVICE, account, key.as_bytes()) {
+        Ok(()) => true,
+        Err(e) => {
+            // Non-fatal at the diagnostic layer, but the caller must NOT
+            // blank the on-disk plaintext when this fires — otherwise the
+            // key is lost. P1 #34 + infra audit M11.
+            crate::diagnostics::warn_with(
+                "settings",
+                &format!("keychain_set({account}): {e}"),
+                serde_json::json!({ "account": account, "error": e.to_string() }),
+            );
+            false
+        }
     }
 }
 
@@ -196,9 +203,18 @@ pub fn load() -> Settings {
                     b.api_key = keychain_get(&b.id);
                 }
                 // Plaintext key on disk → migrate it into the Keychain.
+                // Only mark `migrated` (which triggers the blank-on-disk
+                // save below) when the Keychain write actually succeeded —
+                // otherwise we'd destroy the only copy of the user's key.
+                // Infra audit M11.
                 Some(plain) => {
-                    keychain_set(&b.id, plain);
-                    migrated = true;
+                    let plain_owned = plain.to_string();
+                    if keychain_set(&b.id, &plain_owned) {
+                        migrated = true;
+                    }
+                    // Either way, in-memory keeps the real key so the
+                    // current session still works. If migration failed
+                    // we'll retry next launch.
                 }
             }
         }
@@ -224,14 +240,28 @@ pub fn save(s: &Settings) -> std::io::Result<()> {
     if let Some(backends) = on_disk.custom_backends.as_mut() {
         for b in backends.iter_mut() {
             match b.api_key.take() {
-                // A fresh plaintext key → store it.
-                Some(k) if !k.is_empty() && k != REDACTED_MARKER => keychain_set(&b.id, &k),
+                // A fresh plaintext key → store it. If Keychain refuses,
+                // KEEP the plaintext on disk so the key isn't lost —
+                // user can re-save once Keychain access is restored.
+                // Infra audit M11.
+                Some(k) if !k.is_empty() && k != REDACTED_MARKER => {
+                    if keychain_set(&b.id, &k) {
+                        b.api_key = Some(String::new());
+                    } else {
+                        b.api_key = Some(k);
+                        continue;
+                    }
+                }
                 // The redacted marker means "key unchanged" — leave Keychain as-is.
-                Some(k) if k == REDACTED_MARKER => {}
+                Some(k) if k == REDACTED_MARKER => {
+                    b.api_key = Some(String::new());
+                }
                 // Explicitly empty/absent → user cleared the key.
-                _ => keychain_delete(&b.id),
+                _ => {
+                    keychain_delete(&b.id);
+                    b.api_key = Some(String::new());
+                }
             }
-            b.api_key = Some(String::new());
         }
     }
     let text = serde_json::to_string_pretty(&on_disk).unwrap_or_else(|_| "{}".to_string());

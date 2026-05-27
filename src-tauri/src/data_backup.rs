@@ -82,25 +82,56 @@ pub fn backup_database(dest: &Path) -> Result<()> {
     if dest == src_path {
         bail!("backup destination must differ from the live database");
     }
+    // Atomic write: stream the online backup into a sibling `.partial-<pid>`
+    // file first, then `fs::rename` over the final path. A power loss, kill,
+    // or disk-full mid-write leaves the `.partial` artifact (which the user
+    // sees + can manually remove) instead of a half-baked SQLite file under
+    // the expected backup name — the exact file the user reaches for in a
+    // disaster. Data-layer audit C1 (2026-05-24).
+    let pid = std::process::id();
+    let dest_partial = match dest.file_name() {
+        Some(name) => {
+            let mut tmp_name = std::ffi::OsString::from(name);
+            tmp_name.push(format!(".partial-{pid}"));
+            dest.with_file_name(tmp_name)
+        }
+        None => bail!("backup destination has no file name"),
+    };
+    // Clear any leftover partial from an earlier failed run.
+    let _ = std::fs::remove_file(&dest_partial);
     let src = Connection::open(&src_path).context("open source db for backup")?;
     // Wait up to 5s if the source DB is currently locked by a writer rather
     // than failing immediately with SQLITE_BUSY. Backups run concurrently with
     // normal app traffic, so a transient lock is the common case.
     src.busy_timeout(std::time::Duration::from_millis(5000))
         .context("set source busy_timeout")?;
-    let mut dst = Connection::open(dest)
-        .with_context(|| format!("open backup destination {}", dest.display()))?;
-    // Same 5s busy_timeout on the destination — `Backup::run_to_completion`
-    // writes to it under SQLite's internal lock; an unrelated handle (e.g.
-    // an antivirus scanner that briefly opened the file) racing the open
-    // would otherwise surface as SQLITE_BUSY instead of waiting it out.
-    dst.busy_timeout(std::time::Duration::from_millis(5000))
-        .context("set destination busy_timeout")?;
-    let backup =
-        rusqlite::backup::Backup::new(&src, &mut dst).context("initialize online backup")?;
-    backup
-        .run_to_completion(64, std::time::Duration::from_millis(50), None)
-        .context("run online backup")?;
+    {
+        let mut dst = Connection::open(&dest_partial)
+            .with_context(|| format!("open backup partial {}", dest_partial.display()))?;
+        // Same 5s busy_timeout on the destination — `Backup::run_to_completion`
+        // writes to it under SQLite's internal lock; an unrelated handle (e.g.
+        // an antivirus scanner that briefly opened the file) racing the open
+        // would otherwise surface as SQLITE_BUSY instead of waiting it out.
+        dst.busy_timeout(std::time::Duration::from_millis(5000))
+            .context("set destination busy_timeout")?;
+        // H2 data audit: explicit `PRAGMA foreign_keys=ON` on the backup
+        // destination. The pool's `connect()` hook sets it for live
+        // connections, but `Connection::open` here bypasses the pool. If a
+        // future tool ever opens the backup directly (repair, merge) the FK
+        // discipline carries over.
+        dst.execute_batch("PRAGMA foreign_keys=ON;")
+            .context("set foreign_keys on backup destination")?;
+        let backup = rusqlite::backup::Backup::new(&src, &mut dst)
+            .context("initialize online backup")?;
+        backup
+            .run_to_completion(64, std::time::Duration::from_millis(50), None)
+            .context("run online backup")?;
+    }
+    // Atomic rename. POSIX guarantees this is observable as an all-or-nothing
+    // swap (assuming `dest` and `dest_partial` live on the same fs — which
+    // `with_file_name` guarantees).
+    std::fs::rename(&dest_partial, dest)
+        .with_context(|| format!("rename {} -> {}", dest_partial.display(), dest.display()))?;
     Ok(())
 }
 
@@ -198,7 +229,23 @@ pub fn export_data(dest: &Path) -> Result<()> {
     let conn = get_db()?;
     let doc = collect_export(&conn)?;
     let json = serde_json::to_string_pretty(&doc).context("serialize export document")?;
-    std::fs::write(dest, json).with_context(|| format!("write export to {}", dest.display()))?;
+    // Atomic write: same `.partial-<pid>` + rename pattern as the DB backup
+    // path. A power-loss mid-write otherwise leaves a truncated JSON file
+    // under the user's expected backup name. Data-layer audit C1.
+    let pid = std::process::id();
+    let dest_partial = match dest.file_name() {
+        Some(name) => {
+            let mut tmp_name = std::ffi::OsString::from(name);
+            tmp_name.push(format!(".partial-{pid}"));
+            dest.with_file_name(tmp_name)
+        }
+        None => bail!("export destination has no file name"),
+    };
+    let _ = std::fs::remove_file(&dest_partial);
+    std::fs::write(&dest_partial, &json)
+        .with_context(|| format!("write export partial {}", dest_partial.display()))?;
+    std::fs::rename(&dest_partial, dest)
+        .with_context(|| format!("rename {} -> {}", dest_partial.display(), dest.display()))?;
     Ok(())
 }
 

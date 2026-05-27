@@ -354,6 +354,22 @@ fn latest_version() -> i64 {
 /// Running this against an up-to-date DB is a no-op.
 fn run_migrations(conn: &Connection) -> Result<()> {
     let mut current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    // Data-layer audit C3 (2026-05-24): refuse to open a DB whose schema is
+    // newer than anything this binary knows. A user who auto-updated, used
+    // v12 schema, then rolled back to v10 (e.g. release-channel switch,
+    // crash-recovery via Time Machine) would otherwise silently degrade —
+    // SELECTs survive named columns, but the next INSERT into a table with
+    // a new NOT NULL column hard-fails with a generic error. Bail early
+    // with an actionable message instead.
+    let latest = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
+    if current > latest {
+        anyhow::bail!(
+            "database schema is at version {} but this Froglips build only knows up to v{}. \
+             Upgrade Froglips before re-opening this database.",
+            current,
+            latest
+        );
+    }
     for m in MIGRATIONS {
         if m.version <= current {
             continue;

@@ -238,17 +238,16 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
             return;
         }
     };
-    let validated = match path_safety::validate_write_dest(&path.to_string_lossy()) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = app.emit(
-                "image-error",
-                serde_json::json!({ "op_id": op_id, "message": e }),
-            );
-            ENGINE.release_cancel(&op_id);
-            return;
-        }
-    };
+    // Image storage paths are backend-constructed (image_gen::image_path
+    // → ~/.local-llm-app/images/{bucket}/...) and `assert_under_images_root`
+    // is the authoritative gate. We deliberately skip
+    // `path_safety::validate_write_dest` here: it denies anything under
+    // `~/.local-llm-app/*` to keep user-typed destinations away from app
+    // internals, which is the right policy for save_to / export / backup
+    // but rejects our OWN write target. The denylist conflict broke
+    // image-gen end-to-end (every IPC returned "destination path is in a
+    // protected directory") until this carve-out landed.
+    let validated = path.clone();
     if let Err(e) = assert_under_images_root(&validated) {
         let _ = app.emit(
             "image-error",
@@ -337,10 +336,12 @@ pub async fn image_get(id: i64) -> Result<Option<ImageMeta>, String> {
 pub async fn image_delete(id: i64) -> Result<(), String> {
     let path = super::blocking(move || history::delete_image_row(id)).await?;
     if let Some(path) = path {
-        // Validate the stored path before unlinking. The validator rejects
-        // anything outside the safe set; we further require the resolved
-        // path to sit beneath the images root.
-        let validated = path_safety::validate_write_dest(&path)?;
+        // The stored path is backend-controlled (came from `image_path`
+        // when the row was inserted). `assert_under_images_root` is the
+        // authoritative gate — `validate_write_dest` would reject the
+        // image directory wholesale because `~/.local-llm-app/*` is on
+        // its user-write denylist.
+        let validated = std::path::PathBuf::from(&path);
         assert_under_images_root(&validated)?;
         match std::fs::remove_file(&validated) {
             Ok(()) => Ok(()),
@@ -416,7 +417,11 @@ pub async fn image_save_to(id: i64, dest: String) -> Result<String, String> {
     let row = super::blocking(move || history::get_image(id))
         .await?
         .ok_or_else(|| format!("image id {id} not found"))?;
-    let src_validated = path_safety::validate_read_src(&row.path)?;
+    // Source is backend-controlled (images_root path); gate via
+    // assert_under_images_root, not validate_read_src (which denies
+    // the entire images directory).
+    let src_validated = std::path::PathBuf::from(&row.path);
+    assert_under_images_root(&src_validated)?;
     let src_path = src_validated.to_string_lossy().to_string();
 
     let dest_for_blocking = validated_dest.clone();
@@ -447,7 +452,8 @@ pub async fn image_open_external(id: i64) -> Result<(), String> {
     let row = super::blocking(move || history::get_image(id))
         .await?
         .ok_or_else(|| format!("image id {id} not found"))?;
-    let src = path_safety::validate_read_src(&row.path)?;
+    // Backend-controlled path; assert_under_images_root is the gate.
+    let src = std::path::PathBuf::from(&row.path);
     assert_under_images_root(&src)?;
     let path_str = src.to_string_lossy().to_string();
     super::blocking(move || {
@@ -474,7 +480,7 @@ pub async fn image_reveal_in_finder(id: i64) -> Result<(), String> {
     let row = super::blocking(move || history::get_image(id))
         .await?
         .ok_or_else(|| format!("image id {id} not found"))?;
-    let src = path_safety::validate_read_src(&row.path)?;
+    let src = std::path::PathBuf::from(&row.path);
     assert_under_images_root(&src)?;
     let path_str = src.to_string_lossy().to_string();
     super::blocking(move || {

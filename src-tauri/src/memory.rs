@@ -303,12 +303,19 @@ pub fn list_memories(status_filter: Option<&str>, ctx: &MemoryContext) -> Result
 }
 
 pub fn delete_memory(id: i64) -> Result<()> {
-    // Hold the cache write lock across the DB delete so a concurrent
-    // warm_cache can't read the row mid-delete and resurrect it.
+    // Data-layer audit C2 (2026-05-24): the prior implementation held
+    // `EMB_CACHE.write()` ACROSS `get_db()` (can block on pool exhaustion)
+    // and the DB `DELETE` (can block on SQLITE_BUSY up to 5s). Every
+    // concurrent `search_vector`/`warm_cache`/`find_duplicate` reader
+    // stalled for the duration. Reorder: do the DB delete first, then
+    // take the cache lock just long enough to drop the entry. The brief
+    // window where a recall might score a row that's already been
+    // DB-deleted is harmless — `fetch_by_ids` filters missing ids.
+    {
+        let conn = get_db()?;
+        conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+    }
     let mut cache = EMB_CACHE.write();
-    let conn = get_db()?;
-    conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
-    drop(conn);
     if let Some(map) = cache.as_mut() {
         map.remove(&id);
     }

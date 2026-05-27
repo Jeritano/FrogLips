@@ -43,8 +43,12 @@ pub fn read_crash_log() -> String {
 
 /// Append a diagnostic line to `~/.local-llm-app/diag.log`. Best-effort —
 /// errors are swallowed and `()` is returned regardless. Each call timestamps
-/// the entry and appends a newline. Capped at the same `MAX_LOG_BYTES` budget
-/// as the crash log via simple length-prefixed tail truncation.
+/// the entry and appends a newline.
+///
+/// Rotation (infra audit M12, 2026-05-24): when the file exceeds
+/// `MAX_LOG_BYTES`, the most recent half is retained and the rest dropped.
+/// Mirrors the `crash_log` rotation pattern so `diag.log` doesn't grow
+/// unbounded under heavy frontend logging.
 #[tauri::command]
 pub fn append_diag_log(line: String) -> Result<(), String> {
     use std::fs::OpenOptions;
@@ -57,6 +61,17 @@ pub fn append_diag_log(line: String) -> Result<(), String> {
     let path = dir.join("diag.log");
     // Cap individual line length so a single 50MB body doesn't fill disk.
     const MAX_LINE: usize = 256 * 1024;
+    // Cap on the file as a whole (same shape as `crash_log::MAX_LOG_BYTES`).
+    const MAX_FILE_BYTES: u64 = 256 * 1024;
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > MAX_FILE_BYTES {
+            if let Ok(data) = std::fs::read(&path) {
+                let keep = (MAX_FILE_BYTES as usize / 2).min(data.len());
+                let tail = &data[data.len() - keep..];
+                let _ = std::fs::write(&path, tail);
+            }
+        }
+    }
     let safe = if line.len() > MAX_LINE {
         &line[..MAX_LINE]
     } else {
