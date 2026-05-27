@@ -22,6 +22,7 @@ mod rag;
 mod settings;
 mod task_queue;
 mod util;
+mod workflow_skills;
 mod workflows;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -505,6 +506,11 @@ pub fn run() {
             commands::workflows::workflow_delete,
             commands::workflows::workflow_run_record,
             commands::workflows::workflow_runs_list,
+            commands::workflow_skills::workflow_skill_save,
+            commands::workflow_skills::workflow_skill_list,
+            commands::workflow_skills::workflow_skill_get,
+            commands::workflow_skills::workflow_skill_delete,
+            commands::workflow_skills::workflow_skill_record_invocation,
             commands::image::image_generate,
             commands::image::image_list,
             commands::image::image_get,

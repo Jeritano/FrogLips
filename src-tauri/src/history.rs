@@ -412,6 +412,20 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v14 — Procedural memory: `workflow_skills` lets a workflow save named
+    // reusable `(tool, args)` sequences that future agent runs can list,
+    // inspect, invoke, or delete. `workflow_skills_history` is a shadow
+    // table that captures the prior row on every overwrite, capped to 50
+    // entries per (workflow_id, name) so the audit trail can't grow
+    // unbounded. ON DELETE CASCADE on `workflow_id` so dropping a workflow
+    // also drops its skills (history rows are not cascaded — they carry
+    // workflow_id but no FK, intentionally, so a deleted workflow's
+    // history survives long enough for forensics if needed; the production
+    // delete-workflow path doesn't keep them, see workflow_skills::delete).
+    Migration {
+        version: 14,
+        apply: crate::workflow_skills::ensure_workflow_skills_tables,
+    },
 ];
 
 /// Target schema version — the highest rung of the ladder.

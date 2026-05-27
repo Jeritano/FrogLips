@@ -16,6 +16,7 @@ pub mod misc;
 pub mod models;
 pub mod path_safety;
 pub mod server;
+pub mod workflow_skills;
 pub mod workflows;
 
 /* ── Shared handle types ── */
