@@ -642,10 +642,11 @@ body {
 .conv-list li {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  /* flex-start aligns the action buttons to the top of the row so a
+     wrapped 2-line title doesn't push the icons mid-row. */
+  align-items: flex-start;
   /* Tightened from 7px 10px to claw back ~4px of title room after the
-     sidebar was narrowed. Inline action buttons still get their fixed
-     widths; the conv-title flex-grows into the remainder. */
+     sidebar was narrowed. */
   padding: 6px 6px;
   border-radius: 6px;
   cursor: pointer;
@@ -717,20 +718,9 @@ body {
 .conv-title {
   flex: 1;
   min-width: 0;
-  /* Two-line clamp instead of single-line ellipsis. After the sidebar
-     was trimmed -45px the single-line layout cut titles after ~10
-     characters ('you are th…'). Two lines roughly doubles the visible
-     copy (~22 chars at 13px / 215px row width) while still hard-capping
-     row height so the list density stays predictable. */
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  white-space: normal;
-  line-height: 1.25;
-  /* Tooltip via the existing `title` attribute still surfaces the full
-     untruncated text on hover for the third+ line cases. */
-  word-break: break-word;
+  /* `display: flex; flex-direction: column` is set in components.css to
+     stack the title-line above the tag-chip row. Leave the column-flex
+     intact — the 2-line clamp lives on .conv-title-text. */
 }
 
 .conv-rename {
