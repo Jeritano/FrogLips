@@ -3,6 +3,7 @@ mod agent_audit;
 mod approval;
 mod ask_user;
 mod backend_process;
+mod claude_skills;
 mod commands;
 mod crash_log;
 mod data_backup;
@@ -511,6 +512,12 @@ pub fn run() {
             commands::workflow_skills::workflow_skill_get,
             commands::workflow_skills::workflow_skill_delete,
             commands::workflow_skills::workflow_skill_record_invocation,
+            commands::claude_skills::claude_skill_import,
+            commands::claude_skills::claude_skill_list,
+            commands::claude_skills::claude_skill_get,
+            commands::claude_skills::claude_skill_set_enabled,
+            commands::claude_skills::claude_skill_set_pinned,
+            commands::claude_skills::claude_skill_delete,
             commands::image::image_generate,
             commands::image::image_list,
             commands::image::image_get,

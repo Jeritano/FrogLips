@@ -73,7 +73,12 @@ mistralrs-core = { version = "0.8.1", default-features = false, features = ["met
 candle-core = { version = "0.10", default-features = false, features = ["metal", "accelerate"], optional = true }
 indexmap = { version = "2", optional = true }
 either = { version = "1", optional = true }
-serde_yaml = { version = "0.9", optional = true }
+# `serde_yaml` is used by both the native-mistralrs chat-template parser and
+# the (always-on) Claude Skills frontmatter parser. The crate ships with no
+# default features, so a direct dep is cheap and avoids depending on a
+# feature-flag transitive path. Listed once at the top level instead of as
+# `optional = true` so the dep graph stays uniform across feature sets.
+serde_yaml = "0.9"
 # PNG encoder used by the native image-generation backend to embed
 # prompt/params into tEXt chunks for reproducibility. Only pulled in with
 # `native-mistralrs` — the stub fallback returns "image gen unavailable" and
@@ -90,5 +95,5 @@ futures-util = { version = "0.3", optional = true }
 default = []
 # Umbrella flag — no-op base. Real backends opt in below.
 native-inference = []
-native-mistralrs = ["native-inference", "dep:mistralrs-core", "dep:candle-core", "dep:indexmap", "dep:either", "dep:serde_yaml", "dep:png"]
+native-mistralrs = ["native-inference", "dep:mistralrs-core", "dep:candle-core", "dep:indexmap", "dep:either", "dep:png"]
 browser-automation = ["dep:chromiumoxide", "dep:futures-util"]

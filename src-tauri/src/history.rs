@@ -426,6 +426,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 14,
         apply: crate::workflow_skills::ensure_workflow_skills_tables,
     },
+    // v15 — Claude Skills library. A global (not workflow-scoped) catalog of
+    // Anthropic-format skill folders the user has imported. Each row carries
+    // the full `SKILL.md` body, the parsed frontmatter, and two toggles:
+    // `enabled` (advertised in the agent's tool-stub catalog) and `pinned`
+    // (full body_md prepended to the system prompt at chat start). `name` is
+    // globally UNIQUE so the agent can address a skill by name alone.
+    Migration {
+        version: 15,
+        apply: crate::claude_skills::ensure_claude_skills_tables,
+    },
 ];
 
 /// Target schema version — the highest rung of the ladder.
