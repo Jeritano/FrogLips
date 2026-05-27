@@ -6,6 +6,7 @@ import { logDiag } from "../diagnostics";
 import { api } from "../tauri-api";
 import { resolveLinearOrder } from "./graph";
 import { beginRun as beginScratchpadRun, endRun as endScratchpadRun } from "./scratchpad";
+import { beginSkillRun, endSkillRun } from "./skill-invocations";
 
 /**
  * Per-card outcome.
@@ -422,6 +423,11 @@ export async function runWorkflow(
   if (opts.workflowId != null) {
     beginScratchpadRun(opts.workflowId);
   }
+  // Phase: per-run skill invocation rate-limit. Lifecycle matches the
+  // scratchpad — initialise alongside, clear alongside. Unlike the
+  // scratchpad this is not workflow-id-keyed; the in-process singleton
+  // is sufficient since only one workflow run is in flight at a time.
+  beginSkillRun();
 
   // Optional start-card offset (scheduler triggers a workflow from one card).
   let cards = order;
@@ -429,6 +435,7 @@ export async function runWorkflow(
     const idx = order.findIndex((c) => c.id === opts.startCardId);
     if (idx < 0) {
       endScratchpadRun();
+      endSkillRun();
       throw new Error(`Start card "${opts.startCardId}" is not in the workflow graph.`);
     }
     cards = order.slice(idx);
@@ -623,5 +630,6 @@ export async function runWorkflow(
   // chat-mode call, which is the correct posture (they're workflow-
   // scoped by design).
   endScratchpadRun();
+  endSkillRun();
   return runResult;
 }

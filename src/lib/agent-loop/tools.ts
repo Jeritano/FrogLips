@@ -928,4 +928,101 @@ export const TOOLS = [
       },
     },
   },
+  /* ── Procedural memory: workflow_save_skill / workflow_list_skills /
+       workflow_get_skill / workflow_invoke_skill / workflow_delete_skill.
+       All five require an active workflow context — they return
+       {ok:false, kind:"not_in_workflow"} when called from chat mode. ── */
+  {
+    type: "function",
+    function: {
+      name: "workflow_save_skill",
+      description:
+        "Save the just-completed sequence of tool calls as a reusable named skill scoped to this workflow. Steps are an array of {tool, args} entries replayed by workflow_invoke_skill on later runs.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "Unique skill name within this workflow.",
+          },
+          description: {
+            type: "string",
+            description: "Short human-readable description of what the skill does.",
+          },
+          steps: {
+            type: "array",
+            description:
+              "Ordered list of tool calls to replay. Each step is `{tool: \"<tool_name>\", args: {<tool args>}}`. Cannot contain workflow_invoke_skill / workflow_save_skill / workflow_delete_skill / spawn_subagent / await_subagents.",
+            items: {
+              type: "object",
+              properties: {
+                tool: { type: "string" },
+                args: { type: "object" },
+              },
+              required: ["tool", "args"],
+            },
+          },
+          overwrite: {
+            type: "boolean",
+            description: "When true, replace an existing skill with the same name. Default false (refuses to clobber).",
+          },
+        },
+        required: ["name", "description", "steps"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "workflow_list_skills",
+      description:
+        "List skills saved for the current workflow. Returns summary rows (id, name, description, last_used_at, invocation_count) — use workflow_get_skill to fetch full step lists.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "workflow_get_skill",
+      description:
+        "Get a saved skill's full definition including its step list. Returns null when no skill with that name exists in the current workflow.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "workflow_invoke_skill",
+      description:
+        "Run a previously-saved skill. Each step is dispatched as a normal tool call honoring this card's allowlist + approval policy. Aborts on the first step that returns ok:false. Rate-limited to 10 invocations of the same skill per workflow run.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Skill name to invoke." },
+          args_override: {
+            type: "object",
+            description:
+              "Optional object shallow-merged into each step's args (call-site overrides take precedence over saved args).",
+          },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "workflow_delete_skill",
+      description: "Delete a saved skill from the current workflow.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      },
+    },
+  },
 ] as const;

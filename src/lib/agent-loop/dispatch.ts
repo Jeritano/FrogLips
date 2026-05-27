@@ -1108,6 +1108,247 @@ export async function executeTool(
         return JSON.stringify({ ok: false, kind: "io_error", message });
       }
     }
+    /* ── Procedural memory: workflow_save_skill / workflow_list_skills /
+         workflow_get_skill / workflow_invoke_skill / workflow_delete_skill.
+         Each is workflow-run-scoped — `not_in_workflow` outside a run. ── */
+    case "workflow_save_skill": {
+      const { snapshot } = await import("../workflow/scratchpad");
+      const snap = snapshot();
+      if (!snap) {
+        return JSON.stringify({ ok: false, kind: "not_in_workflow" });
+      }
+      const skillName = String(args.name ?? "");
+      const description = String(args.description ?? "");
+      const stepsRaw = args.steps;
+      if (!skillName) {
+        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+      }
+      if (!Array.isArray(stepsRaw)) {
+        return JSON.stringify({ ok: false, kind: "bad_args", message: "steps must be an array" });
+      }
+      // Client-side filter for tools that would invite recursion or escape
+      // the workflow-scoped intent. The Rust side enforces the same list at
+      // save time — this is a short-circuit so a friendly error lands
+      // without a round-trip. Keep in sync with FORBIDDEN_SKILL_TOOLS in
+      // src-tauri/src/workflow_skills.rs.
+      const FORBIDDEN_STEP_TOOLS = new Set([
+        "workflow_invoke_skill",
+        "workflow_save_skill",
+        "workflow_delete_skill",
+        "spawn_subagent",
+        "await_subagents",
+      ]);
+      for (let i = 0; i < stepsRaw.length; i++) {
+        const step = stepsRaw[i] as { tool?: unknown };
+        if (!step || typeof step !== "object" || typeof step.tool !== "string") {
+          return JSON.stringify({
+            ok: false,
+            kind: "bad_step",
+            message: `step ${i} is missing a string \`tool\` field`,
+          });
+        }
+        if (FORBIDDEN_STEP_TOOLS.has(step.tool)) {
+          return JSON.stringify({
+            ok: false,
+            kind: "forbidden_step_tool",
+            message: `step ${i} uses forbidden tool "${step.tool}"`,
+          });
+        }
+      }
+      const overwrite = args.overwrite === true;
+      try {
+        const id = await api.workflowSkillSave(
+          snap.workflowId,
+          skillName,
+          description,
+          JSON.stringify(stepsRaw),
+          overwrite,
+        );
+        return JSON.stringify({ ok: true, id, name: skillName });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return JSON.stringify({ ok: false, kind: "save_failed", message });
+      }
+    }
+    case "workflow_list_skills": {
+      const { snapshot } = await import("../workflow/scratchpad");
+      const snap = snapshot();
+      if (!snap) {
+        return JSON.stringify({ ok: false, kind: "not_in_workflow" });
+      }
+      try {
+        const skills = await api.workflowSkillList(snap.workflowId);
+        return JSON.stringify({ ok: true, skills });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return JSON.stringify({ ok: false, kind: "list_failed", message });
+      }
+    }
+    case "workflow_get_skill": {
+      const { snapshot } = await import("../workflow/scratchpad");
+      const snap = snapshot();
+      if (!snap) {
+        return JSON.stringify({ ok: false, kind: "not_in_workflow" });
+      }
+      const skillName = String(args.name ?? "");
+      if (!skillName) {
+        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+      }
+      try {
+        const skill = await api.workflowSkillGet(snap.workflowId, skillName);
+        if (!skill) {
+          return JSON.stringify({ ok: false, kind: "not_found", name: skillName });
+        }
+        return JSON.stringify({ ok: true, skill });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return JSON.stringify({ ok: false, kind: "get_failed", message });
+      }
+    }
+    case "workflow_delete_skill": {
+      const { snapshot } = await import("../workflow/scratchpad");
+      const snap = snapshot();
+      if (!snap) {
+        return JSON.stringify({ ok: false, kind: "not_in_workflow" });
+      }
+      const skillName = String(args.name ?? "");
+      if (!skillName) {
+        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+      }
+      try {
+        await api.workflowSkillDelete(snap.workflowId, skillName);
+        return JSON.stringify({ ok: true, name: skillName });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return JSON.stringify({ ok: false, kind: "delete_failed", message });
+      }
+    }
+    case "workflow_invoke_skill": {
+      const { snapshot } = await import("../workflow/scratchpad");
+      const snap = snapshot();
+      if (!snap) {
+        return JSON.stringify({ ok: false, kind: "not_in_workflow" });
+      }
+      const skillName = String(args.name ?? "");
+      if (!skillName) {
+        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+      }
+      const { recordSkillInvocation } = await import("../workflow/skill-invocations");
+      const limit = recordSkillInvocation(skillName);
+      if (!limit.ok) {
+        return JSON.stringify({
+          ok: false,
+          kind: "rate_limit_hit",
+          message: `skill "${skillName}" has been invoked ${limit.count} times this run (cap ${limit.cap}).`,
+          count: limit.count,
+          cap: limit.cap,
+        });
+      }
+      let skill;
+      try {
+        skill = await api.workflowSkillGet(snap.workflowId, skillName);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return JSON.stringify({ ok: false, kind: "get_failed", message });
+      }
+      if (!skill) {
+        return JSON.stringify({ ok: false, kind: "not_found", name: skillName });
+      }
+      let steps: Array<{ tool: string; args: Record<string, unknown> }>;
+      try {
+        const parsed = JSON.parse(skill.steps_json);
+        if (!Array.isArray(parsed)) {
+          return JSON.stringify({ ok: false, kind: "corrupt_steps", message: "steps_json is not an array" });
+        }
+        steps = parsed as Array<{ tool: string; args: Record<string, unknown> }>;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return JSON.stringify({ ok: false, kind: "corrupt_steps", message });
+      }
+      const argsOverride =
+        args.args_override && typeof args.args_override === "object" && !Array.isArray(args.args_override)
+          ? (args.args_override as Record<string, unknown>)
+          : {};
+
+      // Audit boundary markers — synthesised audit rows that bracket the
+      // replay so a reviewer can see "skill X started here, finished
+      // here, ran N inner steps". The inner tool calls audit themselves
+      // normally via the runner.
+      recordAuditSafe({
+        toolName: "skill_invocation_start",
+        args: { skill_name: skillName },
+        resultBody: "",
+        durationMs: 0,
+        approval: "auto",
+        outcome: "ok",
+        workflowRunId: null,
+      });
+
+      const stepResults: Array<Record<string, unknown>> = [];
+      for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        if (
+          !step
+          || typeof step !== "object"
+          || typeof step.tool !== "string"
+          || step.tool.length === 0
+          || typeof step.args !== "object"
+          || step.args === null
+          || Array.isArray(step.args)
+        ) {
+          stepResults.push({ step_index: i, ok: false, kind: "bad_step" });
+          break;
+        }
+        const mergedArgs: Record<string, unknown> = { ...step.args, ...argsOverride };
+        let parsed: Record<string, unknown>;
+        try {
+          // Recursively dispatch through the same executeTool surface so
+          // the card's allowlist + approval gate (applied by the runner
+          // wrapper around executeTool) governs each replayed call.
+          const result = await executeTool(step.tool, mergedArgs, options);
+          try {
+            const decoded = JSON.parse(result);
+            parsed = (decoded && typeof decoded === "object" && !Array.isArray(decoded))
+              ? (decoded as Record<string, unknown>)
+              : { ok: false, raw: result };
+          } catch {
+            parsed = { ok: false, raw: result };
+          }
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          parsed = { ok: false, kind: "step_threw", message };
+        }
+        stepResults.push({ step_index: i, tool: step.tool, ...parsed });
+        if (parsed && parsed.ok === false) break;
+      }
+
+      recordAuditSafe({
+        toolName: "skill_invocation_end",
+        args: { skill_name: skillName, steps_run: stepResults.length },
+        resultBody: "",
+        durationMs: 0,
+        approval: "auto",
+        outcome: "ok",
+        workflowRunId: null,
+      });
+
+      // Best-effort: bump server-side last_used_at + invocation_count.
+      // A failure to record must not mask the actual replay result.
+      try {
+        await api.workflowSkillRecordInvocation(snap.workflowId, skillName);
+      } catch (e) {
+        logDiag({
+          level: "warn",
+          source: "workflow-skills",
+          message: `workflow_skill_record_invocation failed for "${skillName}"`,
+          detail: redactDiagDetail(e),
+        });
+      }
+
+      const lastStep = stepResults[stepResults.length - 1];
+      const overall_ok = !!(lastStep && lastStep.ok !== false);
+      return JSON.stringify({ ok: overall_ok, skill: skillName, steps: stepResults });
+    }
     default:
       return JSON.stringify({ ok: false, kind: "unknown_tool", message: `Unknown tool: ${name}` });
   }

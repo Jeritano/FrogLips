@@ -77,6 +77,10 @@ const ALL_TOOLS = [
   "task_create", "task_status", "task_list",
   // Interaction
   "ask_user",
+  // Procedural memory (workflow skills) — saved sequences of tool calls
+  // that future runs can replay by name.
+  "workflow_save_skill", "workflow_list_skills", "workflow_get_skill",
+  "workflow_invoke_skill", "workflow_delete_skill",
 ];
 
 /**

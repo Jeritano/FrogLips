@@ -135,6 +135,26 @@ export const TOOL_CATEGORIES: readonly ToolCategory[] = [
     description: "Round-trip to the human (ask_user dialog) mid-run.",
     tools: ["ask_user"],
   },
+  {
+    // Procedural memory — saved sequences a card can replay by name.
+    // Scratchpad tools (workflow_set/workflow_get/workflow_keys/
+    // workflow_get_prior_run) are NOT in ALL_TOOLS today (not picker-
+    // exposed), so this bucket lists only the cross-run skill tools.
+    // If those scratchpad tools are added to the picker later, slot
+    // them above the skill tools to preserve the "within-run reads
+    // first, cross-run writes second" reading order.
+    id: "memory",
+    label: "Memory",
+    description:
+      "Save and replay sequences of tool calls (procedural memory) scoped to this workflow.",
+    tools: [
+      "workflow_save_skill",
+      "workflow_list_skills",
+      "workflow_get_skill",
+      "workflow_invoke_skill",
+      "workflow_delete_skill",
+    ],
+  },
 ];
 
 /** Stable id for the catch-all bucket. */

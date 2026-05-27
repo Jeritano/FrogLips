@@ -691,6 +691,31 @@ export interface WorkflowRun {
 }
 
 /**
+ * Procedural-memory skill saved by an agent during a workflow run.
+ * Skills are agent-authored sequences of tool calls — see the
+ * `workflow_save_skill` tool on the Rust side. The renderer surfaces
+ * them in `SkillsPanel` so the user can inspect or remove them.
+ *
+ * `last_used_at` is null until an agent re-invokes the skill via the
+ * `workflow_use_skill` tool; `invocation_count` is the lifetime count.
+ */
+export interface SkillSummary {
+  id: number;
+  name: string;
+  description: string;
+  last_used_at: number | null;
+  invocation_count: number;
+}
+
+/** Full skill row including the `steps_json` payload for inspection. */
+export interface SkillFull extends SkillSummary {
+  workflow_id: number;
+  /** JSON-encoded `[{tool, args}, ...]` — pretty-printed for display. */
+  steps_json: string;
+  created_at: number;
+}
+
+/**
  * Validate and normalize one raw card. Returns a well-formed `WorkflowCard`,
  * or `null` if required string fields are missing — a malformed card is
  * dropped rather than allowed to crash the runner (e.g. `card.tools.length`).
@@ -899,4 +924,30 @@ export interface ImageMeta {
 export interface ListImagesPage {
   rows: ImageMeta[];
   total: number;
+}
+
+/* ── Workflow skills (procedural memory) ─────────────────────────────── */
+
+/**
+ * Summary row returned by `workflow_skill_list`. `last_used_at` and
+ * `invocation_count` reflect how often the skill has been replayed via
+ * `workflow_invoke_skill` — useful for ranking the picker.
+ */
+export interface SkillSummary {
+  id: number;
+  name: string;
+  description: string;
+  last_used_at: number | null;
+  invocation_count: number;
+}
+
+/**
+ * Full skill row returned by `workflow_skill_get`. `steps_json` is the
+ * literal SQLite column — a JSON-encoded array of `{tool, args}` step
+ * descriptors that the invoker replays through `executeTool`.
+ */
+export interface SkillFull extends SkillSummary {
+  workflow_id: number;
+  steps_json: string;
+  created_at: number;
 }

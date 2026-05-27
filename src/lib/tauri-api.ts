@@ -92,6 +92,8 @@ import type {
   ServerStatus,
   ShellOpts,
   ShellResult,
+  SkillFull,
+  SkillSummary,
   TaskInfo,
   WorkflowRun,
   WatchHandle,
@@ -697,6 +699,35 @@ export const api = {
     invoke<number>("workflow_run_record", { workflowId, status, resultsJson }),
   workflowRunsList: (workflowId: number) =>
     invoke<WorkflowRun[]>("workflow_runs_list", { workflowId }),
+
+  // Workflow skills (procedural memory). One skill = a named, replayable
+  // sequence of tool calls scoped to a workflow. Save after a successful
+  // run via `workflow_skill_save`; replay via the `workflow_invoke_skill`
+  // agent tool. The Rust side enforces the same forbidden-tools list the
+  // dispatch layer rejects at save time, so the round-trip is safe even
+  // if a client forgets the client-side check.
+  workflowSkillSave: (
+    workflowId: number,
+    name: string,
+    description: string,
+    stepsJson: string,
+    overwrite = false,
+  ) =>
+    invoke<number>("workflow_skill_save", {
+      workflowId,
+      name,
+      description,
+      stepsJson,
+      overwrite,
+    }),
+  workflowSkillList: (workflowId: number) =>
+    invoke<SkillSummary[]>("workflow_skill_list", { workflowId }),
+  workflowSkillGet: (workflowId: number, name: string) =>
+    invoke<SkillFull | null>("workflow_skill_get", { workflowId, name }),
+  workflowSkillDelete: (workflowId: number, name: string) =>
+    invoke<void>("workflow_skill_delete", { workflowId, name }),
+  workflowSkillRecordInvocation: (workflowId: number, name: string) =>
+    invoke<void>("workflow_skill_record_invocation", { workflowId, name }),
 
   // Image generation (mistralrs FLUX). `imageGenerate` returns the **op_id**
   // immediately — the actual diffusion + PNG write runs async on the Rust
