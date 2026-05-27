@@ -20,7 +20,7 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         with:
           # Reads .release-please-manifest.json + release-please-config.json
           # to know which packages to track. Single-package config here.
