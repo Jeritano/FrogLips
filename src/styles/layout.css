@@ -643,7 +643,10 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 7px 10px;
+  /* Tightened from 7px 10px to claw back ~4px of title room after the
+     sidebar was narrowed. Inline action buttons still get their fixed
+     widths; the conv-title flex-grows into the remainder. */
+  padding: 6px 6px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
@@ -713,9 +716,21 @@ body {
 
 .conv-title {
   flex: 1;
+  min-width: 0;
+  /* Two-line clamp instead of single-line ellipsis. After the sidebar
+     was trimmed -45px the single-line layout cut titles after ~10
+     characters ('you are th…'). Two lines roughly doubles the visible
+     copy (~22 chars at 13px / 215px row width) while still hard-capping
+     row height so the list density stays predictable. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  line-height: 1.25;
+  /* Tooltip via the existing `title` attribute still surfaces the full
+     untruncated text on hover for the third+ line cases. */
+  word-break: break-word;
 }
 
 .conv-rename {
