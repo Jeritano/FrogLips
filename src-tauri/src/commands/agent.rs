@@ -1131,3 +1131,242 @@ pub fn agent_undo_last(approval: String) -> Result<agent::snapshot::UndoResult, 
 pub fn agent_clear_undo_stack() {
     agent::snapshot::clear();
 }
+
+#[cfg(test)]
+mod binding_tests {
+    //! Symmetry tests for `binding_for`. Each dangerous tool family that
+    //! has an arm in `binding_for` must (a) produce the same SHA-256 for
+    //! the same payload across calls, (b) produce a DIFFERENT hash when
+    //! any bound field changes, and (c) never silently fall through to
+    //! `None` for the arms we've declared.
+    //!
+    //! A new dangerous tool added to `binding_for` without a matching
+    //! entry below will not break anything by itself — but the matching
+    //! test in this file will fail to assert non-`None`, which is the
+    //! signal to add the row. (Symmetry between mint and consume sides
+    //! is checked in `approval::tests`; this file covers the mint side
+    //! independently so a refactor that changes `kv` or `sha256_hex`
+    //! gets caught before merge.)
+    use super::*;
+
+    /// Every tool family that is supposed to have a binding actually
+    /// returns `Some(_)` — guards against an accidental `_ => None`
+    /// fall-through after a refactor.
+    #[test]
+    fn declared_tools_all_have_bindings() {
+        let p = ApprovalPayload {
+            command: Some("ls".into()),
+            path: Some("/tmp/x".into()),
+            from: Some("/a".into()),
+            to: Some("/b".into()),
+            url: Some("https://x".into()),
+            pid: Some(1),
+            signal: Some("TERM".into()),
+            text: Some("hi".into()),
+            bundle_id: Some("com.x".into()),
+            script: Some("say hi".into()),
+            title: Some("t".into()),
+            body: Some("b".into()),
+            mcp_command: Some("/bin/echo".into()),
+            mcp_args: Some(vec!["a".into(), "b".into()]),
+            mcp_env_keys: Some(vec!["X".into()]),
+            mcp_server: Some("srv".into()),
+            mcp_tool: Some("tool".into()),
+        };
+        for t in [
+            "agent_run_shell",
+            "agent_write_file",
+            "agent_edit_file",
+            "agent_multi_edit",
+            "agent_make_dir",
+            "agent_delete_path",
+            "agent_open_path_in_editor",
+            "agent_format_code",
+            "image_save_to",
+            "agent_move_path",
+            "agent_copy_path",
+            "agent_undo_last",
+            "agent_kill_process",
+            "agent_clipboard_set",
+            "agent_open_app",
+            "agent_show_notification",
+            "agent_applescript_run",
+            "agent_screenshot",
+            "agent_http_request",
+            "agent_web_fetch",
+            "agent_browser_navigate",
+            "agent_browser_click",
+            "agent_browser_fill",
+            "agent_browser_get_text",
+            "agent_browser_screenshot",
+            "agent_browser_close",
+            "mcp_start_server",
+            "mcp_call_tool",
+        ] {
+            assert!(
+                binding_for(t, &p).is_some(),
+                "tool {t} has no binding — declared but fell through to None"
+            );
+        }
+    }
+
+    /// Two-pass call with identical payloads must produce byte-identical
+    /// fingerprints — guards against accidental clock/random in `kv`.
+    #[test]
+    fn binding_is_deterministic() {
+        let p = ApprovalPayload {
+            path: Some("/tmp/notes.md".into()),
+            ..Default::default()
+        };
+        let a = binding_for("agent_write_file", &p).unwrap();
+        let b = binding_for("agent_write_file", &p).unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// Changing any bound field invalidates the previous binding.
+    #[test]
+    fn path_binding_changes_with_path() {
+        let p1 = ApprovalPayload {
+            path: Some("/tmp/notes.md".into()),
+            ..Default::default()
+        };
+        let p2 = ApprovalPayload {
+            path: Some("/tmp/other.md".into()),
+            ..Default::default()
+        };
+        assert_ne!(
+            binding_for("agent_write_file", &p1).unwrap(),
+            binding_for("agent_write_file", &p2).unwrap()
+        );
+    }
+
+    /// Shell binding follows `command`, NOT the unrelated `path` field —
+    /// a refactor that accidentally cross-wires would be caught here.
+    #[test]
+    fn shell_binding_follows_command_only() {
+        let p_cmd_only = ApprovalPayload {
+            command: Some("ls".into()),
+            ..Default::default()
+        };
+        let p_cmd_and_path = ApprovalPayload {
+            command: Some("ls".into()),
+            path: Some("/tmp".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            binding_for("agent_run_shell", &p_cmd_only).unwrap(),
+            binding_for("agent_run_shell", &p_cmd_and_path).unwrap()
+        );
+        let p_diff_cmd = ApprovalPayload {
+            command: Some("rm -rf /".into()),
+            ..Default::default()
+        };
+        assert_ne!(
+            binding_for("agent_run_shell", &p_cmd_only).unwrap(),
+            binding_for("agent_run_shell", &p_diff_cmd).unwrap()
+        );
+    }
+
+    /// MCP env_keys are sorted on both sides; the binding must be
+    /// invariant under input key order. Infra audit H1 regression test.
+    #[test]
+    fn mcp_env_keys_order_invariant() {
+        let p_abc = ApprovalPayload {
+            mcp_command: Some("/usr/local/bin/server".into()),
+            mcp_args: Some(vec!["--port".into(), "9000".into()]),
+            mcp_env_keys: Some(vec!["A".into(), "B".into(), "C".into()]),
+            ..Default::default()
+        };
+        let p_cba = ApprovalPayload {
+            mcp_command: Some("/usr/local/bin/server".into()),
+            mcp_args: Some(vec!["--port".into(), "9000".into()]),
+            mcp_env_keys: Some(vec!["C".into(), "B".into(), "A".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            binding_for("mcp_start_server", &p_abc).unwrap(),
+            binding_for("mcp_start_server", &p_cba).unwrap()
+        );
+    }
+
+    /// MCP args are positional — order matters because argv is
+    /// semantically ordered. Swapping `--port 9000` to `9000 --port`
+    /// must NOT match.
+    #[test]
+    fn mcp_args_are_position_sensitive() {
+        let p1 = ApprovalPayload {
+            mcp_command: Some("/x".into()),
+            mcp_args: Some(vec!["--port".into(), "9000".into()]),
+            ..Default::default()
+        };
+        let p2 = ApprovalPayload {
+            mcp_command: Some("/x".into()),
+            mcp_args: Some(vec!["9000".into(), "--port".into()]),
+            ..Default::default()
+        };
+        assert_ne!(
+            binding_for("mcp_start_server", &p1).unwrap(),
+            binding_for("mcp_start_server", &p2).unwrap()
+        );
+    }
+
+    /// mcp_call_tool binding follows (server, tool). Swapping either
+    /// field invalidates the token; args are intentionally NOT in the
+    /// binding (see binding_for comment for the float-format rationale).
+    #[test]
+    fn mcp_call_tool_binding_follows_server_and_tool() {
+        let p_fs_read = ApprovalPayload {
+            mcp_server: Some("fs".into()),
+            mcp_tool: Some("read_file".into()),
+            ..Default::default()
+        };
+        let p_fs_delete = ApprovalPayload {
+            mcp_server: Some("fs".into()),
+            mcp_tool: Some("delete_file".into()),
+            ..Default::default()
+        };
+        let p_net_read = ApprovalPayload {
+            mcp_server: Some("net".into()),
+            mcp_tool: Some("read_file".into()),
+            ..Default::default()
+        };
+        let a = binding_for("mcp_call_tool", &p_fs_read).unwrap();
+        let b = binding_for("mcp_call_tool", &p_fs_delete).unwrap();
+        let c = binding_for("mcp_call_tool", &p_net_read).unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+    }
+
+    /// Notification binding uses both title AND body. Re-review M-NEW-1
+    /// regression: previously these were concatenated with `\x1f`, which
+    /// allowed title="A\x1fB" + body="" to collide with title="A" +
+    /// body="B". `kv()` length-prefixes each field, so this should now
+    /// fail to collide.
+    #[test]
+    fn notification_title_body_are_unambiguous() {
+        let p_collision_attempt = ApprovalPayload {
+            title: Some("A\u{1f}B".into()),
+            body: Some(String::new()),
+            ..Default::default()
+        };
+        let p_legitimate = ApprovalPayload {
+            title: Some("A".into()),
+            body: Some("B".into()),
+            ..Default::default()
+        };
+        assert_ne!(
+            binding_for("agent_show_notification", &p_collision_attempt).unwrap(),
+            binding_for("agent_show_notification", &p_legitimate).unwrap()
+        );
+    }
+
+    /// Unknown tools return None — guard against a typo silently turning
+    /// a binding-required tool into an unbound `approval::mint` call.
+    #[test]
+    fn unknown_tool_returns_none() {
+        let p = ApprovalPayload::default();
+        assert!(binding_for("agent_definitely_not_a_real_tool", &p).is_none());
+        assert!(binding_for("", &p).is_none());
+    }
+}
