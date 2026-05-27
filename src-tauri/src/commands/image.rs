@@ -258,7 +258,18 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
     }
 
     // Atomic write: .tmp → fsync file → rename → fsync parent (M7).
-    if let Err(e) = write_atomic(&validated, &png_bytes) {
+    // Audit Tier 5 (2026-05-26): `write_atomic` is fully blocking — it
+    // calls `sync_all`, `rename`, and an explicit parent-dir fsync. Doing
+    // that on the Tokio runtime stalls an executor thread for the entire
+    // disk flush (can be 100ms+ on a busy APFS volume), starving other
+    // async work. Move it to a blocking thread; the calling task is
+    // already async-spawned and just `await`s the join.
+    let write_dest = validated.clone();
+    let write_bytes = png_bytes; // ownership moves into spawn_blocking
+    let write_result = tokio::task::spawn_blocking(move || write_atomic(&write_dest, &write_bytes))
+        .await
+        .unwrap_or_else(|e| Err(format!("write task panicked: {e}")));
+    if let Err(e) = write_result {
         let _ = app.emit(
             "image-error",
             serde_json::json!({ "op_id": op_id, "message": e }),
