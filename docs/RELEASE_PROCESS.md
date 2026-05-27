@@ -135,7 +135,35 @@ npx @tauri-apps/cli signer generate -w ~/.tauri/froglips.key -p ""
 - Private: `~/.tauri/froglips.key` — **DO NOT COMMIT**. Losing it means no further updates work (you'd have to rotate the public key and push a forced re-install).
 - Public: embedded in `tauri.conf.json` under `plugins.updater.pubkey`.
 
-Back the private key up to a password manager.
+### Key custody (bus-factor protection)
+
+Single-developer custody is a bus-factor of 1 — lost laptop, forgotten
+passphrase, or sudden absence breaks the auto-updater forever. Maintain
+**three independent copies** of the private key + passphrase:
+
+1. **Primary:** `~/.tauri/froglips.key` on the build machine (current).
+2. **Cold backup:** GPG-encrypted copy on an offline encrypted USB drive
+   stored in a physically separate location (home safe, bank box).
+   Encrypt with `gpg --symmetric --cipher-algo AES256 froglips.key`;
+   the passphrase for the GPG layer is *different* from the minisign
+   passphrase and is itself stored in a password manager entry titled
+   `froglips-key-gpg-passphrase` (so a single password-manager breach
+   does not yield a usable signing key).
+3. **Password manager:** an entry titled `froglips-minisign-private-key`
+   carrying the raw private key file contents and the minisign
+   passphrase, shared with a co-maintainer (when one exists). 1Password
+   Secure Notes / Bitwarden attachments both work.
+
+Verify the cold backup yearly by decrypting it on an air-gapped machine
+and re-signing a known-good SHA256SUMS file; compare the signature against
+the production one. Yearly verify-only, never re-import to the primary.
+
+If the project has *no* co-maintainer yet, the password-manager copy
+still protects against drive failure but does not protect against the
+maintainer becoming unavailable. The bus-factor remains 1. Resolve by
+adding a trusted co-maintainer with custody-only access (no commit
+rights) to the password-manager entry. Document the co-maintainer in
+this file (currently: **none — sole-maintainer project**).
 
 ### Key rotation playbook
 
@@ -172,6 +200,53 @@ and force a manual reinstall instead — a single release signed with the
 new key, plus a security notice in the release notes directing users to
 download from GitHub manually. Auto-update cannot bridge a hostile-key
 gap.
+
+## Notarization roadmap
+
+The app currently ships **unsigned + unnotarized** by Apple. Gatekeeper
+warns on first launch; the README instructs users to right-click → Open.
+This trains real users to bypass Gatekeeper, which is a malware
+distribution vector other apps will exploit.
+
+Plan to address (sequence matters):
+
+1. **Enroll** in the Apple Developer Program ($99/yr). Required for a
+   Developer ID Application certificate, which is what notarization
+   binds against. Personal vs Organization enrollment is a tax/identity
+   question, not a technical one.
+2. **Generate** a Developer ID Application cert in Xcode → Settings →
+   Accounts → Manage Certificates. Export the `.p12` and password into
+   the release-build machine's keychain (and the password-manager backup
+   the same way the minisign key is stored — see Key custody above).
+3. **Update `scripts/release.sh`** to codesign with the real identity
+   instead of the ad-hoc `-`:
+   ```bash
+   codesign --force --options runtime --timestamp \
+            --sign "Developer ID Application: <your-name> (<team-id>)" \
+            Froglips.app
+   ```
+4. **Add notarize step** after `tauri build`:
+   ```bash
+   xcrun notarytool submit Froglips_0.11.x_aarch64.dmg \
+         --apple-id "$APPLE_ID" \
+         --password "$APP_SPECIFIC_PASSWORD" \
+         --team-id "$TEAM_ID" \
+         --wait
+   xcrun stapler staple Froglips_0.11.x_aarch64.dmg
+   xcrun stapler staple Froglips.app  # for the updater tarball
+   ```
+5. **Mirror in `release.yml`** — the CI runner needs the cert + an
+   app-specific password in GitHub Secrets:
+   - `APPLE_DEVELOPER_ID_CERT_P12` (base64-encoded)
+   - `APPLE_DEVELOPER_ID_CERT_PASSWORD`
+   - `APPLE_ID`, `APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
+6. **Update SECURITY.md** to remove the "intentionally not notarized"
+   line and bump to "first-launch shows nothing — Gatekeeper trusts the
+   binary".
+
+This is gated on the $99/yr enrollment decision. Track as a single
+out-of-scope ticket; no code change in the meantime — the minisign
+updater signature continues to carry integrity for installed users.
 
 ## Troubleshooting builds
 

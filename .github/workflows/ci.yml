@@ -10,6 +10,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default: required jobs only need to read the repo.
+# Any job that needs more (e.g. upload-artifact already grants its own)
+# must override locally. Removes ambient write capability that a
+# compromised action could otherwise use to push commits.
+permissions:
+  contents: read
+
 jobs:
   # Maturity review P2 #48: version must stay in lockstep across three
   # files. A drifted release lands the user a binary whose Info plist,
@@ -101,30 +108,79 @@ jobs:
         working-directory: src-tauri
         run: cargo check --features browser-automation
 
+      # Maturity review M15: locked to aarch64-apple-darwin in production,
+      # but if a contributor on an Intel Mac (or future CI matrix) lands
+      # code that breaks x86_64 builds, nothing catches it. Compile-only
+      # check is cheap; full clippy/test cost is not justified yet.
+      - name: Add x86_64-apple-darwin target
+        run: rustup target add x86_64-apple-darwin
+      - name: cargo check (x86_64-apple-darwin, native-mistralrs)
+        working-directory: src-tauri
+        run: cargo check --target x86_64-apple-darwin --features native-mistralrs
+
+  # Supply-chain advisories — split out of the required jobs so:
+  # (a) the truth surfaces. Maturity review C4: previously `cargo deny`
+  #     and `npm audit` lived under required jobs with `continue-on-error`,
+  #     which made the "4 of 4 required status checks" gate a paper tiger
+  #     — supply-chain findings shipped green.
+  # (b) findings still run on every PR and publish to the run summary,
+  #     so reviewers see them even though the job is not branch-protected.
+  # Promote any of these to required by removing from this job and putting
+  # back under `rust-native` / `frontend` without `continue-on-error`.
+  supply-chain-advisory:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: supply-chain
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
       # cargo-audit reads Cargo.lock; it doesn't compile anything, so
       # running it on the *shipped* feature set (native-mistralrs pulls in
       # mistralrs-core / candle-core / indexmap / either / serde_yaml, none
       # of which the lean no-default-features build sees) is what actually
       # protects releases.
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: cargo audit
+      - name: cargo audit (production)
         working-directory: src-tauri
+        continue-on-error: true
         run: cargo audit
 
-      # Maturity review P2 #46: cargo-deny adds bans / license / source
-      # gates on top of the advisory-only `cargo audit`. Non-blocking
-      # at first (continue-on-error) so we can baseline the dep tree
-      # before promoting to a hard gate; the run still publishes its
-      # findings in CI logs for triage.
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
 
-      - name: cargo deny check
+      - name: cargo deny check (bans + licenses + sources)
         working-directory: src-tauri
         continue-on-error: true
         run: cargo deny check
+
+      # Production deps only — bare `--omit=dev` masks devtime supply chain
+      # risk (vite plugins, vitest). This step covers prod; the next covers
+      # the full tree.
+      - name: npm audit (production, high+)
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: npm audit (devtime, high+)
+        continue-on-error: true
+        run: npm audit --audit-level=high
 
   frontend:
     runs-on: ubuntu-latest
@@ -140,12 +196,9 @@ jobs:
       - name: npm ci
         run: npm ci
 
-      # Non-blocking dependency advisory check. Findings get triaged into
-      # follow-up issues; we don't want a transitive CVE to redline CI before
-      # it can be evaluated. Promote to blocking once the baseline is clean.
-      - name: npm audit (advisory only)
-        continue-on-error: true
-        run: npm audit --omit=dev --audit-level=high
+      # npm audit moved to the supply-chain-advisory job — it lived here
+      # under continue-on-error, which made the required-frontend gate
+      # silently green on supply-chain findings (audit C4, 2026-05-27).
 
       - name: TypeScript check
         run: npx tsc --noEmit
@@ -167,9 +220,13 @@ jobs:
         if: hashFiles('playwright.config.ts') != ''
         run: npx playwright install --with-deps chromium
 
+      # Drop --retries to surface flakes instead of silently re-running.
+      # Maturity review M14: --retries=2 masked real intermittent test
+      # bugs by hiding them under a successful second/third run. With 0
+      # retries flaky tests fail loudly and get triaged.
       - name: Playwright e2e
         if: hashFiles('playwright.config.ts') != ''
-        run: npx playwright test --reporter=line --retries=2
+        run: npx playwright test --reporter=line --retries=0
 
       - name: Upload Playwright artifacts on failure
         if: failure() && hashFiles('playwright.config.ts') != ''

@@ -24,7 +24,7 @@ Out of scope:
 
 - A user explicitly approving a destructive `run_shell` command — that's the user's call.
 - Anything that requires the attacker to already have shell access on the user's machine.
-- macOS Gatekeeper warnings (the app is intentionally not yet notarized).
+- macOS Gatekeeper warnings (the app is intentionally not yet notarized). Notarization is on the roadmap — see `docs/RELEASE_PROCESS.md#notarization-roadmap`. Until then, users right-click-Open through Gatekeeper; the minisign-signed updater + SHA256SUMS provide the integrity guarantee that notarization would otherwise carry.
 
 ## Disclosure timeline
 

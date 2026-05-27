@@ -28,8 +28,12 @@ concurrency:
 jobs:
   build:
     runs-on: macos-14
+    # Build job only emits workflow artifacts via actions/upload-artifact,
+    # which uses an internal API and does not need `contents: write`.
+    # Maturity review C2: tightened from contents:write to read-only so a
+    # compromised step in this job cannot push to the repo.
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
