@@ -600,21 +600,17 @@
   padding: 0 var(--space-2) var(--space-2);
 }
 .wf-tool-item {
-  /* Layout: tool name flush-left, checkbox snug to the right edge of
-     the cell. The previous attempt left .wf-tool-item natural-width,
-     so the flex container sat at the left of each grid cell with
-     empty space to the right — checkboxes appeared in the middle of
-     each cell and the name span (with min-width:0 + overflow:hidden)
-     was collapsing to invisible. Fix: force the row to fill the grid
-     cell (`width: 100%`), let the name span grow with `flex: 1` so
-     it occupies the empty space between the left edge and the
-     checkbox at the right. */
-  display: flex;
+  /* Explicit 2-column grid: name column shrinks/grows, checkbox column
+     is auto-sized. Avoids every flexbox edge case (`flex: 0` shrinking
+     a name span to 0, items overlapping, item natural-width != cell
+     width). Grid cell width is set by the parent .wf-tool-cat-body
+     grid; this inner grid divides it into "name + checkbox at end". */
+  display: grid;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
   padding: 2px var(--space-1);
-  font-size: var(--fs-xs);
   color: var(--text);
   cursor: pointer;
   border-radius: var(--radius-sm);
@@ -623,21 +619,17 @@
   background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
 }
 .wf-tool-item-name {
-  flex: 1 1 auto;
-  /* Explicit color + font-size: was inheriting via the cascade but the
-     previous attempt at ellipsis truncation was apparently rendering
-     the text the same color as the panel background under some
-     conditions. Set the values directly so they can't be overridden
-     by a stray descendant rule elsewhere in the stylesheet. */
   color: var(--text);
   font-size: var(--fs-xs);
+  /* Single line; if a future tool name is too long it can ellipsis,
+     but for the current set (max ~23 chars) wrap is unlikely at the
+     420px panel width. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   min-width: 0;
-  /* Drop the ellipsis truncation — tool names are short (longest is
-     `search_project_knowledge` at 23 chars) and the grid cell is wide
-     enough at the standard 420px form width. If a longer name ships
-     later, we'll re-add ellipsis with an explicit working test. */
 }
 .wf-tool-item input[type="checkbox"] {
   margin: 0;
-  flex: 0 0 auto;
+  justify-self: end;
 }
