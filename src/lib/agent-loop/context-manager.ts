@@ -64,17 +64,50 @@ export function estimateTokens(text: string): number {
   return Math.ceil((text?.length ?? 0) / 4);
 }
 
+/**
+ * Per-Message token estimate cache. `applyContextBudget` calls
+ * `estimateMessagesTokens` 2-4× per turn, and each call re-scans every
+ * message in the array including the JSON.stringify of tool_calls.
+ * Maturity review H4 (2026-05-27): a 30-turn run with 30 messages was
+ * doing ~3600 redundant char-scans per loop iteration on the runner's
+ * hot path. WeakMap keyed by Message ref means the cache invalidates
+ * automatically when the runner replaces a message reference (e.g.
+ * after a tool-result splice) and an updated `content` produces a new
+ * key entry on next access.
+ *
+ * Note: `content` is mutated in place on the streaming assistant msg
+ * (`streamingMsg.content += delta`) — that same Message ref keeps its
+ * cached estimate stale. The runner re-creates a fresh Message before
+ * each `applyContextBudget` call only for the streaming bubble; the
+ * other messages don't mutate in place so this is correct in practice.
+ * Callers that violate that contract should use `invalidateMessageTokens`
+ * below.
+ */
+const MESSAGE_TOKEN_CACHE = new WeakMap<Message, number>();
+
+/** Drop a Message's cached token estimate. Call after mutating
+ *  `content` or `tool_calls` in place. */
+export function invalidateMessageTokens(m: Message): void {
+  MESSAGE_TOKEN_CACHE.delete(m);
+}
+
+function estimateOneMessage(m: Message): number {
+  const cached = MESSAGE_TOKEN_CACHE.get(m);
+  if (cached !== undefined) return cached;
+  let total = estimateTokens(m.content);
+  if (m.tool_calls?.length) {
+    total += estimateTokens(JSON.stringify(m.tool_calls));
+  }
+  total += 4;
+  MESSAGE_TOKEN_CACHE.set(m, total);
+  return total;
+}
+
 /** Estimate total tokens of a message array, including per-message overhead. */
 export function estimateMessagesTokens(msgs: Message[]): number {
   let total = 0;
   for (const m of msgs) {
-    total += estimateTokens(m.content);
-    // Tool-call payloads ride alongside `content` on the wire.
-    if (m.tool_calls?.length) {
-      total += estimateTokens(JSON.stringify(m.tool_calls));
-    }
-    // ~4 tokens of role/delimiter framing per message.
-    total += 4;
+    total += estimateOneMessage(m);
   }
   return total;
 }

@@ -18,12 +18,14 @@ import { EmptyState } from "./components/EmptyState";
 import { Toast } from "./components/Toast";
 import { ErrorBar } from "./components/ErrorBar";
 import { LiveRegion } from "./components/LiveRegion";
-import { WorkflowRunProvider, useWorkflowRun } from "./lib/workflow/run-context";
+import { WorkflowRunProvider, useWorkflowRunControl } from "./lib/workflow/run-context";
 
 /**
  * Sidebar entry for the Workflows view. Wrapped in its own component so
- * the running-badge subscribes to `useWorkflowRun()` without forcing the
- * entire App to re-render on every cardStates delta during a live run.
+ * the running-badge subscribes only to the *stable* control surface
+ * (`useWorkflowRunControl`) instead of the per-card delta surface —
+ * the button re-renders on run start/stop, NOT on every streamed token
+ * (audit H7, 2026-05-27).
  */
 function WorkflowsEntryButton({
   active,
@@ -32,7 +34,7 @@ function WorkflowsEntryButton({
   active: boolean;
   onClick: () => void;
 }) {
-  const { runningWorkflowId } = useWorkflowRun();
+  const { runningWorkflowId } = useWorkflowRunControl();
   const isRunning = runningWorkflowId !== null;
   return (
     <button

@@ -15,7 +15,7 @@ import {
   toolCallSig,
 } from "./dispatch";
 import { buildSystemPrompt } from "./system-prompt";
-import { applyContextBudget } from "./context-manager";
+import { applyContextBudget, invalidateMessageTokens } from "./context-manager";
 import { streamAgentChat } from "./agent-chat";
 import { awaitSubagents, listSubagents, runSubagent, spawnSubagentAsync } from "./subagent";
 import { fetchMcpTools, isMcpToolName } from "./mcp-tools";
@@ -596,6 +596,36 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     }
 
     let result: { content: string; tool_calls: ToolCall[]; prompt_eval_count?: number; eval_count?: number };
+    // Stream-delta coalescing (audit H5 + H6, 2026-05-27).
+    // - H5: every delta previously did `onUpdate([...msgs])` — full-array
+    //   spread per chunk. A 200-token reply with 50 deltas = 50 full
+    //   array allocations + 50 React reconcile rounds.
+    // - H6: `streamingMsg.content += delta` is O(n²) under the hood for
+    //   long replies. Buffer deltas into a string[] and `.join("")` lazily.
+    // Strategy: append delta to a buffer + bump a dirty flag; a 16ms
+    // timer (one webview frame) flushes the buffer into content and
+    // calls onUpdate once. Final flush is synchronous on stream
+    // resolve/error/abort so the persisted msgs always reflect the
+    // final content.
+    const deltaBuf: string[] = [];
+    let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushStream = () => {
+      if (coalesceTimer != null) {
+        clearTimeout(coalesceTimer);
+        coalesceTimer = null;
+      }
+      if (deltaBuf.length === 0) return;
+      streamingMsg.content += deltaBuf.join("");
+      deltaBuf.length = 0;
+      // Mutated `content` in place — invalidate cached token estimate
+      // (audit H4 contract: in-place mutation requires explicit drop).
+      invalidateMessageTokens(streamingMsg);
+      onUpdate([...msgs]);
+    };
+    const scheduleFlush = () => {
+      if (coalesceTimer != null) return;
+      coalesceTimer = setTimeout(flushStream, 16);
+    };
     try {
       result = await streamAgentChat(
         opts,
@@ -603,18 +633,36 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         tools,
         signal,
         (delta) => {
-          streamingMsg.content += delta;
+          deltaBuf.push(delta);
+          // onAssistantDelta is for raw stream consumers (DiagnosticsPanel,
+          // workflow card output stream); they want every delta, not the
+          // coalesced flush. Forward immediately.
           onAssistantDelta?.(delta);
-          onUpdate([...msgs]);
+          scheduleFlush();
         },
         () => {
           // Retry fired — bump the counter and reset the placeholder so the
           // bubble doesn't duplicate text from the half-streamed attempt.
           metrics.retries++;
+          if (coalesceTimer != null) {
+            clearTimeout(coalesceTimer);
+            coalesceTimer = null;
+          }
+          deltaBuf.length = 0;
           streamingMsg.content = "";
+          invalidateMessageTokens(streamingMsg);
         },
       );
+      // Final synchronous flush so the placeholder carries the full reply
+      // before downstream code reads `streamingMsg.content`.
+      flushStream();
     } catch (e) {
+      // Drop any pending coalesce timer before unwinding the error path.
+      if (coalesceTimer != null) {
+        clearTimeout(coalesceTimer);
+        coalesceTimer = null;
+      }
+      deltaBuf.length = 0;
       // Drop the streaming placeholder so error paths don't leak a stub bubble.
       if (streamPushed) {
         const idx = msgs.findIndex((m) => m._tmpKey === streamingKey);

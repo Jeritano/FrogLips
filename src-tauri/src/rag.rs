@@ -574,9 +574,39 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
         Ok((path, s, e, text, blob))
     })?;
 
-    // Score everything; keep top-k via partial sort. For ~50k chunks this is
-    // well under 100ms — no need for an ANN index yet.
-    let mut scored: Vec<(f32, String, i64, i64, String)> = Vec::new();
+    // Maturity review H1 (2026-05-27): previous impl pushed every
+    // positive-scored chunk into a Vec and full-sorted at the end —
+    // O(N log N) over ~50k chunks. Switched to a BinaryHeap<Reverse<...>>
+    // of capacity k, which gives O(N log k). For top_k=10 against 50k
+    // chunks that's ~50k × log2(10) ≈ 165k cmps vs the old 50k × log2(50k)
+    // ≈ 780k. The win compounds when the user expands the corpus.
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    // OrderedF32 wrapper — f32 isn't Ord because of NaN, but cosine over
+    // finite inputs never produces NaN (caller already enforces non-empty
+    // query string, and `embed` returns finite values).
+    #[derive(Clone)]
+    struct OrderedF32(f32);
+    impl PartialEq for OrderedF32 {
+        fn eq(&self, other: &Self) -> bool {
+            self.0.to_bits() == other.0.to_bits()
+        }
+    }
+    impl Eq for OrderedF32 {}
+    impl PartialOrd for OrderedF32 {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl Ord for OrderedF32 {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.0
+                .partial_cmp(&other.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }
+    }
+    type Entry = (OrderedF32, String, i64, i64, String);
+    let mut heap: BinaryHeap<Reverse<Entry>> = BinaryHeap::with_capacity(k + 1);
     for row in rows {
         let (path, s, e, text, blob) = row?;
         let emb = blob_to_vec(&blob);
@@ -584,10 +614,24 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
         if score <= 0.0 {
             continue;
         }
-        scored.push((score, path, s, e, text));
+        heap.push(Reverse((OrderedF32(score), path, s, e, text)));
+        // Trim back to k by dropping the smallest. `pop` on a min-heap
+        // is O(log k).
+        if heap.len() > k {
+            heap.pop();
+        }
     }
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(k);
+    // Drain newest-first by repeatedly popping the heap. Heap pops the
+    // smallest first (we wrapped in Reverse), so collect into a Vec and
+    // reverse at the end for descending order.
+    let mut scored: Vec<(f32, String, i64, i64, String)> = heap
+        .into_sorted_vec()
+        .into_iter()
+        .map(|Reverse((s, p, sb, eb, t))| (s.0, p, sb, eb, t))
+        .collect();
+    // into_sorted_vec yields ascending order (smallest first); reverse
+    // for the descending-by-score contract the caller expects.
+    scored.reverse();
     // Sec re-review H-NEW-3: RAG hits flow back into the agent loop as
     // primary input. Until now they bypassed the injection scanner that
     // wraps every other external-content tool. Wrap the snippet so any

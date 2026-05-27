@@ -62,13 +62,21 @@ function AgentUndoButton() {
   }, []);
   useEffect(() => {
     void refresh();
-    // UX re-review L-new-1: only poll while the document is visible so a
-    // long backgrounded session doesn't burn ~28k IPC/day.
+    // Audit H10 (2026-05-27): previously polled every 3s while visible —
+    // ~1200 IPC/hour for a UI that only changes when the user issues a
+    // mutating agent tool. Bumped to 30s and added an immediate refresh
+    // on tab-visibility regain so a backgrounded → foregrounded session
+    // sees the current state without waiting for the next tick. A full
+    // event-driven push from Rust (`agent-undo-changed`) requires
+    // threading AppHandle through ~10 IPC call sites in commands/agent.rs
+    // — deferred to a future pass; the 30s tick is the practical floor
+    // since the undo button is a passive informational chip, not a
+    // primary affordance.
     const onVisChange = () => { if (document.visibilityState === "visible") void refresh(); };
     document.addEventListener("visibilitychange", onVisChange);
     const id = setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
-    }, 3000);
+    }, 30000);
     return () => {
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisChange);

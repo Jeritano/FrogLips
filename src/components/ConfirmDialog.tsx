@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
+import { useModalA11y } from "../lib/use-modal-a11y";
 
 interface Props {
   /** Accessible dialog label. */
@@ -15,6 +16,9 @@ interface Props {
   boxClassName?: string;
   /** Test id on the overlay. */
   "data-testid"?: string;
+  /** Pass `false` for modals that focus a custom element themselves
+   *  (e.g. an empty textarea the user must fill before submitting). */
+  autoFocus?: boolean;
 }
 
 /**
@@ -31,21 +35,33 @@ export function ConfirmDialog({
   actions,
   onDismiss,
   boxClassName,
+  autoFocus,
   ...rest
 }: Props) {
+  // Audit H9 (2026-05-27): the four ConfirmDialog instances in ChatWindow
+  // (ask-user / edit-message / citation-open / tool-confirm) previously
+  // mounted without any focus management. Keyboard-only users tabbed into
+  // the underlying ChatWindow with the modal technically open. Worse,
+  // on the destructive-tool path the Allow button is disabled until a
+  // checkbox is ticked — without auto-focus the user had no keyboard
+  // path to the checkbox. Now wired through the shared a11y kit:
+  // focus trap, Escape-to-close at the document level (Safari address
+  // bar steal-safe), autofocus on open, and focus restoration on close.
+  const boxRef = useRef<HTMLDivElement>(null);
+  useModalA11y({
+    open: true,
+    onClose: onDismiss,
+    containerRef: boxRef,
+    autoFocus,
+  });
   return (
     <div
       className="agent-confirm-overlay"
       data-testid={rest["data-testid"]}
       onClick={(e) => e.target === e.currentTarget && onDismiss()}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          onDismiss();
-        }
-      }}
     >
       <div
+        ref={boxRef}
         className={`agent-confirm-box${boxClassName ? ` ${boxClassName}` : ""}`}
         role="dialog"
         aria-modal="true"

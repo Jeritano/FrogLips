@@ -44,34 +44,43 @@ export interface RunSummary {
   errorBanner: string | null;
 }
 
-interface WorkflowRunCtx {
-  /** id of workflow currently running, or null if idle. */
+/**
+ * **Stable** controls surface — id of the running workflow, the lifecycle
+ * functions, and the cumulative summary. Updated only on transitions
+ * (start / stop / done), so subscribers re-render at most once per run
+ * boundary, not per streamed token.
+ */
+interface WorkflowRunControlCtx {
   runningWorkflowId: number | null;
-  /** Live per-card state. Keyed by card id. */
-  cardStates: Record<string, CardRunSnapshot>;
-  /** Last-run summary, persisted across navigation. */
   lastSummary: RunSummary | null;
-  /**
-   * Start a run. Refuses if a run is already in flight (returns false).
-   * The actual `runWorkflow` invocation happens here so the AbortController
-   * lives at provider scope — `<WorkflowsPage>` unmounting no longer
-   * cancels the run.
-   */
   start(args: {
     workflowId: number;
     graph: WorkflowGraph;
     opts: Omit<RunWorkflowOptions, "signal" | "workflowId">;
-    /** Pre-flight hook (e.g. ensureCardModelLoaded) — awaited under the
-     *  abort signal before `runWorkflow` kicks off. */
     preflight?: (signal: AbortSignal) => Promise<void>;
   }): boolean;
-  /** Abort the in-flight run, if any. No-op when idle. */
   stop(): void;
-  /** Clear the lastSummary banner without affecting an in-flight run. */
   clearSummary(): void;
 }
 
-const Ctx = createContext<WorkflowRunCtx | null>(null);
+/**
+ * **Hot** per-card state surface. Updates on every onCardOutput delta
+ * (60+ times per second during streaming). Split from control surface
+ * so consumers that only care about the runningWorkflowId chip — App
+ * top bar, sidebar status — don't re-render per token (audit H7,
+ * 2026-05-27).
+ */
+interface WorkflowRunCardCtx {
+  cardStates: Record<string, CardRunSnapshot>;
+}
+
+/** Back-compat aggregate — subscribers using `useWorkflowRun()` still
+ *  get the combined surface. New subscribers should prefer
+ *  `useWorkflowRunControl()` or `useWorkflowRunCards()`. */
+interface WorkflowRunCtx extends WorkflowRunControlCtx, WorkflowRunCardCtx {}
+
+const ControlCtx = createContext<WorkflowRunControlCtx | null>(null);
+const CardCtx = createContext<WorkflowRunCardCtx | null>(null);
 
 /**
  * App-level provider that owns workflow run state. Mount once at the
@@ -210,29 +219,71 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
     [updateCard],
   );
 
-  const value = useMemo<WorkflowRunCtx>(
-    () => ({ runningWorkflowId, cardStates, lastSummary, start, stop, clearSummary }),
-    [runningWorkflowId, cardStates, lastSummary, start, stop, clearSummary],
+  // Stable controls — memoized on transitions only, not on cardStates.
+  // A subscriber to ControlCtx (e.g. App's top-bar workflows button)
+  // re-renders only when the running id flips or the run summary lands,
+  // NOT on every streamed token (audit H7).
+  const controlValue = useMemo<WorkflowRunControlCtx>(
+    () => ({ runningWorkflowId, lastSummary, start, stop, clearSummary }),
+    [runningWorkflowId, lastSummary, start, stop, clearSummary],
+  );
+  // Hot per-card state — updates on every delta. Subscribers should be
+  // scoped to the panel that actually renders the per-card chrome.
+  const cardValue = useMemo<WorkflowRunCardCtx>(
+    () => ({ cardStates }),
+    [cardStates],
   );
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <ControlCtx.Provider value={controlValue}>
+      <CardCtx.Provider value={cardValue}>{children}</CardCtx.Provider>
+    </ControlCtx.Provider>
+  );
 }
 
 /**
- * Subscribe to the App-scoped workflow run state.
+ * Subscribe to the stable controls only (running id + summary +
+ * start/stop/clearSummary). Does NOT re-render on per-card streaming.
+ * Use this in chrome that lives outside the workflows page (App top
+ * bar, sidebar status chip).
+ */
+export function useWorkflowRunControl(): WorkflowRunControlCtx {
+  const ctx = useContext(ControlCtx);
+  if (!ctx) {
+    throw new Error(
+      "useWorkflowRunControl() must be used inside <WorkflowRunProvider>. " +
+        "Mount the provider at the App.tsx root, above every page that " +
+        "needs to observe or control workflow runs.",
+    );
+  }
+  return ctx;
+}
+
+/**
+ * Subscribe to per-card live state. Re-renders on every streamed token.
+ * Use only inside the workflows page card panel.
+ */
+export function useWorkflowRunCards(): WorkflowRunCardCtx {
+  const ctx = useContext(CardCtx);
+  if (!ctx) {
+    throw new Error(
+      "useWorkflowRunCards() must be used inside <WorkflowRunProvider>.",
+    );
+  }
+  return ctx;
+}
+
+/**
+ * Back-compat aggregate. Existing call sites keep working; they pay the
+ * old re-render cost (subscribed to both contexts). Migrate to the
+ * narrower hooks above to drop the streaming-token re-render cost.
  *
  * Throws if used outside `<WorkflowRunProvider>`. That's deliberate —
  * a silent fallback would let a consumer silently lose run continuity
  * when the provider is accidentally removed during a refactor.
  */
 export function useWorkflowRun(): WorkflowRunCtx {
-  const ctx = useContext(Ctx);
-  if (!ctx) {
-    throw new Error(
-      "useWorkflowRun() must be used inside <WorkflowRunProvider>. " +
-        "Mount the provider at the App.tsx root, above every page that " +
-        "needs to observe or control workflow runs.",
-    );
-  }
-  return ctx;
+  const control = useWorkflowRunControl();
+  const cards = useWorkflowRunCards();
+  return { ...control, ...cards };
 }

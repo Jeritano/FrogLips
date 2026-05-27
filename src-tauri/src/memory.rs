@@ -397,6 +397,12 @@ pub fn touch_memory(id: i64) -> Result<()> {
     touch_memories(&[id])
 }
 
+/// Window (seconds) within which a re-touch is treated as a no-op.
+/// Without this, every agent turn re-issues an UPDATE per recall hit
+/// even though `last_used_at` only ticked seconds ago — each UPDATE
+/// forces a WAL fsync on the default connection. Maturity review H2.
+const TOUCH_COALESCE_SECS: i64 = 60;
+
 pub fn touch_memories(ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
@@ -404,21 +410,33 @@ pub fn touch_memories(ids: &[i64]) -> Result<()> {
     let conn = get_db()?;
     let now = now_unix();
     // Build numbered placeholders so the same param style is used throughout
-    // ($1 = now, $2.. = ids). Avoids relying on rusqlite's mixed positional behavior.
+    // ($1 = now, $2 = coalesce_floor, $3.. = ids).
     let mut placeholders = String::with_capacity(ids.len() * 6);
     use std::fmt::Write;
     for i in 0..ids.len() {
         if i > 0 {
             placeholders.push(',');
         }
-        let _ = write!(placeholders, "?{}", i + 2);
+        let _ = write!(placeholders, "?{}", i + 3);
     }
-    let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
+    let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 2);
     params_vec.push(&now);
+    let coalesce_floor = now.saturating_sub(TOUCH_COALESCE_SECS);
+    params_vec.push(&coalesce_floor);
     for i in ids {
         params_vec.push(i);
     }
-    let sql = format!("UPDATE memories SET last_used_at = ?1 WHERE id IN ({placeholders})");
+    // Predicate `last_used_at IS NULL OR last_used_at < ?2` ensures rows
+    // already touched within TOUCH_COALESCE_SECS skip the UPDATE entirely
+    // — SQLite's WHERE-then-UPDATE plan short-circuits before scheduling
+    // the WAL write. For an agent run that recalls the same 10 memories
+    // every turn this drops ~10× per-turn UPDATE traffic to ~10× one
+    // batch per minute.
+    let sql = format!(
+        "UPDATE memories SET last_used_at = ?1
+         WHERE id IN ({placeholders})
+         AND (last_used_at IS NULL OR last_used_at < ?2)"
+    );
     conn.execute(&sql, params_vec.as_slice())?;
     Ok(())
 }
