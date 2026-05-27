@@ -23,6 +23,7 @@ import {
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { CardForm, type FormOrigin } from "./CardForm";
 import { RunPanel, type CardRunInfo } from "./RunPanel";
+import { SkillsPanel } from "./SkillsPanel";
 import { generateAgentName } from "../../lib/agent-name";
 import { formatUserProfile } from "../../lib/user-profile";
 import type { CardRunState } from "./AgentCardNode";
@@ -52,6 +53,10 @@ export function WorkflowsPage({ status }: Props) {
   const [formCard, setFormCard] = useState<WorkflowCard | null>(null);
   const [formIsNew, setFormIsNew] = useState(false);
   const [formOrigin, setFormOrigin] = useState<FormOrigin | null>(null);
+  // Skills panel (procedural-memory inspector) — opened from the editor
+  // header. The panel itself owns its fetch lifecycle and refetches when
+  // `workflowId` changes, so we just toggle visibility here.
+  const [skillsOpen, setSkillsOpen] = useState(false);
   // 2026-05-26 Option-A lift: workflow run state now lives in the
   // App-level WorkflowRunProvider so a navigate-away no longer aborts
   // the run. `cardStates`, `outputs`, and `running` are derived here
@@ -247,6 +252,10 @@ export function WorkflowsPage({ status }: Props) {
     setFormCard(null);
     setFormIsNew(false);
     setFormOrigin(null);
+    // Close any open Skills panel so it doesn't carry the prior workflow's
+    // list into the new one. The panel itself also refetches on
+    // workflowId change, but closing keeps the UX uncluttered.
+    setSkillsOpen(false);
     // Clear any sticky error banner from a prior workflow's run.
     setErr(null);
   }
@@ -643,16 +652,27 @@ export function WorkflowsPage({ status }: Props) {
           ● Run in progress — safe to navigate away.
         </span>
       )}
+      {/* Skills panel opener — procedural memory inspector. Lives next
+          to Run/Stop so the user can pop the panel mid-build. */}
+      <button
+        type="button"
+        className="wf-btn topbar-action"
+        style={{ marginLeft: "auto" }}
+        onClick={() => setSkillsOpen(true)}
+        data-testid="wf-open-skills"
+        title="View procedural-memory skills saved by agent runs"
+      >
+        Skills
+      </button>
       {/* Run/Stop sits in the top bar, immediately left of the theme
           toggle. `.topbar-action` keeps the button compact so the
-          header row matches the chat ModelPicker's height. `margin-left:
-          auto` pushes it to the right edge of the slot (theme toggle
-          still floats further right via its own auto-margin). */}
+          header row matches the chat ModelPicker's height. The Skills
+          button above carries `margin-left: auto` so Run/Stop sits
+          flush against it. */}
       {running ? (
         <button
           type="button"
           className="wf-btn wf-btn-danger topbar-action"
-          style={{ marginLeft: "auto" }}
           onClick={stopRun}
         >
           Stop
@@ -661,7 +681,6 @@ export function WorkflowsPage({ status }: Props) {
         <button
           type="button"
           className="wf-btn wf-btn-primary topbar-action"
-          style={{ marginLeft: "auto" }}
           onClick={runWorkflowNow}
           disabled={!canRun}
           title={canRun ? "Run workflow" : "Add cards and a valid linear chain first"}
@@ -702,6 +721,12 @@ export function WorkflowsPage({ status }: Props) {
           onClose={closeForm}
         />
       )}
+      <SkillsPanel
+        workflowId={selected.id}
+        workflowName={name || selected.name}
+        open={skillsOpen}
+        onClose={() => setSkillsOpen(false)}
+      />
     </div>
   );
 }

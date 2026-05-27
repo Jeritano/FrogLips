@@ -667,3 +667,241 @@
 .wf-tool-item[data-on="true"] .wf-tool-item-check {
   color: var(--accent, #4f9eed);
 }
+
+/* ── SkillsPanel ───────────────────────────────────────────────────────
+ * Procedural-memory inspector opened from the editor header. Mirrors the
+ * frosted-glass treatment used on CardForm so the chrome reads as the
+ * same family. The inner box is a centered card with a header row, an
+ * optional ErrorBar, and either an EmptyState or a table of skills.
+ *
+ * The steps viewer (sub-modal) renders on top of the panel as a second
+ * dialog with its own scrollable <pre>. Sub-modal layering uses higher
+ * z-index than the parent so the focus trap on the inner ConfirmDialog
+ * / steps viewer correctly receives keyboard focus.
+ */
+.skills-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh var(--space-4) var(--space-4);
+  overflow: auto;
+}
+.skills-panel-box {
+  width: min(880px, 100%);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 88vh;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+}
+.skills-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.skills-panel-title {
+  margin: 0;
+  font-size: var(--fs-lg, 16px);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skills-panel-wf {
+  color: var(--text-2);
+  font-weight: 500;
+}
+.skills-panel-close {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid transparent;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.skills-panel-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.skills-panel-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.skills-panel-body {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  overflow: auto;
+  min-height: 0;
+}
+
+/* ── Skills table ── */
+.skills-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.skills-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm, 13px);
+}
+.skills-table thead th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  white-space: nowrap;
+}
+.skills-table tbody td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.skills-table tbody tr:last-child td { border-bottom: none; }
+.skills-table-loading {
+  text-align: center;
+  color: var(--text-2);
+  padding: var(--space-4);
+}
+.skills-col-name { width: 22%; }
+.skills-col-desc { width: auto; }
+.skills-col-num { width: 70px; text-align: right; }
+.skills-col-time { width: 110px; }
+.skills-col-actions { width: 180px; text-align: right; white-space: nowrap; }
+.skills-cell-name {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-sm, 13px);
+  color: var(--text);
+  word-break: break-word;
+}
+.skills-cell-desc { color: var(--text); }
+.skills-cell-desc-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+.skills-cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.skills-cell-time {
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.skills-cell-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+.skills-cell-actions .skills-btn + .skills-btn { margin-left: var(--space-1); }
+.skills-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px var(--space-2);
+  font-size: var(--fs-xs, 12px);
+  cursor: pointer;
+  font-family: inherit;
+}
+.skills-btn:hover { background: var(--surface-hover); }
+.skills-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.skills-btn-danger {
+  color: var(--danger, #d62828);
+  border-color: color-mix(in srgb, var(--danger, #d62828) 35%, var(--border));
+}
+.skills-btn-danger:hover {
+  background: color-mix(in srgb, var(--danger, #d62828) 12%, transparent);
+}
+
+/* Confirm-dialog body wrapper (the title carries the question; this is
+ * the explanatory line under it). */
+.skills-confirm-body {
+  font-size: var(--fs-sm, 13px);
+  color: var(--text-2);
+  padding: var(--space-2) 0;
+}
+
+/* ── Steps viewer (sub-modal) ── */
+.skills-steps-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 610;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+}
+.skills-steps-box {
+  width: min(760px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.38);
+}
+.skills-steps-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.skills-steps-title {
+  margin: 0;
+  font-size: var(--fs-base, 14px);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skills-steps-pre {
+  background: var(--surface-2);
+  color: var(--text);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  max-height: 60vh;
+  overflow: auto;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: var(--space-3);
+  white-space: pre;
+}
