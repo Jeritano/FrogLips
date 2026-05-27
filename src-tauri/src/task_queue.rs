@@ -213,3 +213,126 @@ pub fn prune(older_than_secs: u64) -> usize {
     }
     n
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // TASKS is process-global — serialize so tests don't collide with each
+    // other or with any side-effect from create() in production code paths.
+    static TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    /// Helper: synthesize a terminal-state TaskEntry directly in the map
+    /// without spawning a shell. Used by prune tests so we don't depend
+    /// on a Tokio runtime or actually run a command.
+    fn seed_terminal(id: &str, finished_at: u64, status: TaskStatus) {
+        let entry = std::sync::Arc::new(parking_lot::Mutex::new(TaskEntry {
+            info: TaskInfo {
+                id: id.to_string(),
+                command: "echo synthetic".to_string(),
+                status,
+                created_at: 0,
+                finished_at: Some(finished_at),
+                result: None,
+                error: None,
+            },
+            handle: None,
+            cancel: None,
+        }));
+        TASKS.lock().insert(id.to_string(), entry);
+    }
+
+    fn clear_tasks() {
+        TASKS.lock().clear();
+    }
+
+    #[test]
+    fn prune_drops_old_terminal_tasks_only() {
+        let _g = TEST_LOCK.lock();
+        clear_tasks();
+        let now = now_unix();
+        seed_terminal("old-done", now - 3600, TaskStatus::Done);
+        seed_terminal("recent-done", now, TaskStatus::Done);
+        seed_terminal("old-failed", now - 3600, TaskStatus::Failed);
+
+        // older_than_secs=600 → "old-*" drop (3600 >= 600), "recent-done" stays.
+        let dropped = prune(600);
+        assert_eq!(dropped, 2);
+        assert!(status("old-done").is_none());
+        assert!(status("old-failed").is_none());
+        assert!(status("recent-done").is_some());
+
+        clear_tasks();
+    }
+
+    #[test]
+    fn prune_keeps_pending_or_running_regardless_of_age() {
+        let _g = TEST_LOCK.lock();
+        clear_tasks();
+        let now = now_unix();
+        // Synthesize a "running" task with no finished_at — must be untouched.
+        let entry = std::sync::Arc::new(parking_lot::Mutex::new(TaskEntry {
+            info: TaskInfo {
+                id: "running".into(),
+                command: "loop".into(),
+                status: TaskStatus::Running,
+                created_at: now - 7200,
+                finished_at: None,
+                result: None,
+                error: None,
+            },
+            handle: None,
+            cancel: None,
+        }));
+        TASKS.lock().insert("running".into(), entry);
+
+        seed_terminal("done-old", now - 7200, TaskStatus::Done);
+        let dropped = prune(60);
+        // Only the terminal task should drop; the running one survives.
+        assert_eq!(dropped, 1);
+        assert!(status("running").is_some());
+        assert!(status("done-old").is_none());
+
+        clear_tasks();
+    }
+
+    #[test]
+    fn status_of_unknown_id_is_none() {
+        let _g = TEST_LOCK.lock();
+        clear_tasks();
+        assert!(status("never-existed").is_none());
+    }
+
+    #[test]
+    fn cancel_on_terminal_is_idempotent_ok() {
+        let _g = TEST_LOCK.lock();
+        clear_tasks();
+        let now = now_unix();
+        seed_terminal("already-done", now, TaskStatus::Done);
+        // Cancel on a terminal task returns Ok(()) without flipping state.
+        assert!(cancel("already-done").is_ok());
+        let info = status("already-done").expect("still in map");
+        assert_eq!(info.status, TaskStatus::Done);
+        clear_tasks();
+    }
+
+    #[test]
+    fn cancel_on_unknown_id_errors() {
+        let _g = TEST_LOCK.lock();
+        clear_tasks();
+        let err = cancel("nope-not-here").unwrap_err();
+        assert!(err.contains("no task"));
+    }
+
+    #[test]
+    fn list_reflects_inserted_tasks() {
+        let _g = TEST_LOCK.lock();
+        clear_tasks();
+        let now = now_unix();
+        seed_terminal("a", now, TaskStatus::Done);
+        seed_terminal("b", now, TaskStatus::Failed);
+        let mut ids: Vec<String> = list().into_iter().map(|i| i.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+        clear_tasks();
+    }
+}

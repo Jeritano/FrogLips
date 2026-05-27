@@ -14,7 +14,7 @@ const ASK_TIMEOUT_SECS: u64 = 600; // 10 min — well past human attention span
 static PENDING: Lazy<Mutex<HashMap<String, oneshot::Sender<String>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct AskUserRequest {
     pub id: String,
     pub question: String,
@@ -80,4 +80,69 @@ pub fn reply(id: &str, answer: String) -> Result<(), String> {
 
 pub fn cancel(id: &str) {
     PENDING.lock().remove(id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // PENDING is process-global — serialize tests so a parallel runner
+    // can't interleave id collisions or leak state between cases.
+    use parking_lot::Mutex as PLMutex;
+    static TEST_LOCK: PLMutex<()> = PLMutex::new(());
+
+    #[test]
+    fn prepare_rejects_empty_question() {
+        let _g = TEST_LOCK.lock();
+        let err = prepare("   ".into(), None).unwrap_err();
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn prepare_rejects_oversized_question() {
+        let _g = TEST_LOCK.lock();
+        let big = "x".repeat(4097);
+        let err = prepare(big, None).unwrap_err();
+        assert!(err.contains("too long"));
+    }
+
+    #[test]
+    fn prepare_yields_unique_ids() {
+        let _g = TEST_LOCK.lock();
+        let (a, _rx_a) = prepare("Q1?".into(), None).unwrap();
+        let (b, _rx_b) = prepare("Q2?".into(), Some("h".into())).unwrap();
+        assert_ne!(a.id, b.id);
+        // Cleanup so the global map doesn't carry pendings into other tests.
+        cancel(&a.id);
+        cancel(&b.id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepare_reply_round_trips_the_answer() {
+        let _g = TEST_LOCK.lock();
+        let (req, rx) = prepare("ok?".into(), None).unwrap();
+        reply(&req.id, "yes please".into()).unwrap();
+        let answer = await_reply(rx, &req.id).await.unwrap();
+        // injection_scan::scan_and_wrap rewrites benign answers verbatim;
+        // make sure the round-trip carries the payload, not None/empty.
+        assert!(answer.contains("yes please"));
+    }
+
+    #[test]
+    fn reply_on_unknown_id_errors() {
+        let _g = TEST_LOCK.lock();
+        let err = reply("not-a-real-id", "noop".into()).unwrap_err();
+        assert!(err.contains("no pending"));
+    }
+
+    #[test]
+    fn cancel_removes_pending_and_is_idempotent() {
+        let _g = TEST_LOCK.lock();
+        let (req, _rx) = prepare("cancel-me?".into(), None).unwrap();
+        cancel(&req.id);
+        // Second cancel is a no-op (no panic, no error).
+        cancel(&req.id);
+        // Subsequent reply on the cancelled id is an error.
+        let err = reply(&req.id, "late".into()).unwrap_err();
+        assert!(err.contains("no pending"));
+    }
 }
