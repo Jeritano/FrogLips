@@ -394,8 +394,14 @@
   width: 420px;
   max-width: 100%;
   max-height: 88vh;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  /* Translucent surface — was solid var(--surface), now mixes the surface
+     token with ~25% transparency so the workflow canvas stays faintly
+     visible behind the panel. Backdrop-filter blurs the canvas so the
+     translucency reads as "frosted glass" instead of "leaky content". */
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  backdrop-filter: saturate(140%) blur(18px);
+  -webkit-backdrop-filter: saturate(140%) blur(18px);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-modal);
   display: flex;
@@ -501,6 +507,32 @@
   color: var(--text);
   font-size: var(--fs-base);
   font-family: inherit;
+  /* Grids set the outer width via fr units; let inputs shrink within
+     their grid cell instead of forcing the cell wider (was producing
+     squished number-spinners on the params + retry rows). */
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+/* Inline labels inside a grid wf-field (params row + retry row) stack
+   their span over their input — otherwise the label wraps inline next
+   to the input and the layout looks crammed. */
+.wf-field > label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.wf-field > label > span {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  /* Single-line label text — long copy like "Temperature (0–2)" was
+     wrapping to two rows and pushing the input off-grid. Truncate
+     visually so the row stays one line; the full text is still
+     available as a tooltip via the title attribute on the label. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .wf-field textarea { resize: vertical; }
 .wf-field-hint { margin: var(--space-1) 0 0; font-size: var(--fs-xs); color: var(--text-2); }
