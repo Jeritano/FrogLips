@@ -611,6 +611,15 @@ function ToolPicker({
           );
           const ruleDefault = defaultCollapsed(hits, cat.tools.length);
           const isCollapsed = collapse[cat.id] ?? ruleDefault;
+          // Layout discipline: every interactive control inside the
+          // picker is a <button>, not a <label>+<input type=checkbox>.
+          // The native-checkbox approach went through three regressions
+          // (checkbox at far left with confusing distance to the label,
+          // checkbox overlapping the label text mid-row, label text
+          // invisible). Buttons can't disappear, can't be overlaid by
+          // their text content, can't have their click hijacked by a
+          // parent label association, and render the same way across
+          // every theme.
           return (
             <div key={cat.id} className="wf-tool-cat">
               <div className="wf-tool-cat-head">
@@ -625,43 +634,54 @@ function ToolPicker({
                   <span aria-hidden="true">{isCollapsed ? "▸" : "▾"}</span>{" "}
                   {cat.label}
                 </button>
-                <label className="wf-tool-cat-master" title={cat.description}>
-                  <input
-                    type="checkbox"
-                    checked={master === "all"}
-                    ref={(el) => {
-                      if (el) el.indeterminate = master === "some";
-                    }}
-                    onChange={() =>
-                      onChange(applyMasterToggle(selected, cat.tools))
-                    }
-                  />
+                <button
+                  type="button"
+                  className="wf-tool-cat-master"
+                  aria-pressed={master === "all"}
+                  data-state={master}
+                  onClick={() =>
+                    onChange(applyMasterToggle(selected, cat.tools))
+                  }
+                  title={
+                    master === "all"
+                      ? `Deselect all ${cat.label} tools`
+                      : `Select all ${cat.label} tools`
+                  }
+                >
                   <span className="wf-tool-cat-count">
                     {hits} / {cat.tools.length}
                   </span>
-                </label>
+                  <span className="wf-tool-cat-master-glyph" aria-hidden="true">
+                    {master === "all" ? "☑" : master === "some" ? "◐" : "☐"}
+                  </span>
+                </button>
               </div>
               {!isCollapsed && (
                 <div
                   id={`wf-tool-cat-body-${cat.id}`}
                   className="wf-tool-cat-body"
                 >
-                  {cat.tools.map((tool) => (
-                    // Layout: tool name on the left, checkbox tight against
-                    // its right edge. Previously the checkbox sat on the
-                    // far left and the label drifted to the cell center,
-                    // making it visually unclear which control toggled
-                    // which tool. The new pairing reads as "tool_name [☑]"
-                    // with the click target wrapping both.
-                    <label key={tool} className="wf-tool-item">
-                      <span className="wf-tool-item-name">{tool}</span>
-                      <input
-                        type="checkbox"
-                        checked={selected.includes(tool)}
-                        onChange={() => onToggleOne(tool)}
-                      />
-                    </label>
-                  ))}
+                  {cat.tools.map((tool) => {
+                    const isOn = selected.includes(tool);
+                    return (
+                      <button
+                        key={tool}
+                        type="button"
+                        className="wf-tool-item"
+                        data-on={isOn}
+                        aria-pressed={isOn}
+                        onClick={() => onToggleOne(tool)}
+                      >
+                        <span className="wf-tool-item-name">{tool}</span>
+                        <span
+                          className="wf-tool-item-check"
+                          aria-hidden="true"
+                        >
+                          {isOn ? "☑" : "☐"}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>

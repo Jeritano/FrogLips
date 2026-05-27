@@ -582,6 +582,10 @@
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
+/* Master toggle — a button (not a checkbox-in-label) so the click
+   path is unambiguous and the visual state can't be hidden by
+   native-control theming. `data-state` carries none|some|all so CSS
+   can paint the right glyph color without JS. */
 .wf-tool-cat-master {
   display: inline-flex;
   align-items: center;
@@ -590,8 +594,25 @@
   white-space: nowrap;
   font-size: var(--fs-xs);
   color: var(--text-2);
+  background: transparent;
+  border: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
 }
-.wf-tool-cat-master input { margin: 0; cursor: pointer; }
+.wf-tool-cat-master:hover {
+  background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
+  color: var(--text);
+}
+.wf-tool-cat-master:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.wf-tool-cat-master-glyph { font-size: 14px; line-height: 1; }
+.wf-tool-cat-master[data-state="all"] .wf-tool-cat-master-glyph,
+.wf-tool-cat-master[data-state="some"] .wf-tool-cat-master-glyph {
+  color: var(--accent, #4f9eed);
+}
 .wf-tool-cat-count { font-variant-numeric: tabular-nums; }
 .wf-tool-cat-body {
   display: grid;
@@ -599,37 +620,50 @@
   gap: var(--space-1);
   padding: 0 var(--space-2) var(--space-2);
 }
+/* Per-tool row — also a button. Name on the left, glyph indicator
+   (☐/☑) on the right. `aria-pressed` + `data-on` carry selection
+   state for assistive tech + the CSS [data-on='true'] selector that
+   paints the glyph in the accent color. */
 .wf-tool-item {
-  /* Explicit 2-column grid: name column shrinks/grows, checkbox column
-     is auto-sized. Avoids every flexbox edge case (`flex: 0` shrinking
-     a name span to 0, items overlapping, item natural-width != cell
-     width). Grid cell width is set by the parent .wf-tool-cat-body
-     grid; this inner grid divides it into "name + checkbox at end". */
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: 2px var(--space-1);
+  padding: 4px var(--space-2);
+  background: transparent;
+  border: 1px solid transparent;
   color: var(--text);
   cursor: pointer;
   border-radius: var(--radius-sm);
+  font-family: inherit;
+  text-align: left;
 }
 .wf-tool-item:hover {
   background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
+  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+}
+.wf-tool-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.wf-tool-item[data-on="true"] {
+  background: color-mix(in srgb, var(--accent, #4f9eed) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #4f9eed) 35%, transparent);
 }
 .wf-tool-item-name {
   color: var(--text);
   font-size: var(--fs-xs);
-  /* Single line; if a future tool name is too long it can ellipsis,
-     but for the current set (max ~23 chars) wrap is unlikely at the
-     420px panel width. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
 }
-.wf-tool-item input[type="checkbox"] {
-  margin: 0;
-  justify-self: end;
+.wf-tool-item-check {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-2);
+}
+.wf-tool-item[data-on="true"] .wf-tool-item-check {
+  color: var(--accent, #4f9eed);
 }
