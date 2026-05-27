@@ -624,9 +624,18 @@
 }
 .wf-tool-item-name {
   flex: 1 1 auto;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Explicit color + font-size: was inheriting via the cascade but the
+     previous attempt at ellipsis truncation was apparently rendering
+     the text the same color as the panel background under some
+     conditions. Set the values directly so they can't be overridden
+     by a stray descendant rule elsewhere in the stylesheet. */
+  color: var(--text);
+  font-size: var(--fs-xs);
+  min-width: 0;
+  /* Drop the ellipsis truncation — tool names are short (longest is
+     `search_project_knowledge` at 23 chars) and the grid cell is wide
+     enough at the standard 420px form width. If a longer name ships
+     later, we'll re-add ellipsis with an explicit working test. */
 }
 .wf-tool-item input[type="checkbox"] {
   margin: 0;
