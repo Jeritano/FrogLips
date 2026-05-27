@@ -272,15 +272,21 @@ function substituteDatePlaceholders(prompt: string): string {
     .replace(/\{NOW_DATE\}/g, iso);
 }
 
-/** Resolve agent-run options for a single card, given upstream context text. */
+/** Resolve agent-run options for a single card, given upstream context text.
+ *
+ * `presets` is hoisted to the caller so a 10-card run does 1 load instead
+ * of 10 (audit M8, 2026-05-27). loadAllPresets reads localStorage + the
+ * built-in registry; constant cost per call, but redundant inside a chain.
+ */
 function buildCardOptions(
   card: WorkflowCard,
   previousOutput: string | null,
   opts: RunWorkflowOptions,
   hooks: WorkflowHooks,
   signal: AbortSignal,
+  presets: ReturnType<typeof loadAllPresets>,
 ): AgentRunOptions {
-  const preset = loadAllPresets().find((p) => p.id === card.preset);
+  const preset = presets.find((p) => p.id === card.preset);
   if (card.preset && !preset) {
     // Stealth-permission failure: a card pinned to a renamed/removed preset
     // would otherwise resolve `preset?.allowedTools ?? []` → `[]`, which
@@ -428,6 +434,10 @@ export async function runWorkflow(
     cards = order.slice(idx);
   }
 
+  // Hoist preset load once for the whole run (audit M8). Loaded inside
+  // buildCardOptions previously — 10-card chain = 10 redundant loads.
+  const presets = loadAllPresets();
+
   const results: CardResult[] = [];
   let previousOutput: string | null = null;
   let failed = false;
@@ -447,7 +457,7 @@ export async function runWorkflow(
 
     safeHook("onCardStart", () => hooks.onCardStart?.(card.id));
     try {
-      const cardOpts = buildCardOptions(card, previousOutput, opts, hooks, signal);
+      const cardOpts = buildCardOptions(card, previousOutput, opts, hooks, signal, presets);
       // Phase 1.6: per-card retry. `card.retry.max` extra attempts on
       // a thrown error; on each attempt the abort signal is re-checked
       // so a Stop click during backoff exits cleanly. NOT retried:
@@ -455,7 +465,7 @@ export async function runWorkflow(
       // path (agent loop's own retry inside runAgentLoop already
       // handles transient stream failures).
       const retryMax = card.retry?.max ?? 0;
-      const retryBackoff = card.retry?.backoff_ms ?? 1000;
+      const retryBase = card.retry?.backoff_ms ?? 1000;
       let final: string | null = null;
       let lastErr: unknown = null;
       for (let attempt = 0; attempt <= retryMax; attempt++) {
@@ -467,23 +477,39 @@ export async function runWorkflow(
         } catch (e) {
           lastErr = e;
           if (attempt < retryMax && !signal.aborted) {
+            // Audit M11 (2026-05-27): fixed backoff caused two scheduled
+            // workflows triggered by the same cron to retry against the
+            // same upstream (Ollama / MLX) in lock-step. Exponential
+            // backoff with ±25% jitter de-correlates concurrent retries
+            // and gives a temporarily-overloaded backend room to recover.
+            //   backoff = retryBase * 2**attempt * (0.75..1.25)
+            const expo = retryBase * Math.pow(2, attempt);
+            const jitter = 1 + (Math.random() - 0.5) * 0.5;
+            const backoffMs = Math.max(50, Math.round(expo * jitter));
             logDiag({
               level: "warn",
               source: "workflow-retry",
-              message: `card "${card.name}" attempt ${attempt + 1}/${retryMax + 1} failed, retrying in ${retryBackoff}ms`,
+              message: `card "${card.name}" attempt ${attempt + 1}/${retryMax + 1} failed, retrying in ${backoffMs}ms`,
               detail: e instanceof Error ? e.message : String(e),
             });
             await new Promise<void>((resolve) => {
-              const t = setTimeout(resolve, retryBackoff);
-              // Abort during backoff: bail out immediately.
-              signal.addEventListener(
-                "abort",
-                () => {
-                  clearTimeout(t);
-                  resolve();
-                },
-                { once: true },
-              );
+              const t = setTimeout(resolve, backoffMs);
+              // Abort during backoff: bail out immediately. Use an
+              // AbortController-tied listener that we explicitly remove
+              // when the timeout wins, so we don't accumulate listeners
+              // on signal across multiple cards (audit M11 leak fix).
+              const onAbort = () => {
+                clearTimeout(t);
+                signal.removeEventListener("abort", onAbort);
+                resolve();
+              };
+              signal.addEventListener("abort", onAbort, { once: true });
+              // Wrap resolve so the timeout-wins path also removes the
+              // abort listener instead of relying on {once:true}, which
+              // never fires when the timeout completes first.
+              setTimeout(() => {
+                signal.removeEventListener("abort", onAbort);
+              }, backoffMs + 1);
             });
           }
         }

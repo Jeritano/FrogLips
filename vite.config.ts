@@ -37,6 +37,13 @@ export default defineConfig(async () => ({
   // workflow-only — chunk it separately so chat-only sessions never
   // download it.
   build: {
+    // Audit M17 (2026-05-27): explicit chunk budget. Default warns at
+    // 500 KB; we've been seeing the main chunk live ~511 KB and growing.
+    // Lowering the warn threshold makes accidental dep weight noisy at
+    // build time. CI doesn't fail on warnings yet; a follow-up will add
+    // a hard check against scripts/bundle-budget.json once the existing
+    // chunks are trimmed (highlight.js languages, markdown lib).
+    chunkSizeWarningLimit: 400,
     rollupOptions: {
       output: {
         manualChunks: {

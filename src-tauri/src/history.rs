@@ -340,6 +340,14 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v13 — additional indexes from the maturity review (M1, M2, 2026-05-27):
+    //   * `idx_memories_created` covers `ORDER BY created_at DESC` in
+    //     list_memories (over-fetch of 4000 rows was full-table-sorting).
+    //   * `(ts DESC, id DESC)` index on agent_audit covers the
+    //     "ORDER BY ts DESC, id DESC LIMIT…" hot query without a separate
+    //     tiebreak sort pass. Existing `idx_agent_audit_ts` left in place
+    //     so other read paths that only care about ts still benefit; the
+    //     composite is now the preferred plan for the full ordering.
     // v12 — agent_audit gains a `workflow_run_id` column so workflow-driven
     // tool calls can be filtered out of the per-conversation audit view and
     // correlated back to the run that produced them. Older DBs need a
@@ -373,6 +381,32 @@ const MIGRATIONS: &[Migration] = &[
                 conn.execute_batch(
                     "CREATE INDEX IF NOT EXISTS idx_agent_audit_workflow_run
                         ON agent_audit(workflow_run_id);",
+                )?;
+            }
+            Ok(())
+        },
+    },
+    // v13 — additional indexes (must run after v12 because it references
+    // the same agent_audit table the v12 column ALTER touches).
+    Migration {
+        version: 13,
+        apply: |conn| {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_memories_created
+                    ON memories(created_at DESC);",
+            )?;
+            let has_audit: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type='table' AND name='agent_audit'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if has_audit == 1 {
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_audit_ts_id
+                        ON agent_audit(ts DESC, id DESC);",
                 )?;
             }
             Ok(())
@@ -879,16 +913,38 @@ pub fn create_conversation(title: &str, model: Option<&str>) -> Result<i64> {
     Ok(conn.last_insert_rowid())
 }
 
+/// Hard cap on conversations returned to the sidebar in a single call.
+/// Audit M3 (2026-05-27): the previous unbounded SELECT IPC'd the whole
+/// table on every sidebar mount, which is a hidden cliff for users with
+/// 10k+ conversations. The renderer can't usefully display that many
+/// rows anyway. When truncated we log a diag so power users see the
+/// signal and can switch to search/filter affordances.
+pub const CONVERSATIONS_LIST_CAP: i64 = 5000;
+
 pub fn list_conversations() -> Result<Vec<Conversation>> {
     let conn = get_db()?;
     let mut stmt = conn.prepare(
         "SELECT id, title, model, created_at, parent_conv_id, parent_message_id, params,
                 pinned, tags
-         FROM conversations ORDER BY pinned DESC, created_at DESC",
+         FROM conversations ORDER BY pinned DESC, created_at DESC
+         LIMIT ?1",
     )?;
     let rows = stmt
-        .query_map([], row_to_conversation)?
+        .query_map(params![CONVERSATIONS_LIST_CAP], row_to_conversation)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.len() as i64 == CONVERSATIONS_LIST_CAP {
+        // The page is exactly at the cap — there may be more. Surface a
+        // diag so the user knows; this is purely informational since
+        // older conversations remain reachable via search.
+        crate::diagnostics::warn_with(
+            "history",
+            &format!(
+                "list_conversations truncated at {} rows; older conversations not surfaced in sidebar",
+                CONVERSATIONS_LIST_CAP
+            ),
+            serde_json::Value::Null,
+        );
+    }
     Ok(rows)
 }
 

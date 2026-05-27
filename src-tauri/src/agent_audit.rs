@@ -39,6 +39,7 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
             workflow_run_id INTEGER
          );
          CREATE INDEX IF NOT EXISTS idx_agent_audit_ts ON agent_audit(ts);
+         CREATE INDEX IF NOT EXISTS idx_agent_audit_ts_id ON agent_audit(ts DESC, id DESC);
          CREATE INDEX IF NOT EXISTS idx_agent_audit_conv ON agent_audit(conversation_id);
          CREATE INDEX IF NOT EXISTS idx_agent_audit_workflow_run ON agent_audit(workflow_run_id);
          CREATE TABLE IF NOT EXISTS agent_session_metrics (

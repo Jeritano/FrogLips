@@ -290,7 +290,9 @@ impl ServerState {
         let backend_for_probe = backend.clone();
         tokio::spawn(async move {
             let addr = format!("{}:{}", MLX_HOST, MLX_PORT);
+            let mut iterations = 0u32;
             for _ in 0..180 {
+                iterations += 1;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 if generation.load(Ordering::Acquire) != my_generation {
                     return; // server stopped or replaced
@@ -334,6 +336,40 @@ impl ServerState {
                     }
                     return;
                 }
+            }
+            // Probe ran the full 180 iterations × 500ms ≈ 90s and never
+            // saw the port open. Without this diag the user sees
+            // running=true, ready=false forever with no signal why
+            // (audit M4, 2026-05-27). Emit a structured warning + an
+            // error-shaped server-status so the UI can surface it.
+            if generation.load(Ordering::Acquire) != my_generation {
+                return;
+            }
+            crate::diagnostics::warn_with(
+                "backend-process",
+                &format!(
+                    "readiness probe timed out after {} iterations against {} (model={}, backend={})",
+                    iterations, addr, model_for_probe, backend_for_probe
+                ),
+                serde_json::Value::Null,
+            );
+            if let Some(app) = app {
+                let _ = app.emit(
+                    "server-status",
+                    &ServerStatus {
+                        running: true,
+                        ready: false,
+                        model: Some(model_for_probe.clone()),
+                        backend: Some(backend_for_probe.clone()),
+                        host: MLX_HOST.into(),
+                        port: MLX_PORT,
+                        last_error: Some(format!(
+                            "Readiness probe timed out after 90s — backend started but the HTTP port \
+                             never opened. Check the model name ({}) and the backend logs.",
+                            model_for_probe
+                        )),
+                    },
+                );
             }
         });
 

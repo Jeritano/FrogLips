@@ -14,6 +14,22 @@ Patch (0.0.X) — bug fixes, no API change.
 Minor (0.X.0) — new features, no breaking change to user data.
 Major (X.0.0) — schema migrations, breaking config changes.
 
+### Pre-1.0 policy (current)
+
+While the project is still pre-1.0 the patch and minor bumps **may
+include forward-only DB schema migrations** that change the user-data
+contract. Migrations are additive (new columns, new indexes, new
+tables) and run automatically via the `PRAGMA user_version` ladder in
+`src-tauri/src/history.rs`. We track the current schema version in
+that file's `MIGRATIONS` array (latest = v13 at the time of writing).
+
+Once the schema and IPC surface stabilise enough that we feel comfortable
+calling a major bump a breaking-change marker, we'll cut **1.0.0** and
+switch to the standard semver contract. Track readiness as: stable IPC
+surface (no command renames between minor versions), stable DB schema
+(no migrations between minor versions), and a non-empty co-maintainer
+roster.
+
 ## Build prerequisites
 
 - **Full Xcode** (App Store) — not just the Command Line Tools. `mistralrs` requires the `metal` compiler which only ships in `Xcode.app`.

@@ -100,8 +100,35 @@ export function formatToolError(raw: unknown): string {
   const s = String((raw as { message?: string })?.message ?? raw);
   try {
     const parsed = JSON.parse(s);
-    if (parsed && typeof parsed === "object" && parsed.kind && parsed.message) {
-      return JSON.stringify({ ok: false, kind: parsed.kind, message: parsed.message });
+    if (parsed && typeof parsed === "object") {
+      // Native Froglips shape: top-level {ok:false, kind, message}.
+      if (typeof parsed.kind === "string" && typeof parsed.message === "string") {
+        return JSON.stringify({ ok: false, kind: parsed.kind, message: parsed.message });
+      }
+      // Audit M13 (2026-05-27): also recognise the common upstream shapes
+      // so MCP servers / Ollama / MLX errors carry context instead of
+      // collapsing to kind:"unknown". Priority order:
+      //   1. {error: {message}}      — Ollama, OpenAI-ish
+      //   2. {error: "..."}          — older Ollama
+      //   3. {detail: "..."}         — FastAPI / MLX
+      //   4. {status: "..."}         — generic
+      const err = parsed.error;
+      if (err && typeof err === "object" && typeof err.message === "string") {
+        return JSON.stringify({
+          ok: false,
+          kind: typeof err.code === "string" ? err.code : "upstream_error",
+          message: err.message,
+        });
+      }
+      if (typeof err === "string" && err.length > 0) {
+        return JSON.stringify({ ok: false, kind: "upstream_error", message: err });
+      }
+      if (typeof parsed.detail === "string" && parsed.detail.length > 0) {
+        return JSON.stringify({ ok: false, kind: "upstream_detail", message: parsed.detail });
+      }
+      if (typeof parsed.status === "string" && parsed.status.length > 0) {
+        return JSON.stringify({ ok: false, kind: "upstream_status", message: parsed.status });
+      }
     }
   } catch {/* fallthrough */}
   return JSON.stringify({ ok: false, kind: "unknown", message: s });
@@ -272,9 +299,27 @@ export function redactArgsForLive(args: Record<string, unknown>): Record<string,
 }
 
 export function redactArgsForAudit(name: string, args: Record<string, unknown>): string {
+  // Fast-path (audit M12, 2026-05-27): redactValue recursively walks every
+  // nested string and tests it against looksLikeSecret. For 99% of audit
+  // rows there's no secret-shaped content at all (read_file with /tmp/x,
+  // list_dir with ~/foo, etc.), and the recursive walk is pure overhead.
+  // Stringify the whole args bag once with looksLikeSecret as the gate;
+  // if it doesn't trip the heuristic on the combined blob, skip the deep
+  // walk entirely. The blob includes keys + values, so an `api_key`
+  // *property name* without a sensitive value still triggers the deep
+  // walk — false positives stay safe.
+  let stringified: string | null = null;
+  try {
+    stringified = JSON.stringify(args);
+  } catch {
+    /* fall through to deep walk; redactValue handles cycles via depth cap */
+  }
+  const needsDeepWalk = stringified == null || looksLikeSecret(stringified);
   // Secret redaction first — covers command, env, headers, body, and any
   // nested string arg — then bulky-field truncation on top.
-  const copy = redactValue({ ...args }) as Record<string, unknown>;
+  const copy = needsDeepWalk
+    ? (redactValue({ ...args }) as Record<string, unknown>)
+    : ({ ...args } as Record<string, unknown>);
   const fields = ARG_TRUNCATE_FIELDS[name] ?? [];
   for (const f of fields) {
     const v = copy[f];

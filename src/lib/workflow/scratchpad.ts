@@ -22,6 +22,10 @@
 import { logDiag } from "../diagnostics";
 
 export const SCRATCHPAD_MAX_BYTES = 64 * 1024;
+/** Hard cap on key count — prevents a runaway card from filling the pad
+ *  with tens of thousands of tiny entries even when byte count stays low.
+ *  Audit M10 (2026-05-27). */
+export const SCRATCHPAD_MAX_KEYS = 256;
 
 /** Internal shape — kept narrow so the keys/values remain JSON-roundtrip-safe. */
 type ScratchValue = string | number | boolean | null | ScratchObj | ScratchValue[];
@@ -33,19 +37,40 @@ interface ActiveScratchpad {
   workflowId: number;
   runStartedAt: number;
   data: Record<string, ScratchValue>;
+  /** Cached byte total. Maintained incrementally so setEntry doesn't
+   *  re-stringify the entire pad on every write (was O(n²) over a card
+   *  that writes many keys — audit M10). Updated by recomputing only
+   *  the changed key's contribution. */
+  bytesUsed: number;
 }
 
 let active: ActiveScratchpad | null = null;
 
 /** Called by the workflow runner before any card runs. Initializes an
- *  empty scratchpad scoped to this run. Safe to call repeatedly — last
- *  call wins, the previous run's scratchpad is discarded. */
-export function beginRun(workflowId: number): void {
+ *  empty scratchpad scoped to this run.
+ *
+ *  Audit M9 (2026-05-27): previously last-call-wins silently. Two
+ *  scheduled triggers firing during an in-flight run would overwrite
+ *  the live scratchpad mid-flight. Now refuses if a run is already
+ *  active and logs a diag — the caller is expected to dedupe before
+ *  reaching here (handleWorkflowTrigger). */
+export function beginRun(workflowId: number): boolean {
+  if (active !== null) {
+    logDiag({
+      level: "warn",
+      source: "workflow-scratchpad",
+      message: "beginRun refused: a workflow run is already active",
+      detail: { existingWorkflowId: active.workflowId, requestedWorkflowId: workflowId },
+    });
+    return false;
+  }
   active = {
     workflowId,
     runStartedAt: Date.now(),
     data: {},
+    bytesUsed: 2, // "{}" baseline
   };
+  return true;
 }
 
 /** Called by the workflow runner when the run terminates (success,
@@ -61,15 +86,17 @@ export function isActive(): boolean {
   return active !== null;
 }
 
-/** Serialized size estimate. JSON.stringify is a cheap upper bound
- *  (whitespace minimal). Used to enforce SCRATCHPAD_MAX_BYTES on
- *  every `set`. */
-function approxBytes(d: Record<string, ScratchValue>): number {
-  try {
-    return JSON.stringify(d).length;
-  } catch {
-    return 0;
-  }
+/** Bytes a single key:value pair contributes to the JSON object form,
+ *  including the leading comma when not the first key. Stringify of the
+ *  KEY and VALUE only — no whole-pad rescan. (Audit M10.) */
+function pairBytes(key: string, value: ScratchValue, isFirst: boolean): number {
+  // `"key":<value>` plus the comma separator if not first.
+  return (
+    JSON.stringify(key).length
+    + 1 // ':'
+    + JSON.stringify(value).length
+    + (isFirst ? 0 : 1) // ','
+  );
 }
 
 /** Set a scratchpad entry. Returns ok:false when no run is active OR
@@ -94,16 +121,44 @@ export function setEntry(key: string, value: ScratchValue): {
   } catch {
     return { ok: false, kind: "bad_value", message: "value must be JSON-serializable." };
   }
-  const next = { ...active.data, [key]: normalized };
-  const size = approxBytes(next);
-  if (size > SCRATCHPAD_MAX_BYTES) {
+  // Key-count cap (audit M10) — defends against runaway cards that fill
+  // the pad with tiny entries even when byte count stays under the
+  // overall cap.
+  const replacingExisting = Object.prototype.hasOwnProperty.call(active.data, key);
+  const nextKeyCount = active.data
+    ? Object.keys(active.data).length + (replacingExisting ? 0 : 1)
+    : 1;
+  if (nextKeyCount > SCRATCHPAD_MAX_KEYS) {
+    return {
+      ok: false,
+      kind: "key_cap",
+      message: `scratchpad would exceed ${SCRATCHPAD_MAX_KEYS} keys.`,
+    };
+  }
+  // Incremental byte accounting (audit M10) — previously O(n²) due to
+  // full-pad stringify per write. Now subtract old contribution + add
+  // new contribution and compare against the cap. JSON-object form is
+  // `{` + key1pair + ',' + key2pair + ... + `}`, so we account for the
+  // 2-byte `{}` frame in `bytesUsed` initial value and per-pair commas
+  // via `pairBytes(isFirst)`.
+  const keysBefore = Object.keys(active.data).length;
+  const oldContribution = replacingExisting
+    ? pairBytes(key, active.data[key], false)
+    : 0;
+  // The new pair is "not first" if there are already other keys present
+  // (i.e. keys_before > 1 when replacing, or keys_before > 0 when adding).
+  const otherKeyCount = replacingExisting ? keysBefore - 1 : keysBefore;
+  const newContribution = pairBytes(key, normalized, otherKeyCount === 0);
+  const nextBytes = active.bytesUsed - oldContribution + newContribution;
+  if (nextBytes > SCRATCHPAD_MAX_BYTES) {
     return {
       ok: false,
       kind: "size_cap",
-      message: `scratchpad would exceed ${SCRATCHPAD_MAX_BYTES} bytes (would be ${size}).`,
+      message: `scratchpad would exceed ${SCRATCHPAD_MAX_BYTES} bytes (would be ${nextBytes}).`,
     };
   }
-  active.data = next;
+  active.data[key] = normalized;
+  active.bytesUsed = nextBytes;
   return { ok: true };
 }
 
