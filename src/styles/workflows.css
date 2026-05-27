@@ -600,16 +600,19 @@
   padding: 0 var(--space-2) var(--space-2);
 }
 .wf-tool-item {
-  /* Layout: tool name on the left of the cell, checkbox snug against
-     the right edge. `justify-content: space-between` was producing
-     mid-cell drift when used with the old [☐] name order; the explicit
-     `name [☐]` order + `padding-right: var(--space-1)` on the wrapper
-     keeps the checkbox visually near its label without filling the
-     entire cell width with whitespace. */
+  /* Layout: tool name flush-left, checkbox snug to the right edge of
+     the cell. The previous attempt left .wf-tool-item natural-width,
+     so the flex container sat at the left of each grid cell with
+     empty space to the right — checkboxes appeared in the middle of
+     each cell and the name span (with min-width:0 + overflow:hidden)
+     was collapsing to invisible. Fix: force the row to fill the grid
+     cell (`width: 100%`), let the name span grow with `flex: 1` so
+     it occupies the empty space between the left edge and the
+     checkbox at the right. */
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
+  width: 100%;
   padding: 2px var(--space-1);
   font-size: var(--fs-xs);
   color: var(--text);
@@ -620,10 +623,10 @@
   background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
 }
 .wf-tool-item-name {
+  flex: 1 1 auto;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
 }
 .wf-tool-item input[type="checkbox"] {
   margin: 0;
