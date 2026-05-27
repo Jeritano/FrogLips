@@ -1,10 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelEntry, WorkflowCard } from "../../types";
 import { loadAllPresets } from "../../lib/agent-presets";
 import { useModalA11y } from "../../lib/use-modal-a11y";
 import { generateAgentName } from "../../lib/agent-name";
 import { isNonChatRepo } from "../../lib/chat-model-filter";
 import { api } from "../../lib/tauri-api";
+import {
+  applyMasterToggle,
+  defaultCollapsed,
+  loadCollapseState,
+  masterStateOf,
+  resolveToolGroups,
+  saveCollapseState,
+  type CollapseMap,
+} from "./tool-categories";
 
 /** Origin rect the card flies in from / back to (the deck or a placed node). */
 export interface FormOrigin {
@@ -528,22 +537,11 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                 />
               </label>
             </div>
-            <div className="wf-field">
-              <span>Tools</span>
-              <div className="wf-tool-grid">
-                {ALL_TOOLS.map((tool) => (
-                  <label key={tool} className="wf-tool-item">
-                    <input
-                      type="checkbox"
-                      checked={draft.tools.includes(tool)}
-                      onChange={() => toggleTool(tool)}
-                    />
-                    {tool}
-                  </label>
-                ))}
-              </div>
-              <p className="wf-field-hint">No tools selected = role default tools.</p>
-            </div>
+            <ToolPicker
+              selected={draft.tools}
+              onChange={(next) => set("tools", next)}
+              onToggleOne={toggleTool}
+            />
           </div>
           <div className="wf-form-foot">
             <button type="button" className="wf-btn" onClick={handleCancel}>Cancel</button>
@@ -559,6 +557,115 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── Grouped tool picker ─────────────────────────────────────────────────
+ * Renders ALL_TOOLS bucketed by `TOOL_CATEGORIES`. Each group has:
+ *   - a header row with a tri-state master checkbox (none/some/all)
+ *   - a disclosure ▸/▾ toggle that remembers collapse state in localStorage
+ *   - "N of M selected" indicator
+ * Tools not in any category surface in an auto-generated "Other" group
+ * so a contributor adding a new tool without categorizing it produces a
+ * visible signal instead of silent omission.
+ */
+function ToolPicker({
+  selected,
+  onChange,
+  onToggleOne,
+}: {
+  selected: string[];
+  onChange: (next: string[]) => void;
+  onToggleOne: (tool: string) => void;
+}) {
+  // Memoize group resolution — TOOL_CATEGORIES is constant, ALL_TOOLS is
+  // module-constant; the result only changes if a contributor edits the
+  // source. Recomputing per-render is fine but the memo also keeps the
+  // dev-console warning from firing on every render of a card.
+  const groups = useMemo(() => resolveToolGroups(ALL_TOOLS), []);
+
+  const [collapse, setCollapse] = useState<CollapseMap>(() => loadCollapseState());
+
+  const toggleCollapse = (id: string, defaultClosed: boolean) => {
+    setCollapse((prev) => {
+      // If the user has never touched this group, prev[id] is undefined
+      // and the rule-based default applies. Toggle inverts whatever the
+      // user is currently looking at — defaultClosed when undefined.
+      const current = prev[id] ?? defaultClosed;
+      const next = { ...prev, [id]: !current };
+      saveCollapseState(next);
+      return next;
+    });
+  };
+
+  return (
+    <div className="wf-field">
+      <span>Tools</span>
+      <div className="wf-tool-categories">
+        {groups.map((cat) => {
+          const master = masterStateOf(selected, cat.tools);
+          const hits = cat.tools.reduce(
+            (n, t) => n + (selected.includes(t) ? 1 : 0),
+            0,
+          );
+          const ruleDefault = defaultCollapsed(hits, cat.tools.length);
+          const isCollapsed = collapse[cat.id] ?? ruleDefault;
+          return (
+            <div key={cat.id} className="wf-tool-cat">
+              <div className="wf-tool-cat-head">
+                <button
+                  type="button"
+                  className="wf-tool-cat-disclose"
+                  aria-expanded={!isCollapsed}
+                  aria-controls={`wf-tool-cat-body-${cat.id}`}
+                  onClick={() => toggleCollapse(cat.id, ruleDefault)}
+                  title={cat.description}
+                >
+                  <span aria-hidden="true">{isCollapsed ? "▸" : "▾"}</span>{" "}
+                  {cat.label}
+                </button>
+                <label className="wf-tool-cat-master" title={cat.description}>
+                  <input
+                    type="checkbox"
+                    checked={master === "all"}
+                    ref={(el) => {
+                      if (el) el.indeterminate = master === "some";
+                    }}
+                    onChange={() =>
+                      onChange(applyMasterToggle(selected, cat.tools))
+                    }
+                  />
+                  <span className="wf-tool-cat-count">
+                    {hits} / {cat.tools.length}
+                  </span>
+                </label>
+              </div>
+              {!isCollapsed && (
+                <div
+                  id={`wf-tool-cat-body-${cat.id}`}
+                  className="wf-tool-cat-body"
+                >
+                  {cat.tools.map((tool) => (
+                    <label key={tool} className="wf-tool-item">
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(tool)}
+                        onChange={() => onToggleOne(tool)}
+                      />
+                      {tool}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="wf-field-hint">
+        No tools selected = role default tools. Click a category checkbox
+        to toggle every tool in that group at once.
+      </p>
     </div>
   );
 }
