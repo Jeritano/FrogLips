@@ -273,7 +273,8 @@
 
 /* ── Run panel ── */
 .wf-run-panel {
-  width: 260px;
+  /* Was 260px; user trimmed 50px to give the canvas more room. */
+  width: 210px;
   flex-shrink: 0;
   border-left: 1px solid var(--border);
   background: var(--surface);
