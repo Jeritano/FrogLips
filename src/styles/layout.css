@@ -237,7 +237,9 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: minmax(248px, 260px) 1fr;
+  /* Sidebar narrowed by 20px (was 248–260) — extra horizontal room for
+     the main pane content. */
+  grid-template-columns: minmax(228px, 240px) 1fr;
   /* height:100% (not 100vh) — in the macOS Overlay webview 100vh is
      ~44px taller than the real window, which made .app overflow and
      the body scroll, pushing the panel top off-screen. 100% chains
@@ -762,11 +764,22 @@ header {
   /* Smooth slide when the sidebar collapses (header padding-left jumps
      to clear the title-bar buttons). */
   transition: padding-left 0.18s ease;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface);
+  /* Fully translucent header — drops the solid surface fill + border so
+     the buttons/menus inside appear to float over the underlying view.
+     Backdrop-blur is intentionally absent here (per spec '100%
+     translucent'); if a frosted-glass effect is wanted later, add
+     `backdrop-filter: saturate(140%) blur(14px)` plus a 12% surface
+     tint via `color-mix`. */
+  background: transparent;
+  border-bottom: 0;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 12px;
+  /* Stack above the view body so any negative-margin / overlapping
+     content under it (chat top edge) doesn't paint over the
+     floating buttons. */
+  position: relative;
+  z-index: 2;
 }
 
