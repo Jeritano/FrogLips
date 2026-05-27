@@ -81,6 +81,11 @@ const ALL_TOOLS = [
   // that future runs can replay by name.
   "workflow_save_skill", "workflow_list_skills", "workflow_get_skill",
   "workflow_invoke_skill", "workflow_delete_skill",
+  // Claude Skills (imported Anthropic SKILL.md packages) — list/load the
+  // user's imported skill library. Useful in workflow agents that want
+  // to mount domain knowledge on demand instead of carrying the body in
+  // the card's system prompt.
+  "list_claude_skills", "load_claude_skill",
 ];
 
 /**

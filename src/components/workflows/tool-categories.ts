@@ -146,13 +146,19 @@ export const TOOL_CATEGORIES: readonly ToolCategory[] = [
     id: "memory",
     label: "Memory",
     description:
-      "Save and replay sequences of tool calls (procedural memory) scoped to this workflow.",
+      "Save and replay sequences of tool calls (procedural memory) scoped to this workflow; mount imported Claude Skills on demand.",
     tools: [
       "workflow_save_skill",
       "workflow_list_skills",
       "workflow_get_skill",
       "workflow_invoke_skill",
       "workflow_delete_skill",
+      // Claude Skills lookup — read-only, no approval. Belongs in Memory
+      // because the model uses them the same way (mount knowledge on
+      // demand), even though their storage is global rather than
+      // workflow-scoped.
+      "list_claude_skills",
+      "load_claude_skill",
     ],
   },
 ];

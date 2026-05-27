@@ -1025,4 +1025,37 @@ export const TOOLS = [
       },
     },
   },
+  /* ── Claude Skills (imported Anthropic SKILL.md packages). Read-only,
+       no-approval tools the chat agent uses to enumerate or load
+       user-imported skill instructions on demand. The actual skill body
+       may reference Anthropic-style tool names (Read, Write, Bash, etc.)
+       — see the translation glossary in the chat system prompt that the
+       runner prepends when any skill is enabled. ─────────────────── */
+  {
+    type: "function",
+    function: {
+      name: "list_claude_skills",
+      description:
+        "List the user's imported Claude Skills (name + description only). Call this if you need to see what skills are available before deciding which to load.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "load_claude_skill",
+      description:
+        "Load a Claude Skill by name. Returns the full markdown instructions for the skill. The skill body may reference Anthropic-style tool names (Read, Write, Bash, etc.) — see the translation glossary in the chat system prompt.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "The skill name as returned by list_claude_skills.",
+          },
+        },
+        required: ["name"],
+      },
+    },
+  },
 ] as const;

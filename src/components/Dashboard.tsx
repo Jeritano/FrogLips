@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { ClaudeSkillsPanel } from "./ClaudeSkillsPanel";
 import type {
   AgentSessionMetricsRow,
   ApprovalCount,
@@ -95,6 +96,9 @@ export function Dashboard({ open, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [sortKey, setSortKey] = useState<LatencyKey>("count");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  // Claude Skills panel state — owned by the dashboard so the panel
+  // auto-closes when the dashboard closes (per spec).
+  const [claudeSkillsOpen, setClaudeSkillsOpen] = useState(false);
   const timerRef = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -129,6 +133,13 @@ export function Dashboard({ open, onClose }: Props) {
       }
     };
   }, [open, refresh]);
+
+  // Auto-close the Claude Skills sub-panel when the dashboard itself
+  // closes — the dashboard is the natural home for app-wide settings
+  // and the panel should not outlive its host.
+  useEffect(() => {
+    if (!open) setClaudeSkillsOpen(false);
+  }, [open]);
 
   const sortedLatency = useMemo<ToolLatencyRow[]>(() => {
     const rows = summary?.tool_latency ?? [];
@@ -320,8 +331,38 @@ export function Dashboard({ open, onClose }: Props) {
               <ApprovalPie approvals={approvals} total={approvalTotal} />
             )}
           </section>
+
+          {/* 6. Claude Skills — global library of Anthropic SKILL.md folders.
+               Lives in the dashboard since it's app-wide settings (not
+               scoped to a single conversation or workflow). */}
+          <section
+            className="dashboard-card"
+            data-testid="dashboard-claude-skills"
+          >
+            <h3>Claude Skills</h3>
+            <div className="dashboard-empty">
+              Manage the Anthropic-format skills available to chat-mode agents.
+              Imported folders are stored in the global library and surfaced to
+              agents via <code>list_claude_skills()</code>.
+            </div>
+            <div className="dashboard-actions">
+              <button
+                type="button"
+                className="dashboard-action-btn"
+                data-testid="dashboard-open-claude-skills"
+                onClick={() => setClaudeSkillsOpen(true)}
+              >
+                Manage Claude Skills
+              </button>
+            </div>
+          </section>
         </div>
       </div>
+
+      <ClaudeSkillsPanel
+        open={claudeSkillsOpen}
+        onClose={() => setClaudeSkillsOpen(false)}
+      />
     </DashboardOverlay>
   );
 }

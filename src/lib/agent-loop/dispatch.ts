@@ -1349,6 +1349,55 @@ export async function executeTool(
       const overall_ok = !!(lastStep && lastStep.ok !== false);
       return JSON.stringify({ ok: overall_ok, skill: skillName, steps: stepResults });
     }
+    // ── Claude Skills (imported Anthropic SKILL.md packages) ────────────
+    // Read-only, no-approval. `list_claude_skills` enumerates ENABLED
+    // entries only — the chat agent shouldn't see disabled skills at all.
+    // `load_claude_skill` fetches the full body for one skill so the
+    // model can paste its instructions into context on demand instead of
+    // paying the full-body cost on every turn.
+    case "list_claude_skills": {
+      const rows = await api.claudeSkillList(true);
+      return JSON.stringify({
+        ok: true,
+        skills: rows.map((r) => ({ name: r.name, description: r.description })),
+      });
+    }
+    case "load_claude_skill": {
+      const skillName = String(args.name ?? "");
+      if (!skillName) {
+        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+      }
+      const row = await api.claudeSkillGet(skillName);
+      if (!row) {
+        return JSON.stringify({ ok: false, kind: "not_found", message: `Skill '${skillName}' not found.` });
+      }
+      if (!row.enabled) {
+        return JSON.stringify({ ok: false, kind: "disabled", message: `Skill '${skillName}' is disabled.` });
+      }
+      // The skill's frontmatter `allowed_tools` is stored as a JSON string.
+      // Surface it as a parsed array to the model when it parses cleanly;
+      // a null column or unparseable value leaves the field undefined so
+      // the caller can omit it from its planning.
+      let allowedTools: string[] | undefined;
+      if (row.allowed_tools_json) {
+        try {
+          const parsed = JSON.parse(row.allowed_tools_json);
+          if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) {
+            allowedTools = parsed as string[];
+          }
+        } catch {
+          /* leave undefined — malformed frontmatter is silently dropped */
+        }
+      }
+      return JSON.stringify({
+        ok: true,
+        name: row.name,
+        description: row.description,
+        body: row.body_md,
+        allowed_tools: allowedTools,
+        source_path: row.source_path,
+      });
+    }
     default:
       return JSON.stringify({ ok: false, kind: "unknown_tool", message: `Unknown tool: ${name}` });
   }
@@ -1390,6 +1439,12 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "diff_files",
   "find_definition",
   "find_references",
+  // Claude Skills lookup: list + load are pure DB reads against the
+  // `claude_skills` table. Per-run caching is safe because importing or
+  // toggling a skill happens via the panel (a non-loop UI flow); the
+  // first mutating tool call invalidates anyway.
+  "list_claude_skills",
+  "load_claude_skill",
   // Code re-review H-4: `list_processes` + `list_undo` REMOVED — both
   // reflect real-time state that a non-mutating cache invalidator (file
   // edit, shell command, etc.) doesn't catch. A cached `list_processes`

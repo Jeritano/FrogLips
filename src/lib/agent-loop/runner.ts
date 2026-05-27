@@ -23,6 +23,131 @@ import { api } from "../tauri-api";
 import { logDiag } from "../diagnostics";
 
 /**
+ * Stub-prompt header inserted into the system context when at least one
+ * non-pinned Claude Skill is enabled. The translation glossary is the
+ * core payload: Anthropic SKILL.md packages reference upstream tool
+ * names (Read, Write, Bash, …) that don't exist in Froglips's dispatch
+ * table, so we tell the model what to call instead.
+ *
+ * Kept as a module-level constant rather than computed-per-run so the
+ * test suite can assert against a stable string and the prompt cache
+ * upstream sees a steady prefix across turns.
+ */
+const CLAUDE_SKILLS_STUB_HEADER =
+  "You have access to imported Claude Skills. Each is a markdown instruction set the user has imported into Froglips.\n\n"
+  + "Tool-name translation (Anthropic tool names → Froglips tool names that exist in your current allowlist):\n"
+  + "  Read → read_file\n"
+  + "  Write → write_file\n"
+  + "  Edit → edit_file\n"
+  + "  MultiEdit → multi_edit\n"
+  + "  Bash → run_shell\n"
+  + "  Glob → search_files (use glob arg)\n"
+  + "  Grep → search_files (use pattern arg)\n"
+  + "  WebFetch → web_fetch\n"
+  + "  WebSearch → web_search\n"
+  + "  TodoWrite → workflow_set (not a perfect mapping; use scratchpad)\n\n"
+  + "When a skill body references one of the above Anthropic tool names, call the Froglips equivalent instead.";
+
+/**
+ * Inject Claude Skills context into `msgs` immediately after the main
+ * system prompt (index 1) and before any user / assistant content.
+ *
+ * Layout produced (top → bottom):
+ *   [0] main system prompt   (already unshifted by caller)
+ *   [1] stub catalog        (when non-pinned enabled skills exist)
+ *   [2..] pinned-body system messages, one per pinned skill, in enabled-
+ *         list order
+ *   [next] pre-existing user/assistant history
+ *
+ * Rationale: the stub is a catalog the model reaches for via
+ * load_claude_skill; pinned bodies are authoritative reference text the
+ * user has explicitly elevated. Keeping pinned bodies immediately above
+ * the conversation history (and the eventual user-profile injection)
+ * makes them feel like the most-recent system context the model should
+ * obey, while still living BELOW any user-profile injection appended
+ * later.
+ *
+ * IPC failures are non-fatal — we log a diag and return. The runner
+ * continues without skill context rather than crashing the chat.
+ */
+async function injectClaudeSkillsContext(
+  msgs: Message[],
+  conversationId: number,
+): Promise<void> {
+  let enabled: Awaited<ReturnType<typeof api.claudeSkillList>>;
+  try {
+    enabled = await api.claudeSkillList(true);
+  } catch (e) {
+    logDiag({
+      level: "warn",
+      source: "claude-skills",
+      message: "claude_skill_list failed at chat start — continuing without skill context",
+      detail: { error: e instanceof Error ? e.message : String(e) },
+    });
+    return;
+  }
+  if (!enabled || enabled.length === 0) return;
+
+  const pinned = enabled.filter((s) => s.pinned);
+  const nonPinned = enabled.filter((s) => !s.pinned);
+
+  // Insert position: directly after the main system prompt that the
+  // caller just unshifted. Using `splice` instead of `unshift` keeps the
+  // main sysMsg at index 0 (where downstream context-budget logic
+  // expects the canonical system rules) and slots the skill context
+  // between rules and user history.
+  let insertAt = 1;
+
+  // Stub first so pinned-body messages slot above it (closer to user
+  // history). Pinned reference text reads more authoritatively when
+  // adjacent to the turn the model is answering.
+  if (nonPinned.length > 0) {
+    const bullets = nonPinned
+      .map((s) => `  - ${s.name}: ${s.description}`)
+      .join("\n");
+    const stub =
+      `${CLAUDE_SKILLS_STUB_HEADER}\n\n`
+      + `Available skills:\n${bullets}\n\n`
+      + "Call list_claude_skills() to refresh this list, load_claude_skill(name) to read the full instructions on demand.";
+    msgs.splice(insertAt, 0, {
+      conversation_id: conversationId,
+      role: "system",
+      content: stub,
+    });
+    insertAt += 1;
+  }
+
+  // Pinned-skill bodies — one combined system message with per-skill
+  // separators. Keeping it to a single message bounds the system-prompt
+  // count for downstream context-budget tracking. A `get` failure for
+  // one skill skips that skill but still emits the others.
+  if (pinned.length > 0) {
+    const parts: string[] = [];
+    for (const s of pinned) {
+      try {
+        const row = await api.claudeSkillGet(s.name);
+        if (!row || !row.enabled) continue;
+        parts.push(`\n\n--- Claude Skill: ${row.name} ---\n${row.body_md}`);
+      } catch (e) {
+        logDiag({
+          level: "warn",
+          source: "claude-skills",
+          message: `claude_skill_get failed for pinned skill "${s.name}"`,
+          detail: { error: e instanceof Error ? e.message : String(e) },
+        });
+      }
+    }
+    if (parts.length > 0) {
+      msgs.splice(insertAt, 0, {
+        conversation_id: conversationId,
+        role: "system",
+        content: parts.join("").trimStart(),
+      });
+    }
+  }
+}
+
+/**
  * Policy-driven decision for a dangerous tool call. We can't reach into the
  * Rust matcher from the synchronous gate code, so this mirrors the
  * pattern semantics from `src-tauri/src/policy.rs`. Kept intentionally
@@ -492,6 +617,23 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     content: buildSystemPrompt(workspaceRoot, toolAllowlist, systemPromptOverride, mcpTools),
   };
   msgs.unshift(sysMsg);
+
+  // ── Claude Skills injection ────────────────────────────────────────────
+  // If the user has imported any Anthropic-format SKILL.md packages and
+  // marked them enabled, surface them to the model:
+  //
+  //   - Pinned skills get their FULL body inlined as one system message
+  //     per skill — the user explicitly elevated them, so we pay the
+  //     full-body cost up front instead of waiting for a load_claude_skill
+  //     round-trip.
+  //   - Other enabled (non-pinned) skills appear as a single stub system
+  //     message that the model can drill into via load_claude_skill.
+  //
+  // Both injections come AFTER the main system prompt and BEFORE any
+  // later user-profile / handoff context, so user-most-recent ordering
+  // is preserved. Failures here are non-fatal — a Rust IPC outage at
+  // chat start logs a diag and the loop runs without skills.
+  await injectClaudeSkillsContext(msgs, opts.conversationId);
 
   // Wrap the rest of the run in a try/finally so the session-metrics row is
   // written exactly once regardless of how we exit (completion, abort,

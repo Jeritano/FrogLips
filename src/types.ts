@@ -951,3 +951,40 @@ export interface SkillFull extends SkillSummary {
   steps_json: string;
   created_at: number;
 }
+
+/* ── Claude Skills (Anthropic-format imported skills) ─────────────────── */
+
+/**
+ * Summary row for a Claude Skill — a user-imported Anthropic SKILL.md
+ * folder living in the global library. Distinct from `SkillSummary`,
+ * which is a per-workflow procedural memory. Claude Skills are mounted
+ * by chat-mode agents on demand via `list_claude_skills()` and
+ * `load_claude_skill(name)`.
+ *
+ * `enabled` controls whether the chat agent can see the skill;
+ * `pinned` is purely a UI hint for ordering / starring favorites.
+ */
+export interface ClaudeSkillSummary {
+  id: number;
+  name: string;
+  description: string;
+  source_path: string;
+  enabled: boolean;
+  pinned: boolean;
+}
+
+/**
+ * Full Claude Skill row returned by `claude_skill_get`. Carries the
+ * imported SKILL.md body and the JSON-encoded `allowed_tools` field
+ * Anthropic skills declare in their frontmatter. The body is rendered
+ * verbatim in the View-Body sub-modal; `allowed_tools_json` is parsed
+ * client-side into chips so the user can see what the skill expects.
+ *
+ * Per the spec, Froglips translates those declared tool names to its
+ * own dispatch table at runtime; the chips are informational only.
+ */
+export interface ClaudeSkillRow extends ClaudeSkillSummary {
+  body_md: string;
+  allowed_tools_json: string | null;
+  imported_at: number;
+}

@@ -54,6 +54,8 @@ import type {
   OllamaLibraryEntry,
   AppSettings,
   BranchInfo,
+  ClaudeSkillRow,
+  ClaudeSkillSummary,
   BrowserNavigateResult,
   BrowserOkResult,
   BrowserScreenshotResult,
@@ -728,6 +730,38 @@ export const api = {
     invoke<void>("workflow_skill_delete", { workflowId, name }),
   workflowSkillRecordInvocation: (workflowId: number, name: string) =>
     invoke<void>("workflow_skill_record_invocation", { workflowId, name }),
+
+  // Claude Skills (Anthropic-format imported skills). One Claude Skill =
+  // a folder containing a SKILL.md file (Anthropic's published format).
+  // Imported into the global library so chat-mode agents can mount it on
+  // demand via `list_claude_skills()` / `load_claude_skill(name)`. The
+  // Rust side handles folder-walking, SKILL.md parsing, and storage in
+  // the `claude_skills` SQLite table.
+  //
+  // Feature-detected: `"claudeSkillList" in api` should return true once
+  // the Rust commands ship. Until then the panel renders an unavailable
+  // hint instead of crashing on an invoke that resolves to a missing
+  // handler. `claudeSkillImport` returns the full row so the caller can
+  // refresh local state; on `kind: name_collision` it throws an error
+  // whose string contains the marker the panel parses to trigger the
+  // overwrite confirm flow.
+  claudeSkillImport: (folderPath: string, overwrite?: boolean) =>
+    invoke<ClaudeSkillRow>("claude_skill_import", {
+      folderPath,
+      overwrite: overwrite ?? false,
+    }),
+  claudeSkillList: (enabledOnly?: boolean) =>
+    invoke<ClaudeSkillSummary[]>("claude_skill_list", {
+      enabledOnly: enabledOnly ?? null,
+    }),
+  claudeSkillGet: (name: string) =>
+    invoke<ClaudeSkillRow | null>("claude_skill_get", { name }),
+  claudeSkillSetEnabled: (name: string, enabled: boolean) =>
+    invoke<void>("claude_skill_set_enabled", { name, enabled }),
+  claudeSkillSetPinned: (name: string, pinned: boolean) =>
+    invoke<void>("claude_skill_set_pinned", { name, pinned }),
+  claudeSkillDelete: (name: string) =>
+    invoke<void>("claude_skill_delete", { name }),
 
   // Image generation (mistralrs FLUX). `imageGenerate` returns the **op_id**
   // immediately — the actual diffusion + PNG write runs async on the Rust

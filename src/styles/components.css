@@ -365,3 +365,388 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Dashboard card actions ──────────────────────────────────────────────
+ * Inline action buttons inside a dashboard-card (e.g. "Manage Claude
+ * Skills"). Keeps the card padded but lets the button sit flush-left
+ * under the empty/description copy. */
+.dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.dashboard-action-btn {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.dashboard-action-btn:hover {
+  background: var(--surface-hover);
+}
+.dashboard-action-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── Claude Skills panel ─────────────────────────────────────────────────
+ * Global library inspector opened from the dashboard. Mirrors the
+ * frosted-glass treatment used on the workflows CardForm / SkillsPanel so
+ * the chrome reads as the same family. The inner box is a centered card
+ * with a header row, an optional ErrorBar, and either an EmptyState or
+ * the skills table. The body viewer (sub-modal) renders on top of the
+ * panel with a higher z-index so the focus trap on the inner viewer or
+ * ConfirmDialog correctly receives keyboard focus.
+ */
+.cs-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh var(--space-4, 16px) var(--space-4, 16px);
+  overflow: auto;
+}
+.cs-panel-box {
+  width: min(960px, 100%);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 88vh;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+}
+.cs-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border-bottom: 1px solid var(--border);
+}
+.cs-panel-title {
+  margin: 0;
+  font-size: var(--fs-lg, 16px);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cs-panel-import {
+  background: var(--accent);
+  color: var(--accent-fg, white);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm, 4px);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.cs-panel-import:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.cs-panel-import:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.cs-panel-import:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.cs-panel-close {
+  background: transparent;
+  color: var(--text-2, var(--text));
+  border: 1px solid transparent;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.cs-panel-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.cs-panel-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.cs-panel-body {
+  padding: var(--space-3, 12px) var(--space-4, 16px) var(--space-4, 16px);
+  overflow: auto;
+  min-height: 0;
+}
+
+/* ── Table ── */
+.cs-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface);
+}
+.cs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm, 13px);
+}
+.cs-table thead th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-2, var(--text));
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  white-space: nowrap;
+}
+.cs-table tbody td {
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.cs-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.cs-table-loading {
+  text-align: center;
+  color: var(--text-2, var(--text));
+  padding: var(--space-4, 16px);
+}
+.cs-col-name {
+  width: 18%;
+}
+.cs-col-desc {
+  width: auto;
+}
+.cs-col-path {
+  width: 22%;
+}
+.cs-col-status {
+  width: 130px;
+}
+.cs-col-actions {
+  width: 260px;
+  text-align: right;
+  white-space: nowrap;
+}
+.cs-cell-name {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-sm, 13px);
+  color: var(--text);
+  word-break: break-word;
+}
+.cs-cell-desc {
+  color: var(--text);
+}
+.cs-cell-desc-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2, var(--text));
+  line-height: 1.4;
+}
+.cs-cell-path {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--text-2, var(--text));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+.cs-cell-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cs-cell-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+.cs-cell-actions .cs-btn + .cs-btn {
+  margin-left: 4px;
+}
+
+/* ── Chips ── */
+.cs-chip {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  line-height: 1.4;
+}
+.cs-chip-enabled {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.cs-chip-disabled {
+  background: var(--surface-2);
+  color: var(--text-3, var(--text-2, var(--text)));
+  border-color: var(--border);
+  opacity: 0.7;
+}
+.cs-chip-pinned {
+  background: var(--accent);
+  color: var(--accent-fg, white);
+  border-color: var(--accent);
+}
+.cs-chip-tool {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border);
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.cs-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  padding: 4px var(--space-2, 8px);
+  font-size: var(--fs-xs, 12px);
+  cursor: pointer;
+  font-family: inherit;
+}
+.cs-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.cs-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.cs-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.cs-btn-danger {
+  color: var(--danger, #d62828);
+  border-color: color-mix(in srgb, var(--danger, #d62828) 35%, var(--border));
+}
+.cs-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger, #d62828) 12%, transparent);
+}
+
+.cs-confirm-body {
+  font-size: var(--fs-sm, 13px);
+  color: var(--text-2, var(--text));
+  padding: var(--space-2, 8px) 0;
+}
+
+/* ── Body viewer (sub-modal) ── */
+.cs-body-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 610;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4, 16px);
+}
+.cs-body-box {
+  width: min(820px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  display: flex;
+  flex-direction: column;
+  max-height: 86vh;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.38);
+  overflow: hidden;
+}
+.cs-body-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border-bottom: 1px solid var(--border);
+}
+.cs-body-title {
+  margin: 0;
+  font-size: var(--fs-base, 14px);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cs-body-meta {
+  padding: var(--space-3, 12px) var(--space-4, 16px) 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-sm, 13px);
+}
+.cs-body-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cs-body-meta-label {
+  color: var(--text-2, var(--text));
+  font-weight: 600;
+}
+.cs-body-meta-path {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--text-2, var(--text));
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cs-body-meta-note {
+  font-size: 11px;
+  color: var(--text-3, var(--text-2, var(--text)));
+  font-style: italic;
+}
+.cs-body-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cs-body-pre {
+  background: var(--surface-2);
+  color: var(--text);
+  padding: var(--space-3, 12px);
+  border-radius: var(--radius-sm, 4px);
+  max-height: 60vh;
+  overflow: auto;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: var(--space-3, 12px);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
