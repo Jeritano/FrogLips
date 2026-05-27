@@ -2,7 +2,7 @@
 
 use crate::{
     approval,
-    commands::agent::{binding_for, ApprovalPayload},
+    commands::agent::{binding_for, verify_bound, ApprovalPayload},
     mcp,
 };
 
@@ -66,7 +66,24 @@ pub async fn mcp_call_tool(
     server: String,
     tool: String,
     args: Option<serde_json::Value>,
+    approval: String,
 ) -> Result<String, String> {
+    // Approval gate (sec audit C2, 2026-05-26): MCP-provided tools are
+    // out-of-process and can do anything their server permits — filesystem,
+    // shell, network, etc. The agent-loop runner shows a confirmation modal
+    // before every MCP tool call, but without a Rust-side gate a compromised
+    // renderer could invoke this IPC directly and skip the modal. Token is
+    // bound to (server, tool) so a token approved for `fs__read_file` can't
+    // be silently replayed against `fs__delete_file` on the same server.
+    verify_bound(
+        "mcp_call_tool",
+        &approval,
+        ApprovalPayload {
+            mcp_server: Some(server.clone()),
+            mcp_tool: Some(tool.clone()),
+            ..Default::default()
+        },
+    )?;
     let args = args.unwrap_or(serde_json::json!({}));
     mcp::call_tool(&server, &tool, args)
         .await

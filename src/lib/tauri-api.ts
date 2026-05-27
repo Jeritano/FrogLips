@@ -26,6 +26,8 @@ export interface ApprovalPayload {
   mcp_command?: string;
   mcp_args?: string[];
   mcp_env_keys?: string[];
+  mcp_server?: string;
+  mcp_tool?: string;
 }
 
 /**
@@ -604,8 +606,13 @@ export const api = {
   mcpListServers: () => invoke<McpServerInfo[]>("mcp_list_servers"),
   mcpListTools: (name: string) =>
     invoke<McpToolDescriptor[]>("mcp_list_tools", { name }),
-  mcpCallTool: (server: string, tool: string, args: Record<string, unknown>) =>
-    invoke<string>("mcp_call_tool", { server, tool, args }),
+  mcpCallTool: async (server: string, tool: string, args: Record<string, unknown>) =>
+    invoke<string>("mcp_call_tool", {
+      server,
+      tool,
+      args,
+      approval: await mintApproval("mcp_call_tool", { mcp_server: server, mcp_tool: tool }),
+    }),
   mcpServerStderr: (name: string) =>
     invoke<string | null>("mcp_server_stderr", { name }),
 
@@ -746,8 +753,12 @@ export const api = {
    * IPCs (rejects `~/.ssh/`, system dirs, credential filenames, etc).
    * Returns the resolved canonical destination path.
    */
-  imageSaveTo: (id: number, dest: string) =>
-    invoke<string>("image_save_to", { id, dest }),
+  imageSaveTo: async (id: number, dest: string) =>
+    invoke<string>("image_save_to", {
+      id,
+      dest,
+      approval: await mintApproval("image_save_to", { path: dest }),
+    }),
   /**
    * Open the on-disk PNG in the user's default image viewer (Preview on
    * macOS) via `/usr/bin/open <path>`. Provided because WebKit's native

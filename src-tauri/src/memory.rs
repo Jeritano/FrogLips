@@ -72,18 +72,47 @@ recall + dedup check (~30 MB at 10k entries × 768 floats).
 type EmbeddingMap = HashMap<i64, Vec<f32>>;
 static EMB_CACHE: Lazy<RwLock<Option<EmbeddingMap>>> = Lazy::new(|| RwLock::new(None));
 
+/// Hard cap on cache entry count. At 768 dims × 4 bytes that's ~60 MB; at
+/// 1024 dims ~80 MB. Above this the oldest-id entries are evicted on insert.
+/// A workflow that mass-creates memories (or a long-lived install with many
+/// 10k+ memories) would otherwise grow the cache unboundedly. (Tier 3 audit
+/// finding "EMB_CACHE LRU bound", 2026-05-26 — eviction is oldest-id, not
+/// strict LRU, since we don't track access timestamps.)
+const MAX_CACHE_ENTRIES: usize = 20_000;
+
+/// Evict the smallest-id entries (oldest memories) until the map is within
+/// `MAX_CACHE_ENTRIES`. Called after any cache insert so the bound is
+/// maintained as a post-condition.
+fn evict_if_over_cap(map: &mut EmbeddingMap) {
+    if map.len() <= MAX_CACHE_ENTRIES {
+        return;
+    }
+    let mut ids: Vec<i64> = map.keys().copied().collect();
+    ids.sort_unstable();
+    let drop_count = map.len() - MAX_CACHE_ENTRIES;
+    for id in ids.iter().take(drop_count) {
+        map.remove(id);
+    }
+}
+
 fn warm_cache() -> Result<()> {
     if EMB_CACHE.read().is_some() {
         return Ok(());
     }
     // Build the map without holding any cache lock so DB I/O doesn't serialize
-    // recall calls from other threads.
+    // recall calls from other threads. Pull the most-recent `MAX_CACHE_ENTRIES`
+    // by id DESC so a multi-100k-row database doesn't pin the entire vector
+    // set in RAM at startup — older entries are still searchable via direct
+    // DB scan paths, just not via the in-RAM fast path.
     let conn = get_db()?;
     let mut stmt = conn.prepare(
-        "SELECT id, embedding FROM memories WHERE status = 'active' AND embedding IS NOT NULL",
+        "SELECT id, embedding FROM memories
+         WHERE status = 'active' AND embedding IS NOT NULL
+         ORDER BY id DESC
+         LIMIT ?1",
     )?;
     let mut map: EmbeddingMap = HashMap::new();
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map(params![MAX_CACHE_ENTRIES as i64], |r| {
         let id: i64 = r.get(0)?;
         let blob: Vec<u8> = r.get(1)?;
         Ok((id, blob))
@@ -256,6 +285,7 @@ pub fn add_memory(
                 let dim_ok = map.values().next().is_none_or(|v| v.len() == emb.len());
                 if dim_ok {
                     map.insert(id, emb);
+                    evict_if_over_cap(map);
                 }
             }
         }
@@ -349,6 +379,7 @@ pub fn update_memory_status(id: i64, status: &str) -> Result<()> {
                     let dim_ok = map.values().next().is_none_or(|v| v.len() == emb.len());
                     if dim_ok {
                         map.insert(id, emb);
+                        evict_if_over_cap(map);
                     }
                 }
             }
@@ -766,5 +797,43 @@ mod tests {
         assert_eq!(next_down("global"), Some("project"));
         assert_eq!(next_down("project"), Some("conversation"));
         assert_eq!(next_down("conversation"), None);
+    }
+
+    /// `evict_if_over_cap` drops the smallest-id entries until the map is
+    /// within `MAX_CACHE_ENTRIES`. Verifies the cap holds and that the
+    /// retained entries are the most recent (largest ids).
+    #[test]
+    fn evict_drops_oldest_ids_first() {
+        let mut map: EmbeddingMap = HashMap::new();
+        // Seed past the cap so eviction actually fires.
+        let overflow: usize = 50;
+        let total = MAX_CACHE_ENTRIES + overflow;
+        for id in 0..total {
+            map.insert(id as i64, vec![0.0_f32; 4]);
+        }
+        assert_eq!(map.len(), total);
+
+        evict_if_over_cap(&mut map);
+        assert_eq!(map.len(), MAX_CACHE_ENTRIES);
+        // Smallest `overflow` ids were dropped; everything from `overflow..total`
+        // is retained.
+        for id in 0..overflow {
+            assert!(!map.contains_key(&(id as i64)), "id {id} should be evicted");
+        }
+        for id in overflow..total {
+            assert!(map.contains_key(&(id as i64)), "id {id} should be retained");
+        }
+    }
+
+    /// No-op when under cap.
+    #[test]
+    fn evict_is_noop_under_cap() {
+        let mut map: EmbeddingMap = HashMap::new();
+        for id in 0..100 {
+            map.insert(id as i64, vec![0.0_f32; 4]);
+        }
+        let before = map.len();
+        evict_if_over_cap(&mut map);
+        assert_eq!(map.len(), before);
     }
 }

@@ -33,12 +33,27 @@ enum PriorState {
 struct Entry {
     path: PathBuf,
     prior: PriorState,
+    /// Canonical parent path at capture time. Re-checked at undo to catch
+    /// parent-dir symlink races: an attacker who swaps the parent to a
+    /// symlink between capture and undo would otherwise have the restore
+    /// write the captured bytes into the swap target's filesystem.
+    /// `write_nofollow_sync` only protects the LEAF component; the parent
+    /// has no equivalent guard, so we cache the canonical at capture and
+    /// recanonicalize-and-compare at undo. (Audit C2-undo, 2026-05-26.)
+    canonical_parent: Option<PathBuf>,
     /// Wall-clock ms since epoch when the snapshot was taken. Surfaced to
     /// the user so the undo confirmation can show "from N seconds ago".
     taken_at_ms: u64,
     /// Free-form label describing what produced the snapshot
     /// (`write_file` / `edit_file` / `multi_edit`).
     kind: &'static str,
+}
+
+/// Canonical of the parent directory of `p`, or `None` if `p` has no parent
+/// or the parent does not currently resolve. Stored at capture time and
+/// re-checked at undo time to detect parent-swap races.
+fn canonical_parent_of(p: &Path) -> Option<PathBuf> {
+    p.parent().and_then(|par| std::fs::canonicalize(par).ok())
 }
 
 static STACK: Lazy<Mutex<VecDeque<Entry>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
@@ -56,10 +71,12 @@ pub fn capture_with_bytes(path: &Path, prior_bytes: Vec<u8>, kind: &'static str)
     if prior_bytes.len() > MAX_PER_ENTRY_BYTES {
         return;
     }
+    let canonical_parent = canonical_parent_of(path);
     let mut s = STACK.lock();
     s.push_back(Entry {
         path: path.to_path_buf(),
         prior: PriorState::Bytes(prior_bytes),
+        canonical_parent,
         taken_at_ms: now_ms(),
         kind,
     });
@@ -86,10 +103,12 @@ pub fn capture(path: &Path, kind: &'static str) {
         Ok(_) => return, // directory — not a write_file target
         Err(_) => PriorState::Absent,
     };
+    let canonical_parent = canonical_parent_of(path);
     let mut s = STACK.lock();
     s.push_back(Entry {
         path: path.to_path_buf(),
         prior,
+        canonical_parent,
         taken_at_ms: now_ms(),
         kind,
     });
@@ -142,6 +161,33 @@ pub fn undo_last() -> Result<UndoResult, String> {
         return Err("nothing to undo".into());
     };
     let path = entry.path.clone();
+
+    // Audit C2-undo (2026-05-26): re-validate the parent directory canonical
+    // matches what we saw at capture time. If the parent has been swapped
+    // for a symlink (or replaced wholesale) between capture and undo, refuse
+    // the restore — write_nofollow_sync only protects the LEAF, not the
+    // parent path, so a parent swap is enough to redirect the write.
+    if let Some(captured_parent) = &entry.canonical_parent {
+        let now_parent = canonical_parent_of(&path);
+        if now_parent.as_ref() != Some(captured_parent) {
+            return Err(format!(
+                "undo refused: parent directory of {} changed since snapshot",
+                path.display()
+            ));
+        }
+    }
+
+    // Also re-validate against the current workspace root if one is set.
+    // `set_workspace_root` calls `clear()` on change so under normal flow
+    // every entry's path is already inside the current root, but a malicious
+    // mutation of STACK from a renderer-side IPC would bypass that gate. The
+    // assertion here is a defense-in-depth backstop.
+    if let Some(ws) = crate::agent::fs::workspace_root_clone() {
+        if !path.starts_with(&ws) {
+            return Err("undo refused: target is outside current workspace".into());
+        }
+    }
+
     match entry.prior {
         PriorState::Bytes(bytes) => {
             if let Some(parent) = path.parent() {

@@ -391,10 +391,21 @@ pub async fn image_unload() -> Result<bool, String> {
 /// parent. A power-loss mid-copy leaves `<dest>` either fully written or
 /// not present.
 #[tauri::command]
-pub async fn image_save_to(id: i64, dest: String) -> Result<String, String> {
+pub async fn image_save_to(id: i64, dest: String, approval: String) -> Result<String, String> {
     if id < 0 {
         return Err("id must be non-negative".into());
     }
+    // Audit C2 (2026-05-26): bind approval to the destination path so a
+    // token approved for `~/Desktop/cat.png` cannot be silently replayed
+    // against a different filename within the 60s TTL.
+    super::agent::verify_bound(
+        "image_save_to",
+        &approval,
+        super::agent::ApprovalPayload {
+            path: Some(dest.clone()),
+            ..Default::default()
+        },
+    )?;
     let validated_dest = path_safety::validate_write_dest(&dest)?;
     // Sec review M6: require .png suffix so the model can't use this IPC to
     // drop arbitrary-named bytes anywhere the user has approved. The image

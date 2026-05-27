@@ -41,6 +41,8 @@ pub struct ApprovalPayload {
     pub mcp_command: Option<String>,
     pub mcp_args: Option<Vec<String>>,
     pub mcp_env_keys: Option<Vec<String>>,
+    pub mcp_server: Option<String>,
+    pub mcp_tool: Option<String>,
 }
 
 /// Mint a single-use approval token bound to `tool`. Wired from the frontend's
@@ -100,7 +102,11 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
         | "agent_make_dir"
         | "agent_delete_path"
         | "agent_open_path_in_editor"
-        | "agent_format_code" => Some(sha256_hex(&kv(&[(
+        | "agent_format_code"
+        // image_save_to writes generated PNG bytes to a user-supplied dest.
+        // Same path binding as the agent_* write-family so a leaked
+        // approval can't redirect the save to a different file.
+        | "image_save_to" => Some(sha256_hex(&kv(&[(
             "path",
             p.path.as_deref().unwrap_or(""),
         )]))),
@@ -203,6 +209,18 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
                 ("env_keys", &env_joined),
             ])))
         }
+        // MCP tool call — bound to (server, tool). Args are NOT in the
+        // binding: number-format drift between JS `JSON.stringify` and Rust
+        // `serde_json::Number::to_string` (e.g. `1.0` vs `1`) makes a
+        // canonical-JSON binding silently break in the float case. The
+        // user-confirmation modal already shows the exact args at call time;
+        // the IPC gate ensures a leaked token for benign tool X cannot be
+        // replayed against dangerous tool Y on the same server within the
+        // 60s TTL. (Audit C2, 2026-05-26.)
+        "mcp_call_tool" => Some(sha256_hex(&kv(&[
+            ("server", p.mcp_server.as_deref().unwrap_or("")),
+            ("tool", p.mcp_tool.as_deref().unwrap_or("")),
+        ]))),
         _ => None,
     }
 }
@@ -261,7 +279,7 @@ pub async fn agent_list_dir(path: String) -> Result<agent::DirListing, String> {
 /// the source of truth on the consume side; the matching mint side lives
 /// in `binding_for`. Both MUST produce the same canonical string for the
 /// same logical payload — drift = silent reject of every legitimate call.
-fn verify_bound(tool: &str, approval: &str, payload: ApprovalPayload) -> Result<(), String> {
+pub(crate) fn verify_bound(tool: &str, approval: &str, payload: ApprovalPayload) -> Result<(), String> {
     let Some(expected) = binding_for(tool, &payload) else {
         return Err(format!(
             "internal: tool {tool} has no binding declared but expected one"
