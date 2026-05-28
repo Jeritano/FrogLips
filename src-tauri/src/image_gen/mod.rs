@@ -49,13 +49,6 @@ pub use engine::{new_engine, ImageEngine};
 )))]
 pub use stub::{new_engine, ImageEngine};
 
-/// Symmetry alias mirroring `native_inference::SharedRuntime` — kept here so a
-/// future `.manage(SharedEngine)` State extractor can drop in without forcing
-/// every call site through the `Lazy<ImageEngine>` singleton. Currently
-/// unused by IPC (which uses the `Lazy`), so flagged dead-code-allow.
-#[allow(dead_code)]
-pub type SharedEngine = ImageEngine;
-
 /// One row of the `image_list` paginated response. The engine returns rows +
 /// the total count under the supplied filter so the frontend can render a
 /// pager without needing a second `count(*)` round-trip.

@@ -842,12 +842,6 @@ fn internal_to_public(r: history::LoraMergeRowInternal) -> LoraMergeRow {
     }
 }
 
-/// Look up a merge row by sha (for `engine.rs::<base>+lora:<sha>` routing).
-pub fn get_by_sha(sha: &str) -> Result<Option<LoraMergeRow>> {
-    let row = history::lora_get_by_sha(sha)?;
-    Ok(row.map(internal_to_public))
-}
-
 /// Drive the full merge pipeline. Idempotent: a cache hit returns the
 /// existing row immediately (and bumps `last_used_at`).
 pub fn merge<F: Fn(MergeProgress)>(

@@ -515,25 +515,6 @@ pub fn delete(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Return `(name, body_md)` for every pinned, enabled skill. Used by the
-/// chat runner to prepend skill bodies to the system prompt at chat start.
-/// Only enabled skills are included — a disabled skill, even if pinned, is
-/// dormant.
-pub fn list_pinned_bodies() -> Result<Vec<(String, String)>> {
-    let conn = get_db()?;
-    let mut stmt = conn.prepare(
-        "SELECT name, body_md FROM claude_skills
-         WHERE pinned = 1 AND enabled = 1
-         ORDER BY name ASC",
-    )?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

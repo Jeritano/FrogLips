@@ -98,21 +98,9 @@ pub fn info(source: &str, message: &str) {
     emit(DiagLevel::Info, source, message, None);
 }
 
-/// Emit a `warn`-level diagnostic.
-#[allow(dead_code)]
-pub fn warn(source: &str, message: &str) {
-    emit(DiagLevel::Warn, source, message, None);
-}
-
 /// Emit a `warn` with optional structured detail.
 pub fn warn_with(source: &str, message: &str, detail: Value) {
     emit(DiagLevel::Warn, source, message, Some(detail));
-}
-
-/// Emit an `error`-level diagnostic.
-#[allow(dead_code)]
-pub fn error(source: &str, message: &str) {
-    emit(DiagLevel::Error, source, message, None);
 }
 
 /// Emit an `error` with optional structured detail.

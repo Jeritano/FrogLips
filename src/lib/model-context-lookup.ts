@@ -100,7 +100,3 @@ export async function prefetchContextLength(
   }
 }
 
-/** Test/devtool helper — wipe the cache. Not used by product code. */
-export function _clearContextCache(): void {
-  cache.clear();
-}

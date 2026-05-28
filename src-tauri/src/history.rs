@@ -928,14 +928,6 @@ fn row_to_image(r: &rusqlite::Row<'_>) -> rusqlite::Result<ImageRow> {
     })
 }
 
-/// Legacy listing helper (no pagination). Retained for callers / tests that
-/// don't need the unpaginated total; the IPC layer now uses
-/// [`list_images_page`] directly.
-#[allow(dead_code)]
-pub fn list_images(conv_id: Option<i64>, limit: Option<u32>) -> Result<Vec<ImageRow>> {
-    list_images_page(conv_id, limit, None).map(|(rows, _)| rows)
-}
-
 /// Paginated `images` listing. Returns `(rows, total_for_filter)` so callers
 /// can render a pager without a second round-trip. `limit` is capped at
 /// `IMAGES_PAGE_LIMIT_MAX`; `offset` is honored verbatim.

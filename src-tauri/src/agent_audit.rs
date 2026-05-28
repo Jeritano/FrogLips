@@ -610,11 +610,12 @@ pub fn dashboard_summary(filter: AuditFilter) -> Result<DashboardSummary> {
 /* ── Internal: small helper for callers that want a structured args map ── */
 
 /// Convenience: serialize args (truncating large `content` fields for
-/// write_file / edit_file / multi_edit) to bounded JSON. Exposed for any
-/// future Rust-side caller that wants to record an audit row directly;
-/// the live agent loop performs the equivalent truncation in TS before
-/// sending args over IPC.
-#[allow(dead_code)]
+/// write_file / edit_file / multi_edit) to bounded JSON. Used exclusively
+/// by the tests below; the live agent loop performs the equivalent
+/// truncation in TS before sending args over IPC. Gated to `cfg(test)`
+/// so the dead-code warning stays clean on prod builds while the helper
+/// remains available for the existing test coverage.
+#[cfg(test)]
 pub fn redact_args(tool: &str, args: &serde_json::Value) -> String {
     fn truncate_str(s: &str, max: usize) -> String {
         if s.chars().count() <= max {

@@ -44,7 +44,11 @@ export function ContextMeter({ messages, model, status }: Props) {
   const { used, total, pct } = useMemo(() => {
     const t = resolveContextTokens(model, status);
     const u = estimateMessagesTokens(messages);
-    return { used: u, total: t, pct: Math.min(100, Math.round((u / t) * 100)) };
+    // Audit M-F5: when `resolveContextTokens` returns 0 (unknown backend),
+    // u/t produces NaN → CSS renders "NaN%" width which collapses the bar
+    // and surfaces as a console warning. Clamp the denominator.
+    const pct = t > 0 ? Math.min(100, Math.max(0, Math.round((u / t) * 100))) : 0;
+    return { used: u, total: t, pct };
     // setLookupTick triggers a re-render and re-runs resolveContextTokens via
     // the dep on status (cached value is in module state, not React state).
   }, [messages, model, status]);
