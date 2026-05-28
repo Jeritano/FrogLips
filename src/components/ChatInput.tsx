@@ -1,10 +1,13 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import type { ChatImage } from "../types";
+import type { ChatImage, ServerStatus } from "../types";
 import {
   MAX_IMAGES_PER_MESSAGE,
   MAX_IMAGE_BYTES,
-  modelSupportsVision,
 } from "../lib/model-capabilities";
+import {
+  resolveVisionSupport,
+  prefetchVisionSupport,
+} from "../lib/model-capability-lookup";
 import {
   applyTemplate,
   filterByTrigger,
@@ -74,6 +77,10 @@ interface Props {
   streaming?: boolean;
   /** Active model id — used to gate the image-drop affordance. */
   currentModel?: string | null;
+  /** Active backend status — lets the image-drop gate consult the
+   *  backend's authoritative `capabilities` (Ollama /api/show) instead
+   *  of the name-regex heuristic alone. */
+  status?: ServerStatus | null;
 }
 
 const IMAGE_MIME_RE = /^image\/(png|jpe?g|webp|gif|bmp)$/i;
@@ -110,7 +117,7 @@ async function fileToScrubbedPng(file: File): Promise<{ base64: string; size_byt
   return { base64, size_bytes };
 }
 
-export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }: Props) {
+export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, status }: Props) {
   const [text, setText] = useState("");
   const [dropping, setDropping] = useState(false);
   const [images, setImages] = useState<ChatImage[]>([]);
@@ -134,7 +141,22 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
   const listeningRef = useRef(false);
   const mountedRef = useRef(true);
 
-  const visionOK = modelSupportsVision(currentModel);
+  // Bump on a successful backend capability lookup so the cache-first
+  // `resolveVisionSupport` re-reads the authoritative answer without a
+  // remount (mirrors ContextMeter's prefetch-tick pattern).
+  const [visionTick, setVisionTick] = useState(0);
+  useEffect(() => {
+    if (!currentModel || !status?.running) return;
+    let cancelled = false;
+    void prefetchVisionSupport(currentModel, status).then((v) => {
+      if (!cancelled && v != null) setVisionTick((t) => t + 1);
+    });
+    return () => { cancelled = true; };
+  }, [currentModel, status]);
+  // visionTick forces a re-evaluation when the prefetch lands; the value
+  // itself isn't read (the cache inside resolveVisionSupport holds it).
+  void visionTick;
+  const visionOK = resolveVisionSupport(currentModel, status ?? null);
 
   const matches = useMemo(
     () => (slashCtx ? filterByTrigger(templates, slashCtx.prefix) : []),

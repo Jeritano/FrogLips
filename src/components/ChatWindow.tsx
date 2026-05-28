@@ -512,6 +512,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             onAbort={abort}
             streaming={isWorking}
             currentModel={status?.running ? status.model : null}
+            status={status}
           />
           <ContextMeter
             messages={messages}
