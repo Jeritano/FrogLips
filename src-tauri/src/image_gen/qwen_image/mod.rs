@@ -64,6 +64,7 @@ use anyhow::anyhow;
 // allocate model weights yet; weight loading is Phase 4.
 pub mod config;
 pub mod rope;
+pub mod text_encoder;
 pub mod transformer;
 pub mod weights;
 

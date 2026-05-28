@@ -117,7 +117,7 @@ fn gated_add(x: &Tensor, gate: &Tensor, delta: &Tensor) -> CandleResult<Tensor> 
 /// All inputs are `(batch, heads, seq, head_dim)`; output matches q's
 /// shape. Phase 6 (Metal kernels) replaces this with `nn_ops::sdpa`
 /// behind a `#[cfg]` once the test harness has a Metal-capable runner.
-fn sdpa_manual(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> CandleResult<Tensor> {
+pub(crate) fn sdpa_manual(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> CandleResult<Tensor> {
     let kt = k.transpose(D::Minus2, D::Minus1)?.contiguous()?;
     let scores = q.matmul(&kt)?;
     let scaled = (scores * scale as f64)?;
