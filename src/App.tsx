@@ -21,42 +21,82 @@ import { ErrorBar } from "./components/ErrorBar";
 import { LiveRegion } from "./components/LiveRegion";
 import { WorkflowRunProvider, useWorkflowRunControl } from "./lib/workflow/run-context";
 
+type ViewId = "chat" | "workflows" | "images" | "knowledge";
+
 /**
- * Sidebar entry for the Workflows view. Wrapped in its own component so
- * the running-badge subscribes only to the *stable* control surface
- * (`useWorkflowRunControl`) instead of the per-card delta surface —
- * the button re-renders on run start/stop, NOT on every streamed token
- * (audit H7, 2026-05-27).
+ * Top-of-sidebar segmented control for the three primary surfaces:
+ * Froglips (chat), Images, Workflows. Modelled after Claude desktop's
+ * top-bar surface switcher — no emoji icons, equal-width tabs, the
+ * active tab carries a filled background. Per-tab badges (workflow
+ * running, image-gen running) ride on the tab without disturbing
+ * layout.
+ *
+ * Subscribes to `useWorkflowRunControl()` so the workflow-running dot
+ * updates on run start/stop without re-rendering on every streamed
+ * token (the per-card delta surface lives in a different context).
+ * Audit H7 (2026-05-27).
  */
-function WorkflowsEntryButton({
-  active,
-  onClick,
+function ViewSegmentedControl({
+  view,
+  setView,
+  imageRunning,
 }: {
-  active: boolean;
-  onClick: () => void;
+  view: ViewId;
+  setView: (v: ViewId) => void;
+  imageRunning: boolean;
 }) {
   const { runningWorkflowId } = useWorkflowRunControl();
-  const isRunning = runningWorkflowId !== null;
+  const workflowsRunning = runningWorkflowId !== null;
+
   return (
-    <button
-      type="button"
-      className="workflows-entry"
-      onClick={onClick}
-      aria-current={active ? "page" : undefined}
-      aria-pressed={active}
-      data-testid="workflows-entry-btn"
-    >
-      <span aria-hidden="true">🧩</span> Workflows
-      {isRunning && (
-        <span
-          className="workflows-running-badge"
-          title="A workflow run is in progress — click to return."
-          aria-label="Workflow run in progress"
-        >
-          ●
-        </span>
-      )}
-    </button>
+    <div className="view-tabs" role="tablist" aria-label="App views">
+      <button
+        type="button"
+        role="tab"
+        className={`view-tab${view === "chat" ? " active" : ""}`}
+        onClick={() => setView("chat")}
+        aria-selected={view === "chat"}
+        data-testid="view-tab-chat"
+      >
+        Chat
+      </button>
+      <button
+        type="button"
+        role="tab"
+        className={`view-tab${view === "images" ? " active" : ""}`}
+        onClick={() => setView("images")}
+        aria-selected={view === "images"}
+        data-testid="view-tab-images"
+      >
+        Images
+        {imageRunning && (
+          <span
+            className="sidebar-activity-dot"
+            aria-label="Image generation in progress"
+            data-testid="images-entry-activity-dot"
+          />
+        )}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        className={`view-tab${view === "workflows" ? " active" : ""}`}
+        onClick={() => setView("workflows")}
+        aria-selected={view === "workflows"}
+        data-testid="view-tab-workflows"
+      >
+        Flows
+        {workflowsRunning && (
+          <span
+            className="workflows-running-badge"
+            title="A workflow run is in progress — click to return."
+            aria-label="Workflow run in progress"
+          >
+            ●
+          </span>
+        )}
+      </button>
+    </div>
   );
 }
 import { announce } from "./lib/announce";
@@ -130,7 +170,7 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Main-pane view: chat / workflow canvas / image-gen surface / knowledge library.
-  const [view, setView] = useState<"chat" | "workflows" | "images" | "knowledge">("chat");
+  const [view, setView] = useState<ViewId>("chat");
   // First-run setup wizard. `undefined` = haven't checked the flag yet, so we
   // render nothing for the wizard region until the IPC call returns. This
   // avoids a flash of the wizard on returning users whose setup is already
@@ -756,6 +796,15 @@ function App() {
                 <button
                   type="button"
                   role="menuitem"
+                  data-testid="menu-knowledge"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setView("knowledge"); setMenuOpen(false); }}
+                >
+                  <span aria-hidden="true">📚</span> Knowledge
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   data-testid="menu-diagnostics"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => { setDiagnosticsOpen(true); setMenuOpen(false); }}
@@ -810,49 +859,19 @@ function App() {
           </button>
         </div>
         <div className="sidebar-spacer-top" aria-hidden="true" />
-        {/* UI review U-C1: surface a small "Views" group label so the
-            two top-level verbs (Workflows / Images) read as a navigation
-            group rather than floating buttons. Chat is implicit — it's
-            the substrate everything else lives in — so it doesn't get
-            its own button (the locked layout reserves the + New chat
-            button below for chat creation). */}
-        <div className="sidebar-view-group" role="navigation" aria-label="App views">
-          <div className="sidebar-section-label" aria-hidden="true">VIEWS</div>
-          <WorkflowsEntryButton
-            active={view === "workflows"}
-            onClick={() => setView("workflows")}
-          />
-          <button
-            type="button"
-            className="images-entry"
-            onClick={() => setView("images")}
-            aria-current={view === "images" ? "page" : undefined}
-            aria-pressed={view === "images"}
-            data-testid="images-entry-btn"
-          >
-            <span aria-hidden="true">🎨</span> Images
-            {/* UX re-review M5: dot indicator while image generation is
-                in flight so a user who navigated away can see something
-                is happening on a tab they're not currently viewing. */}
-            {imageGen.running && (
-              <span
-                className="sidebar-activity-dot"
-                aria-label="Image generation in progress"
-                data-testid="images-entry-activity-dot"
-              />
-            )}
-          </button>
-          <button
-            type="button"
-            className="knowledge-entry"
-            onClick={() => setView("knowledge")}
-            aria-current={view === "knowledge" ? "page" : undefined}
-            aria-pressed={view === "knowledge"}
-            data-testid="knowledge-entry-btn"
-          >
-            <span aria-hidden="true">📚</span> Knowledge
-          </button>
-        </div>
+        {/* UI review 2026-05-28: replaced the labelled VIEWS group (three
+            stacked emoji-prefixed buttons) with a Claude-style top-bar
+            segmented control. Knowledge moved off the segmented control
+            into the hamburger menu — it's an editorial surface (RAG
+            corpora) accessed less often than chat/images/workflows, so
+            it doesn't need top-level real estate. The chat substrate is
+            now an explicit tab labelled "Froglips" (matches the app
+            name) instead of being implicit. */}
+        <ViewSegmentedControl
+          view={view}
+          setView={setView}
+          imageRunning={imageGen.running}
+        />
         <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
         <input
           className="conv-search"

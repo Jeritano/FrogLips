@@ -3,11 +3,15 @@
   align-items: stretch;
   gap: 6px;
   /* Drag strip at the sidebar's top edge. The hamburger it contains is
-     position:fixed (see .topbar-hamburger), so this row's main job is to
-     provide a -webkit-app-region drag surface. */
+     position:fixed (see .topbar-hamburger), so this row's main job is
+     to provide a -webkit-app-region drag surface AND reserve enough
+     vertical space below the traffic lights for the absolutely-
+     positioned .view-tabs segmented control to sit at top: 38px without
+     the conv-search block (centered via flex spacers below) creeping
+     underneath. ~74px = 38 (tabs y-offset) + 32 (tabs height) + 4
+     (visual breathing). */
   padding: 12px 0 0 64px;
-  /* This row is the window-drag surface (Overlay style strips the OS
-     drag bar). Children opt out via -webkit-app-region: no-drag. */
+  min-height: 74px;
   -webkit-app-region: drag;
   position: relative;
 }
@@ -378,25 +382,67 @@ body {
   line-height: 1;
 }
 
-/* UI review U-C1: tiny uppercase section label that groups the top-level
-   view-switcher buttons in the sidebar. Stays narrow + low-vis so the
-   conversation list below reads as the primary content. */
-.sidebar-view-group {
+/* UI redesign 2026-05-28: Claude-style segmented control replacing the
+   three stacked emoji-prefixed sidebar entries. Anchored to the very
+   top of the sidebar column, ~6px below the macOS traffic-light row
+   (lights occupy roughly 12-32px from window top; 38px keeps a 6px
+   gap). `position: absolute` so the segmented control sits in the top
+   chrome zone without contributing to the flex flow that centers the
+   conv-search block in the column below. */
+.view-tabs {
   display: flex;
-  flex-direction: column;
-  /* UI re-review M3: trim the gap so the group adds ~60px (not ~80px)
-     above the locked + New chat button. */
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2px;
   gap: 2px;
-  margin-bottom: 4px;
+  background: var(--surface);
+  position: absolute;
+  top: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 16px);
+  z-index: var(--z-popover);
+  /* Pulled out of the document flow above, so the menu-icon-style
+     buttons that hang at `top: 19px` (hamburger, collapse) sit cleanly
+     above the segmented control without overlap. */
 }
-.sidebar-section-label {
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  padding: 0 10px;
-  margin-bottom: 0;
-  user-select: none;
+.view-tab {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  border-radius: var(--radius-sm);
+  position: relative;
+  transition: background 0.1s, color 0.1s;
+  /* Inline-flex so per-tab badges (running dot, activity pulse) sit on
+     the same baseline as the label without breaking equal-width layout.
+     `min-width: 0` lets each segment shrink below its content width so
+     `text-overflow: ellipsis` can engage when the sidebar is narrow. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.view-tab:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.view-tab.active {
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.view-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* UX re-review U-C3 / H6: secondary actions sitting next to the model
@@ -598,6 +644,9 @@ body {
      control the exact gap below the macOS traffic lights. */
   padding: 0 8px 12px 8px;
   overflow-y: auto;
+  /* Anchor for the absolutely-positioned .view-tabs control that sits in
+     the chrome zone (top: 38px, just below the traffic lights). */
+  position: relative;
 }
 
 .new-chat {

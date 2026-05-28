@@ -4,37 +4,15 @@
  * motion is non-essential and already covered by the global
  * prefers-reduced-motion rule in components.css. */
 
-/* Sidebar entry button — sits directly above .new-chat. */
-.workflows-entry {
-  margin: 0 var(--space-3) var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: var(--fs-base);
-  cursor: pointer;
-  text-align: left;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  transition: background 0.12s ease;
-}
-.workflows-entry:hover { background: var(--surface-hover); }
-.workflows-entry[aria-pressed="true"] {
-  background: var(--accent-bg);
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-/* Live-run badge: small pulsing dot next to "Workflows" in the sidebar
- * when a workflow run is in flight. User can be elsewhere in the app
- * (Chat / Images) and still see at a glance that a run is going.
- * Click anywhere on the entry returns to the Workflows view. */
+/* Live-run badge: small pulsing dot inside the Workflows tab in the
+ * segmented control when a workflow run is in flight. User can be on
+ * another tab (Froglips / Images) and still see at a glance that a run
+ * is going. Click on the Workflows tab returns to that view.
+ * (Stand-alone .workflows-entry sidebar button removed 2026-05-28 when
+ * the VIEWS group was replaced by the segmented control in App.tsx.) */
 .workflows-running-badge {
-  margin-left: auto;
-  color: #10b981;
-  font-size: 14px;
+  color: var(--green, #10b981);
+  font-size: 10px;
   line-height: 1;
   animation: workflows-running-pulse 1.6s ease-in-out infinite;
 }

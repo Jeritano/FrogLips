@@ -539,13 +539,18 @@
 /* UX re-review M5: live-activity dot for the Images sidebar entry while
    image generation is in flight on a tab the user isn't currently
    viewing. Pulse animation respects prefers-reduced-motion. */
+/* Tab activity dot — pulses next to the Images tab label when image
+   generation is in flight on a tab the user isn't currently viewing.
+   Pulse animation respects prefers-reduced-motion.
+   (Stand-alone .images-entry / .knowledge-entry sidebar buttons removed
+   2026-05-28 when the VIEWS group was replaced by the segmented control
+   in App.tsx; Knowledge moved into the hamburger menu.) */
 .sidebar-activity-dot {
   display: inline-block;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
-  margin-left: 6px;
   animation: sidebar-activity-pulse 1.4s ease-in-out infinite;
 }
 @keyframes sidebar-activity-pulse {
@@ -554,55 +559,6 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .sidebar-activity-dot { animation: none; opacity: 1; }
-}
-
-.images-entry {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: calc(100% - var(--space-4));
-  margin: 0 var(--space-2) var(--space-2);
-  padding: 6px var(--space-2);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  text-align: left;
-}
-
-.images-entry:hover {
-  background: var(--surface-hover);
-}
-
-.images-entry[aria-pressed="true"] {
-  background: var(--accent-bg);
-  border-color: var(--accent-strong);
-  color: var(--accent);
-}
-
-/* Sidebar Knowledge entry — peer to .images-entry / .workflows-entry. */
-.knowledge-entry {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: calc(100% - var(--space-4));
-  margin: 0 var(--space-2) var(--space-2);
-  padding: 6px var(--space-2);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  text-align: left;
-}
-.knowledge-entry:hover { background: var(--surface-hover); }
-.knowledge-entry[aria-pressed="true"] {
-  background: var(--accent-bg);
-  border-color: var(--accent-strong);
-  color: var(--accent);
 }
 
 /* Knowledge view page shell — peers with .image-view / .wf-page. */
