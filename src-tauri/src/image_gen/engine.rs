@@ -369,6 +369,21 @@ impl ImageEngine {
         req: ImageGenRequest,
         events: mpsc::Sender<ImageProgress>,
     ) -> Result<Vec<u8>> {
+        // Phase 1 Qwen-Image dispatcher (2026-05-28): if the model id (or
+        // its `<base>+lora:<sha>` envelope) resolves to a Qwen-Image
+        // variant, short-circuit with a structured `qwen_unimplemented`
+        // error. Phases 2-5 will replace this with the real load + forward
+        // pass. We intentionally check BEFORE acquiring `generate_mutex`
+        // and BEFORE `check_memory` so a Qwen-shape request never queues
+        // behind a Flux generate or wastes a memory probe — the error is
+        // surfaced as fast as possible.
+        let effective_id = parse_lora_suffix(&req.model)
+            .map(|(base, _)| base)
+            .unwrap_or(req.model.as_str());
+        if crate::image_gen::qwen_image::model_id_resolves_to_qwen(effective_id) {
+            return Err(crate::image_gen::qwen_image::unimplemented_error());
+        }
+
         // Serialize concurrent generate calls (H2). Two IPC callers (UI
         // click + agent-loop tool call) would otherwise race `load_or_reuse`
         // and double-load ~14 GiB. The Fixed(1) scheduler already serializes

@@ -829,6 +829,14 @@ fn canonicalize_flux_repo(model: &str) -> String {
         "dev" | "FLUX.1-dev" | "flux-dev" | "flux.1-dev" => {
             "black-forest-labs/FLUX.1-dev".to_string()
         }
+        // Phase 1 Qwen-Image shorthands (2026-05-28): canonicalize to the
+        // Alibaba HF repo so the LoRA pipeline routes Qwen merges to the
+        // right `ALLOWED_BASES` entry. Inference against these still
+        // errors out via the engine's `qwen_unimplemented` short-circuit
+        // until Phase 5 lands.
+        "qwen-image" | "qwen-image-fp8" | "Qwen-Image" => {
+            crate::image_gen::qwen_image::QWEN_IMAGE_REPO.to_string()
+        }
         // Already canonical (or a custom repo) — pass through.
         other => other.to_string(),
     }

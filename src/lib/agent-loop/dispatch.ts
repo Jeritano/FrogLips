@@ -917,6 +917,13 @@ export async function executeTool(
         "schnell", "dev",
         "schnell-fp8", "dev-fp8",
         "schnell-gguf-q4", "dev-gguf-q4",
+        // Phase 1 Qwen-Image variants (2026-05-28). Inference still
+        // errors out via the Rust engine's `qwen_unimplemented` guard
+        // until Phase 5 lands; an agent that picks these as the model
+        // gets a clear structured error back, which is still better
+        // than the previous behaviour of silently falling back to
+        // `schnell`.
+        "qwen-image", "qwen-image-fp8",
       ]);
       const model = KNOWN_MODELS.has(modelArg) ? modelArg : "schnell";
       const size = typeof args.size === "string" && args.size.length > 0

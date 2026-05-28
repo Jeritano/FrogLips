@@ -21,6 +21,21 @@ use serde::{Deserialize, Serialize};
 pub mod lora;
 pub mod metadata;
 
+// Qwen-Image backend (Alibaba's 20B MMDiT text-to-image model).
+//
+// Phase 1 (2026-05-28): scaffolding only — module + base-id detection +
+// LoRA key mapping + dispatcher routing. Actual image generation is
+// stubbed and returns `kind:"qwen_unimplemented"`. The Phase 2+ work
+// (full MMDiT forward pass, Qwen2.5-VL text encoder, VAE) lands across
+// later sessions.
+//
+// LoRA merge against Qwen-Image base IS architecturally possible in
+// Phase 1 because the merge pipeline is pure tensor math (candle) and
+// only needs the base safetensors loadable on disk — see
+// `lora::merge`. Inference against the merged variant still errors out
+// until the Phase 2 forward pass lands.
+pub mod qwen_image;
+
 #[cfg(all(
     feature = "native-mistralrs",
     target_os = "macos",

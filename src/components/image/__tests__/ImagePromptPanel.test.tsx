@@ -120,15 +120,19 @@ describe("ImagePromptPanel", () => {
     expect(hint?.textContent ?? "").toContain("Dev uses 28");
   });
 
-  it("offers only the loadable upstream FLUX repos in the model dropdown", async () => {
+  it("offers the loadable Flux repos and Phase-1 Qwen-Image in the model dropdown", async () => {
     // F1 quantized variants were reverted — community GGUF / single-file
     // fp8 repos don't ship the multi-file safetensors layout mistralrs's
-    // FluxLoader requires. Keep this assertion narrow so a future re-add
-    // (once an upstream loader supports it) trips the test loudly.
+    // FluxLoader requires. Qwen-Image was added 2026-05-28 as Phase 1
+    // of the Qwen backend port — picking it allows LoRA inspection +
+    // merge against the Qwen-Image base but Generate surfaces a
+    // structured `qwen_unimplemented` error until Phase 5 lands. Keep
+    // this assertion narrow so a future re-add of quantized Flux
+    // variants OR a new Qwen variant trips the test loudly.
     h = await mount();
     const select = h.container.querySelector<HTMLSelectElement>('[data-testid="image-model-select"]')!;
     const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(["schnell", "dev"]);
+    expect(values).toEqual(["schnell", "dev", "qwen-image"]);
   });
 
   it("does not render a Cancel button (H4)", async () => {

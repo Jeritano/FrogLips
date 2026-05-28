@@ -80,11 +80,16 @@ fn acquire_merge_lock(sha: &str) -> Arc<PLMutex<()>> {
         .clone()
 }
 
-/// Allowed Flux bases for v1. Anything else hits an `unsupported_base`
-/// error; the frontend dropdown only emits these two.
+/// Allowed bases for LoRA merge. Flux pair is the v1 set; Qwen-Image was
+/// added in Phase 1 of the Qwen backend port (2026-05-28). LoRA MERGE
+/// against Qwen-Image works in Phase 1 because the merge pipeline is
+/// pure tensor math (candle); INFERENCE against the merged variant
+/// stays gated behind Phase 5 — see `image_gen::qwen_image` for the
+/// staged rollout plan.
 pub const ALLOWED_BASES: &[&str] = &[
     "black-forest-labs/FLUX.1-dev",
     "black-forest-labs/FLUX.1-schnell",
+    crate::image_gen::qwen_image::QWEN_IMAGE_REPO,
 ];
 
 /// Hard cap on total cache size (200 GiB). When `current + projected >
@@ -159,10 +164,28 @@ impl MergeProgress {
 }
 
 /// Detected LoRA key-naming convention.
+///
+/// Qwen variant (Phase 1, 2026-05-28): Qwen-Image LoRAs in the wild use
+/// either a PEFT-style diffusers shape with `transformer.transformer_blocks
+/// .{N}.attn.{to_q,to_k,to_v,to_out.0,add_q_proj,add_k_proj,add_v_proj,
+/// to_add_out}` + `.lora_A.default_0.default.weight` / `.lora_B...` or a
+/// Kohya-style `lora_unet_transformer_blocks_{N}_attn_*` (the `lora_unet_`
+/// prefix is carried forward from Flux/UNet even though Qwen has no UNet).
+/// Some hand-mixed variants combine the diffusers prefix with the
+/// `lora_{down,up}` suffix pair. The matcher accepts all three.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Convention {
     Diffusers,
     Kohya,
+    /// Qwen-Image MMDiT joint-block convention. Differs from `Diffusers`
+    /// in two ways: it strips the `default_0.default` PEFT infix and it
+    /// allows BOTH `lora_A/B` and `lora_down/up` suffix shapes (some
+    /// Qwen LoRAs use a mixed convention — see HF diffusers issue
+    /// #12159). Routed through a separate enum variant rather than
+    /// extending `Diffusers` so the Flux path's strict matching can't
+    /// false-positive on a Qwen-shape key (Qwen modules like
+    /// `add_q_proj` don't appear in the Flux key vocabulary).
+    QwenImage,
     Unknown,
 }
 
@@ -171,6 +194,7 @@ impl Convention {
         match self {
             Convention::Diffusers => "diffusers",
             Convention::Kohya => "kohya",
+            Convention::QwenImage => "qwen-image",
             Convention::Unknown => "unknown",
         }
     }
@@ -416,6 +440,34 @@ pub fn inspect(lora_path: &Path) -> Result<LoraMetadata> {
 /// Detect the LoRA naming convention by sampling the first matching key.
 /// Returns `Unknown` when nothing matches either pattern.
 fn detect_convention(names: &[String]) -> Convention {
+    // Phase 1 (2026-05-28): probe for Qwen-shape modules FIRST. A Qwen
+    // key like `transformer.transformer_blocks.0.attn.add_q_proj.lora_A
+    // .default_0.default.weight` would also match `is_diffusers_a` on
+    // its suffix; without the early Qwen check the merger would
+    // misclassify it as Flux-shape and the target rewrite would fail
+    // silently. Qwen identifiers we look for:
+    //   * `transformer_blocks` — the joint-block container name (Flux
+    //     uses `blocks` or `double_blocks`/`single_blocks`).
+    //   * `add_q_proj` / `add_k_proj` / `add_v_proj` / `to_add_out` —
+    //     text-stream attention projections in the Qwen MMDiT block
+    //     that don't appear in the Flux key vocabulary.
+    //   * `.default_0.default.weight` — the PEFT infix Qwen LoRAs
+    //     typically carry.
+    let is_qwen_shape = |n: &str| {
+        n.contains("transformer_blocks")
+            || n.contains("add_q_proj")
+            || n.contains("add_k_proj")
+            || n.contains("add_v_proj")
+            || n.contains("to_add_out")
+            || n.contains(".default_0.default.weight")
+    };
+    for n in names {
+        if is_qwen_shape(n) {
+            return Convention::QwenImage;
+        }
+    }
+    // Fall through to the Flux-era detection: diffusers shape OR Kohya
+    // `lora_unet_*` shape.
     for n in names {
         if is_diffusers_a(n) || is_diffusers_b(n) {
             return Convention::Diffusers;
@@ -438,6 +490,32 @@ fn is_kohya_down(name: &str) -> bool {
 }
 fn is_kohya_up(name: &str) -> bool {
     name.ends_with("_lora_up.weight") || name.ends_with(".lora_up.weight")
+}
+
+/// Returns `true` when `name` is the "A" side (down-projection) of a
+/// Qwen-shape LoRA pair. Qwen LoRAs use FOUR suffix patterns in the
+/// wild (HF diffusers issue #12159):
+///   * `.lora_A.weight` (clean diffusers)
+///   * `.lora_A.default_0.default.weight` (PEFT-saved diffusers)
+///   * `.lora_down.weight` (Kohya-flavored even under a diffusers prefix)
+///   * `_lora_down.weight` (full Kohya)
+fn is_qwen_a(name: &str) -> bool {
+    name.ends_with(".lora_A.weight")
+        || name.ends_with(".lora_A.default_0.default.weight")
+        || name.ends_with(".lora_down.weight")
+        || name.ends_with("_lora_down.weight")
+}
+
+/// "B" side (up-projection) counterpart of [`is_qwen_a`]. Currently
+/// referenced only by tests + the doc on `is_qwen_a`; `build_pairs`
+/// already classifies a non-A-side key as B implicitly, so this helper
+/// is kept for explicit checks future Qwen-specific code may want.
+#[allow(dead_code)]
+fn is_qwen_b(name: &str) -> bool {
+    name.ends_with(".lora_B.weight")
+        || name.ends_with(".lora_B.default_0.default.weight")
+        || name.ends_with(".lora_up.weight")
+        || name.ends_with("_lora_up.weight")
 }
 
 /// Pulls trigger-word strings and a base-model hint out of the safetensors
@@ -610,6 +688,46 @@ fn target_from_lora_key(name: &str, convention: Convention) -> Option<String> {
                 .unwrap_or(base);
             Some(format!("{}.weight", core.replace('_', ".")))
         }
+        Convention::QwenImage => {
+            // Qwen LoRA keys come in four suffix shapes (see `is_qwen_a` /
+            // `is_qwen_b` above). Strip whichever matches.
+            let base = if let Some(s) = name.strip_suffix(".lora_A.default_0.default.weight") {
+                s
+            } else if let Some(s) = name.strip_suffix(".lora_B.default_0.default.weight") {
+                s
+            } else if let Some(s) = name.strip_suffix(".lora_A.weight") {
+                s
+            } else if let Some(s) = name.strip_suffix(".lora_B.weight") {
+                s
+            } else if let Some(s) = name.strip_suffix(".lora_down.weight") {
+                s
+            } else if let Some(s) = name.strip_suffix(".lora_up.weight") {
+                s
+            } else if let Some(s) = name.strip_suffix("_lora_down.weight") {
+                s
+            } else if let Some(s) = name.strip_suffix("_lora_up.weight") {
+                s
+            } else {
+                return None;
+            };
+            // Two prefix conventions to drop:
+            //   * `transformer.` — diffusers-style.
+            //   * `lora_unet_` / `lora_transformer_` — Kohya carries
+            //     these forward even though Qwen has no UNet. Under
+            //     Kohya, the post-prefix path uses `_` instead of `.`,
+            //     so we ALSO convert `_` → `.` after stripping.
+            let core = if let Some(s) = base.strip_prefix("transformer.") {
+                s.to_string()
+            } else if let Some(s) = base
+                .strip_prefix("lora_unet_")
+                .or_else(|| base.strip_prefix("lora_transformer_"))
+            {
+                s.replace('_', ".")
+            } else {
+                base.to_string()
+            };
+            Some(format!("{core}.weight"))
+        }
         Convention::Unknown => None,
     }
 }
@@ -618,6 +736,7 @@ fn is_a_side(name: &str, convention: Convention) -> bool {
     match convention {
         Convention::Diffusers => is_diffusers_a(name),
         Convention::Kohya => is_kohya_down(name),
+        Convention::QwenImage => is_qwen_a(name),
         Convention::Unknown => false,
     }
 }
@@ -1850,6 +1969,118 @@ mod tests {
         assert_eq!(
             target_from_lora_key("lora_unet_blocks_0_attn_to_q_lora_up.weight", Convention::Kohya).unwrap(),
             "blocks.0.attn.to.q.weight"
+        );
+    }
+
+    // ── Qwen-Image Phase 1 (2026-05-28): convention detection + key mapping ──
+
+    #[test]
+    fn qwen_convention_detected_by_transformer_blocks_path() {
+        let names = vec![
+            "transformer.transformer_blocks.0.attn.to_q.lora_A.weight".to_string(),
+            "transformer.transformer_blocks.0.attn.to_q.lora_B.weight".to_string(),
+        ];
+        assert_eq!(detect_convention(&names), Convention::QwenImage);
+    }
+
+    #[test]
+    fn qwen_convention_detected_by_text_stream_modules() {
+        for module in ["add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"] {
+            let names = vec![format!(
+                "transformer.blocks.5.attn.{module}.lora_A.weight"
+            )];
+            assert_eq!(
+                detect_convention(&names),
+                Convention::QwenImage,
+                "Qwen text-stream module {module} must steer detection"
+            );
+        }
+    }
+
+    #[test]
+    fn qwen_convention_detected_by_peft_infix() {
+        let names = vec![
+            "transformer.transformer_blocks.0.attn.to_q.lora_A.default_0.default.weight".to_string(),
+        ];
+        assert_eq!(detect_convention(&names), Convention::QwenImage);
+    }
+
+    #[test]
+    fn qwen_convention_does_not_cannibalize_flux_keys() {
+        // A pure Flux key set must STILL land on Convention::Diffusers /
+        // Convention::Kohya — the Qwen probe runs first but only matches
+        // when Qwen-specific identifiers are present.
+        let diffusers = vec![
+            "transformer.blocks.0.attn.to_q.lora_A.weight".to_string(),
+        ];
+        assert_eq!(detect_convention(&diffusers), Convention::Diffusers);
+        let kohya = vec![
+            "lora_unet_blocks_0_attn_to_q_lora_down.weight".to_string(),
+        ];
+        assert_eq!(detect_convention(&kohya), Convention::Kohya);
+    }
+
+    #[test]
+    fn qwen_diffusers_target_mapping() {
+        // Clean PEFT-saved diffusers shape: `lora_A.default_0.default`.
+        assert_eq!(
+            target_from_lora_key(
+                "transformer.transformer_blocks.0.attn.to_q.lora_A.default_0.default.weight",
+                Convention::QwenImage,
+            ).unwrap(),
+            "transformer_blocks.0.attn.to_q.weight"
+        );
+        // Bare diffusers shape without the PEFT infix.
+        assert_eq!(
+            target_from_lora_key(
+                "transformer.transformer_blocks.0.attn.add_q_proj.lora_B.weight",
+                Convention::QwenImage,
+            ).unwrap(),
+            "transformer_blocks.0.attn.add_q_proj.weight"
+        );
+    }
+
+    #[test]
+    fn qwen_kohya_target_mapping() {
+        // Full Kohya shape: prefix `lora_unet_`, suffix `_lora_down`.
+        assert_eq!(
+            target_from_lora_key(
+                "lora_unet_transformer_blocks_0_attn_add_k_proj_lora_down.weight",
+                Convention::QwenImage,
+            ).unwrap(),
+            "transformer.blocks.0.attn.add.k.proj.weight"
+        );
+    }
+
+    #[test]
+    fn qwen_mixed_convention_target_mapping() {
+        // Mixed: diffusers-style prefix with Kohya-style suffix
+        // (HF diffusers issue #12159 — some Qwen LoRAs ship like this).
+        assert_eq!(
+            target_from_lora_key(
+                "transformer.transformer_blocks.0.attn.to_q.lora_down.weight",
+                Convention::QwenImage,
+            ).unwrap(),
+            "transformer_blocks.0.attn.to_q.weight"
+        );
+    }
+
+    #[test]
+    fn qwen_a_side_detection_covers_all_four_suffixes() {
+        assert!(is_qwen_a("x.lora_A.weight"));
+        assert!(is_qwen_a("x.lora_A.default_0.default.weight"));
+        assert!(is_qwen_a("x.lora_down.weight"));
+        assert!(is_qwen_a("x_lora_down.weight"));
+        // B-side suffixes must NOT classify as A.
+        assert!(!is_qwen_a("x.lora_B.weight"));
+        assert!(!is_qwen_a("x.lora_up.weight"));
+    }
+
+    #[test]
+    fn qwen_image_repo_is_in_allowed_bases() {
+        assert!(
+            ALLOWED_BASES.iter().any(|b| *b == crate::image_gen::qwen_image::QWEN_IMAGE_REPO),
+            "Qwen-Image must be reachable from the LoRA merge entry-point"
         );
     }
 

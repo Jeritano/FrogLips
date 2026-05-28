@@ -52,6 +52,12 @@ const SIZE_OPTIONS: ReadonlyArray<string> = [
 const MODEL_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "schnell", label: "FLUX.1 schnell (fast, 4 steps)" },
   { value: "dev", label: "FLUX.1 dev (higher quality, 28 steps)" },
+  // Phase 1 Qwen-Image (2026-05-28). Selecting these allows LoRA
+  // inspection + merge against the Qwen-Image base, but pressing
+  // Generate surfaces a `qwen_unimplemented` error from the engine
+  // until Phase 5 lands the forward pass. Labelled "(Phase 1: LoRA
+  // only)" so the user sees the limitation up-front.
+  { value: "qwen-image", label: "Qwen-Image (Phase 1: LoRA only)" },
 ];
 
 /**
