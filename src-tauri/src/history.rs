@@ -680,7 +680,14 @@ pub(crate) fn ensure_images_table(conn: &Connection) -> Result<()> {
             created_at INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS idx_images_conv_created
-             ON images(conv_id, created_at DESC);",
+             ON images(conv_id, created_at DESC);
+         -- R2-M4 (2026-05-28): single-column reverse index for
+         -- global-scope (`conv_id IS NULL`) top-N queries. The composite
+         -- index above only helps when `conv_id` is bound; the global
+         -- ImageView pagination (the most common scope on a long-running
+         -- gallery) needs a tight index on `created_at` alone.
+         CREATE INDEX IF NOT EXISTS idx_images_created_desc
+             ON images(created_at DESC);",
     )?;
     Ok(())
 }
@@ -751,6 +758,40 @@ pub fn lora_get_by_sha(sha: &str) -> Result<Option<LoraMergeRowInternal>> {
             row_to_lora,
         )
         .optional()?;
+    Ok(row)
+}
+
+/// Atomic "read + touch" for the dispatch-path LRU. Returns the row and
+/// updates `last_used_at` in a single transaction so two concurrent
+/// dispatches against the same sha can't see a stale clock value
+/// relative to an eviction pass running in parallel.
+///
+/// `Ok(None)` means the row didn't exist (treated as `merge_evicted` by
+/// the caller). Audit R2-H1 (2026-05-28): the previous design called
+/// `lora_get_by_sha` then `lora_record_used` back-to-back, opening a
+/// window where the LRU order could flip non-deterministically — the
+/// eviction pass might decide an older merge was "fresher" than a
+/// merge dispatched 200µs earlier because the timestamps were written
+/// out of clock order.
+pub fn lora_get_by_sha_and_touch(sha: &str) -> Result<Option<LoraMergeRowInternal>> {
+    let mut conn = get_db()?;
+    let tx = conn.transaction()?;
+    let row: Option<LoraMergeRowInternal> = tx
+        .query_row(
+            "SELECT id, sha, base_repo, lora_path, lora_sha, weight, merged_path,
+                    created_at, last_used_at, bytes
+             FROM lora_merges WHERE sha = ?1",
+            params![sha],
+            row_to_lora,
+        )
+        .optional()?;
+    if row.is_some() {
+        tx.execute(
+            "UPDATE lora_merges SET last_used_at = ?1 WHERE sha = ?2",
+            params![now_unix(), sha],
+        )?;
+    }
+    tx.commit()?;
     Ok(row)
 }
 

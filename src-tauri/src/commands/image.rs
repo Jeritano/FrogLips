@@ -132,6 +132,14 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
     let (tx, mut rx) = mpsc::channel::<ImageProgress>(64);
     let app_for_events = app.clone();
     let op_for_events = op_id.clone();
+    // R2-M3 (2026-05-28): terminal_sent guard ensures the frontend sees
+    // EXACTLY ONE `image-done` or `image-error` per op_id. Without this
+    // a panic during `reencode_with_metadata` (below) could emit
+    // `image-error` from the IPC error path AFTER the engine's own
+    // error path already fired the same event, doubling up on the
+    // frontend's error-toast queue.
+    let terminal_sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let terminal_for_pump = terminal_sent.clone();
     let event_pump = tokio::spawn(async move {
         while let Some(evt) = rx.recv().await {
             // Route the variant onto the matching Tauri event name. The
@@ -139,8 +147,15 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
             // `{ op_id, step, total }`, `image-done` carries
             // `{ op_id, image_id }`, `image-error` carries
             // `{ op_id, message }`.
+            //
+            // R2-H2 (2026-05-28): defensively assert each variant's
+            // own `op_id` matches the run's `op_id_for_events` so a
+            // future engine refactor that accidentally fans out
+            // cross-op events is caught in debug builds. In release
+            // we drop the assert and trust the engine contract.
             match evt {
                 ImageProgress::Loading { op_id, stage } => {
+                    debug_assert_eq!(op_id, op_for_events, "engine emitted Loading with mismatched op_id");
                     let _ = app_for_events.emit(
                         "image-progress",
                         serde_json::json!({
@@ -152,6 +167,7 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
                     );
                 }
                 ImageProgress::Step { op_id, step, total } => {
+                    debug_assert_eq!(op_id, op_for_events, "engine emitted Step with mismatched op_id");
                     let _ = app_for_events.emit(
                         "image-progress",
                         serde_json::json!({
@@ -162,27 +178,47 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
                     );
                 }
                 ImageProgress::Done { op_id, image_id } => {
-                    let _ = app_for_events.emit(
-                        "image-done",
-                        serde_json::json!({
-                            "op_id": op_id,
-                            "image_id": image_id,
-                        }),
-                    );
+                    debug_assert_eq!(op_id, op_for_events, "engine emitted Done with mismatched op_id");
+                    if !terminal_for_pump.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = app_for_events.emit(
+                            "image-done",
+                            serde_json::json!({
+                                "op_id": op_id,
+                                "image_id": image_id,
+                            }),
+                        );
+                    }
                 }
                 ImageProgress::Error { op_id, message } => {
-                    let _ = app_for_events.emit(
-                        "image-error",
-                        serde_json::json!({
-                            "op_id": op_id,
-                            "message": message,
-                        }),
-                    );
+                    debug_assert_eq!(op_id, op_for_events, "engine emitted Error with mismatched op_id");
+                    if !terminal_for_pump.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = app_for_events.emit(
+                            "image-error",
+                            serde_json::json!({
+                                "op_id": op_id,
+                                "message": message,
+                            }),
+                        );
+                    }
                 }
             }
         }
-        drop(op_for_events);
     });
+
+    // R2-M3 (2026-05-28): terminal-event helper. Wraps every
+    // `image-error` / `image-done` emit so the AtomicBool gate is the
+    // single source of truth for "this run has already finished". Any
+    // path that tries to emit a second terminal event becomes a no-op
+    // instead of doubling the frontend's error-toast queue or stomping
+    // the success state.
+    let emit_error = |message: String| {
+        if !terminal_sent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let _ = app.emit(
+                "image-error",
+                serde_json::json!({ "op_id": op_id, "message": message }),
+            );
+        }
+    };
 
     // Run the engine to completion; convert any panic / engine error into
     // an `image-error` event.
@@ -199,10 +235,7 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
                 message.push_str("\n\nHint: ");
                 message.push_str(hint);
             }
-            let _ = app.emit(
-                "image-error",
-                serde_json::json!({ "op_id": op_id, "message": message }),
-            );
+            emit_error(message);
             ENGINE.release_cancel(&op_id);
             return;
         }
@@ -215,10 +248,7 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
     let png_bytes = match reencode_with_metadata(&png_bytes_raw, &request, &params_json) {
         Ok(b) => b,
         Err(e) => {
-            let _ = app.emit(
-                "image-error",
-                serde_json::json!({ "op_id": op_id, "message": e }),
-            );
+            emit_error(e);
             ENGINE.release_cancel(&op_id);
             return;
         }
@@ -230,10 +260,7 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
     let path = match image_path(request.conv_id, ts_ms, request.seed) {
         Ok(p) => p,
         Err(e) => {
-            let _ = app.emit(
-                "image-error",
-                serde_json::json!({ "op_id": op_id, "message": e }),
-            );
+            emit_error(e);
             ENGINE.release_cancel(&op_id);
             return;
         }
@@ -249,10 +276,7 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
     // protected directory") until this carve-out landed.
     let validated = path.clone();
     if let Err(e) = assert_under_images_root(&validated) {
-        let _ = app.emit(
-            "image-error",
-            serde_json::json!({ "op_id": op_id, "message": e }),
-        );
+        emit_error(e);
         ENGINE.release_cancel(&op_id);
         return;
     }
@@ -270,10 +294,7 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
         .await
         .unwrap_or_else(|e| Err(format!("write task panicked: {e}")));
     if let Err(e) = write_result {
-        let _ = app.emit(
-            "image-error",
-            serde_json::json!({ "op_id": op_id, "message": e }),
-        );
+        emit_error(e);
         ENGINE.release_cancel(&op_id);
         return;
     }
@@ -296,20 +317,19 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
     ) {
         Ok(id) => id,
         Err(e) => {
-            let _ = app.emit(
-                "image-error",
-                serde_json::json!({ "op_id": op_id, "message": e.to_string() }),
-            );
+            emit_error(e.to_string());
             ENGINE.release_cancel(&op_id);
             return;
         }
     };
 
     ENGINE.release_cancel(&op_id);
-    let _ = app.emit(
-        "image-done",
-        serde_json::json!({ "op_id": op_id, "image_id": image_id }),
-    );
+    if !terminal_sent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let _ = app.emit(
+            "image-done",
+            serde_json::json!({ "op_id": op_id, "image_id": image_id }),
+        );
+    }
 }
 
 /// List generated images, newest first, with pagination. `conv_id` filters
@@ -947,6 +967,39 @@ fn evict_until_under_cap(incoming_bytes: u64) -> Result<usize, String> {
     for (path, size, _mtime) in files {
         if total + incoming_bytes <= GALLERY_BYTES_CAP {
             break;
+        }
+        // R2-M2 (2026-05-28): re-verify the path is a regular file before
+        // unlinking. `gallery_inventory` already filters with
+        // `symlink_metadata`, but the inode that walked the directory can
+        // be REPLACED with a symlink between the walk and this delete
+        // (a concurrent process — agent loop, user shell — racing into
+        // the bucket dir). Without this re-check we'd happily delete a
+        // symlink target outside the gallery root. The cost is one extra
+        // stat() per eviction candidate — negligible.
+        match std::fs::symlink_metadata(&path) {
+            Ok(md) if md.file_type().is_symlink() => {
+                crate::diagnostics::warn_with(
+                    "image-gallery",
+                    "eviction skipped: path became a symlink between inventory and unlink",
+                    serde_json::json!({ "path": path.display().to_string() }),
+                );
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // Path may have been deleted by another process between the
+                // inventory walk and now. Skip — no longer occupying space.
+                crate::diagnostics::info(
+                    "image-gallery",
+                    &format!(
+                        "eviction candidate vanished before unlink ({}): {}",
+                        path.display(),
+                        e
+                    ),
+                );
+                total = total.saturating_sub(size);
+                continue;
+            }
         }
         match std::fs::remove_file(&path) {
             Ok(_) => {

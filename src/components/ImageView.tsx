@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { announce } from "../lib/announce";
@@ -156,13 +156,24 @@ export function ImageView({
   // requiring a view swap. `useImageGeneration` already handles the local UI
   // op state; this listener fires for ALL ops (including loop-issued ones
   // that don't run through this hook).
+  //
+  // R2-M5 (2026-05-28): stabilize the handler via a ref so flipping the
+  // filter chip or bumping `pageLimit` (both of which recreate the
+  // `refresh` callback) doesn't tear down and re-register the Tauri
+  // listener. The previous `[refresh]` deps caused a ~50 ms
+  // unsubscribe/resubscribe window in which an `image-done` event fired
+  // by a concurrent agent generate could land between the off()/listen()
+  // pair and be lost — manifesting as the gallery missing the new image
+  // until the user manually refreshed.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
   useTauriEvent<{ op_id?: string; image_id?: number }>(
     "image-done",
     (e) => {
       const id = typeof e.payload?.image_id === "number" ? e.payload.image_id : undefined;
-      void refresh(id);
+      void refreshRef.current(id);
     },
-    [refresh],
+    [],
   );
 
   const onGenerate = useCallback(

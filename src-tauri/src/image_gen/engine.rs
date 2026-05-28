@@ -236,10 +236,19 @@ impl ImageEngine {
         let engine = self.clone();
         let shutdown = crate::shutdown_signal();
         tokio::spawn(async move {
+            // R2-M1 (2026-05-28): the idle-evictor previously polled every
+            // 60 s, but each generate() bumps `last_use` to Instant::now(),
+            // so under an active agent loop (one image per ~30 s) the
+            // check returns "not idle yet" every wake — burning ~1440
+            // wakeup syscalls/day per engine instance for nothing. 300 s
+            // matches IDLE_TIMEOUT's order of magnitude (typically 10-15
+            // min) so we still catch genuine idle states quickly enough,
+            // while cutting baseline polling 5×.
+            const POLL_INTERVAL: Duration = Duration::from_secs(300);
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => return,
-                    _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+                    _ = tokio::time::sleep(POLL_INTERVAL) => {}
                 }
                 if crate::is_shutting_down() {
                     return;
@@ -654,32 +663,19 @@ pub fn parse_lora_suffix(model: &str) -> Option<(&str, &str)> {
 /// back to the base, because doing so would silently produce wrong-looking
 /// images.
 fn resolve_lora_merged_path(_base: &str, sha: &str) -> Result<String> {
-    use crate::image_gen::lora as lora_mod;
-    let row = lora_mod::get_by_sha(sha)
-        .map_err(|e| anyhow!("lora row lookup failed: {e}"))?
-        .ok_or_else(|| {
-            anyhow!(
-                "kind:\"unknown_lora_sha\" no merged variant cached for sha {sha} (re-run lora_merge)"
-            )
-        })?;
-    // Touch the last_used_at column. M1 (2026-05-28): previously a
-    // best-effort warn-and-continue. Now distinguishes the three
-    // outcomes:
-    //   * Ok(true)  — row touched, proceed with on-disk path.
-    //   * Ok(false) — row vanished between get_by_sha and now (concurrent
-    //                 eviction). Returning a clear `merge_evicted` error
-    //                 here is better than handing the engine a stale
-    //                 path and watching it crash on `tensor not found`.
-    //   * Err(e)    — DB locked / corrupt. Same logic — fail loudly so
-    //                 the user gets an actionable message rather than a
-    //                 downstream surfacing.
-    match lora_mod::record_used(sha) {
-        Ok(true) => Ok(row.merged_path),
-        Ok(false) => Err(anyhow!(
-            "kind:\"merge_evicted\" lora variant for sha {sha} was evicted from the cache; re-run lora_merge to repopulate"
+    // R2-H1 (2026-05-28): swap the previous `get_by_sha` + `record_used`
+    // pair for the single transactional `get_by_sha_and_touch` call so
+    // the row read and the timestamp update commit atomically. This
+    // closes a race where a concurrent eviction pass running between the
+    // two statements could see the OLD `last_used_at` and decide the row
+    // was the LRU eviction target — even though we'd just touched it.
+    match crate::history::lora_get_by_sha_and_touch(sha) {
+        Ok(Some(row)) => Ok(row.merged_path),
+        Ok(None) => Err(anyhow!(
+            "kind:\"unknown_lora_sha\" no merged variant cached for sha {sha} (re-run lora_merge)"
         )),
         Err(e) => Err(anyhow!(
-            "kind:\"lora_record_failed\" lora_record_used failed for sha {sha}: {e}"
+            "kind:\"lora_record_failed\" lora_get_by_sha_and_touch failed for sha {sha}: {e}"
         )),
     }
 }
