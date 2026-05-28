@@ -1,10 +1,24 @@
 //! Model management: discovery, pulls/deletes, native inference, GGUF files.
 
+use once_cell::sync::Lazy;
 use tauri::{Emitter, Manager};
 
 use super::{blocking, map_err, validate_hf_repo, validate_ollama_name, NativeHandle};
 use crate::models::ModelEntry;
 use crate::{gguf, models, native_inference, ollama_library};
+
+/// Serializes `native_load_model` calls. The heavy `NativeRuntime::load`
+/// (a ~10 s `load_model_from_hf`) runs OUTSIDE the `NativeHandle` state
+/// lock so reads of the current model stay responsive during a load.
+/// But that left a window where two concurrent `native_load_model`
+/// calls (a UI click racing an agent-loop dispatch) both ran the full
+/// load and then both stored — the first `Arc<NativeRuntime>` dropped
+/// the instant the second overwrote it, wasting a multi-GiB GPU load
+/// and briefly doubling resident weights. This gate makes loads
+/// strictly serial; a second caller waits, then sees the now-current
+/// model and short-circuits. Audit HIGH (2026-05-28).
+static NATIVE_LOAD_GATE: Lazy<tokio::sync::Mutex<()>> =
+    Lazy::new(|| tokio::sync::Mutex::new(()));
 
 #[derive(serde::Serialize)]
 pub struct AllModels {
@@ -224,6 +238,22 @@ pub async fn native_load_model(
             "native inference not compiled in (rebuild with --features native-inference)".into(),
         );
     }
+    // Serialize loads (HIGH 2026-05-28). Held across the whole load so a
+    // second concurrent caller waits here rather than kicking off a
+    // duplicate multi-GiB load.
+    let _load_gate = NATIVE_LOAD_GATE.lock().await;
+
+    // Dedup: if the requested model is already resident (a prior load
+    // that we were queued behind just finished it, or it was never
+    // unloaded), skip the reload entirely and re-broadcast `loaded`.
+    {
+        let g = state.lock().await;
+        if g.as_ref().map(|rt| rt.model_id() == model_id).unwrap_or(false) {
+            let _ = app.emit("native-loaded", &model_id);
+            return Ok(());
+        }
+    }
+
     let _ = app.emit("native-loading", &model_id);
     let rt = match native_inference::NativeRuntime::load(model_id.clone()).await {
         Ok(rt) => rt,
@@ -242,8 +272,13 @@ pub async fn native_load_model(
             return Err(msg);
         }
     };
-    let mut g = state.lock().await;
-    *g = Some(rt);
+    // Store under the state lock, then DROP the guard before emitting so
+    // a frontend listener reacting to `native-loaded` reads a settled
+    // state, never the in-flight guard (ghost-state race, audit MED).
+    {
+        let mut g = state.lock().await;
+        *g = Some(rt);
+    }
     let _ = app.emit("native-loaded", &model_id);
     Ok(())
 }

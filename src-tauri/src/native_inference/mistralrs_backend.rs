@@ -33,6 +33,22 @@ struct Inner {
     next_id: AtomicUsize,
 }
 
+// Explicit teardown observability (audit 2026-05-28). Dropping the
+// `Arc<Inner>` frees the `Arc<MistralRs>` automatically — Rust needs no
+// manual free — but mistralrs' resident GPU weights + scheduler engine
+// are opaque, so we log the teardown to make unload visible in the
+// diagnostics stream. If a future mistralrs version spawns detached
+// engine threads that DON'T stop on drop, this log is the first place
+// a "memory didn't drop after unload" investigation will look.
+impl Drop for Inner {
+    fn drop(&mut self) {
+        crate::diagnostics::info(
+            "native-inference",
+            &format!("dropping resident native model '{}' (GPU weights freed)", self.model_id),
+        );
+    }
+}
+
 impl NativeRuntime {
     /// Load a HF model by repo id (e.g. `"mlx-community/Llama-3.2-3B-Instruct-4bit"`)
     /// onto the Metal device. Runs the heavy `load_model_from_hf` on a

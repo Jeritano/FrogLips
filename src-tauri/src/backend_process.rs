@@ -297,6 +297,25 @@ impl ServerState {
                 if generation.load(Ordering::Acquire) != my_generation {
                     return; // server stopped or replaced
                 }
+                // Staged liveness diagnostics (audit HIGH 2026-05-28).
+                // At 500 ms/iter the 90 s probe was previously silent
+                // until the final timeout, so a slow-but-healthy cold
+                // load (weights still downloading) was indistinguishable
+                // from a hung/misconfigured backend. Emit a heartbeat at
+                // 10 s / 30 s / 60 s so the UI + Diagnostics panel show
+                // progress and the user can tell "still loading" from
+                // "stuck". Only fires while the port is NOT yet open.
+                if matches!(iterations, 20 | 60 | 120) {
+                    let secs = iterations / 2;
+                    crate::diagnostics::info(
+                        "backend-process",
+                        &format!(
+                            "MLX backend still warming up after {secs}s (model={model_for_probe}, \
+                             backend={backend_for_probe}) — port not open yet. Cold loads download \
+                             + map weights; large models can take 1-2 min."
+                        ),
+                    );
+                }
                 let probe = tokio::net::TcpStream::connect(&addr);
                 if tokio::time::timeout(std::time::Duration::from_millis(200), probe)
                     .await
