@@ -282,16 +282,21 @@ export function chipifyCitations(root: HTMLElement | DocumentFragment): void {
     if (!CITATION_RE.test(text)) continue;
     CITATION_RE.lastIndex = 0;
 
+    // Audit L-F6 (2026-05-28): hoist `code.ownerDocument` once per loop
+    // body and fall back to the global `document` so we drop the five
+    // `code.ownerDocument!` non-null assertions that previously littered
+    // this block. A detached node has a non-null ownerDocument by spec,
+    // but the null-assertion cluster read as "we kept hitting the lint
+    // wall" — explicit fallback is cleaner.
+    const doc = code.ownerDocument ?? document;
     // Build a fragment that interleaves chip anchors with text segments,
     // then replace the inline <code>'s contents wholesale.
-    const frag = code.ownerDocument!.createDocumentFragment();
+    const frag = doc.createDocumentFragment();
     let lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = CITATION_RE.exec(text)) !== null) {
       if (m.index > lastIndex) {
-        frag.appendChild(
-          code.ownerDocument!.createTextNode(text.slice(lastIndex, m.index)),
-        );
+        frag.appendChild(doc.createTextNode(text.slice(lastIndex, m.index)));
       }
       const matchStr = m[0];
       const { path, line } = splitPathAndLine(matchStr);
@@ -299,11 +304,11 @@ export function chipifyCitations(root: HTMLElement | DocumentFragment): void {
       // able to escape the workspace via `..`. Emit the literal text instead
       // of a clickable chip. The click handler re-checks as defense in depth.
       if (path.split("/").some((seg) => seg === "..")) {
-        frag.appendChild(code.ownerDocument!.createTextNode(matchStr));
+        frag.appendChild(doc.createTextNode(matchStr));
         lastIndex = m.index + matchStr.length;
         continue;
       }
-      const a = code.ownerDocument!.createElement("a");
+      const a = doc.createElement("a");
       a.className = "citation-chip";
       a.setAttribute("data-path", path);
       if (line) a.setAttribute("data-line", line);
@@ -316,7 +321,7 @@ export function chipifyCitations(root: HTMLElement | DocumentFragment): void {
       lastIndex = m.index + matchStr.length;
     }
     if (lastIndex < text.length) {
-      frag.appendChild(code.ownerDocument!.createTextNode(text.slice(lastIndex)));
+      frag.appendChild(doc.createTextNode(text.slice(lastIndex)));
     }
     // Only commit if we actually produced at least one chip.
     if (frag.childNodes.length > 0) {

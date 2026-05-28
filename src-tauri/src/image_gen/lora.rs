@@ -53,8 +53,32 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use once_cell::sync::Lazy;
+use parking_lot::Mutex as PLMutex;
 
 use crate::history;
+
+/// Per-sha mutex registry. Two concurrent merges for the same cache key
+/// must serialize so the second one observes the first's cache write
+/// instead of racing the `fs::rename(&tmp_dir, &final_dir)` and yanking
+/// the just-promoted dir out from under itself. Audit M-R3 (2026-05-28).
+///
+/// Entries are content-addressed by sha; the registry grows at most to
+/// the number of distinct LoRA merges attempted this session (typically
+/// <20). Per-entry overhead ~50 bytes — not cleaned up on completion to
+/// avoid the register-deregister dance, since the memory ceiling is
+/// negligible.
+static MERGE_LOCKS: Lazy<PLMutex<HashMap<String, Arc<PLMutex<()>>>>> =
+    Lazy::new(|| PLMutex::new(HashMap::new()));
+
+fn acquire_merge_lock(sha: &str) -> Arc<PLMutex<()>> {
+    let mut reg = MERGE_LOCKS.lock();
+    reg.entry(sha.to_string())
+        .or_insert_with(|| Arc::new(PLMutex::new(())))
+        .clone()
+}
 
 /// Allowed Flux bases for v1. Anything else hits an `unsupported_base`
 /// error; the frontend dropdown only emits these two.
@@ -886,8 +910,17 @@ pub fn merge<F: Fn(MergeProgress)>(
     let lora_sha = sha256_file(lora_path)?;
     let sha = compute_merge_sha(base_repo, &lora_sha, weight);
 
+    // Audit M-R3: acquire a per-sha mutex so two concurrent merges for
+    // the same cache key serialize instead of racing the rename. The
+    // SECOND caller blocks here, then re-checks the cache below and
+    // sees the FIRST caller's just-promoted entry.
+    let merge_lock = acquire_merge_lock(&sha);
+    let _guard = merge_lock.lock();
+
     // Cache hit: return the row without rewriting any files. `record_used`
     // bumps the LRU clock so subsequent eviction passes see the touch.
+    // Re-checked AFTER acquiring the per-sha lock so a concurrent merge
+    // that finished while we were waiting is observed correctly.
     if let Some(existing) = history::lora_get_by_sha(&sha)? {
         history::lora_record_used(&sha)?;
         emit(MergeProgress::ReadingLora { progress: 1.0 });

@@ -342,6 +342,19 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   useEffect(() => { void refreshGgufInstalled(); }, []);
   useEffect(() => { if (tab === "hf" || tab === "installed") void refreshGgufInstalled(); }, [tab]);
 
+  // Audit L-F5 (2026-05-28): HF tree fetch had no AbortSignal. Closing
+  // the browser mid-fetch let the request complete and call setGgufTrees
+  // on an unmounted component (React 18 warns; setState was a no-op).
+  // Single AbortController scoped to the component lifetime; loadGgufTree
+  // ties each fetch to it and the cleanup aborts everything in flight.
+  const hfFetchAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => {
+      hfFetchAbortRef.current?.abort();
+      hfFetchAbortRef.current = null;
+    };
+  }, []);
+
   /* The HF and Civitai tabs each own their own debounced fetch / abort /
      state inside their respective sibling components (HuggingFaceLibraryView,
      CivitaiBrowserTab). ModelBrowser no longer drives those requests. */
@@ -349,9 +362,15 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
   /** Lazy-load the file tree for a GGUF repo when the user clicks its row. */
   async function loadGgufTree(repoId: string) {
     setGgufTrees((m) => new Map([...m, [repoId, "loading"]]));
+    // Lazy-init the AbortController so we don't pay for it until the user
+    // actually issues an HF fetch.
+    if (!hfFetchAbortRef.current) {
+      hfFetchAbortRef.current = new AbortController();
+    }
+    const signal = hfFetchAbortRef.current.signal;
     try {
       const url = `https://huggingface.co/api/models/${encodeURIComponent(repoId)}/tree/main`;
-      const res = await fetch(url);
+      const res = await fetch(url, { signal });
       if (!res.ok) throw new Error(`HF tree API ${res.status}`);
       const data: HfTreeEntry[] = await res.json();
       // Filter to GGUF leaves only — directories and sidecar files (README.md,
@@ -360,8 +379,12 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
         (e) => e.type === "file" && /\.gguf$/i.test(e.path),
       );
       setGgufTrees((m) => new Map([...m, [repoId, ggufs]]));
-    } catch (e: any) {
-      setGgufTrees((m) => new Map([...m, [repoId, { error: String(e?.message || e) }]]));
+    } catch (e) {
+      // Abort during unmount: swallow silently — setState would be a
+      // no-op anyway and we don't want to surface a faux error toast.
+      if (signal.aborted) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      setGgufTrees((m) => new Map([...m, [repoId, { error: msg }]]));
     }
   }
 
