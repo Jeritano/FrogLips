@@ -63,7 +63,9 @@ use anyhow::anyhow;
 // block forward pass (Phase 2b) hangs off `transformer`. None of these
 // allocate model weights yet; weight loading is Phase 4.
 pub mod config;
+pub mod pipeline;
 pub mod rope;
+pub mod scheduler;
 pub mod text_encoder;
 pub mod transformer;
 pub mod vae;
