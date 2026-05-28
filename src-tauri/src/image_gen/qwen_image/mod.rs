@@ -65,6 +65,7 @@ use anyhow::anyhow;
 pub mod config;
 pub mod rope;
 pub mod transformer;
+pub mod weights;
 
 /// Canonical HF repo id for the Qwen-Image base model.
 pub const QWEN_IMAGE_REPO: &str = "Qwen/Qwen-Image";
