@@ -20,6 +20,28 @@ const PromptLibrary = lazy(() =>
 );
 
 /**
+ * Minimal shape for the Web Speech API's `SpeechRecognition` instance —
+ * not part of `lib.dom`. Captures only the methods + handlers used here.
+ */
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start: () => void;
+  stop: () => void;
+  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onerror: ((e: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+}
+interface SpeechRecognitionCtor {
+  new(): SpeechRecognitionLike;
+}
+interface WindowWithSpeech extends Window {
+  SpeechRecognition?: SpeechRecognitionCtor;
+  webkitSpeechRecognition?: SpeechRecognitionCtor;
+}
+
+/**
  * Detect a slash-command "trigger context" in the textarea.
  *
  * Returns the index of the `/` and the prefix typed after it iff the caret is
@@ -101,7 +123,12 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
   const [showLibrary, setShowLibrary] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const recogRef = useRef<any>(null);
+  // Audit L-F4 (2026-05-28): SpeechRecognition isn't in the lib.dom.d.ts
+  // baseline (it's a non-standard Web Speech API, prefixed in WebKit). A
+  // minimal local shape captures the surface this component touches —
+  // enough to drop the `any` typings without committing to the upstream
+  // proposal's full schema.
+  const recogRef = useRef<SpeechRecognitionLike | null>(null);
   const baseTextRef = useRef("");
   const lastVoiceTextRef = useRef("");
   const listeningRef = useRef(false);
@@ -346,9 +373,8 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
       recogRef.current?.stop?.();
       return;
     }
-    const Recog =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
+    const w = window as WindowWithSpeech;
+    const Recog = w.SpeechRecognition ?? w.webkitSpeechRecognition;
     if (!Recog) {
       setVoiceErr("Speech recognition unavailable in this build");
       return;
@@ -360,7 +386,7 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
       r.lang = navigator.language || "en-US";
       baseTextRef.current = text ? text + (text.endsWith(" ") ? "" : " ") : "";
 
-      r.onresult = (e: any) => {
+      r.onresult = (e) => {
         const segments = [];
         for (let i = 0; i < e.results.length; i++) {
           const seg = e.results[i][0].transcript.trim();
@@ -375,7 +401,7 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
         lastVoiceTextRef.current = next;
         setText(next);
       };
-      r.onerror = (e: any) => {
+      r.onerror = (e) => {
         listeningRef.current = false;
         if (!mountedRef.current) return;
         const code = e?.error || "unknown";
@@ -398,8 +424,8 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel }
       recogRef.current = r;
       listeningRef.current = true;
       setListening(true);
-    } catch (err: any) {
-      setVoiceErr(String(err?.message || err));
+    } catch (err) {
+      setVoiceErr(err instanceof Error ? err.message : String(err));
       listeningRef.current = false;
       setListening(false);
     }

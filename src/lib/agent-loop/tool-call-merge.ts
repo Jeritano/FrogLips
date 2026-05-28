@@ -84,10 +84,14 @@ export function finalizeToolCalls(acc: PartialToolCall[]): ToolCall[] {
     //      step (in `runner.pushToolResult`), copying `tc.id` directly —
     //      so the sanitized id round-trips on both sides.
     const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+    // Audit L-A1 (2026-05-28): use crypto.randomUUID like the other id
+    // mint sites (subagent.makeId, dispatch opIds). The previous
+    // Math.random().toString(36).slice(...) gave ~41 bits of entropy —
+    // negligible collision risk within a run but a needless inconsistency.
     const id =
       slot.id && SAFE_ID.test(slot.id)
         ? slot.id
-        : `call_${Math.random().toString(36).slice(2, 10)}`;
+        : `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
     out.push({
       id,
       type: "function",

@@ -202,6 +202,15 @@ pub fn images_root() -> Result<std::path::PathBuf, String> {
     Ok(root)
 }
 
+/// Monotonic per-process counter appended to image filenames as a
+/// tiebreaker when two generations land within the same millisecond
+/// with the same seed (audit M-R2). Without this, `{ts_ms}-{seed}.png`
+/// could be overwritten by a second-faster-than-1ms generation that
+/// chose the same explicit seed — a real concern for reproducibility
+/// workflows that loop over a seed range.
+static IMAGE_FILENAME_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Compute the storage path for a single generated image, creating the bucket
 /// directory if needed. Bucket is the conv id (numeric folder) or
 /// `"global"` for conv-less generations.
@@ -217,7 +226,9 @@ pub fn image_path(
     };
     let dir = root.join(&bucket);
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create images bucket: {e}"))?;
-    Ok(dir.join(format!("{ts_ms}-{seed}.png")))
+    let n = IMAGE_FILENAME_COUNTER
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(dir.join(format!("{ts_ms}-{seed}-{n}.png")))
 }
 
 #[cfg(test)]
@@ -227,8 +238,13 @@ mod tests {
     #[test]
     fn image_path_uses_global_bucket_when_no_conv() {
         let p = image_path(None, 1_700_000_000_000, 42).expect("image_path");
-        assert!(p.to_string_lossy().contains("/images/global/"));
-        assert!(p.to_string_lossy().ends_with("1700000000000-42.png"));
+        let s = p.to_string_lossy();
+        assert!(s.contains("/images/global/"));
+        // Filename schema: `<ts>-<seed>-<counter>.png` — counter is a
+        // per-process monotonic tiebreaker so two same-ts+same-seed
+        // generations don't overwrite each other (audit M-R2).
+        assert!(s.contains("1700000000000-42-"));
+        assert!(s.ends_with(".png"));
     }
 
     #[test]

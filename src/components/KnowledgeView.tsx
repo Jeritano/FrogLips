@@ -37,7 +37,10 @@ export function KnowledgeView() {
         </p>
       </header>
       <div className="knowledge-view-body">
-        <Suspense fallback={<div className="lazy-loading">Loading…</div>}>
+        {/* Audit L-F2: every other lazy panel in App.tsx uses
+            `fallback={null}` to avoid a "Loading…" flash on first open.
+            Match that convention here. */}
+        <Suspense fallback={null}>
           <RagPanel />
         </Suspense>
       </div>

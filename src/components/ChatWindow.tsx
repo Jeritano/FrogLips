@@ -219,16 +219,13 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         });
         setWorkspaceErr(`Workspace picker unavailable: ${msg}`);
       }
-      // Plugin missing in dev → fall back to a typed entry so the user isn't
-      // blocked. Empty input clears scope. (Even on a non-plugin error, the
-      // prompt fallback is still better than leaving the user with no way to
-      // set a workspace at all.)
-      const typed = window.prompt(
-        "Workspace root (agent confined to this dir; blank = full FS):",
-        workspaceRoot ?? "",
-      );
-      if (typed === null) return;
-      picked = typed.trim() ? typed.trim() : null;
+      // Audit L-F1 (2026-05-28): the old fallback called `window.prompt`,
+      // which Tauri 2 WKWebView blocks → the user got nothing. Removed
+      // the dead branch; the picker-unavailable error above is now the
+      // terminal state. If the user needs to set the workspace and the
+      // dialog plugin is broken, the workaround is to invoke
+      // `agent_set_workspace` directly via DiagnosticsPanel.
+      return;
     }
     try {
       const set = await api.agentSetWorkspace(picked);

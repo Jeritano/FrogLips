@@ -1428,10 +1428,15 @@ export async function executeTool(
 //      non-read-only tool may have changed filesystem / process / network
 //      state in ways the cached read would miss.
 //
-//   2. **Parallel execution.** When an assistant turn issues multiple tool
-//      calls AND every one of them is in this set, the runner can fire them
-//      with `Promise.all` instead of serial `await`. Mixed batches stay
-//      sequential (write ordering matters; approvals are per-call).
+//   2. **Future parallel execution (NOT wired yet).** When an assistant turn
+//      issues multiple tool calls AND every one of them is in this set,
+//      the runner COULD fire them with `Promise.all` instead of serial
+//      `await`. Mixed batches must stay sequential (write ordering
+//      matters; approvals are per-call). The runner is still strictly
+//      serial today (runner.ts main tool-call loop) — flagged here so a
+//      future contributor adding the optimization knows which set to
+//      gate on. (Audit L-A4: comment was previously written as if the
+//      optimization existed; corrected to mark it as aspirational.)
 //
 // Anything mutating, anything network-side-effectful, anything that depends
 // on real-time state (clipboard, screenshots), or anything that requires

@@ -410,25 +410,35 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     walk_files(&root_canon, glob_matcher.as_ref(), &mut files);
     let files_seen = files.len();
 
-    // Insert/update corpus row.
-    let conn = get_db()?;
+    // Audit M-R4 (2026-05-28): upsert + lookup + delete previously ran
+    // outside a transaction. Two concurrent `rag_ingest_folder` calls
+    // for the same name could interleave the chunk DELETE with another
+    // ingest's INSERTs, producing a half-deleted corpus the user sees
+    // as corrupt. Wrap upsert+lookup+delete in a single transaction so
+    // either both calls serialize cleanly via SQLite's locking or the
+    // second one fails predictably on BUSY.
+    let mut conn = get_db()?;
     let now = now_unix();
-    conn.execute(
-        "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
-         VALUES (?1, ?2, 0, ?3, ?3)
-         ON CONFLICT(name) DO UPDATE SET root_path = excluded.root_path, updated_at = ?3",
-        params![&opts.name, root_canon.to_string_lossy(), now],
-    )?;
-    let corpus_id: i64 = conn.query_row(
-        "SELECT id FROM rag_corpora WHERE name = ?1",
-        params![&opts.name],
-        |r| r.get(0),
-    )?;
-    // Clear prior chunks for re-ingest semantics.
-    conn.execute(
-        "DELETE FROM rag_chunks WHERE corpus_id = ?1",
-        params![corpus_id],
-    )?;
+    let corpus_id: i64 = {
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
+             VALUES (?1, ?2, 0, ?3, ?3)
+             ON CONFLICT(name) DO UPDATE SET root_path = excluded.root_path, updated_at = ?3",
+            params![&opts.name, root_canon.to_string_lossy(), now],
+        )?;
+        let id: i64 = tx.query_row(
+            "SELECT id FROM rag_corpora WHERE name = ?1",
+            params![&opts.name],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "DELETE FROM rag_chunks WHERE corpus_id = ?1",
+            params![id],
+        )?;
+        tx.commit()?;
+        id
+    };
     drop(conn);
 
     let mut files_indexed = 0usize;

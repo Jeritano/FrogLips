@@ -29,8 +29,13 @@ export function Toast({
     return () => clearTimeout(t);
   }, [durationMs, message]);
 
+  // Audit L-F3 (2026-05-28): role=status (polite live region) so
+  // assistive tech announces the toast on mount. The App-level
+  // announce() helper still drives most state messaging, but the
+  // toast contents (e.g. "Undo delete · Restore") aren't always
+  // announced through that path.
   return (
-    <div className="toast" role="group" aria-label="Notification">
+    <div className="toast" role="status" aria-live="polite" aria-label="Notification">
       <span className="toast-msg">{message}</span>
       {actionLabel && onAction && (
         <button

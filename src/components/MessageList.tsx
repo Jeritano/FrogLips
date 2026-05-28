@@ -583,8 +583,13 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
   // turn doesn't flash a stale "Switched to" banner.
   const lastAsstModel = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant" && messages[i].model) {
-        return messages[i].model!;
+      // Audit M-F3: bind the indexed message once so TS narrows
+      // `m.model` through the truthiness check instead of relying on
+      // a `messages[i].model!` non-null assertion the next refactor
+      // could outlive.
+      const m = messages[i];
+      if (m.role === "assistant" && m.model) {
+        return m.model;
       }
     }
     return null;

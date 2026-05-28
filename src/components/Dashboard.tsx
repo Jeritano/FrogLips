@@ -105,7 +105,11 @@ export function Dashboard({ open, onClose }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      const opt = WINDOW_OPTIONS.find((w) => w.key === windowKey)!;
+      // Audit M-F6: replace `.find(...)!` non-null assertion with a
+      // default-fallback. If a future window key is added without
+      // landing it in WINDOW_OPTIONS, the user sees the all-time
+      // window instead of a null deref. Default = full history.
+      const opt = WINDOW_OPTIONS.find((w) => w.key === windowKey) ?? WINDOW_OPTIONS[WINDOW_OPTIONS.length - 1];
       const since = opt.ms == null ? null : Date.now() - opt.ms;
       const s = await api.agentDashboardSummary({
         since_ts: since,

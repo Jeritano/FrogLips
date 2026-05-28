@@ -161,6 +161,12 @@ function App() {
 
   // Initial data + first-run wizard gate.
   useEffect(() => {
+    // Audit M-F4 (2026-05-28): React 18 StrictMode runs effects twice in
+    // dev → two parallel settings reads. Without an `ignored` guard the
+    // second read's resolution overwrites whatever state the first set,
+    // and on a fresh install both could race setWizardOpen. Guard each
+    // async branch so stale results from a prior mount drop silently.
+    let ignored = false;
     // Window uses macOS Overlay title-bar style + hiddenTitle, so the OS
     // chrome only renders the traffic lights. `pkg` stays imported so the
     // version is available for the in-app footer.
@@ -175,15 +181,18 @@ function App() {
     // Auto-mark them complete so the wizard never opens.
     Promise.all([api.setupCompleteGet(), api.settingsGet()])
       .then(async ([done, s]) => {
+        if (ignored) return;
         if (done) { setWizardOpen(false); return; }
         if (s.last_model) {
           await api.setupCompleteSet(true).catch(() => {});
+          if (ignored) return;
           setWizardOpen(false);
           return;
         }
         setWizardOpen(true);
       })
       .catch((err) => {
+        if (ignored) return;
         logDiag({
           level: "info",
           source: "app",
@@ -194,6 +203,7 @@ function App() {
       });
     // Configure the memory client + apply the persisted theme.
     api.settingsGet().then((s) => {
+      if (ignored) return;
       configureMemory({
         embeddingModel: s.embedding_model,
         recallThreshold: s.recall_threshold,
@@ -202,14 +212,18 @@ function App() {
         setTheme(s.theme);
         document.documentElement.dataset.theme = s.theme;
       }
-    }).catch((err) =>
+    }).catch((err) => {
+      if (ignored) return;
       logDiag({
         level: "warn",
         source: "app",
         message: "settingsGet() rejected on startup — memory client may use defaults",
         detail: err,
-      }),
-    );
+      });
+    });
+    return () => {
+      ignored = true;
+    };
   }, []);
 
   useTauriEvent<ServerStatus>(

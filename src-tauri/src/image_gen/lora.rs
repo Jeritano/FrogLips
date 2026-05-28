@@ -792,14 +792,39 @@ fn evict_if_needed<F: Fn(MergeProgress)>(
         if running + projected_bytes <= LORA_CACHE_CAP_BYTES {
             break;
         }
-        if let Ok(Some(path)) = history::lora_delete_by_sha(&row.sha) {
-            let p = PathBuf::from(&path);
-            if p.exists() {
-                let _ = fs::remove_dir_all(&p);
+        // Audit M-R1 (2026-05-28): previously the DB delete was swallowed
+        // via `if let Ok(Some(...))`, so a transient DB-locked error
+        // continued the loop without decrementing `running` — leaving
+        // the cache permanently over cap with the merger silently
+        // proceeding. Now propagates: a DB delete failure aborts the
+        // eviction pass + returns an Err so the merge caller can
+        // surface "cache eviction failed" to the user instead of
+        // exceeding the disk cap.
+        match history::lora_delete_by_sha(&row.sha)? {
+            Some(path) => {
+                let p = PathBuf::from(&path);
+                if p.exists() {
+                    if let Err(e) = fs::remove_dir_all(&p) {
+                        // On-disk dir won't go away but the DB row is
+                        // already gone — log + continue. The orphan
+                        // dir is benign (won't be re-referenced).
+                        crate::diagnostics::warn_with(
+                            "lora-evict",
+                            &format!("on-disk eviction failed for {}", p.display()),
+                            serde_json::json!({ "sha": row.sha, "error": format!("{e:#}") }),
+                        );
+                    }
+                }
+                running = running.saturating_sub(row.bytes as u64);
+                dropped += 1;
+                emit(MergeProgress::Evicted { sha: row.sha.clone() });
             }
-            running = running.saturating_sub(row.bytes as u64);
-            dropped += 1;
-            emit(MergeProgress::Evicted { sha: row.sha.clone() });
+            None => {
+                // Row vanished between list_lru and delete (concurrent
+                // delete via lora_delete IPC). Recompute running total
+                // from DB so we don't double-count phantom bytes.
+                running = history::lora_total_bytes()? as u64;
+            }
         }
     }
     Ok(dropped)
