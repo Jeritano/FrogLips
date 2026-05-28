@@ -3,12 +3,14 @@ import { McpSettings } from "./McpSettings";
 import { ErrorBar } from "./ErrorBar";
 import type { AgentSettings } from "../hooks/useAgentSettings";
 
-// RagPanel and AuditLog only render inside the agent-settings disclosure
-// (gear icon while agent mode is on). Lazy-load so first paint of the chat
-// surface doesn't pay for them — both pull in their own datastore helpers.
-const RagPanel = lazy(() =>
-  import("./RagPanel").then((m) => ({ default: m.RagPanel })),
-);
+// AuditLog only renders inside the agent-settings disclosure (gear icon
+// while agent mode is on). Lazy-loaded so first paint of the chat
+// surface doesn't pay for the datastore helpers.
+//
+// RagPanel used to live here too but moved to its own top-level
+// Knowledge view (sidebar) for discoverability — see KnowledgeView.tsx.
+// Agents and workflows that need the corpus library now point users to
+// the sidebar Knowledge entry instead of the chat-agent gear.
 const AuditLog = lazy(() =>
   import("./AuditLog").then((m) => ({ default: m.AuditLog })),
 );
@@ -128,14 +130,7 @@ export function AgentSettingsPanel({
         {updateMsg && <span className="agent-settings-hint">{updateMsg}</span>}
       </div>
       <McpSettings />
-      {/*
-       * Render lazy panels inside a single Suspense boundary — both
-       * resolve from the same chunk pipeline, and a shared fallback
-       * keeps the panel layout stable while they hydrate (no flash of
-       * empty space between the rows).
-       */}
       <Suspense fallback={<div className="lazy-loading">Loading…</div>}>
-        <RagPanel />
         <AuditLog />
       </Suspense>
     </div>

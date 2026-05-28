@@ -95,6 +95,9 @@ const WorkflowsPage = lazy(() =>
 const ImageView = lazy(() =>
   import("./components/ImageView").then((m) => ({ default: m.ImageView })),
 );
+const KnowledgeView = lazy(() =>
+  import("./components/KnowledgeView").then((m) => ({ default: m.KnowledgeView })),
+);
 
 function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -126,8 +129,8 @@ function App() {
   const [aboutYouOpen, setAboutYouOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  // Main-pane view: chat / workflow canvas / image-gen surface.
-  const [view, setView] = useState<"chat" | "workflows" | "images">("chat");
+  // Main-pane view: chat / workflow canvas / image-gen surface / knowledge library.
+  const [view, setView] = useState<"chat" | "workflows" | "images" | "knowledge">("chat");
   // First-run setup wizard. `undefined` = haven't checked the flag yet, so we
   // render nothing for the wizard region until the IPC call returns. This
   // avoids a flash of the wizard on returning users whose setup is already
@@ -825,6 +828,16 @@ function App() {
               />
             )}
           </button>
+          <button
+            type="button"
+            className="knowledge-entry"
+            onClick={() => setView("knowledge")}
+            aria-current={view === "knowledge" ? "page" : undefined}
+            aria-pressed={view === "knowledge"}
+            data-testid="knowledge-entry-btn"
+          >
+            <span aria-hidden="true">📚</span> Knowledge
+          </button>
         </div>
         <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
         <input
@@ -1049,6 +1062,12 @@ function App() {
                 error={imageGen.error}
                 generate={imageGen.generate}
               />
+            </Suspense>
+          </ErrorBoundary>
+        ) : view === "knowledge" ? (
+          <ErrorBoundary label="Knowledge">
+            <Suspense fallback={null}>
+              <KnowledgeView />
             </Suspense>
           </ErrorBoundary>
         ) : (

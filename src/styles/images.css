@@ -582,6 +582,68 @@
   color: var(--accent);
 }
 
+/* Sidebar Knowledge entry — peer to .images-entry / .workflows-entry. */
+.knowledge-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: calc(100% - var(--space-4));
+  margin: 0 var(--space-2) var(--space-2);
+  padding: 6px var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.knowledge-entry:hover { background: var(--surface-hover); }
+.knowledge-entry[aria-pressed="true"] {
+  background: var(--accent-bg);
+  border-color: var(--accent-strong);
+  color: var(--accent);
+}
+
+/* Knowledge view page shell — peers with .image-view / .wf-page. */
+.knowledge-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+.knowledge-view-header {
+  padding: var(--space-4) var(--space-5) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.knowledge-view-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--fs-xl);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.knowledge-view-hint {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.knowledge-view-hint code {
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+.knowledge-view-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5);
+}
+
 /* ── Image right-click menu ───────────────────────────────────────────── */
 .image-ctx-menu {
   position: fixed;
