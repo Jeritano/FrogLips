@@ -136,16 +136,9 @@ export function ImagePromptPanel({
     setUnloadStatus(null);
     setUnloadBusy(true);
     try {
-      // Feature-detect imageUnload — BACK has not yet shipped it. When the
-      // wrapper lands on `api`, this branch starts working without further
-      // frontend changes.
-      // TODO(image-gen-back-ready): replace the `in` check with a direct call.
-      const maybeUnload = (api as Record<string, unknown>).imageUnload;
-      if (typeof maybeUnload !== "function") {
-        setUnloadStatus("Model-unload IPC isn't available yet in this build.");
-        return;
-      }
-      await (maybeUnload as () => Promise<void>)();
+      // L-F7 cleanup (2026-05-28): `imageUnload` IPC is stable on `api`;
+      // dropped the feature-detect path.
+      await api.imageUnload();
       setUnloadStatus("Model unloaded. Next generate will reload (~30-90s).");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

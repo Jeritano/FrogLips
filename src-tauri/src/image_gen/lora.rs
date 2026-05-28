@@ -696,8 +696,27 @@ impl<'a> safetensors::View for &TensorPayload<'a> {
 }
 
 /// Compute the delta tensor for one LoRA pair and add it to the base
-/// tensor. Math runs in f32; the caller casts back to the base dtype at
-/// serialize time.
+/// tensor.
+///
+/// **Precision contract (audit L-R5, 2026-05-28).** All math runs in f32
+/// regardless of the base dtype:
+///
+///   1. `lora_a` and `lora_b` are up-cast to f32 before the matmul, because
+///      bf16/f16 matmul on the rank-4–rank-128 inner dim can accumulate ~2-3
+///      ULPs of error per row vs. f32, and we sum that error across every
+///      pair stacked onto the same base tensor. Stacking 4-8 LoRAs at
+///      weight 1.0 on a bf16-direct path produces visibly different output
+///      images vs. the same stack run in f32 — colour banding in low-light
+///      regions is the common failure mode.
+///   2. `base_f32` is passed in already at f32 (the caller up-casts once
+///      per shard via `Tensor::to_dtype`), so the `broadcast_add` is also
+///      f32+f32.
+///   3. The caller re-casts back to the original base dtype only at the
+///      serialize step (see `tensor_to_serialized`), so per-shard f32
+///      accumulation across multiple pairs stays exact.
+///
+/// `weight` is multiplied in as f64 to avoid a redundant f32 round-trip on
+/// the scaling step itself; Candle accepts the wider scalar verbatim.
 fn apply_delta_to_base(
     base_f32: &Tensor,
     lora_a: &Tensor,

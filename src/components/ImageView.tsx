@@ -40,13 +40,9 @@ interface Props {
 type FilterMode = "all" | "this-chat" | "standalone";
 
 /**
- * Generic page-size cap for `imageList`. Until BACK ships paginated metadata
- * (item count + cursor) we fetch up to PAGE_LIMIT rows and show a "Load more"
- * button when the server returns exactly that many — indicating there might
- * be additional rows we haven't fetched.
- *
- * TODO(image-gen-back-ready): swap to the paginated `imageList` shape and
- * surface a real `total` count when the BACK agent ships it.
+ * Generic page-size cap for `imageList`. BACK returns `{ rows, total }` so we
+ * already render an authoritative count; `pageLimit` controls the slab size
+ * for incremental loading. Bumping it asks BACK for a wider window.
  */
 const PAGE_LIMIT = 200;
 

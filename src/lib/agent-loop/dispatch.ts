@@ -603,6 +603,13 @@ export interface ExecuteToolOptions {
    * cross-conversation / global scope.
    */
   conversationId?: number | null;
+  /**
+   * Parent workflow_runs.id when this dispatch is happening inside a workflow
+   * card's agent loop. Threaded into audit-marker rows (skill_invocation_*)
+   * so the bracket pair correlates back to the run. Null/absent for
+   * interactive chat turns. Audit L-A2 (2026-05-28).
+   */
+  workflowRunId?: number | null;
 }
 
 export async function executeTool(
@@ -1293,7 +1300,11 @@ export async function executeTool(
         durationMs: 0,
         approval: "auto",
         outcome: "ok",
-        workflowRunId: null,
+        // Audit L-A2 (2026-05-28): thread the parent workflow run id so the
+        // bracket pair is correlated to its workflow row in the audit view.
+        // Previously hardcoded null — skill replays inside a workflow were
+        // orphaned from their parent run.
+        workflowRunId: options.workflowRunId ?? null,
       });
 
       const stepResults: Array<Record<string, unknown>> = [];
@@ -1341,7 +1352,8 @@ export async function executeTool(
         durationMs: 0,
         approval: "auto",
         outcome: "ok",
-        workflowRunId: null,
+        // See L-A2 note on the matching start marker above.
+        workflowRunId: options.workflowRunId ?? null,
       });
 
       // Best-effort: bump server-side last_used_at + invocation_count.

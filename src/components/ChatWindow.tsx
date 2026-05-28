@@ -684,7 +684,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               <div className="agent-risk-warning">
                 ⚠ This action matches a known destructive pattern. Read it carefully before approving.
               </div>
-              <label className="agent-confirm-remember" style={{ color: "#fca5a5" }}>
+              <label className="agent-confirm-remember" style={{ color: "var(--danger-fg, #fca5a5)" }}>
                 <input
                   type="checkbox"
                   checked={destructiveAck}

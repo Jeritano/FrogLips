@@ -73,41 +73,15 @@ export function ImageDetail({ image, onDeleted, onSendToChat, onContextMenu }: P
         setBusy(null);
         return;
       }
-      // Feature-detect the BACK-side `imageSaveTo` IPC. When BACK ships it we
-      // get an honest "copy from validated source to validated dest" — until
-      // then we fall back to the <a download> path that always lands in
-      // Downloads (the dest path the user picked is at least informational).
-      // TODO(image-gen-back-ready): drop the fallback branch once
-      // `api.imageSaveTo` is stable.
-      if ("imageSaveTo" in api) {
-        const saveTo = (api as { imageSaveTo: (id: number, dest: string) => Promise<unknown> })
-          .imageSaveTo;
-        const result = await saveTo(image.id, dest);
-        // BACK currently returns the canonical destination path as a string.
-        // Treat any truthy string as authoritative; fall back to the original
-        // `dest` when the wrapper is older / returns void.
-        const written = typeof result === "string" && result.length > 0 ? result : dest;
-        setSaveStatus(`Saved to ${written}`);
-        return;
-      }
-      // Legacy fallback. Read the PNG through the asset protocol then trigger
-      // an in-webview download. The chosen dest path is reported to the user
-      // as info; the file itself always lands in Downloads.
-      const url = convertFileSrc(image.path);
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`asset fetch failed: ${resp.status}`);
-      const blob = await resp.blob();
-      const objUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objUrl;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(objUrl);
-      setSaveStatus(
-        `Saved to Downloads/${fileName}. (Backend save-to-path IPC pending; chosen path was ${dest}.)`,
-      );
+      // BACK-side `imageSaveTo` IPC is stable on `api`. Returns the
+      // canonical destination path; treat any truthy string as authoritative
+      // and fall back to the user-chosen `dest` if BACK ever returns void.
+      // L-F7 cleanup (2026-05-28): removed `<a download>` legacy fallback —
+      // it always landed in Downloads regardless of the user's `dest`,
+      // which silently violated the user's chosen save location.
+      const result = await api.imageSaveTo(image.id, dest);
+      const written = typeof result === "string" && result.length > 0 ? result : dest;
+      setSaveStatus(`Saved to ${written}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setSaveStatus(`Save failed: ${msg}`);

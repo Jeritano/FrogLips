@@ -242,26 +242,46 @@ export function applyContextBudget(
   }
 
   // ── Pass 2: collapse oldest non-system turns into a summary. ──
+  // Audit L-A3 (2026-05-28): previous implementation was O(n²) — each
+  // collapseCount iteration rebuilt the candidate array and called
+  // `estimateMessagesTokens` over the full N messages. On a 40-turn run
+  // with 80 messages that's ~3200 char-scans per budget pass on the hot
+  // path. Switched to prefix sums computed once (O(n)) and an O(1)
+  // candidate cost = head + summary(collapsed) + kept_suffix_sum. Total
+  // pass cost is now O(n × cost_of_summarizeCollapsedTurns), and the
+  // summary itself walks at most `collapseCount` messages which we already
+  // accept as the work we're doing.
   if (estimateMessagesTokens(working) > budget && working.length > 1) {
     const head = working[0]; // system prompt — immutable.
     const rest = working.slice(1);
     const convId = head.conversation_id;
 
+    // Per-message costs and prefix sums. `prefix[i]` = sum of rest[0..i-1].
+    const restCosts: number[] = new Array(rest.length);
+    const prefix: number[] = new Array(rest.length + 1);
+    prefix[0] = 0;
+    for (let i = 0; i < rest.length; i++) {
+      const c = estimateOneMessage(rest[i]);
+      restCosts[i] = c;
+      prefix[i + 1] = prefix[i] + c;
+    }
+    const headCost = estimateOneMessage(head);
+    const totalRest = prefix[rest.length];
+
     // Collapse from the front until we fit or only the most recent turn
     // remains. We always keep at least the final message so the model has
     // the live user request to act on.
-    let collapseCount = 0;
-    while (collapseCount < rest.length - 1) {
-      const collapsed = rest.slice(0, collapseCount + 1);
-      const kept = rest.slice(collapseCount + 1);
-      const summary = summarizeCollapsedTurns(collapsed, convId);
-      const candidate = [head, summary, ...kept];
-      if (estimateMessagesTokens(candidate) <= budget) {
-        working = candidate;
-        turnsCollapsed = collapsed.length;
+    for (let collapseCount = 0; collapseCount < rest.length - 1; collapseCount++) {
+      const collapsedSlice = rest.slice(0, collapseCount + 1);
+      const summary = summarizeCollapsedTurns(collapsedSlice, convId);
+      const summaryCost = estimateOneMessage(summary);
+      const keptSum = totalRest - prefix[collapseCount + 1];
+      const candidateCost = headCost + summaryCost + keptSum;
+      if (candidateCost <= budget) {
+        working = [head, summary, ...rest.slice(collapseCount + 1)];
+        turnsCollapsed = collapsedSlice.length;
         break;
       }
-      collapseCount++;
     }
     // If even collapsing all-but-one didn't fit, take the maximal collapse.
     if (turnsCollapsed === 0 && rest.length > 1) {

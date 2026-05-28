@@ -28,6 +28,17 @@
   --overlay-soft: rgba(255, 255, 255, 0.06);
   --overlay-softer: rgba(255, 255, 255, 0.04);
   --overlay-strong: rgba(255, 255, 255, 0.10);
+
+  /* Model-browser tag pill palette. Distinct hues so backends are
+     visually distinguishable in dense installed-models lists. Hex
+     remains as the inline fallback so older browsers without CSS-var
+     support still render a readable badge. */
+  --mb-tag-ollama-bg: rgba(59, 130, 246, 0.13);
+  --mb-tag-ollama-fg: #3b82f6;
+  --mb-tag-cloud-bg: rgba(14, 165, 233, 0.13);
+  --mb-tag-cloud-fg: #0ea5e9;
+  --mb-tag-mlx-bg: rgba(168, 85, 247, 0.13);
+  --mb-tag-mlx-fg: #a855f7;
   --shadow-modal: 0 12px 48px rgba(0, 0, 0, 0.5);
   --shadow-toast: 0 6px 16px rgba(0, 0, 0, 0.4);
   --mono: "SF Mono", Menlo, Consolas, monospace;
@@ -104,6 +115,15 @@
   --overlay-soft: rgba(0, 0, 0, 0.04);
   --overlay-softer: rgba(0, 0, 0, 0.02);
   --overlay-strong: rgba(0, 0, 0, 0.08);
+  /* Light-mode mb-tag palette: deeper hues so pills stay readable on a
+     bright surface; same hex fallbacks as dark mode for graceful
+     degradation. */
+  --mb-tag-ollama-bg: rgba(37, 99, 235, 0.10);
+  --mb-tag-ollama-fg: #1d4ed8;
+  --mb-tag-cloud-bg: rgba(2, 132, 199, 0.10);
+  --mb-tag-cloud-fg: #0369a1;
+  --mb-tag-mlx-bg: rgba(126, 34, 206, 0.10);
+  --mb-tag-mlx-fg: #6b21a8;
   --shadow-modal: 0 12px 48px rgba(0, 0, 0, 0.15);
   --shadow-toast: 0 6px 16px rgba(0, 0, 0, 0.10);
   --caret-svg: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2352525b' stroke-width='2'><polyline points='6 9 12 15 18 9'/></svg>");

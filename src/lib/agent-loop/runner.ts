@@ -1097,6 +1097,11 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
               // the active conversation id in opts; pass it down
               // unmodified.
               conversationId: opts.conversationId,
+              // Thread the parent workflow_runs.id (if any) so that nested
+              // tools that emit their own audit rows (today: the skill
+              // invocation start/end markers) can correlate back to the
+              // run that produced them. L-A2 (2026-05-28).
+              workflowRunId: opts.workflowRunId ?? null,
             });
             if (ckey != null) {
               // Only cache responses that don't look like errors — caching

@@ -98,9 +98,25 @@ export function InstalledModelsTab({
                 <div className="mb-card-top">
                   <span className="mb-card-label">{m.id}</span>
                   <div className="mb-tags">
-                    <span className="mb-tag" style={{ background: "#3b82f622", color: "#3b82f6" }}>ollama</span>
+                    <span
+                      className="mb-tag"
+                      style={{
+                        background: "var(--mb-tag-ollama-bg, #3b82f622)",
+                        color: "var(--mb-tag-ollama-fg, #3b82f6)",
+                      }}
+                    >
+                      ollama
+                    </span>
                     {isCloud && (
-                      <span className="mb-tag" style={{ background: "#0ea5e922", color: "#0ea5e9" }}>cloud</span>
+                      <span
+                        className="mb-tag"
+                        style={{
+                          background: "var(--mb-tag-cloud-bg, #0ea5e922)",
+                          color: "var(--mb-tag-cloud-fg, #0ea5e9)",
+                        }}
+                      >
+                        cloud
+                      </span>
                     )}
                   </div>
                 </div>
@@ -134,7 +150,15 @@ export function InstalledModelsTab({
                 <div className="mb-card-top">
                   <span className="mb-card-label">{m.id}</span>
                   <div className="mb-tags">
-                    <span className="mb-tag" style={{ background: "#a855f722", color: "#a855f7" }}>mlx</span>
+                    <span
+                      className="mb-tag"
+                      style={{
+                        background: "var(--mb-tag-mlx-bg, #a855f722)",
+                        color: "var(--mb-tag-mlx-fg, #a855f7)",
+                      }}
+                    >
+                      mlx
+                    </span>
                   </div>
                 </div>
                 {err && <div className="mb-card-err">{err}</div>}
@@ -181,7 +205,15 @@ export function InstalledModelsTab({
                 <div className="mb-card-top">
                   <span className="mb-card-label">{f.filename}</span>
                   <div className="mb-tags">
-                    <span className="mb-tag" style={{ background: "#22c55e22", color: "#22c55e" }}>gguf</span>
+                    <span
+                      className="mb-tag"
+                      style={{
+                        background: "var(--green-bg, #22c55e22)",
+                        color: "var(--green, #22c55e)",
+                      }}
+                    >
+                      gguf
+                    </span>
                     {quant && <span className="mb-tag civitai-soft">{quant}</span>}
                   </div>
                 </div>
