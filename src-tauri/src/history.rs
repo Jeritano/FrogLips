@@ -773,6 +773,7 @@ pub fn lora_get_by_sha(sha: &str) -> Result<Option<LoraMergeRowInternal>> {
 /// eviction pass might decide an older merge was "fresher" than a
 /// merge dispatched 200µs earlier because the timestamps were written
 /// out of clock order.
+#[allow(dead_code)] // Consumed by the native-only engine LoRA dispatch path.
 pub fn lora_get_by_sha_and_touch(sha: &str) -> Result<Option<LoraMergeRowInternal>> {
     let mut conn = get_db()?;
     lora_get_by_sha_and_touch_in(&mut conn, sha)

@@ -66,6 +66,7 @@ pub mod config;
 pub mod rope;
 pub mod text_encoder;
 pub mod transformer;
+pub mod vae;
 pub mod weights;
 
 /// Canonical HF repo id for the Qwen-Image base model.
@@ -73,6 +74,7 @@ pub const QWEN_IMAGE_REPO: &str = "Qwen/Qwen-Image";
 
 /// Shorthand model ids the frontend dropdown emits. `commands/image.rs::
 /// canonicalize_*` maps these into [`QWEN_IMAGE_REPO`].
+#[allow(dead_code)] // Consumed by the native-only engine dispatcher (engine.rs).
 pub const QWEN_IMAGE_SHORTHANDS: &[&str] = &[
     "qwen-image",
     "qwen-image-fp8",
@@ -81,6 +83,7 @@ pub const QWEN_IMAGE_SHORTHANDS: &[&str] = &[
 /// Returns `true` when `repo` names the Qwen-Image base. Case-insensitive so
 /// a model id typed `qwen/qwen-image` from the agent loop matches the
 /// canonical `Qwen/Qwen-Image`.
+#[allow(dead_code)] // Native-only consumer (engine dispatcher + lora ALLOWED_BASES).
 pub fn is_qwen_base(repo: &str) -> bool {
     repo.eq_ignore_ascii_case(QWEN_IMAGE_REPO)
 }
@@ -92,6 +95,7 @@ pub fn is_qwen_base(repo: &str) -> bool {
 /// Does NOT accept the `<base>+lora:<sha>` suffix; the dispatcher strips
 /// the LoRA suffix BEFORE this check so a `Qwen/Qwen-Image+lora:abc...` id
 /// resolves correctly.
+#[allow(dead_code)] // Native-only consumer (engine dispatcher).
 pub fn model_id_resolves_to_qwen(id: &str) -> bool {
     if is_qwen_base(id) {
         return true;
@@ -104,6 +108,7 @@ pub fn model_id_resolves_to_qwen(id: &str) -> bool {
 /// Phase-1 stub error: surfaced by the engine dispatcher when a request
 /// resolves to a Qwen-Image variant. Frontend renders this with a
 /// "Qwen-Image inference is not yet enabled — Phase 5 work" copy.
+#[allow(dead_code)] // Native-only consumer (engine dispatcher).
 pub fn unimplemented_error() -> anyhow::Error {
     anyhow!(
         "kind:\"qwen_unimplemented\" Qwen-Image inference is not yet wired in; only LoRA inspection + merge are supported in Phase 1"

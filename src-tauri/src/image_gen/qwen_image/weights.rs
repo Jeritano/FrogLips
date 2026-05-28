@@ -17,7 +17,7 @@
 //! without changing the public surface.
 
 use candle_core::{DType, Device, Result, Tensor};
-use candle_nn::Linear;
+use candle_nn::{Linear, VarBuilder};
 
 use crate::image_gen::qwen_image::config::Config;
 
@@ -94,6 +94,48 @@ impl JointBlockWeights {
             // 6 modulation vectors of hidden-d each.
             img_mod: rect(6 * h, h)?,
             txt_mod: rect(6 * h, h)?,
+        })
+    }
+
+    /// Load one joint block's weights from a `VarBuilder` rooted at the
+    /// block's safetensors prefix (`transformer.transformer_blocks.{i}.`).
+    /// The key paths match the diffusers `QwenImageTransformer2DModel`
+    /// layout documented on `transformer.rs`.
+    ///
+    /// Phase 4 (2026-05-28): this is the real loader the Phase 5
+    /// end-to-end forward calls once it `mmap`s the Qwen-Image
+    /// safetensors archive. All attention projections are bias-free;
+    /// the MLP + modulation linears carry biases in the upstream
+    /// checkpoint, so they load with `linear` (bias) not
+    /// `linear_no_bias`.
+    ///
+    /// `vb` must already be `.pp(prefix)`-scoped by the caller; the
+    /// keys below are relative to the block root.
+    #[allow(dead_code)] // Wired by the Phase-5 loader walk over all blocks.
+    pub fn load(config: &Config, vb: VarBuilder) -> Result<Self> {
+        let h = config.hidden_size;
+        let f = config.ffn_dim;
+        let nb = candle_nn::linear_no_bias;
+        let lb = candle_nn::linear;
+        let attn = vb.pp("attn");
+        Ok(Self {
+            img_to_q: nb(h, h, attn.pp("to_q"))?,
+            img_to_k: nb(h, h, attn.pp("to_k"))?,
+            img_to_v: nb(h, h, attn.pp("to_v"))?,
+            // `to_out` is a Sequential in diffusers; the linear is `.0`.
+            img_to_out: nb(h, h, attn.pp("to_out").pp("0"))?,
+            txt_add_q: nb(h, h, attn.pp("add_q_proj"))?,
+            txt_add_k: nb(h, h, attn.pp("add_k_proj"))?,
+            txt_add_v: nb(h, h, attn.pp("add_v_proj"))?,
+            txt_to_add_out: nb(h, h, attn.pp("to_add_out"))?,
+            // FFN: `ff.net.0.proj` (hidden→ffn) + `ff.net.2` (ffn→hidden).
+            img_ff_in: lb(h, f, vb.pp("ff").pp("net").pp("0").pp("proj"))?,
+            img_ff_out: lb(f, h, vb.pp("ff").pp("net").pp("2"))?,
+            txt_ff_in: lb(h, f, vb.pp("ff_context").pp("net").pp("0").pp("proj"))?,
+            txt_ff_out: lb(f, h, vb.pp("ff_context").pp("net").pp("2"))?,
+            // Modulation: `*_mod.1` is the projection linear.
+            img_mod: lb(h, 6 * h, vb.pp("img_mod").pp("1"))?,
+            txt_mod: lb(h, 6 * h, vb.pp("txt_mod").pp("1"))?,
         })
     }
 }
