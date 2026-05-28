@@ -728,6 +728,19 @@ body {
   pointer-events: auto;
   color: var(--accent);
 }
+
+/* UX refinement 2026-05-28: pin (★/☆) and tag (🏷) are the two everyday
+   actions on a conversation row — keep them dimly visible even without
+   hover so the affordance is discoverable on every row. Detach (⧉) and
+   delete (×) remain hover-only because they're rarer + destructive and
+   benefit from being out of casual reach. Hover bumps them to full
+   opacity via the rule above. */
+.conv-list .del.conv-pin,
+.conv-list .del.conv-tag-btn {
+  opacity: 0.45;
+  pointer-events: auto;
+  color: var(--text-3);
+}
 /* Armed delete (mid-confirmation, "click again to confirm") must stay
    visible even when the cursor briefly leaves the row, or the user
    loses the click target. */
