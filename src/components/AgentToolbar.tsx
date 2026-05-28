@@ -164,14 +164,21 @@ export function AgentToolbar(props: Props) {
 
   return (
     <div className="agent-toolbar">
-      <ExportMenu
-        conversation={conversation as Conversation}
-        messages={messages}
-        open={showExportMenu && !!conversation}
-        onToggle={onToggleExportMenu}
-        onClose={onCloseExportMenu}
-        disabled={!conversation || messages.length === 0}
-      />
+      {/* Audit H-F4 (2026-05-27): mount ExportMenu only when a real
+          conversation is selected. The previous `conversation as
+          Conversation` cast silenced TS but passed `null` through to
+          ExportMenu's typed prop — the disabled-state branch was the
+          only thing keeping it from runtime-crashing on a null deref. */}
+      {conversation && (
+        <ExportMenu
+          conversation={conversation}
+          messages={messages}
+          open={showExportMenu}
+          onToggle={onToggleExportMenu}
+          onClose={onCloseExportMenu}
+          disabled={messages.length === 0}
+        />
+      )}
       <button
         className="agent-toggle"
         onClick={onToggleToolHistory}

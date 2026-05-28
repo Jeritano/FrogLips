@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -201,16 +201,35 @@ export function WorkflowCanvas({
     [placedCards, cardStates, hasUpstream, onConfigure, onRunCard, onDeleteCard],
   );
 
+  // Two-click edge-disconnect armed state — declared above flowEdges so
+  // the memo can read it. See handleEdgeClick below for the lifecycle.
+  const [armedEdgeId, setArmedEdgeId] = useState<string | null>(null);
+  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearArmTimer = useCallback(() => {
+    if (armTimerRef.current != null) {
+      clearTimeout(armTimerRef.current);
+      armTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => () => clearArmTimer(), [clearArmTimer]);
+
   const flowEdges = useMemo<Edge[]>(
     () =>
-      edges.map((e) => ({
-        id: `${e.from}->${e.to}`,
-        source: e.from,
-        target: e.to,
-        animated: runningCardId != null && e.from === runningCardId,
-        className: "wf-edge",
-      })),
-    [edges, runningCardId],
+      edges.map((e) => {
+        const id = `${e.from}->${e.to}`;
+        return {
+          id,
+          source: e.from,
+          target: e.to,
+          animated: runningCardId != null && e.from === runningCardId,
+          // `selected:true` triggers ReactFlow's built-in selected styling,
+          // which surfaces the armed-state visual for the two-click
+          // disconnect (audit C-F1). 3-second window from first click.
+          selected: armedEdgeId === id,
+          className: armedEdgeId === id ? "wf-edge wf-edge-armed" : "wf-edge",
+        };
+      }),
+    [edges, runningCardId, armedEdgeId],
   );
 
   const handleNodesChange = useCallback(
@@ -249,22 +268,39 @@ export function WorkflowCanvas({
   // Click an edge to delete it. React Flow's built-in "select + Delete"
   // dance doesn't survive our re-render cycle (the parent rebuilds the
   // edge array from `{from,to}` shape, losing internal `selected` state)
-  // so this is the only reliable disconnect affordance. Confirm only if
-  // the edge connects two real cards — accidental misclicks are common
-  // and re-drawing requires a drag from the source handle.
+  // so this is the only reliable disconnect affordance.
+  //
+  // Audit C-F1 (2026-05-27): previously used `window.confirm()` for the
+  // two-click guard, which Tauri 2 WKWebView blocks → the prompt never
+  // appeared and `ok` was always falsy → edge deletion silent no-op.
+  // Replaced with an in-component armed-state two-click pattern: first
+  // click arms the edge for 3 s (visual highlight via the `selected`
+  // class through ReactFlow), second click within the window
+  // disconnects. Mid-flight clicks on a different edge re-arm.
+  // State + cleanup hook declared above flowEdges so the edge memo can
+  // read `armedEdgeId` to surface the visual armed state.
   const handleEdgeClick = useCallback(
     (_evt: React.MouseEvent, edge: Edge) => {
-      const ok = window.confirm(
-        `Disconnect ${edge.source} → ${edge.target}?`,
-      );
-      if (!ok) return;
-      onEdgesChange(
-        flowEdges
-          .filter((e) => e.id !== edge.id)
-          .map((e) => ({ from: e.source, to: e.target })),
-      );
+      if (armedEdgeId === edge.id) {
+        // Second click on the armed edge → commit.
+        clearArmTimer();
+        setArmedEdgeId(null);
+        onEdgesChange(
+          flowEdges
+            .filter((e) => e.id !== edge.id)
+            .map((e) => ({ from: e.source, to: e.target })),
+        );
+        return;
+      }
+      // First click (or click on a different edge while armed) → re-arm.
+      clearArmTimer();
+      setArmedEdgeId(edge.id);
+      armTimerRef.current = setTimeout(() => {
+        setArmedEdgeId(null);
+        armTimerRef.current = null;
+      }, 3000);
     },
-    [flowEdges, onEdgesChange],
+    [armedEdgeId, clearArmTimer, flowEdges, onEdgesChange],
   );
 
   return (

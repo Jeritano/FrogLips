@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorBar } from "./ErrorBar";
+import { useModalA11y } from "../lib/use-modal-a11y";
 import {
   deleteCustomTemplate,
   extractVariables,
@@ -37,6 +38,13 @@ export function PromptLibrary({ open, onClose, onChange }: Props) {
   const [tick, setTick] = useState(0);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Audit H-F1 (2026-05-27): previously the overlay had no role="dialog",
+  // no aria-modal, no focus trap, no Escape handler — keyboard-only
+  // users could tab into the underlying ChatWindow with the library
+  // technically open. Wire the shared a11y kit so every modal in the
+  // app behaves consistently.
+  const boxRef = useRef<HTMLDivElement>(null);
+  useModalA11y({ open, onClose, containerRef: boxRef });
 
   // Read fresh state on each render burst. Cheap (localStorage).
   const data = useMemo(
@@ -111,7 +119,13 @@ export function PromptLibrary({ open, onClose, onChange }: Props) {
       data-testid="prompt-library-overlay"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="prompt-library">
+      <div
+        ref={boxRef}
+        className="prompt-library"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Prompt library"
+      >
         <div className="prompt-library-head">
           <h3>Prompt library</h3>
           <button

@@ -66,14 +66,24 @@ export function DetachedChatView({ conversationId }: Props) {
   // strategy: re-fetch the Conversation row (cheap, picks up renames) and let
   // ChatWindow refetch its messages on the next id transition. For full
   // message sync we expose a re-listing via a key bump.
-  const [refreshTick, setRefreshTick] = useState(0);
+  // Audit H-F3: `refreshTick` state previously drove `key={refreshTick}`
+  // on <ChatWindow>, remounting it on every conversation-updated event
+  // and killing any in-flight stream. The remount strategy is gone; the
+  // listener stays so we can re-fetch the Conversation header row (title
+  // / model rename pickup) without nuking the message-list state. A
+  // proper messages-refresh path (refresh-token prop on ChatWindow) is
+  // deferred.
   useTauriEvent<number>(
     "conversation-updated",
     useCallback((e) => {
-      // Payload is the conversation id (or -1 = unknown / wildcard).
       const cid = e.payload;
       if (cid === conversationId || cid === -1) {
-        setRefreshTick((t) => t + 1);
+        // Re-fetch the bare conversation row so the header reflects
+        // remote renames. Message list refresh deferred.
+        void api.listConversations().then((rows) => {
+          const fresh = rows.find((r) => r.id === conversationId);
+          if (fresh) setConversation(fresh);
+        }).catch(() => { /* best-effort */ });
       }
     }, [conversationId]),
   );
@@ -122,13 +132,21 @@ export function DetachedChatView({ conversationId }: Props) {
           </span>
         </header>
         {/*
-          `key={refreshTick}` is the rebuild trigger — when another window
-          persists a message, ChatWindow remounts and re-fetches the message
-          list cleanly. We keep this scoped to the detached view to avoid
-          re-mounting the main window's ChatWindow on every event.
+          Audit H-F3 (2026-05-27): previously `key={refreshTick}` triggered
+          a full unmount/remount of ChatWindow on every `conversation-
+          updated` event from another window — which also tore down any
+          in-flight stream and AbortController on the detached window
+          (a user mid-generation in this window would lose the response
+          when the main window persisted an unrelated edit). Key now
+          tied to `conversation.id` only: ChatWindow remounts when the
+          user switches conversations, not when a sibling window pings.
+          Pulling fresh state on remote updates without unmount is
+          deferred — needs a refresh-token prop on ChatWindow/MessageList,
+          which is a follow-up. Stale state in the detached window
+          between switches is acceptable for v1 (rare-enough flow).
         */}
         <ChatWindow
-          key={refreshTick}
+          key={conversation.id}
           status={status}
           conversation={conversation}
           onConversationCreated={(c) => setConversation(c)}

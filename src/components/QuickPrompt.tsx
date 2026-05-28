@@ -76,6 +76,16 @@ export function QuickPrompt() {
 
     // Listen first so we don't miss the leading chunks (backend may emit
     // synchronously after the invoke resolves the future scheduler).
+    //
+    // Audit H-F2 (2026-05-27): unlistenRef.current was overwritten on
+    // each submit() without unlisten-ing the prior handle, so a user
+    // resubmitting from the "error" state leaked a listener per attempt
+    // for the lifetime of the window. Drop any prior handle before
+    // assigning the new one.
+    if (unlistenRef.current) {
+      try { unlistenRef.current(); } catch { /* listener already dead */ }
+      unlistenRef.current = null;
+    }
     try {
       const off = await listen<ChunkEvent>(
         `quick-prompt-response:${opId}`,
