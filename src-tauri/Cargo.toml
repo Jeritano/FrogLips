@@ -57,7 +57,7 @@ regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate", "stream", "json"] }
 futures = "0.3"
 base64 = "0.22"
-pdf-extract = "0.7"
+pdf-extract = "0.10"
 html2text = "0.13"
 sha2 = "0.10"
 notify = "8"
