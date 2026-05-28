@@ -121,6 +121,11 @@ pub async fn lora_merge(
     // spawn_blocking boundary.
     let app_for_emit = app.clone();
     let op_id_for_emit = op_id.clone();
+    // Separate clone for the closure body — the &op_id_for_emit borrow
+    // passed as the `op_id` arg below conflicts with moving op_id_for_emit
+    // into the FnMut closure. Two owned copies avoids the borrow vs move
+    // dance (op_id strings are tiny — at most 64 chars).
+    let op_id_for_closure = op_id.clone();
     let base_for_blocking = base_repo.clone();
 
     let join_result = tokio::task::spawn_blocking(move || {
@@ -138,7 +143,7 @@ pub async fn lora_merge(
                     let _ = app_for_emit.emit(
                         "lora-merge-progress",
                         serde_json::json!({
-                            "op_id": op_id_for_emit,
+                            "op_id": op_id_for_closure,
                             "stage": "indexing",
                             "progress": 1.0,
                         }),
@@ -151,7 +156,7 @@ pub async fn lora_merge(
                         let _ = app_for_emit.emit(
                             "lora-merge-progress",
                             serde_json::json!({
-                                "op_id": op_id_for_emit,
+                                "op_id": op_id_for_closure,
                                 "stage": stage,
                                 "progress": progress,
                             }),
