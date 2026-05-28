@@ -500,23 +500,30 @@ export async function runWorkflow(
               detail: e instanceof Error ? e.message : String(e),
             });
             await new Promise<void>((resolve) => {
-              const t = setTimeout(resolve, backoffMs);
-              // Abort during backoff: bail out immediately. Use an
-              // AbortController-tied listener that we explicitly remove
-              // when the timeout wins, so we don't accumulate listeners
-              // on signal across multiple cards (audit M11 leak fix).
+              // Audit M-A1 (2026-05-27): previous impl spawned a SECOND
+              // setTimeout for `backoffMs + 1ms` to clean up the abort
+              // listener on the timeout-wins path. That orphan timer
+              // held the event loop alive past run completion + the
+              // listener cleanup was effectively duplicated with the
+              // direct removeEventListener inside the timeout callback.
+              // Single timer + a `resolved` guard cleanly handles both
+              // races: whichever wins removes the listener and resolves
+              // exactly once.
+              let resolved = false;
               const onAbort = () => {
+                if (resolved) return;
+                resolved = true;
                 clearTimeout(t);
                 signal.removeEventListener("abort", onAbort);
                 resolve();
               };
-              signal.addEventListener("abort", onAbort, { once: true });
-              // Wrap resolve so the timeout-wins path also removes the
-              // abort listener instead of relying on {once:true}, which
-              // never fires when the timeout completes first.
-              setTimeout(() => {
+              const t = setTimeout(() => {
+                if (resolved) return;
+                resolved = true;
                 signal.removeEventListener("abort", onAbort);
-              }, backoffMs + 1);
+                resolve();
+              }, backoffMs);
+              signal.addEventListener("abort", onAbort, { once: true });
             });
           }
         }

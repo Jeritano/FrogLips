@@ -140,15 +140,53 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
           if (preflight) await preflight(ac.signal);
           if (ac.signal.aborted) return;
 
+          // Audit M-A2 (2026-05-27): per-card delta coalescing mirrors the
+          // chat-path fix (H5/H6). Previous impl did `prev.output + text`
+          // inside setCardStates on every delta — O(n²) over a card
+          // streaming 60+ deltas/sec for 30 s. Buffer deltas per card in
+          // a Map<string, string[]>, flush every 16ms (one frame) into
+          // a single setCardStates that produces one React reconcile per
+          // tick instead of one per delta.
+          const deltaBuf = new Map<string, string[]>();
+          let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
+          const flushDeltas = () => {
+            coalesceTimer = null;
+            if (deltaBuf.size === 0) return;
+            const batch = new Map(deltaBuf);
+            deltaBuf.clear();
+            setCardStates((s) => {
+              const next = { ...s };
+              for (const [id, parts] of batch) {
+                const joined = parts.join("");
+                const prev = next[id] ?? { state: "running" as CardRunState, output: "" };
+                next[id] = { ...prev, output: prev.output + joined };
+              }
+              return next;
+            });
+          };
+          const scheduleFlush = () => {
+            if (coalesceTimer != null) return;
+            coalesceTimer = setTimeout(flushDeltas, 16);
+          };
           const hooks: WorkflowHooks = {
             onCardStart: (id) => updateCard(id, { state: "running" }),
             onCardOutput: (id, text) => {
-              setCardStates((s) => {
-                const prev = s[id] ?? { state: "running" as CardRunState, output: "" };
-                return { ...s, [id]: { ...prev, output: prev.output + text } };
-              });
+              const cur = deltaBuf.get(id) ?? [];
+              cur.push(text);
+              deltaBuf.set(id, cur);
+              scheduleFlush();
             },
             onCardDone: (id, result) => {
+              // Flush any pending deltas so the card's final output
+              // reflects the full streamed text before we transition to
+              // a terminal state. Synchronous (clears the coalesce
+              // timer) so the next React reconcile sees the complete
+              // string, not a half-flushed buffer.
+              if (coalesceTimer != null) {
+                clearTimeout(coalesceTimer);
+                coalesceTimer = null;
+              }
+              flushDeltas();
               if (result.status === "ok") updateCard(id, { state: "done" });
               else if (result.status === "skipped") updateCard(id, { state: "idle" });
               else if (result.status === "aborted" || result.status === "error") {

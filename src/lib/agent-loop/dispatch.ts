@@ -925,17 +925,27 @@ export async function executeTool(
       // matching op_id, then await the event before resolving so the tool
       // result carries a real `image_id` + `path` the model can reference.
       // The race window is closed by listening BEFORE we call the IPC.
+      // Audit H-A1 (2026-05-27): listeners must release on every exit
+      // path. Track unlisten handles at function scope and dispose via
+      // `try/finally` so an early `api.imageGenerate` failure, an aborted
+      // run, or a never-emitted-event hang all clean up correctly.
+      // Previous impl only released inside `settle()` — when settle never
+      // fired the two listeners leaked for the page lifetime.
+      let offDone: (() => void) | undefined;
+      let offErr: (() => void) | undefined;
+      const releaseListeners = () => {
+        try { offDone?.(); } catch { /* listener already torn down */ }
+        try { offErr?.(); } catch { /* listener already torn down */ }
+        offDone = undefined;
+        offErr = undefined;
+      };
       try {
         const { listen } = await import("@tauri-apps/api/event");
         const donePromise = new Promise<{ image_id: number } | null>((resolve, reject) => {
-          let offDone: (() => void) | undefined;
-          let offErr: (() => void) | undefined;
           let settled = false;
           const settle = (fn: () => void) => {
             if (settled) return;
             settled = true;
-            try { offDone?.(); } catch {/* ignore */}
-            try { offErr?.(); } catch {/* ignore */}
             fn();
           };
           void listen<{ op_id?: string; image_id?: number }>("image-done", (e) => {
@@ -972,6 +982,8 @@ export async function executeTool(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return JSON.stringify({ ok: false, kind: "image_gen_failed", message });
+      } finally {
+        releaseListeners();
       }
     }
     // ── Extras: file ops + hash + diff + processes + undo ────────────────
