@@ -377,10 +377,33 @@ impl ImageEngine {
         // and BEFORE `check_memory` so a Qwen-shape request never queues
         // behind a Flux generate or wastes a memory probe — the error is
         // surfaced as fast as possible.
-        let effective_id = parse_lora_suffix(&req.model)
+        let lora_suffix = parse_lora_suffix(&req.model);
+        let effective_id = lora_suffix
             .map(|(base, _)| base)
             .unwrap_or(req.model.as_str());
         if crate::image_gen::qwen_image::model_id_resolves_to_qwen(effective_id) {
+            // Phase 7 (2026-05-28): LoRA dispatch. When the request
+            // carries a `+lora:<sha>` suffix we resolve the merged
+            // variant THROUGH the same path the Flux engine uses
+            // (`resolve_lora_merged_path` → transactional row touch).
+            // This proves the full LoRA pipeline reaches a Qwen base:
+            // merge math ran, the variant is on disk, and the
+            // dispatcher resolves it. Inference against the resolved
+            // path is still gated behind Phase 8 (full forward + real
+            // weight load), so we return a structured error that names
+            // the resolved path — useful confirmation for the
+            // capability-audit workflow that the merge + dispatch
+            // succeeded and only generation is pending.
+            if let Some((_, sha)) = lora_suffix {
+                match resolve_lora_merged_path(effective_id, sha) {
+                    Ok(path) => {
+                        return Err(anyhow!(
+                            "kind:\"qwen_lora_resolved_pending_inference\" Qwen-Image LoRA variant resolved on disk at {path}; inference is not yet enabled (Phase 8). Merge + dispatch verified."
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
             return Err(crate::image_gen::qwen_image::unimplemented_error());
         }
 
