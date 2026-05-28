@@ -903,7 +903,13 @@ pub fn get_by_sha(sha: &str) -> Result<Option<LoraMergeRow>> {
     Ok(row.map(internal_to_public))
 }
 
-pub fn record_used(sha: &str) -> Result<()> {
+/// Touch the `last_used_at` timestamp for a merge variant. Returns
+/// `Ok(true)` when the row was updated, `Ok(false)` when no row
+/// matched (evicted between lookup and this call). The IPC layer maps
+/// `Ok(false)` into a user-facing `merge_evicted` error so the user
+/// sees a clear "re-merge to cache" message instead of a downstream
+/// "tensor not found" surfacing from the engine.
+pub fn record_used(sha: &str) -> Result<bool> {
     history::lora_record_used(sha)
 }
 
@@ -1725,6 +1731,46 @@ mod tests {
         assert_eq!(
             target_from_lora_key("lora_unet_blocks_0_attn_to_q_lora_up.weight", Convention::Kohya).unwrap(),
             "blocks.0.attn.to.q.weight"
+        );
+    }
+
+    // ── Audit H3 (2026-05-28): per-sha merge-lock registry invariants ──
+    //
+    // The image-layer review flagged a gap in coverage around the
+    // concurrent-merge path: two callers requesting the same `(base, sha)`
+    // merge in parallel must serialize on a SINGLE lock, but two callers
+    // working on DIFFERENT shas must NOT block each other. These tests pin
+    // both invariants. The real merge() body is heavy (candle math, fs
+    // shard rewrites) — too expensive for the unit suite — but the
+    // registry primitive is what guarantees the concurrency contract, so
+    // exercising it directly is the high-value coverage.
+
+    #[test]
+    fn merge_lock_registry_dedupes_by_sha() {
+        let sha = "0000000000000000000000000000000000000000000000000000000000000001";
+        let a = acquire_merge_lock(sha);
+        let b = acquire_merge_lock(sha);
+        // Same sha → same Arc<Mutex<()>>. Two concurrent merges with the
+        // same content hash serialize through this single mutex so we
+        // never write the same shard twice.
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "expected the registry to return the same Arc for identical shas"
+        );
+    }
+
+    #[test]
+    fn merge_lock_registry_distinguishes_distinct_shas() {
+        let sha_a = "00000000000000000000000000000000000000000000000000000000000000aa";
+        let sha_b = "00000000000000000000000000000000000000000000000000000000000000bb";
+        let a = acquire_merge_lock(sha_a);
+        let b = acquire_merge_lock(sha_b);
+        // Different shas → different Arcs. Two unrelated merges running
+        // in parallel must not block each other; the lock granularity
+        // matters here.
+        assert!(
+            !Arc::ptr_eq(&a, &b),
+            "expected distinct shas to map to distinct mutex Arcs"
         );
     }
 }

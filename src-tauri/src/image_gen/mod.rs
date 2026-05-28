@@ -226,8 +226,15 @@ pub fn image_path(
     };
     let dir = root.join(&bucket);
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create images bucket: {e}"))?;
+    // M3 (2026-05-28): switched from Relaxed → SeqCst so concurrent
+    // generators on ARM64 (Apple Silicon, our shipped target) see
+    // causally-ordered increments. Relaxed allowed two threads to read
+    // the same counter value within a single ms-tick + same explicit
+    // seed and produce identical filenames. The fetch_add is rare (once
+    // per generation, ~seconds apart) so the cache-coherence cost is
+    // negligible.
     let n = IMAGE_FILENAME_COUNTER
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     Ok(dir.join(format!("{ts_ms}-{seed}-{n}.png")))
 }
 

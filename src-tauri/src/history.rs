@@ -834,13 +834,20 @@ pub fn lora_insert(
 
 /// Touch `last_used_at = now()` on a row. Best-effort: a sha that no longer
 /// exists (raced with eviction) is not an error.
-pub fn lora_record_used(sha: &str) -> Result<()> {
+/// Touch the `last_used_at` column for an existing merge row. Returns
+/// `Ok(true)` when a row was updated, `Ok(false)` when no row matched
+/// the sha (most likely because the merge was evicted between the
+/// caller's `get_by_sha` lookup and this call). `Err` is reserved for
+/// genuine SQLite failures (DB locked, corruption, etc.) so the IPC
+/// layer can distinguish "the user asked about a gone merge" from
+/// "the DB is unhealthy". Audit M4 (2026-05-28).
+pub fn lora_record_used(sha: &str) -> Result<bool> {
     let conn = get_db()?;
-    conn.execute(
+    let updated = conn.execute(
         "UPDATE lora_merges SET last_used_at = ?1 WHERE sha = ?2",
         params![now_unix(), sha],
     )?;
-    Ok(())
+    Ok(updated > 0)
 }
 
 /// Delete a merge row by sha, returning the stored `merged_path` so the

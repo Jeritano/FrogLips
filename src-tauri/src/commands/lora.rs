@@ -212,10 +212,23 @@ pub async fn lora_delete_merge(sha: String) -> Result<(), String> {
 
 /// Touch `last_used_at = now()` for a sha. Used by the JS side after the
 /// user applies a cached row so LRU eviction targets stale entries first.
+///
+/// Audit M4 (2026-05-28): `lora::record_used` now returns `Result<bool>`
+/// where `Ok(false)` means the row no longer exists (concurrent eviction
+/// between the user's apply gesture and this call). Map that case to a
+/// structured `kind:"merge_evicted"` error so the frontend can render a
+/// clear "re-merge to cache" message instead of silently succeeding.
 #[tauri::command]
 pub async fn lora_record_used(sha: String) -> Result<(), String> {
     if sha.is_empty() || sha.len() > 128 {
-        return Err("sha length out of range".into());
+        return Err("kind:bad_args | message:sha length out of range".into());
     }
-    super::blocking(move || lora::record_used(&sha)).await
+    let sha_for_err = sha.clone();
+    match super::blocking(move || lora::record_used(&sha)).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "kind:merge_evicted | message:lora merge for sha {sha_for_err} is no longer cached; re-run lora_merge to repopulate",
+        )),
+        Err(e) => Err(format!("kind:db_error | message:{e}")),
+    }
 }

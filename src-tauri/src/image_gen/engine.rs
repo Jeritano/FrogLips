@@ -385,6 +385,20 @@ impl ImageEngine {
         // registered immediately after the IPC return doesn't miss it.
         tokio::time::sleep(LOADING_EVENT_DELAY).await;
 
+        // Cancel-check #1: pre-load. Reliably cancels if the user clicked
+        // Cancel before we even started the HF download.
+        //
+        // H2 (2026-05-28): the cancel-check now runs BEFORE we emit the
+        // "Loading" event so a frontend that has already cancelled never
+        // sees a spinner appear and then immediately disappear. Previously
+        // Loading fired unconditionally; a fast double-tap "Generate →
+        // Cancel" would surface a confusing flash of progress chrome the
+        // user could believe meant the request was actually running.
+        if cancel.is_cancelled() {
+            self.release_cancel(&req.op_id);
+            return Err(anyhow!("cancelled before engine dispatch"));
+        }
+
         // Emit a "loading" tick so the frontend can show a spinner during the
         // pipeline-warm phase. Failures here are non-terminal — the client
         // just won't see the spinner update.
@@ -394,13 +408,6 @@ impl ImageEngine {
                 stage: "warmup".into(),
             })
             .await;
-
-        // Cancel-check #1: pre-load. Reliably cancels if the user clicked
-        // Cancel before we even started the HF download.
-        if cancel.is_cancelled() {
-            self.release_cancel(&req.op_id);
-            return Err(anyhow!("cancelled before engine dispatch"));
-        }
 
         // Lazy-load (or reuse) the Flux scheduler. The first call on a cold
         // cache may take many minutes — `load_or_reuse` runs the synchronous
@@ -655,16 +662,26 @@ fn resolve_lora_merged_path(_base: &str, sha: &str) -> Result<String> {
                 "kind:\"unknown_lora_sha\" no merged variant cached for sha {sha} (re-run lora_merge)"
             )
         })?;
-    // Touch best-effort; a stale row that's already been evicted is unusual
-    // because we just read it, but we don't fail the load for it either.
-    if let Err(e) = lora_mod::record_used(sha) {
-        crate::diagnostics::warn_with(
-            "lora",
-            "lora_record_used failed during dispatch",
-            serde_json::json!({ "sha": sha, "error": e.to_string() }),
-        );
+    // Touch the last_used_at column. M1 (2026-05-28): previously a
+    // best-effort warn-and-continue. Now distinguishes the three
+    // outcomes:
+    //   * Ok(true)  — row touched, proceed with on-disk path.
+    //   * Ok(false) — row vanished between get_by_sha and now (concurrent
+    //                 eviction). Returning a clear `merge_evicted` error
+    //                 here is better than handing the engine a stale
+    //                 path and watching it crash on `tensor not found`.
+    //   * Err(e)    — DB locked / corrupt. Same logic — fail loudly so
+    //                 the user gets an actionable message rather than a
+    //                 downstream surfacing.
+    match lora_mod::record_used(sha) {
+        Ok(true) => Ok(row.merged_path),
+        Ok(false) => Err(anyhow!(
+            "kind:\"merge_evicted\" lora variant for sha {sha} was evicted from the cache; re-run lora_merge to repopulate"
+        )),
+        Err(e) => Err(anyhow!(
+            "kind:\"lora_record_failed\" lora_record_used failed for sha {sha}: {e}"
+        )),
     }
-    Ok(row.merged_path)
 }
 
 /// Resolve the candle Device for diffusion: prefer Metal on macOS, fall back

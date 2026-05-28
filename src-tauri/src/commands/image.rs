@@ -985,20 +985,34 @@ fn evict_until_under_cap(incoming_bytes: u64) -> Result<usize, String> {
 /// this, a long-running session of image generation can balloon the
 /// gallery to disk-full and crash subsequent writes mid-stream.
 fn write_atomic(dest: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    // Serialize eviction + write under one lock so concurrent image
-    // generations can't race the inventory or evict each other's
-    // destination. The lock is dropped at function exit so the parent
-    // IPC continues to handle multiple in-flight requests, just not
-    // through the critical fs section. Poison-recovery: re-take the
-    // lock data even on PoisonError — the lock data is `()`, nothing
-    // to corrupt.
+    // Best-effort eviction runs BEFORE acquiring the write lock so a slow
+    // DB query (the eviction pass walks `images.bytes` ordered by
+    // `created_at`) doesn't block concurrent generators behind it. Audit
+    // M2 (2026-05-28): previously inside the lock; under load this
+    // serialized every write to single-threaded throughput.
+    //
+    // If eviction fails we still proceed to the write — the atomic
+    // operation below will fail with a clearer disk-full error if
+    // there really is no space. But we now surface the failure as a
+    // diagnostics warning so repeated eviction failures (which would
+    // silently push the gallery over GALLERY_BYTES_CAP) are visible to
+    // the user and the support engineer. Audit H1 (2026-05-28).
+    if let Err(e) = evict_until_under_cap(bytes.len() as u64) {
+        crate::diagnostics::warn_with(
+            "image_gen",
+            "gallery eviction failed; proceeding with write — gallery may exceed cap",
+            serde_json::json!({ "error": e }),
+        );
+    }
+    // Serialize the actual rename via the write lock so concurrent image
+    // generations can't race each other to land the same filename. The
+    // lock is dropped at function exit so the parent IPC continues to
+    // handle multiple in-flight requests, just not through the critical
+    // fs section. Poison-recovery: re-take the lock data even on
+    // PoisonError — the lock data is `()`, nothing to corrupt.
     let _guard = GALLERY_WRITE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Best-effort eviction. If it fails we still try to write — the
-    // atomic-write below will fail with a clearer disk-full error if
-    // there really is no space.
-    let _ = evict_until_under_cap(bytes.len() as u64);
     use std::io::Write;
     let parent = dest
         .parent()
