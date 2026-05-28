@@ -89,12 +89,18 @@ export function useImageGeneration(): UseImageGenerationResult {
   // Component-unmount safety net — fire any unlisten handles that are still
   // outstanding when the owner React tree goes away. The normal happy-path
   // also calls these (and clears the ref) inside `finalize` below.
+  //
+  // R3-M3 (2026-05-28): snapshot `cleanupsRef.current` into a local before
+  // iterating, then null the ref. Without this snapshot, a `finalize()`
+  // call that races the unmount could mutate the same array mid-loop,
+  // skipping or double-invoking unlistens.
   useEffect(() => {
     return () => {
-      for (const off of cleanupsRef.current) {
+      const pending = cleanupsRef.current;
+      cleanupsRef.current = [];
+      for (const off of pending) {
         try { off(); } catch {/* unlisten failures are non-fatal */}
       }
-      cleanupsRef.current = [];
     };
   }, []);
 
@@ -116,10 +122,14 @@ export function useImageGeneration(): UseImageGenerationResult {
 
       return await new Promise<number>((resolve, reject) => {
         const finalize = (fn: () => void) => {
-          for (const off of cleanupsRef.current) {
+          // R3-M3 (2026-05-28): snapshot + null pattern mirrors the
+          // unmount effect above so a concurrent unmount can't race
+          // against this loop and end up double-firing unlistens.
+          const pending = cleanupsRef.current;
+          cleanupsRef.current = [];
+          for (const off of pending) {
             try { off(); } catch {/* unlisten failures are non-fatal */}
           }
-          cleanupsRef.current = [];
           opIdRef.current = null;
           setRunning(false);
           fn();

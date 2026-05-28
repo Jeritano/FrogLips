@@ -288,11 +288,19 @@ async fn run_generation(app: tauri::AppHandle, request: ImageGenRequest, op_id: 
     // disk flush (can be 100ms+ on a busy APFS volume), starving other
     // async work. Move it to a blocking thread; the calling task is
     // already async-spawned and just `await`s the join.
+    //
+    // R3-M2 (2026-05-28): unified with the shared `super::blocking()`
+    // helper — same pattern as the other use-site at line 473. The
+    // helper folds `JoinError` and the closure's own anyhow::Error
+    // into a single `Result<T, String>`, replacing the local
+    // `unwrap_or_else(|e| Err(format!(...)))`. `write_atomic` still
+    // returns `Result<(), String>` so we adapt it inside the closure.
     let write_dest = validated.clone();
-    let write_bytes = png_bytes; // ownership moves into spawn_blocking
-    let write_result = tokio::task::spawn_blocking(move || write_atomic(&write_dest, &write_bytes))
-        .await
-        .unwrap_or_else(|e| Err(format!("write task panicked: {e}")));
+    let write_bytes = png_bytes; // ownership moves into the helper
+    let write_result = super::blocking(move || {
+        write_atomic(&write_dest, &write_bytes).map_err(|e| anyhow::anyhow!("{e}"))
+    })
+    .await;
     if let Err(e) = write_result {
         emit_error(e);
         ENGINE.release_cancel(&op_id);

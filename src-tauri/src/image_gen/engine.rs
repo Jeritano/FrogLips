@@ -762,6 +762,62 @@ mod tests {
         assert!(!e.cancel("op-7"));
     }
 
+    // R3-H1 (2026-05-28): coverage for the post-load cancel contract
+    // that the generate() driver depends on. The full diffusion pipeline
+    // is too expensive to spin up here (mistralrs + Metal), so these
+    // tests exercise the cancellation primitives directly — the same
+    // surface generate() uses after the post-load cancel-check.
+
+    #[test]
+    fn register_cancel_is_idempotent_returns_same_token() {
+        // Per the comment above `register_cancel`, calling it twice for
+        // the same op_id MUST return the SAME token instance. Otherwise
+        // a cancel fired against the IPC-side handle and a fresh token
+        // installed by generate() would be desynchronized — the user's
+        // cancel gesture would be effectively lost.
+        let e = new_engine();
+        let first = e.register_cancel("op-idem");
+        let second = e.register_cancel("op-idem");
+        // CancellationToken doesn't impl PartialEq; cancelling one and
+        // observing the other proves they're the same underlying handle.
+        first.cancel();
+        assert!(second.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_after_release_cannot_fire_stale_token() {
+        // generate()'s happy-path releases the cancel entry on terminal
+        // success. A late-arriving cancel IPC must NOT fire a stale
+        // token belonging to a now-completed run.
+        let e = new_engine();
+        let token = e.register_cancel("op-late");
+        e.release_cancel("op-late");
+        // Map no longer has the op; cancel() returns false.
+        assert!(!e.cancel("op-late"));
+        // Original token handle stays uncancelled — release dropped the
+        // map entry but didn't fire the token, so any code still
+        // holding a clone observes the same state generate() saw.
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn re_register_after_release_yields_fresh_token() {
+        // After release, a NEW register_cancel for the same op_id must
+        // produce a fresh, non-cancelled token. This is the path a
+        // legitimate "retry the same op" flow would take.
+        let e = new_engine();
+        let first = e.register_cancel("op-reuse");
+        first.cancel();
+        assert!(first.is_cancelled());
+        e.release_cancel("op-reuse");
+
+        let second = e.register_cancel("op-reuse");
+        assert!(
+            !second.is_cancelled(),
+            "post-release re-registration must yield a fresh token"
+        );
+    }
+
     #[test]
     fn decode_b64_png_strips_data_url_prefix() {
         let raw: Vec<u8> = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];

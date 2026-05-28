@@ -220,6 +220,17 @@ pub fn run() {
                 // exit instead of being torn down mid-sleep.
                 workflows::start_scheduler(app.handle().clone(), shutdown_signal());
 
+                // R3-H2 (2026-05-28): one-shot startup sweep of the lora
+                // cache to remove `*.tmp/` directories left behind by a
+                // crashed merge. Per-sha cleanup at merge time only catches
+                // the SAME sha; orphans from prior runs with different shas
+                // would otherwise accumulate forever. Run on a blocking
+                // thread so the (typically empty) directory walk doesn't
+                // delay first paint of the main window.
+                tauri::async_runtime::spawn_blocking(|| {
+                    image_gen::lora::cleanup_orphan_tmp_dirs();
+                });
+
                 let s = state.clone();
                 let shutdown = shutdown_signal();
                 tauri::async_runtime::spawn(async move {

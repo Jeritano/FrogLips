@@ -185,6 +185,82 @@ pub fn cache_root() -> Result<PathBuf> {
     Ok(root)
 }
 
+/// One-shot startup sweep that removes any `*.tmp/` directories under
+/// the lora cache root left behind by a crashed merge. The per-sha
+/// `merge()` cleanup at lines ~1018 only catches the SAME sha as it
+/// starts; orphans from a different sha would accumulate forever
+/// without this sweep.
+///
+/// Best-effort: failures are diagnostics-warn-only. Audit R3-H2
+/// (2026-05-28).
+pub fn cleanup_orphan_tmp_dirs() {
+    let root = match cache_root() {
+        Ok(r) => r,
+        Err(e) => {
+            crate::diagnostics::warn_with(
+                "lora",
+                "cleanup_orphan_tmp_dirs: cache_root unavailable",
+                serde_json::json!({ "error": format!("{e:#}") }),
+            );
+            return;
+        }
+    };
+    let entries = match fs::read_dir(&root) {
+        Ok(it) => it,
+        Err(e) => {
+            crate::diagnostics::warn_with(
+                "lora",
+                "cleanup_orphan_tmp_dirs: read_dir failed",
+                serde_json::json!({
+                    "root": root.display().to_string(),
+                    "error": e.to_string(),
+                }),
+            );
+            return;
+        }
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_tmp = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.ends_with(".tmp"))
+            .unwrap_or(false);
+        if !is_tmp {
+            continue;
+        }
+        // `symlink_metadata` so we never traverse a symlink dropped into
+        // the cache root by a hostile peer process.
+        let md = match fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if md.file_type().is_symlink() || !md.is_dir() {
+            continue;
+        }
+        match fs::remove_dir_all(&path) {
+            Ok(_) => removed += 1,
+            Err(e) => {
+                crate::diagnostics::warn_with(
+                    "lora",
+                    "cleanup_orphan_tmp_dirs: failed to remove orphan",
+                    serde_json::json!({
+                        "path": path.display().to_string(),
+                        "error": e.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+    if removed > 0 {
+        crate::diagnostics::info(
+            "lora",
+            &format!("cleaned up {removed} orphan *.tmp/ director(y/ies) from prior crash"),
+        );
+    }
+}
+
 /// HF hub root used by the engine's mistralrs FluxLoader. Mirrors
 /// `crate::models::hf_hub_dir` semantics so a `HF_HOME` override carries
 /// over.
@@ -820,10 +896,47 @@ fn link_or_copy(src: &Path, dst: &Path) -> Result<()> {
 /// `MergeProgress::Evicted` per row dropped. Each evicted row's on-disk
 /// directory is best-effort deleted too. Returns the number of rows
 /// dropped.
+/// Paths whose `remove_dir_all` failed AFTER the corresponding DB row
+/// was already deleted. The bytes still live on disk but accounting
+/// has lost track of them — every subsequent eviction pass retries
+/// these first so a transient fs error (locked file, antivirus scan)
+/// doesn't permanently leak the bytes. R3-M1 (2026-05-28).
+static ORPHAN_DIRS: Lazy<PLMutex<Vec<PathBuf>>> = Lazy::new(|| PLMutex::new(Vec::new()));
+
+/// Retry-pass over `ORPHAN_DIRS`: re-attempt `remove_dir_all` on each.
+/// Successes are removed from the list; persistent failures stay queued.
+/// Called at the head of every eviction pass.
+fn retry_orphan_dir_removals() {
+    let mut orphans = ORPHAN_DIRS.lock();
+    let mut still_failing = Vec::with_capacity(orphans.len());
+    for path in orphans.drain(..) {
+        if !path.exists() {
+            // Already gone (user cleanup, separate process). Drop from
+            // the list silently.
+            continue;
+        }
+        match fs::remove_dir_all(&path) {
+            Ok(_) => {
+                crate::diagnostics::info(
+                    "lora-evict",
+                    &format!("orphan dir retry succeeded: {}", path.display()),
+                );
+            }
+            Err(_) => still_failing.push(path),
+        }
+    }
+    *orphans = still_failing;
+}
+
 fn evict_if_needed<F: Fn(MergeProgress)>(
     projected_bytes: u64,
     emit: &F,
 ) -> Result<usize> {
+    // R3-M1 (2026-05-28): retry previously-failed dir removals BEFORE
+    // computing the cap math, so successful retries free disk space we
+    // can credit against the projected merge.
+    retry_orphan_dir_removals();
+
     let total = history::lora_total_bytes()? as u64;
     if total + projected_bytes <= LORA_CACHE_CAP_BYTES {
         return Ok(0);
@@ -849,13 +962,19 @@ fn evict_if_needed<F: Fn(MergeProgress)>(
                 if p.exists() {
                     if let Err(e) = fs::remove_dir_all(&p) {
                         // On-disk dir won't go away but the DB row is
-                        // already gone — log + continue. The orphan
-                        // dir is benign (won't be re-referenced).
+                        // already gone. R3-M1 (2026-05-28): queue the
+                        // path on ORPHAN_DIRS so subsequent eviction
+                        // passes retry it. Without the queue a single
+                        // transient fs error (antivirus scan, file
+                        // locked by another process) permanently leaked
+                        // the bytes — every later eviction was blind to
+                        // them because the row is gone.
                         crate::diagnostics::warn_with(
                             "lora-evict",
-                            &format!("on-disk eviction failed for {}", p.display()),
+                            &format!("on-disk eviction failed for {} (queued for retry)", p.display()),
                             serde_json::json!({ "sha": row.sha, "error": format!("{e:#}") }),
                         );
+                        ORPHAN_DIRS.lock().push(p.clone());
                     }
                 }
                 running = running.saturating_sub(row.bytes as u64);

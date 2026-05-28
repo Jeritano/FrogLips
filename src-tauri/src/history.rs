@@ -775,6 +775,16 @@ pub fn lora_get_by_sha(sha: &str) -> Result<Option<LoraMergeRowInternal>> {
 /// out of clock order.
 pub fn lora_get_by_sha_and_touch(sha: &str) -> Result<Option<LoraMergeRowInternal>> {
     let mut conn = get_db()?;
+    lora_get_by_sha_and_touch_in(&mut conn, sha)
+}
+
+/// Connection-scoped implementation of `lora_get_by_sha_and_touch`.
+/// Tests drive this directly on an in-memory DB without standing up
+/// the global pool. R3-M4 (2026-05-28).
+pub(crate) fn lora_get_by_sha_and_touch_in(
+    conn: &mut Connection,
+    sha: &str,
+) -> Result<Option<LoraMergeRowInternal>> {
     let tx = conn.transaction()?;
     let row: Option<LoraMergeRowInternal> = tx
         .query_row(
@@ -2394,5 +2404,87 @@ mod tests {
             )
             .unwrap();
         assert!(has);
+    }
+
+    // R3-M4 (2026-05-28): coverage for the transactional read+touch
+    // path. The atomicity claim (read row + update timestamp in ONE
+    // SQLite transaction so a concurrent eviction can't see a stale
+    // clock) is the entire reason this function exists; without a test
+    // a future refactor that splits it back into two statements would
+    // re-open the LRU-skew race silently.
+
+    fn build_lora_merges_in_memory() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        ensure_lora_merges_table(&conn).expect("create lora_merges");
+        conn
+    }
+
+    fn seed_merge_row(conn: &Connection, sha: &str, bytes: i64, last_used: Option<i64>) {
+        conn.execute(
+            "INSERT INTO lora_merges (sha, base_repo, lora_path, lora_sha, weight,
+                                       merged_path, created_at, last_used_at, bytes)
+             VALUES (?1, 'black-forest-labs/FLUX.1-dev', '/tmp/lora.safetensors',
+                     'deadbeef', 1.0, '/tmp/merged', ?2, ?3, ?4)",
+            params![sha, 1_700_000_000_i64, last_used, bytes],
+        )
+        .expect("seed merge row");
+    }
+
+    #[test]
+    fn get_by_sha_and_touch_returns_row_and_updates_timestamp() {
+        let mut conn = build_lora_merges_in_memory();
+        let sha = "a".repeat(64);
+        seed_merge_row(&conn, &sha, 1_000, None);
+
+        // Pre-condition: last_used_at is NULL (never used).
+        let before: Option<i64> = conn
+            .query_row(
+                "SELECT last_used_at FROM lora_merges WHERE sha = ?1",
+                params![sha],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(before.is_none(), "fresh seed must have NULL last_used_at");
+
+        let row = lora_get_by_sha_and_touch_in(&mut conn, &sha)
+            .expect("must succeed on existing row")
+            .expect("row must be Some");
+        assert_eq!(row.sha, sha);
+
+        // Post-condition: last_used_at is now set to a recent unix time.
+        let after: i64 = conn
+            .query_row(
+                "SELECT last_used_at FROM lora_merges WHERE sha = ?1",
+                params![sha],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let now = now_unix();
+        assert!(
+            (now - after).abs() <= 5,
+            "last_used_at ({after}) should be within 5s of now ({now})"
+        );
+    }
+
+    #[test]
+    fn get_by_sha_and_touch_returns_none_for_missing_row() {
+        let mut conn = build_lora_merges_in_memory();
+        let missing = "b".repeat(64);
+        let row = lora_get_by_sha_and_touch_in(&mut conn, &missing)
+            .expect("Ok variant for missing row");
+        assert!(row.is_none(), "missing sha must produce Ok(None)");
+    }
+
+    #[test]
+    fn get_by_sha_and_touch_does_not_update_when_row_missing() {
+        // Touching a non-existent sha must NOT spuriously create a row
+        // or write a timestamp. Verifies the `if row.is_some()` gate is
+        // honoured inside the transaction.
+        let mut conn = build_lora_merges_in_memory();
+        let _ = lora_get_by_sha_and_touch_in(&mut conn, "ff".repeat(32).as_str());
+        let row_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM lora_merges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(row_count, 0, "touch on missing row must not insert");
     }
 }
