@@ -159,12 +159,38 @@ impl ServerState {
             // Probe the daemon so we don't claim ready while ollama is down.
             // First chat call would hang otherwise. TCP connect is cheap and
             // doesn't need an HTTP client dep.
+            //
+            // Audit MED (2026-05-28): retry with backoff instead of a single
+            // connect. A daemon that's restarting (brew-services bounce,
+            // systemd delay, or a just-launched `ollama serve`) can refuse
+            // one connect then accept the next 200ms later; failing the
+            // whole model load on a single transient ECONNREFUSED forced an
+            // unnecessary user retry. Five attempts with a 200ms gap ≈ 1s
+            // worst case before giving up — still well under the old single
+            // 2s timeout in the common already-up case (first attempt wins).
             let addr = format!("{}:{}", OLLAMA_HOST, OLLAMA_PORT);
-            let probe = tokio::net::TcpStream::connect(&addr);
-            tokio::time::timeout(std::time::Duration::from_secs(2), probe)
-                .await
-                .map_err(|_| anyhow!("ollama daemon probe timed out at {addr}"))?
-                .map_err(|e| anyhow!("ollama daemon not reachable at {addr}: {e}"))?;
+            let mut last_err: Option<String> = None;
+            let mut connected = false;
+            for attempt in 0..5 {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                let probe = tokio::net::TcpStream::connect(&addr);
+                match tokio::time::timeout(std::time::Duration::from_secs(2), probe).await {
+                    Ok(Ok(_)) => {
+                        connected = true;
+                        break;
+                    }
+                    Ok(Err(e)) => last_err = Some(e.to_string()),
+                    Err(_) => last_err = Some("connect timed out".to_string()),
+                }
+            }
+            if !connected {
+                return Err(anyhow!(
+                    "ollama daemon not reachable at {addr} after 5 attempts: {} — ensure `ollama serve` is running",
+                    last_err.unwrap_or_else(|| "unknown".into()),
+                ));
+            }
             *guard = Some(RunningServer {
                 child: None,
                 model: model.clone(),

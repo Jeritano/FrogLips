@@ -52,6 +52,23 @@ describe("modelContextTokens", () => {
     expect(modelContextTokens("tinyllama")).toBe(2048);
     expect(modelContextTokens("mistral-7b")).toBe(32768);
   });
+
+  it("resolves families broadened in the 2026-05-28 maturity pass", () => {
+    expect(modelContextTokens("llama-4-scout")).toBe(128_000);
+    expect(modelContextTokens("llama-3.3-70b")).toBe(128_000);
+    expect(modelContextTokens("qwen3-8b")).toBe(32_768);
+    expect(modelContextTokens("mistral-nemo")).toBe(32_768);
+    expect(modelContextTokens("command-r-plus")).toBe(32_768);
+    expect(modelContextTokens("phi-4")).toBe(16_384);
+    expect(modelContextTokens("phi-3.5-mini")).toBe(16_384);
+    // Base phi-3 stays at the conservative 4k (below the 3.5 rule).
+    expect(modelContextTokens("phi-3-mini")).toBe(4_096);
+    // Explicit window markers win.
+    expect(modelContextTokens("somemodel-256k")).toBe(256_000);
+    expect(modelContextTokens("bigctx-1m")).toBe(1_000_000);
+    // Gemma 2/3 still 8k.
+    expect(modelContextTokens("gemma3:12b")).toBe(8_192);
+  });
 });
 
 describe("applyContextBudget", () => {

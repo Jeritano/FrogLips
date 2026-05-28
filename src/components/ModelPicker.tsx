@@ -43,15 +43,32 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   // surfaces via Tauri events rather than the polled ServerStatus.
   const [nativeLoading, setNativeLoading] = useState<string | null>(null);
 
-  useEffect(() => { loadModels(); }, []);
+  // Timestamp of the last successful model-list fetch. The dropdown's
+  // onFocus + onMouseDown both fire `loadModels` (so the list is fresh
+  // when opened), but without a guard that's two full `listAllModels`
+  // IPCs per open — and Ollama's `ollama list` shell-out is not free.
+  // Skip a refetch when the cache is younger than STALE_MS unless the
+  // caller forces it (post-pull / post-close, where the list genuinely
+  // changed). Audit MED (2026-05-28).
+  const lastLoadRef = useRef<number>(0);
+  const LIST_STALE_MS = 30_000;
+
+  useEffect(() => { void loadModels(true); }, []);
 
   // Native models load in-process: progress only surfaces via Tauri events.
   useTauriEvent<string>("native-loading", useCallback((e) => setNativeLoading(e.payload), []));
   useTauriEvent<string>("native-loaded", useCallback(() => setNativeLoading(null), []));
 
-  async function loadModels() {
+  async function loadModels(force = false) {
+    // `performance.now()` is monotonic — immune to wall-clock jumps that
+    // could otherwise make the cache look perpetually fresh or stale.
+    const now = performance.now();
+    if (!force && now - lastLoadRef.current < LIST_STALE_MS) {
+      return; // cache still fresh; skip the redundant IPC
+    }
     try {
       const m = await api.listAllModels();
+      lastLoadRef.current = performance.now();
       // Strip image-gen weight sets + their dep encoders even if the Rust
       // backend filter is missing (older binary). Matches the patterns in
       // `is_non_chat_repo` in src-tauri/src/models.rs — keep in sync.
@@ -295,7 +312,7 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
             <button
               type="button"
               className="error-retry"
-              onClick={() => { setErr(null); void loadModels(); }}
+              onClick={() => { setErr(null); void loadModels(true); }}
             >
               Retry
             </button>
@@ -310,8 +327,8 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
             // models via a path that didn't fire onPulled (e.g. CLI alongside
             // the app, or a remove). Cheaper than missing freshly-installed
             // entries.
-            onClose={() => { setBrowserOpen(false); loadModels(); }}
-            onPulled={() => { loadModels(); setBrowserOpen(false); }}
+            onClose={() => { setBrowserOpen(false); void loadModels(true); }}
+            onPulled={() => { void loadModels(true); setBrowserOpen(false); }}
           />
         </Suspense>
       )}

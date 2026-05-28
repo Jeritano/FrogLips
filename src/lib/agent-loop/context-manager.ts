@@ -34,14 +34,28 @@ export const DEFAULT_CONTEXT_TOKENS = 8192;
 // pattern requires either a leading boundary (start/non-word) AND a trailing
 // boundary, or a known prefix anchor.
 const CONTEXT_OVERRIDES: Array<{ pattern: RegExp; tokens: number }> = [
-  // "128k" must be a stand-alone token: preceded by start/non-alnum and
-  // followed by end/non-alnum. Same idea for the llama-3.1/3.2 family.
+  // Order matters — first match wins, so explicit "256k"/"1m" markers
+  // and the largest-window families sit above the broad fallbacks.
+  // (Audit MED 2026-05-28: this heuristic only fires when the backend
+  // doesn't report an authoritative window — Ollama's /api/show does;
+  // MLX + native don't yet. Broadened so common modern families land
+  // closer to their real window instead of the 8k default.)
+  { pattern: /(?:^|[^a-z0-9])(?:1m|1000k)(?![a-z0-9])/i, tokens: 1_000_000 },
+  { pattern: /(?:^|[^a-z0-9])256k(?![a-z0-9])/i, tokens: 256_000 },
+  // Llama 4 (Scout/Maverick) ship very large windows; treat the family
+  // as 128k for a safe budget floor even though Scout advertises more.
   {
-    pattern: /(?:^|[^a-z0-9])(?:128k|llama-?3\.[12]|llama3[._-]?[12])(?![a-z0-9])/i,
+    pattern: /(?:^|[^a-z0-9])(?:128k|llama-?4|llama-?3\.[123]|llama3[._-]?[123])(?![a-z0-9])/i,
     tokens: 128_000,
   },
-  { pattern: /(?:^|[^a-z0-9])(?:qwen2\.5|qwen3)(?![a-z0-9])/i, tokens: 32_768 },
-  { pattern: /(?:^|[^a-z0-9])(?:mistral|mixtral)(?![a-z0-9])/i, tokens: 32_768 },
+  // Qwen2.5 / Qwen3 / Mistral-Nemo / Command-R all 32k+ class.
+  {
+    pattern: /(?:^|[^a-z0-9])(?:qwen2\.5|qwen3|mistral-?nemo|command-?r)(?![a-z0-9])/i,
+    tokens: 32_768,
+  },
+  { pattern: /(?:^|[^a-z0-9])(?:mistral|mixtral|mistral-?small)(?![a-z0-9])/i, tokens: 32_768 },
+  // Gemma 2/3 → 8k. Phi-3.5/4 → 16k (Phi-3 base stays 4k below).
+  { pattern: /(?:^|[^a-z0-9])(?:phi-?3\.5|phi-?4)(?![a-z0-9])/i, tokens: 16_384 },
   { pattern: /(?:^|[^a-z0-9])gemma-?[23](?![a-z0-9])/i, tokens: 8_192 },
   { pattern: /(?:^|[^a-z0-9])phi-?3(?![a-z0-9])/i, tokens: 4_096 },
   {
