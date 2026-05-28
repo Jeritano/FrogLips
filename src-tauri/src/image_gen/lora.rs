@@ -244,20 +244,66 @@ fn compute_merge_sha(base_repo: &str, lora_sha: &str, weight: f32) -> String {
     hex(&hasher.finalize())
 }
 
+/// Hard cap on the safetensors header (key index + metadata blob). Real
+/// LoRAs ship headers ≤ a few hundred KiB; capping at 16 MiB protects
+/// against a malicious / corrupted file claiming a multi-GB header.
+const MAX_LORA_HEADER_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Inspect a LoRA file: convention, key count, trigger words, base hint,
 /// size. Best-effort — a partially-malformed metadata block is logged but
 /// doesn't fail the inspect (the user might still want to merge it).
+///
+/// Parses the safetensors header JSON directly instead of routing through
+/// `SafeTensors::deserialize` (which requires the entire file in memory
+/// because it validates tensor-data offsets against buffer length). The
+/// header alone is sufficient to enumerate keys + extract `__metadata__`.
+/// Audit H-R4 (2026-05-27): previous `fs::read(lora_path)` allocated up
+/// to MAX_LORA_BYTES (4 GiB) on the blocking pool per inspect call.
 pub fn inspect(lora_path: &Path) -> Result<LoraMetadata> {
+    use std::io::Read;
     let bytes = fs::metadata(lora_path)
         .with_context(|| format!("failed to stat {}", lora_path.display()))?
         .len();
-    let data = fs::read(lora_path)
-        .with_context(|| format!("failed to read {}", lora_path.display()))?;
-    let st = SafeTensors::deserialize(&data)
-        .with_context(|| format!("failed to parse safetensors header for {}", lora_path.display()))?;
-    let names: Vec<String> = st.names().into_iter().cloned().collect();
+    let mut f = fs::File::open(lora_path)
+        .with_context(|| format!("failed to open {}", lora_path.display()))?;
+    let mut len_buf = [0u8; 8];
+    f.read_exact(&mut len_buf)
+        .with_context(|| format!("failed to read header length of {}", lora_path.display()))?;
+    let header_len = u64::from_le_bytes(len_buf);
+    if header_len == 0 || header_len > MAX_LORA_HEADER_BYTES {
+        return Err(anyhow::anyhow!(
+            "safetensors header length {} bytes is out of range (max {})",
+            header_len,
+            MAX_LORA_HEADER_BYTES,
+        ));
+    }
+    // Allocate the 8-byte length prefix + header bytes so existing helpers
+    // (`extract_metadata_hints` / `read_header_metadata`, which expect the
+    // canonical safetensors layout starting with the length prefix) can
+    // operate on this buffer without reading the tensor-data payload.
+    let mut prefixed = Vec::with_capacity(8 + header_len as usize);
+    prefixed.extend_from_slice(&len_buf);
+    prefixed.resize(8 + header_len as usize, 0);
+    f.read_exact(&mut prefixed[8..]).with_context(|| {
+        format!("failed to read header bytes of {}", lora_path.display())
+    })?;
+    let header: serde_json::Value =
+        serde_json::from_slice(&prefixed[8..]).with_context(|| {
+            format!("failed to parse safetensors header JSON for {}", lora_path.display())
+        })?;
+    // Header is `{"key1": {...tensor info...}, ..., "__metadata__": {...}}`.
+    // Filter out the metadata sentinel; everything else is a tensor key.
+    let names: Vec<String> = header
+        .as_object()
+        .map(|obj| {
+            obj.keys()
+                .filter(|k| k.as_str() != "__metadata__")
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
     let convention = detect_convention(&names);
-    let (triggers, base_model_hint) = extract_metadata_hints(&data);
+    let (triggers, base_model_hint) = extract_metadata_hints(&prefixed);
     Ok(LoraMetadata {
         triggers,
         convention: convention.as_str().to_string(),

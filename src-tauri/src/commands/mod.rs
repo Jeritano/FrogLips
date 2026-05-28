@@ -46,8 +46,14 @@ static OLLAMA_MODEL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9._:@/
 static HF_REPO_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$").unwrap());
 
+/// Default IPC error formatter. Uses `format!("{e:#}")` so anyhow's
+/// `.context("...")` chain renders in full at the renderer boundary —
+/// previously this was `e.to_string()` which dropped every wrapper
+/// context the crate carefully attaches in rag / models / lora /
+/// history. Audit H-R3 (2026-05-27): consolidate on the chain-printing
+/// formatter that the LoRA + image-gen IPCs already use directly.
 pub fn map_err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
+    format!("{e:#}")
 }
 
 /// Run a blocking closure on the blocking thread pool and flatten both the
@@ -81,6 +87,26 @@ pub fn validate_ollama_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Optional LoRA-merge suffix appended to a model id by the image-gen
+/// dispatcher: `<base>+lora:<64-hex-sha>`. The validator strips this before
+/// the org/name regex check so a merged-variant id (which is otherwise a
+/// valid HF repo id) survives validation. Without this carve-out the entire
+/// LoRA pre-merge pipeline (image_gen/lora.rs) is unreachable from any IPC
+/// caller — `validate_hf_repo` rejects `+` and `:`. Critical audit C-R1.
+static LORA_SUFFIX_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\+lora:[0-9a-f]{64}$").unwrap());
+
+/// Strip a `+lora:<sha>` suffix from an HF model id if present. Returns
+/// the bare base id. Used both at IPC validation time (so we don't reject
+/// merged-variant ids) and inside the image engine to feed dev/schnell
+/// detection helpers.
+pub fn strip_lora_suffix(id: &str) -> &str {
+    match LORA_SUFFIX_RE.find(id) {
+        Some(m) => &id[..m.start()],
+        None => id,
+    }
+}
+
 pub fn validate_hf_repo(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 256 {
         return Err("HF repo id length out of range".into());
@@ -88,11 +114,14 @@ pub fn validate_hf_repo(id: &str) -> Result<(), String> {
     if id.starts_with('-') || id.contains("..") {
         return Err("HF repo id must not start with '-' or contain '..'".into());
     }
-    if !HF_REPO_RE.is_match(id) {
+    // Validate the optional LoRA suffix in isolation (its `:` and `+` are
+    // not in HF_REPO_RE's charset), then strip it for the base-id check.
+    let base = strip_lora_suffix(id);
+    if !HF_REPO_RE.is_match(base) {
         return Err("HF repo id must match org/name".into());
     }
     // Each segment must contain at least one alphanumeric (rules out names like "./.")
-    for seg in id.split('/') {
+    for seg in base.split('/') {
         if !seg.chars().any(|c| c.is_ascii_alphanumeric()) {
             return Err("HF repo id segments must contain alphanumerics".into());
         }

@@ -600,9 +600,13 @@ fn estimate_need_gib(model: &str, offload: bool) -> f64 {
 /// Exact-match check against canonical FLUX.1-dev repo ids. Replaces the
 /// old `contains("dev")` substring check (L1) that would false-positive on
 /// names like `developer-edition` or `lewdev`.
+///
+/// Strips any `+lora:<sha>` suffix first (audit H-R1): a model id of the
+/// form `black-forest-labs/FLUX.1-dev+lora:abc...` is still the dev model
+/// and must get the dev step/cfg/memory ceilings, not the schnell ones.
 pub fn is_dev_repo(model: &str) -> bool {
-    let m = model.trim();
-    FLUX_DEV_REPOS.iter().any(|d| m.eq_ignore_ascii_case(d))
+    let base = crate::commands::strip_lora_suffix(model.trim());
+    FLUX_DEV_REPOS.iter().any(|d| base.eq_ignore_ascii_case(d))
 }
 
 /// Parse a `<base>+lora:<sha>` model id into `(base_repo, sha)`. Returns

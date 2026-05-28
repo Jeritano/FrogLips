@@ -12,14 +12,61 @@ use std::path::PathBuf;
 use super::blocking;
 use crate::claude_skills;
 
+/// Roots a Claude-skill folder is allowed to live under. Without this gate a
+/// compromised renderer could ask the IPC to read a SKILL.md from anywhere
+/// on disk and stash its contents in the DB — then pin it as a system
+/// prompt addition on the next chat. Audit H-R5 (2026-05-27).
+fn validate_skill_folder(folder: &str) -> Result<PathBuf, String> {
+    if folder.is_empty() || folder.len() > 4096 {
+        return Err("kind:bad_path | message:folder path length out of range".into());
+    }
+    if folder.contains('\0') {
+        return Err("kind:bad_path | message:folder path contains NUL".into());
+    }
+    let raw = PathBuf::from(folder);
+    if !raw.is_absolute() {
+        return Err("kind:bad_path | message:folder path must be absolute".into());
+    }
+    // Reject explicit traversal in the source string outright. Canonicalize
+    // is run inside the module on `<folder>/SKILL.md` once we know the
+    // root is allowed.
+    if raw
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("kind:bad_path | message:folder path may not contain '..'".into());
+    }
+
+    // Allow-list of acceptable roots. Anything under the user's home is
+    // fine — that's where Claude/Anthropic install skills and where users
+    // store their own — but reject /private, /var, /System, /Library
+    // (system internals + browser caches that could exfiltrate
+    // unrelated SKILL.md files placed by other apps).
+    let home = dirs::home_dir().ok_or_else(|| {
+        "kind:bad_path | message:no home directory resolved".to_string()
+    })?;
+    // Canonicalize folder if it exists to defeat symlink-out-of-home escapes.
+    let canonical = std::fs::canonicalize(&raw).map_err(|e| {
+        format!("kind:bad_path | message:folder path inaccessible: {e}")
+    })?;
+    if !canonical.starts_with(&home) {
+        return Err(format!(
+            "kind:bad_path | message:folder must live under {} (got {})",
+            home.display(),
+            canonical.display(),
+        ));
+    }
+    Ok(canonical)
+}
+
 #[tauri::command]
 pub async fn claude_skill_import(
     folder_path: String,
     overwrite: Option<bool>,
 ) -> Result<claude_skills::ClaudeSkillRow, String> {
     let overwrite = overwrite.unwrap_or(false);
-    blocking(move || claude_skills::import_from_folder(&PathBuf::from(folder_path), overwrite))
-        .await
+    let canonical = validate_skill_folder(&folder_path)?;
+    blocking(move || claude_skills::import_from_folder(&canonical, overwrite)).await
 }
 
 #[tauri::command]

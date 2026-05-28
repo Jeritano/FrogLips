@@ -562,7 +562,13 @@ pub(crate) fn write_nofollow_sync(
     }
     let mut f = opts.open(resolved)?;
     f.write_all(bytes)?;
-    f.sync_data().ok();
+    // Audit H-R2 (2026-05-27): previously this was `sync_data().ok()` —
+    // silently dropping fsync failures meant callers (write_file,
+    // edit_file, multi_edit, undo restore, image_save_to indirectly)
+    // saw `Ok(())` on a failing disk. The bytes might be in-page-cache
+    // but not durable; an immediate crash or power loss would discard
+    // them. Propagate the error so classify_io can map it.
+    f.sync_data()?;
     Ok(())
 }
 
