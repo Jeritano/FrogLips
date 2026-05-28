@@ -18,6 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod lora;
 pub mod metadata;
 
 #[cfg(all(

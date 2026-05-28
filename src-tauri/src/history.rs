@@ -436,6 +436,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 15,
         apply: crate::claude_skills::ensure_claude_skills_tables,
     },
+    // v16 — LoRA pre-merge pipeline (Flux.1 [dev|schnell]). `lora_merges`
+    // tracks every merged-variant safetensors directory the merger has
+    // produced. `sha` is content-addressed
+    // (`sha256(base_repo|lora_sha|weight)`) and used by the dispatcher to
+    // route `<base>+lora:<sha>` model ids to `merged_path`. `last_used_at`
+    // drives LRU eviction when the 200 GiB disk cap is hit.
+    Migration {
+        version: 16,
+        apply: ensure_lora_merges_table,
+    },
 ];
 
 /// Target schema version — the highest rung of the ladder.
@@ -675,6 +685,182 @@ pub(crate) fn ensure_images_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Idempotently create the `lora_merges` table + LRU index (migration v16).
+/// Every column is non-null except `last_used_at` so an LRU pick can sort
+/// "never used" rows ahead of "used long ago" rows via `nulls first`.
+pub(crate) fn ensure_lora_merges_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS lora_merges (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            sha           TEXT NOT NULL UNIQUE,
+            base_repo     TEXT NOT NULL,
+            lora_path     TEXT NOT NULL,
+            lora_sha      TEXT NOT NULL,
+            weight        REAL NOT NULL,
+            merged_path   TEXT NOT NULL,
+            created_at    INTEGER NOT NULL,
+            last_used_at  INTEGER,
+            bytes         INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_lora_merges_lru ON lora_merges(last_used_at);",
+    )?;
+    Ok(())
+}
+
+/// Raw row mirror of `lora_merges`. The `image_gen::lora` module wraps this
+/// into the serde-shaped public type the IPC layer hands to the frontend.
+#[derive(Clone, Debug)]
+pub struct LoraMergeRowInternal {
+    pub id: i64,
+    pub sha: String,
+    pub base_repo: String,
+    pub lora_path: String,
+    pub lora_sha: String,
+    pub weight: f64,
+    pub merged_path: String,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+    pub bytes: i64,
+}
+
+fn row_to_lora(r: &rusqlite::Row<'_>) -> rusqlite::Result<LoraMergeRowInternal> {
+    Ok(LoraMergeRowInternal {
+        id: r.get(0)?,
+        sha: r.get(1)?,
+        base_repo: r.get(2)?,
+        lora_path: r.get(3)?,
+        lora_sha: r.get(4)?,
+        weight: r.get(5)?,
+        merged_path: r.get(6)?,
+        created_at: r.get(7)?,
+        last_used_at: r.get(8)?,
+        bytes: r.get(9)?,
+    })
+}
+
+/// Look up a merge row by its content-addressed sha. Returns `None` when no
+/// row matches.
+pub fn lora_get_by_sha(sha: &str) -> Result<Option<LoraMergeRowInternal>> {
+    let conn = get_db()?;
+    let row = conn
+        .query_row(
+            "SELECT id, sha, base_repo, lora_path, lora_sha, weight, merged_path,
+                    created_at, last_used_at, bytes
+             FROM lora_merges WHERE sha = ?1",
+            params![sha],
+            row_to_lora,
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// List every cached merge row, newest-first by created_at. The frontend
+/// shows these in the "Cached merges" disclosure.
+pub fn lora_list_all() -> Result<Vec<LoraMergeRowInternal>> {
+    let conn = get_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, sha, base_repo, lora_path, lora_sha, weight, merged_path,
+                created_at, last_used_at, bytes
+         FROM lora_merges
+         ORDER BY created_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], row_to_lora)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Sum the `bytes` column across all rows — used by the eviction pass to
+/// decide whether to delete LRU entries before writing a new merge.
+pub fn lora_total_bytes() -> Result<i64> {
+    let conn = get_db()?;
+    let total: i64 =
+        conn.query_row("SELECT COALESCE(SUM(bytes), 0) FROM lora_merges", [], |r| {
+            r.get(0)
+        })?;
+    Ok(total)
+}
+
+/// LRU candidates: oldest-used first (nulls first so "never used since
+/// insert" rows sort ahead of "used long ago"), tiebroken by created_at
+/// ascending. Returns rows in eviction order.
+pub fn lora_list_lru() -> Result<Vec<LoraMergeRowInternal>> {
+    let conn = get_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, sha, base_repo, lora_path, lora_sha, weight, merged_path,
+                created_at, last_used_at, bytes
+         FROM lora_merges
+         ORDER BY (last_used_at IS NULL) DESC, last_used_at ASC, created_at ASC",
+    )?;
+    let rows = stmt
+        .query_map([], row_to_lora)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Insert a freshly-merged row. Returns the autoincrement id. Caller is
+/// responsible for having already written the merged safetensors files at
+/// `merged_path` (this row is the canonical pointer).
+#[allow(clippy::too_many_arguments)]
+pub fn lora_insert(
+    sha: &str,
+    base_repo: &str,
+    lora_path: &str,
+    lora_sha: &str,
+    weight: f64,
+    merged_path: &str,
+    bytes: i64,
+) -> Result<i64> {
+    let conn = get_db()?;
+    let created_at = now_unix();
+    conn.execute(
+        "INSERT INTO lora_merges
+            (sha, base_repo, lora_path, lora_sha, weight, merged_path,
+             created_at, last_used_at, bytes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+        params![
+            sha,
+            base_repo,
+            lora_path,
+            lora_sha,
+            weight,
+            merged_path,
+            created_at,
+            bytes
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Touch `last_used_at = now()` on a row. Best-effort: a sha that no longer
+/// exists (raced with eviction) is not an error.
+pub fn lora_record_used(sha: &str) -> Result<()> {
+    let conn = get_db()?;
+    conn.execute(
+        "UPDATE lora_merges SET last_used_at = ?1 WHERE sha = ?2",
+        params![now_unix(), sha],
+    )?;
+    Ok(())
+}
+
+/// Delete a merge row by sha, returning the stored `merged_path` so the
+/// caller can recursively unlink the on-disk directory. Returns `None` when
+/// the row didn't exist.
+pub fn lora_delete_by_sha(sha: &str) -> Result<Option<String>> {
+    let conn = get_db()?;
+    let path: Option<String> = conn
+        .query_row(
+            "SELECT merged_path FROM lora_merges WHERE sha = ?1",
+            params![sha],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    if path.is_some() {
+        conn.execute("DELETE FROM lora_merges WHERE sha = ?1", params![sha])?;
+    }
+    Ok(path)
+}
+
 /// Insert a row for a newly-written PNG and return its id. Callers pass the
 /// already-validated absolute path string; the path-safety check happens at
 /// the IPC layer before the bytes hit disk.
@@ -859,6 +1045,14 @@ pub(crate) fn get_db() -> Result<PooledConnection<SqliteManager>> {
         // than panicking. Callers map this into IPC errors / UI banners.
         Err(e) => Err(anyhow::anyhow!("db unavailable: {e}")),
     }
+}
+
+/// Test-only DB accessor — pulls a pooled connection through the same code
+/// path as `get_db` so the lora module's tests can run raw SQL against the
+/// real DB. Not part of the IPC surface.
+#[cfg(test)]
+pub fn __test_get_db() -> Result<PooledConnection<SqliteManager>> {
+    get_db()
 }
 
 pub(crate) fn now_unix() -> i64 {

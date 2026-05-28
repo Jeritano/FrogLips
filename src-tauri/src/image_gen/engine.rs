@@ -261,6 +261,24 @@ impl ImageEngine {
     /// `self.inner.pipeline` for subsequent generate calls (only honored
     /// when the caller sets `reuse_pipeline = true`; see C1).
     async fn load_or_reuse(&self, model: &str, offload: bool) -> Result<Arc<MistralRs>> {
+        // LoRA dispatch: a model id of the form `<base>+lora:<sha>` resolves
+        // to a content-addressed merged variant on disk and is loaded as if
+        // it were a normal HF repo. The suffix is the public hand-shake
+        // contract between `commands/image.rs` and the LoRA merger
+        // (`image_gen::lora`). Format: 64-hex chars after `+lora:`.
+        // `lora_dispatch_path` returns Some(path) for a valid suffix and
+        // bumps the row's `last_used_at` clock; the path is the on-disk
+        // merged variant the FluxLoader points at.
+        let (resolved_model_id, _slot_key) =
+            if let Some((base, sha)) = parse_lora_suffix(model) {
+                match resolve_lora_merged_path(base, sha) {
+                    Ok(path) => (path, model.to_string()),
+                    Err(e) => return Err(e),
+                }
+            } else {
+                (model.to_string(), model.to_string())
+            };
+
         // Fast path: existing slot matches.
         {
             let guard = self.inner.pipeline.lock();
@@ -271,7 +289,7 @@ impl ImageEngine {
             }
         }
 
-        let model_id = model.to_string();
+        let model_id = resolved_model_id;
         let pipeline_arc = tokio::task::spawn_blocking(move || -> Result<_> {
             let device = candle_device()?;
             let loader_type = if offload {
@@ -587,6 +605,52 @@ pub fn is_dev_repo(model: &str) -> bool {
     FLUX_DEV_REPOS.iter().any(|d| m.eq_ignore_ascii_case(d))
 }
 
+/// Parse a `<base>+lora:<sha>` model id into `(base_repo, sha)`. Returns
+/// `None` for the common case (no LoRA suffix). The sha must be 64 hex
+/// chars; anything else is rejected with `None` so a stray `+lora:`
+/// substring in a custom repo id is ignored cleanly.
+///
+/// This is the public hand-shake the frontend uses: after a successful
+/// `lora_merge`, the renderer sets `model = "<base>+lora:<sha>"` on the
+/// next `image_generate` and the dispatcher swaps in the merged variant.
+pub fn parse_lora_suffix(model: &str) -> Option<(&str, &str)> {
+    let (base, sha) = model.rsplit_once("+lora:")?;
+    if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    if base.trim().is_empty() {
+        return None;
+    }
+    Some((base, sha))
+}
+
+/// Resolve a LoRA-suffix model id to the on-disk merged variant path.
+/// Bumps `last_used_at` on the row as a side effect so subsequent
+/// generations keep this merge fresh in the LRU. Fails loudly with
+/// `kind:"unknown_lora_sha"` when no row matches — we never silently fall
+/// back to the base, because doing so would silently produce wrong-looking
+/// images.
+fn resolve_lora_merged_path(_base: &str, sha: &str) -> Result<String> {
+    use crate::image_gen::lora as lora_mod;
+    let row = lora_mod::get_by_sha(sha)
+        .map_err(|e| anyhow!("lora row lookup failed: {e}"))?
+        .ok_or_else(|| {
+            anyhow!(
+                "kind:\"unknown_lora_sha\" no merged variant cached for sha {sha} (re-run lora_merge)"
+            )
+        })?;
+    // Touch best-effort; a stale row that's already been evicted is unusual
+    // because we just read it, but we don't fail the load for it either.
+    if let Err(e) = lora_mod::record_used(sha) {
+        crate::diagnostics::warn_with(
+            "lora",
+            "lora_record_used failed during dispatch",
+            serde_json::json!({ "sha": sha, "error": e.to_string() }),
+        );
+    }
+    Ok(row.merged_path)
+}
+
 /// Resolve the candle Device for diffusion: prefer Metal on macOS, fall back
 /// to CPU otherwise. Mirrors `native_inference::mistralrs_backend::candle_device`
 /// — duplicated here to keep the image_gen module free of cross-module
@@ -612,6 +676,30 @@ mod tests {
         let offloaded = estimate_need_gib("black-forest-labs/FLUX.1-dev", true);
         assert!(dev > schnell);
         assert!(offloaded < schnell);
+    }
+
+    #[test]
+    fn parse_lora_suffix_accepts_64_hex() {
+        let sha = "a".repeat(64);
+        let id = format!("black-forest-labs/FLUX.1-dev+lora:{sha}");
+        let parsed = parse_lora_suffix(&id);
+        assert_eq!(parsed.map(|(b, s)| (b.to_string(), s.to_string())),
+                   Some(("black-forest-labs/FLUX.1-dev".to_string(), sha)));
+    }
+
+    #[test]
+    fn parse_lora_suffix_rejects_non_hex_or_short() {
+        // 63 chars
+        let short = format!("base+lora:{}", "a".repeat(63));
+        assert!(parse_lora_suffix(&short).is_none());
+        // 64 chars but with a non-hex
+        let bad = format!("base+lora:{}z", "a".repeat(63));
+        assert!(parse_lora_suffix(&bad).is_none());
+        // No suffix at all
+        assert!(parse_lora_suffix("plain/repo").is_none());
+        // Empty base
+        let empty_base = format!("+lora:{}", "a".repeat(64));
+        assert!(parse_lora_suffix(&empty_base).is_none());
     }
 
     #[test]

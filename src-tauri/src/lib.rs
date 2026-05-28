@@ -527,6 +527,11 @@ pub fn run() {
             commands::image::image_save_to,
             commands::image::image_open_external,
             commands::image::image_reveal_in_finder,
+            commands::lora::lora_inspect,
+            commands::lora::lora_merge,
+            commands::lora::lora_list_merges,
+            commands::lora::lora_delete_merge,
+            commands::lora::lora_record_used,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

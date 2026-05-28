@@ -70,7 +70,17 @@ tracing-appender = "0.2"
 # Native inference — fast in-process LLM on Apple Silicon: mistralrs +
 # candle + Metal. Build with --features native-mistralrs.
 mistralrs-core = { version = "0.8.1", default-features = false, features = ["metal", "accelerate"], optional = true }
-candle-core = { version = "0.10", default-features = false, features = ["metal", "accelerate"], optional = true }
+# Candle-core stays non-optional so the LoRA pre-merge pipeline can compile
+# on stub / no-mistralrs builds. The full mistralrs feature still re-uses
+# the same crate (matched version, no duplicate compile).
+candle-core = { version = "0.10", default-features = false, features = ["metal", "accelerate"] }
+# safetensors is pulled in by candle-core transitively, but the LoRA module
+# needs the public API directly (serialize + Metadata extraction). Pin the
+# matching 0.4.x line so we don't double-compile two majors.
+safetensors = "0.4"
+# Half-precision float types — the LoRA merger casts merged tensors back
+# to the base shard's dtype (F16/BF16 for Flux) before writing.
+half = { version = "2", features = ["num-traits"] }
 indexmap = { version = "2", optional = true }
 either = { version = "1", optional = true }
 # `serde_yaml` is used by both the native-mistralrs chat-template parser and
@@ -95,5 +105,5 @@ futures-util = { version = "0.3", optional = true }
 default = []
 # Umbrella flag — no-op base. Real backends opt in below.
 native-inference = []
-native-mistralrs = ["native-inference", "dep:mistralrs-core", "dep:candle-core", "dep:indexmap", "dep:either", "dep:png"]
+native-mistralrs = ["native-inference", "dep:mistralrs-core", "dep:indexmap", "dep:either", "dep:png"]
 browser-automation = ["dep:chromiumoxide", "dep:futures-util"]
