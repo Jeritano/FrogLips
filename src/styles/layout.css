@@ -641,17 +641,19 @@ body {
 
 .conv-list li {
   /* `position: relative` anchors the absolute-positioned action buttons
-     (pin / tag / detach / delete) that fade in on hover. With the
-     buttons removed from the flex flow, the .conv-title spans the full
-     row width and the ellipsis truncates as late as possible. */
+     (pin / tag / detach / delete) anchored to the top-right of the row.
+     With the buttons removed from the flex flow, the .conv-title spans
+     the full row width below them and the ellipsis truncates as late
+     as possible. Top padding adds a 24px gutter so the always-visible
+     pinned ★ never collides with the title baseline. */
   position: relative;
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   /* Tightened padding reclaims ~4px after the -45px sidebar trim.
-     Right padding stays small (6px) because the action-button overlay
-     uses its own absolute right offsets. */
-  padding: 6px 6px;
+     Top padding (28px) reserves a corner-zone for the action buttons;
+     6px elsewhere keeps the row compact. */
+  padding: 28px 6px 6px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
@@ -676,21 +678,23 @@ body {
 }
 
 .conv-list .del {
-  /* Action buttons live in an overlay on the right edge of the row.
-     They take no flow space — the title gets the full row width.
-     Buttons fade in on hover / focus-within. The pinned-state pin
-     button stays visible always so the user can see at a glance which
-     conversations are pinned. */
+  /* Action buttons live in an overlay anchored to the top-right corner
+     of the row. They take no flow space — the title gets the full row
+     width below them. Anchoring to the top (instead of vertical-center)
+     means the always-visible pin star sits ABOVE the title text rather
+     than overlapping it. UX refinement 2026-05-28: previously buttons
+     were vertically centered which made the pin/tag/delete glyphs land
+     on top of the title baseline; the new anchoring keeps glyphs and
+     title text in separate visual zones. */
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 4px;
   background: transparent;
   color: transparent;
   border: 0;
   cursor: pointer;
-  font-size: 15px;
-  width: 24px;
-  height: 24px;
+  font-size: 14px;
+  width: 22px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -702,10 +706,11 @@ body {
 
 /* Per-button right offsets — HTML order is (pin, tag, detach, delete),
    so the rightmost button (delete = last-child) sits closest to the
-   row's right edge. Spacing keeps a 2px visual gap between buttons. */
-.conv-list .del.conv-pin     { right: calc(24px * 3 + 8px); }
-.conv-list .del.conv-tag-btn { right: calc(24px * 2 + 6px); }
-.conv-list .del.detach       { right: calc(24px * 1 + 4px); }
+   row's right edge. Spacing keeps a 2px visual gap between buttons.
+   Button glyph cells are 22px wide (top-right anchored). */
+.conv-list .del.conv-pin     { right: calc(22px * 3 + 6px); }
+.conv-list .del.conv-tag-btn { right: calc(22px * 2 + 4px); }
+.conv-list .del.detach       { right: calc(22px * 1 + 2px); }
 .conv-list li > .del:last-child { right: 2px; }
 
 /* Reveal on row hover / keyboard focus. The pinned button stays
