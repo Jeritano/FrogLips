@@ -100,7 +100,7 @@ serde_yaml = "0.9"
 # prompt/params into tEXt chunks for reproducibility. Only pulled in with
 # `native-mistralrs` — the stub fallback returns "image gen unavailable" and
 # never touches the encoder.
-png = { version = "0.17", optional = true }
+png = { version = "0.18", optional = true }
 
 # Browser automation (alpha) — agent-controlled headless Chrome via CDP.
 # Enabled via the "browser-automation" feature; requires a Chrome/Chromium
