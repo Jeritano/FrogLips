@@ -26,19 +26,33 @@ use crate::image_gen::qwen_image::config::Config;
 /// the AdaLayerNormZero modulation path; for Phase 2b we keep the
 /// surface minimal so the joint-attention core can be exercised in
 /// isolation.
-#[allow(dead_code)] // Phase 2b: built but not yet wired to a real safetensors loader.
+#[allow(dead_code)] // Phase 2b/2c: built but not yet wired to a real safetensors loader.
 #[derive(Debug)]
 pub struct JointBlockWeights {
-    // Image stream projections.
+    // Image stream attention projections.
     pub img_to_q: Linear,
     pub img_to_k: Linear,
     pub img_to_v: Linear,
     pub img_to_out: Linear,
-    // Text stream projections.
+    // Text stream attention projections.
     pub txt_add_q: Linear,
     pub txt_add_k: Linear,
     pub txt_add_v: Linear,
     pub txt_to_add_out: Linear,
+    // Phase 2c — per-stream MLP. `ff_in` is `ff.net.0.proj`
+    // (hidden→ffn), `ff_out` is `ff.net.2` (ffn→hidden). Text stream
+    // uses `ff_context.*` with identical shapes.
+    pub img_ff_in: Linear,
+    pub img_ff_out: Linear,
+    pub txt_ff_in: Linear,
+    pub txt_ff_out: Linear,
+    // Phase 2c — AdaLayerNormZero modulation. `img_mod` / `txt_mod`
+    // are the `*_mod.1` linears projecting the timestep embedding into
+    // SIX channel-modulation vectors each (shift_msa, scale_msa,
+    // gate_msa, shift_mlp, scale_mlp, gate_mlp), so out_dim =
+    // 6 * hidden_size.
+    pub img_mod: Linear,
+    pub txt_mod: Linear,
 }
 
 impl JointBlockWeights {
@@ -54,10 +68,15 @@ impl JointBlockWeights {
     #[allow(dead_code)] // Phase 2b: only callers are unit tests + Phase 4 loader.
     pub fn zeroed(config: &Config, device: &Device, dtype: DType) -> Result<Self> {
         let h = config.hidden_size;
+        let f = config.ffn_dim;
         // Linear in candle is `out = x @ W.T + b`, so the weight tensor
         // has shape `(out_dim, in_dim)`. For square projections both
         // dims are `hidden_size`.
         let square = || Tensor::zeros((h, h), dtype, device).map(|w| Linear::new(w, None));
+        // `rect(out, in)` for the MLP + modulation projections.
+        let rect = |out: usize, inp: usize| {
+            Tensor::zeros((out, inp), dtype, device).map(|w| Linear::new(w, None))
+        };
         Ok(Self {
             img_to_q: square()?,
             img_to_k: square()?,
@@ -67,6 +86,14 @@ impl JointBlockWeights {
             txt_add_k: square()?,
             txt_add_v: square()?,
             txt_to_add_out: square()?,
+            img_ff_in: rect(f, h)?,
+            img_ff_out: rect(h, f)?,
+            txt_ff_in: rect(f, h)?,
+            txt_ff_out: rect(h, f)?,
+            // Modulation projects the timestep embedding (hidden-d) into
+            // 6 modulation vectors of hidden-d each.
+            img_mod: rect(6 * h, h)?,
+            txt_mod: rect(6 * h, h)?,
         })
     }
 }

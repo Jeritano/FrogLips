@@ -71,8 +71,37 @@
 use candle_core::{Result as CandleResult, Tensor, D};
 
 use crate::image_gen::qwen_image::config::Config;
-use crate::image_gen::qwen_image::rope::RopeFrequencies;
+use crate::image_gen::qwen_image::rope::{apply_rope_interleaved, RopeFrequencies};
 use crate::image_gen::qwen_image::weights::JointBlockWeights;
+
+/// Non-affine LayerNorm over the last dim. Qwen-Image's pre-attention
+/// and pre-MLP norms use `elementwise_affine=False` — the gain/bias
+/// come from the AdaLayerNormZero modulation instead. Pure tensor ops
+/// so it runs on CPU + Metal alike.
+fn layer_norm_no_affine(x: &Tensor, eps: f64) -> CandleResult<Tensor> {
+    let mean = x.mean_keepdim(D::Minus1)?;
+    let centered = x.broadcast_sub(&mean)?;
+    let var = centered.sqr()?.mean_keepdim(D::Minus1)?;
+    let denom = (var + eps)?.sqrt()?;
+    centered.broadcast_div(&denom)
+}
+
+/// Apply AdaLayerNormZero modulation: `norm(x) * (1 + scale) + shift`.
+/// `scale` / `shift` are `(batch, hidden)`; unsqueezed to `(batch, 1,
+/// hidden)` so they broadcast across the sequence dim.
+fn modulate(normed: &Tensor, scale: &Tensor, shift: &Tensor) -> CandleResult<Tensor> {
+    let scale = scale.unsqueeze(1)?; // (b, 1, h)
+    let shift = shift.unsqueeze(1)?;
+    let one_plus = (scale + 1.0)?;
+    normed.broadcast_mul(&one_plus)?.broadcast_add(&shift)
+}
+
+/// Gated residual: `x + gate * delta`. `gate` is `(batch, hidden)`,
+/// unsqueezed to broadcast across the sequence dim.
+fn gated_add(x: &Tensor, gate: &Tensor, delta: &Tensor) -> CandleResult<Tensor> {
+    let gate = gate.unsqueeze(1)?;
+    x.broadcast_add(&delta.broadcast_mul(&gate)?)
+}
 
 /// Manual scaled dot-product attention. Candle 0.10's `nn_ops::sdpa` is
 /// Metal/CUDA-only — invoking it on a CPU tensor panics with "SDPA has
@@ -127,65 +156,78 @@ impl JointBlock {
         format!("transformer.transformer_blocks.{}.", self.layer_idx)
     }
 
-    /// Joint-attention forward pass.
+    /// Full joint-block forward pass.
     ///
-    /// Phase 2b (2026-05-28) implements the attention core:
-    ///   * Per-stream Q/K/V projections.
-    ///   * Concat image-K + text-K and image-V + text-V along the
-    ///     sequence dim so the SDPA runs a single shared kernel call.
-    ///   * `candle_nn::ops::sdpa` (Metal-backed on Apple Silicon, CPU
-    ///     elsewhere) with the standard `1/sqrt(head_dim)` scale and
-    ///     no causal mask (image+text generation is non-causal in
-    ///     MMDiT).
-    ///   * Split outputs back into image and text streams and apply
-    ///     output projections (`to_out.0` and `to_add_out`).
+    /// Phase 2c (2026-05-28) completes the block:
+    ///   1. AdaLayerNormZero modulation derived from the timestep
+    ///      embedding `temb` — each stream's `*_mod` linear projects
+    ///      `silu(temb)` into 6 channel vectors (shift/scale/gate for
+    ///      the attn block, shift/scale/gate for the MLP block).
+    ///   2. Pre-attention non-affine LayerNorm → modulate → Q/K/V.
+    ///   3. 3D RoPE rotation (interleaved) on the IMAGE Q/K only; the
+    ///      text stream is position-free in Qwen-Image.
+    ///   4. Joint attention (concat image+text K/V, single SDPA, split).
+    ///   5. Output projections + gated residual (`gate_msa`).
+    ///   6. Pre-MLP non-affine LayerNorm → modulate → `ff_in` → GELU →
+    ///      `ff_out` → gated residual (`gate_mlp`).
     ///
-    /// Pending Phase 2c hooks:
-    ///   * AdaLayerNormZero modulation gates the attention input and
-    ///     the residual connection. Currently passes through.
-    ///   * 3D RoPE rotation on image Q/K. The `_rope` parameter is
-    ///     accepted so the signature stays stable across phases; the
-    ///     rotation kernel lands in 2c.
-    ///   * Per-stream MLP (ff.net.0.proj + GELU + ff.net.2). Currently
-    ///     skipped — output is attention-only.
-    ///   * Post-attention LayerNorm with affine scale + bias.
-    ///
-    /// Shape contract (all 3D, batch-first):
+    /// Shape contract:
     ///   * `img`: `(batch, img_seq, hidden_size)`
     ///   * `txt`: `(batch, txt_seq, hidden_size)`
-    ///   * returns `(img_out, txt_out)` with matching shapes.
+    ///   * `temb`: `(batch, hidden_size)` — timestep embedding.
+    ///   * `rope_cos` / `rope_sin`: `(img_seq, head_dim/2)` from
+    ///     [`RopeFrequencies::image_rotation_tensors`].
+    ///   * returns `(img_out, txt_out)` with the input stream shapes.
     ///
-    /// The batch dim is preserved verbatim; the sequence dims are
-    /// independent (image and text can differ in length, joint
-    /// attention is over their concatenation).
-    #[allow(dead_code)] // Phase 2b — wired by Phase 5 end-to-end forward pass.
+    /// Remaining Phase 5 wiring: this is the PER-BLOCK pass. The
+    /// end-to-end forward (patchify → N blocks → unpatchify → VAE
+    /// decode) lands once the loader + scheduler exist.
+    #[allow(dead_code)] // Wired by the Phase 5 end-to-end forward pass.
     pub fn forward(
         &self,
         img: &Tensor,
         txt: &Tensor,
+        temb: &Tensor,
         weights: &JointBlockWeights,
-        _rope: &RopeFrequencies,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
     ) -> CandleResult<(Tensor, Tensor)> {
+        const LN_EPS: f64 = 1e-6;
         let cfg = self.config;
         let heads = cfg.num_attention_heads;
         let head_dim = cfg.head_dim;
+        let h = cfg.hidden_size;
         let scale = (head_dim as f32).powf(-0.5);
 
         let (b, img_seq, _) = img.dims3()?;
         let (_, txt_seq, _) = txt.dims3()?;
 
-        // Per-stream Q/K/V projections. `apply(linear)` does
-        // `x @ W.T + b` matching candle's Linear semantics.
-        let img_q = img.apply(&weights.img_to_q)?;
-        let img_k = img.apply(&weights.img_to_k)?;
-        let img_v = img.apply(&weights.img_to_v)?;
-        let txt_q = txt.apply(&weights.txt_add_q)?;
-        let txt_k = txt.apply(&weights.txt_add_k)?;
-        let txt_v = txt.apply(&weights.txt_add_v)?;
+        // ── 1. Modulation: silu(temb) → 6 chunks per stream ──
+        let act = candle_nn::ops::silu(temb)?;
+        let img_mod = act.apply(&weights.img_mod)?; // (b, 6h)
+        let txt_mod = act.apply(&weights.txt_mod)?;
+        // chunk(6, last) splits the 6h dim into six (b, h) tensors in
+        // order: shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp,
+        // gate_mlp.
+        let imc = img_mod.chunk(6, D::Minus1)?;
+        let txc = txt_mod.chunk(6, D::Minus1)?;
+        let (i_shift_a, i_scale_a, i_gate_a, i_shift_m, i_scale_m, i_gate_m) =
+            (&imc[0], &imc[1], &imc[2], &imc[3], &imc[4], &imc[5]);
+        let (t_shift_a, t_scale_a, t_gate_a, t_shift_m, t_scale_m, t_gate_m) =
+            (&txc[0], &txc[1], &txc[2], &txc[3], &txc[4], &txc[5]);
 
-        // Reshape to (batch, heads, seq, head_dim) for SDPA. Permute
-        // is `(0, 2, 1, 3)` from the post-reshape `(batch, seq, heads,
-        // head_dim)` layout.
+        // ── 2. Pre-attention norm + modulate → Q/K/V ──
+        let img_in = modulate(&layer_norm_no_affine(img, LN_EPS)?, i_scale_a, i_shift_a)?;
+        let txt_in = modulate(&layer_norm_no_affine(txt, LN_EPS)?, t_scale_a, t_shift_a)?;
+
+        let img_q = img_in.apply(&weights.img_to_q)?;
+        let img_k = img_in.apply(&weights.img_to_k)?;
+        let img_v = img_in.apply(&weights.img_to_v)?;
+        let txt_q = txt_in.apply(&weights.txt_add_q)?;
+        let txt_k = txt_in.apply(&weights.txt_add_k)?;
+        let txt_v = txt_in.apply(&weights.txt_add_v)?;
+
+        // Reshape to (batch, heads, seq, head_dim).
         let to_heads = |x: Tensor, seq: usize| -> CandleResult<Tensor> {
             x.reshape((b, seq, heads, head_dim))?
                 .transpose(1, 2)?
@@ -198,39 +240,48 @@ impl JointBlock {
         let txt_k = to_heads(txt_k, txt_seq)?;
         let txt_v = to_heads(txt_v, txt_seq)?;
 
-        // Joint attention: concat image + text along the sequence dim
-        // for K and V (the shared context both streams attend over).
-        // Each stream's Q is concatenated too — we run a single SDPA
-        // and split the output back along the sequence dim.
+        // ── 3. 3D RoPE on image Q/K (text is position-free) ──
+        let img_q = apply_rope_interleaved(&img_q, rope_cos, rope_sin)?;
+        let img_k = apply_rope_interleaved(&img_k, rope_cos, rope_sin)?;
+
+        // ── 4. Joint attention ──
         let joint_q = Tensor::cat(&[&img_q, &txt_q], 2)?;
         let joint_k = Tensor::cat(&[&img_k, &txt_k], 2)?;
         let joint_v = Tensor::cat(&[&img_v, &txt_v], 2)?;
-
-        // SDPA: (batch, heads, seq, head_dim). No mask, non-causal,
-        // scale = 1/sqrt(head_dim). Manual impl runs on both CPU + Metal
-        // — see `sdpa_manual` for the rationale; candle's
-        // `nn_ops::sdpa` is Metal/CUDA-only as of 0.10.2 and panics on
-        // CPU under the unit tests.
         let joint_out = sdpa_manual(&joint_q, &joint_k, &joint_v, scale)?;
 
-        // Split outputs along the sequence dim back into image and
-        // text. `narrow(2, start, len)` slices the seq axis.
-        let img_out = joint_out.narrow(2, 0, img_seq)?;
-        let txt_out = joint_out.narrow(2, img_seq, txt_seq)?;
+        let img_attn = joint_out.narrow(2, 0, img_seq)?;
+        let txt_attn = joint_out.narrow(2, img_seq, txt_seq)?;
 
-        // Reshape back to (batch, seq, hidden_size) before the output
-        // projection.
         let from_heads = |x: Tensor, seq: usize| -> CandleResult<Tensor> {
             x.transpose(1, 2)?.reshape((b, seq, heads * head_dim))?.contiguous()
         };
-        let img_out = from_heads(img_out, img_seq)?;
-        let txt_out = from_heads(txt_out, txt_seq)?;
+        let img_attn = from_heads(img_attn, img_seq)?;
+        let txt_attn = from_heads(txt_attn, txt_seq)?;
 
-        // Output projections.
-        let img_out = img_out.apply(&weights.img_to_out)?;
-        let txt_out = txt_out.apply(&weights.txt_to_add_out)?;
+        // ── 5. Output projection + gated residual ──
+        let img_attn = img_attn.apply(&weights.img_to_out)?;
+        let txt_attn = txt_attn.apply(&weights.txt_to_add_out)?;
+        let img = gated_add(img, i_gate_a, &img_attn)?;
+        let txt = gated_add(txt, t_gate_a, &txt_attn)?;
 
-        Ok((img_out, txt_out))
+        // ── 6. Pre-MLP norm + modulate → MLP → gated residual ──
+        let img_mlp_in = modulate(&layer_norm_no_affine(&img, LN_EPS)?, i_scale_m, i_shift_m)?;
+        let txt_mlp_in = modulate(&layer_norm_no_affine(&txt, LN_EPS)?, t_scale_m, t_shift_m)?;
+        let img_mlp = img_mlp_in
+            .apply(&weights.img_ff_in)?
+            .gelu()?
+            .apply(&weights.img_ff_out)?;
+        let txt_mlp = txt_mlp_in
+            .apply(&weights.txt_ff_in)?
+            .gelu()?
+            .apply(&weights.txt_ff_out)?;
+        let img = gated_add(&img, i_gate_m, &img_mlp)?;
+        let txt = gated_add(&txt, t_gate_m, &txt_mlp)?;
+
+        // Silence unused-binding lint on `h` when assertions compiled out.
+        debug_assert_eq!(img.dim(D::Minus1)?, h);
+        Ok((img, txt))
     }
 }
 
@@ -330,9 +381,7 @@ mod tests {
         use candle_core::{DType, Device, Tensor};
         use crate::image_gen::qwen_image::weights::JointBlockWeights;
 
-        // Use a SMALL test config so the CPU matmul stays fast — the
-        // canonical 60-layer / 3072-hidden config would take seconds
-        // even with zeroed weights.
+        // Small test config so the CPU matmul stays fast.
         let test_cfg = Config {
             hidden_size: 32,
             num_attention_heads: 4,
@@ -344,36 +393,68 @@ mod tests {
             text_embed_dim: 32,
             max_text_seq_len: 16,
             rope_theta: 10_000.0,
-            // For head_dim 8, axes (2, 2, 4) sums to 8 (even pairs OK).
             rope_axes_dim: (2, 2, 4),
         };
         test_cfg.validate().expect("test config must validate");
 
         let device = Device::Cpu;
-        let t = QwenImageTransformer::new(test_cfg, 1, 4, 4).expect("scaffold must build");
+        // Grid 4×4 → img_seq = 16. txt_seq is independent.
+        let (h_pos, w_pos) = (4usize, 4usize);
+        let t = QwenImageTransformer::new(test_cfg, 1, h_pos, w_pos).expect("scaffold");
         let w = JointBlockWeights::zeroed(&test_cfg, &device, DType::F32)
             .expect("zeroed weights");
+        let (rope_cos, rope_sin) =
+            t.rope.image_rotation_tensors(&device).expect("rope tensors");
 
         let batch = 1;
-        let img_seq = 16;
+        let img_seq = h_pos * w_pos;
         let txt_seq = 8;
-        let img = Tensor::zeros(
-            (batch, img_seq, test_cfg.hidden_size),
-            DType::F32,
-            &device,
-        )
-        .expect("img tensor");
-        let txt = Tensor::zeros(
-            (batch, txt_seq, test_cfg.hidden_size),
-            DType::F32,
-            &device,
-        )
-        .expect("txt tensor");
+        let img = Tensor::zeros((batch, img_seq, test_cfg.hidden_size), DType::F32, &device)
+            .expect("img tensor");
+        let txt = Tensor::zeros((batch, txt_seq, test_cfg.hidden_size), DType::F32, &device)
+            .expect("txt tensor");
+        let temb = Tensor::zeros((batch, test_cfg.hidden_size), DType::F32, &device)
+            .expect("temb tensor");
 
         let (img_out, txt_out) = t.blocks[0]
-            .forward(&img, &txt, &w, &t.rope)
+            .forward(&img, &txt, &temb, &w, &rope_cos, &rope_sin)
             .expect("forward must run end-to-end");
         assert_eq!(img_out.dims(), [batch, img_seq, test_cfg.hidden_size]);
         assert_eq!(txt_out.dims(), [batch, txt_seq, test_cfg.hidden_size]);
+    }
+
+    #[test]
+    fn joint_block_forward_with_nonzero_temb_runs() {
+        // Exercise the modulation path with a non-zero timestep
+        // embedding so the silu + chunk + broadcast arithmetic is
+        // actually traversed (zeroed temb short-circuits to silu(0)=0).
+        use candle_core::{DType, Device, Tensor};
+        use crate::image_gen::qwen_image::weights::JointBlockWeights;
+
+        let test_cfg = Config {
+            hidden_size: 16,
+            num_attention_heads: 2,
+            head_dim: 8,
+            num_layers: 1,
+            ffn_dim: 32,
+            patch_size: 2,
+            in_channels: 16,
+            text_embed_dim: 16,
+            max_text_seq_len: 8,
+            rope_theta: 10_000.0,
+            rope_axes_dim: (2, 2, 4),
+        };
+        let device = Device::Cpu;
+        let t = QwenImageTransformer::new(test_cfg, 1, 2, 2).expect("scaffold");
+        let w = JointBlockWeights::zeroed(&test_cfg, &device, DType::F32).expect("weights");
+        let (rc, rs) = t.rope.image_rotation_tensors(&device).expect("rope");
+        let img = Tensor::ones((1, 4, 16), DType::F32, &device).unwrap();
+        let txt = Tensor::ones((1, 3, 16), DType::F32, &device).unwrap();
+        let temb = Tensor::ones((1, 16), DType::F32, &device).unwrap();
+        let (io, to) = t.blocks[0]
+            .forward(&img, &txt, &temb, &w, &rc, &rs)
+            .expect("forward with non-zero temb");
+        assert_eq!(io.dims(), [1, 4, 16]);
+        assert_eq!(to.dims(), [1, 3, 16]);
     }
 }
