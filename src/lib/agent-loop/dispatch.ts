@@ -948,26 +948,49 @@ export async function executeTool(
       };
       try {
         const { listen } = await import("@tauri-apps/api/event");
+        // R4-M1 (2026-05-28): await BOTH listener registrations BEFORE
+        // dispatching `image_generate`. The previous design fired the
+        // two `void listen(...).then(...)` calls inside the Promise
+        // constructor and dispatched the IPC immediately after, so:
+        //
+        //   1. If `image-error`'s listen() rejected, its `.then()` never
+        //      fired, `offErr` stayed undefined, and a Rust-side
+        //      `image-error` event landed on no listener — donePromise
+        //      hung forever and the agent-loop tool call never returned.
+        //   2. If the engine emitted `image-done` BETWEEN the two
+        //      listens (the IPC layer dispatches immediately after the
+        //      constructor returns), the event could land before the
+        //      done listener attached.
+        //
+        // Awaiting both before the IPC closes both races: any listen
+        // failure rejects upward into the outer try/catch (handled below
+        // as `image_gen_failed`), and the IPC is only kicked AFTER both
+        // handlers are armed.
+        let resolveDone!: (value: { image_id: number } | null) => void;
+        let rejectDone!: (err: Error) => void;
         const donePromise = new Promise<{ image_id: number } | null>((resolve, reject) => {
-          let settled = false;
-          const settle = (fn: () => void) => {
-            if (settled) return;
-            settled = true;
-            fn();
-          };
-          void listen<{ op_id?: string; image_id?: number }>("image-done", (e) => {
-            if (e.payload?.op_id !== opId) return;
-            const id = typeof e.payload.image_id === "number" ? e.payload.image_id : null;
-            settle(() => resolve(id != null ? { image_id: id } : null));
-          }).then((off) => { offDone = off; if (settled) off(); });
-          void listen<{ op_id?: string; message?: string }>("image-error", (e) => {
-            if (e.payload?.op_id !== opId) return;
-            const msg = e.payload?.message ?? "image generation failed";
-            settle(() => reject(new Error(msg)));
-          }).then((off) => { offErr = off; if (settled) off(); });
+          resolveDone = resolve;
+          rejectDone = reject;
         });
-        // Kick off the IPC. The op_id is forwarded — Rust echoes it back on
-        // all three events so the listeners above can filter.
+        let settled = false;
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
+        offDone = await listen<{ op_id?: string; image_id?: number }>("image-done", (e) => {
+          if (e.payload?.op_id !== opId) return;
+          const id = typeof e.payload.image_id === "number" ? e.payload.image_id : null;
+          settle(() => resolveDone(id != null ? { image_id: id } : null));
+        });
+        offErr = await listen<{ op_id?: string; message?: string }>("image-error", (e) => {
+          if (e.payload?.op_id !== opId) return;
+          const msg = e.payload?.message ?? "image generation failed";
+          settle(() => rejectDone(new Error(msg)));
+        });
+        // Both listeners armed — safe to dispatch. The op_id is
+        // forwarded; Rust echoes it back on every event so the
+        // listeners above can filter.
         await api.imageGenerate(
           prompt,
           model,
