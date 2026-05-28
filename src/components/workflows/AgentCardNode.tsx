@@ -1,4 +1,4 @@
-import { memo, useRef } from "react";
+import { memo, useRef, type CSSProperties } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 export type CardRunState = "idle" | "running" | "done" | "failed";
@@ -10,6 +10,8 @@ export interface AgentCardNodeData {
   state: CardRunState;
   /** True when the card has an incoming edge — a single-card run is isolated. */
   midChain: boolean;
+  /** Optional accent color (hex) for the card theme; null = neutral default. */
+  color?: string | null;
   /** Opens the centered form, flying from the clicked node's rect. */
   onConfigure: (rect: DOMRect) => void;
   onRun: () => void;
@@ -37,8 +39,22 @@ function AgentCardNodeImpl({ data }: NodeProps) {
     if (ref.current) d.onConfigure(ref.current.getBoundingClientRect());
   }
 
+  // Accent color drives a CSS custom property the stylesheet uses for the
+  // left border + name tint. `data-themed` lets the CSS scope the accent
+  // rules so a null color falls back to the neutral default chrome.
+  const themeStyle = d.color
+    ? ({ "--wf-card-accent": d.color } as CSSProperties)
+    : undefined;
+
   return (
-    <div className="wf-node" data-state={d.state} data-testid="wf-node" ref={ref}>
+    <div
+      className="wf-node"
+      data-state={d.state}
+      data-themed={d.color ? "true" : undefined}
+      data-testid="wf-node"
+      ref={ref}
+      style={themeStyle}
+    >
       <Handle type="target" position={Position.Left} className="wf-handle" />
       <button
         type="button"
@@ -119,6 +135,7 @@ function dataEqual(prev: NodeProps, next: NodeProps): boolean {
     && a.schedule === b.schedule
     && a.state === b.state
     && a.midChain === b.midChain
+    && a.color === b.color
     // ReactFlow's NodeProps carry position + selected + dimensions —
     // re-render on those because they map to visible chrome.
     && prev.selected === next.selected

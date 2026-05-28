@@ -193,6 +193,7 @@ export function WorkflowCanvas({
           schedule: c.schedule,
           state: cardStates[c.id] ?? "idle",
           midChain: hasUpstream.has(c.id),
+          color: c.color ?? null,
           onConfigure: (rect: DOMRect) => onConfigure(c.id, rect),
           onRun: () => onRunCard(c.id),
           onDelete: () => onDeleteCard(c.id),

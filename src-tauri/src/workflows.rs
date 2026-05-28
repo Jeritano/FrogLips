@@ -294,6 +294,28 @@ pub fn validate_graph_json(graph_json: &str) -> Result<()> {
                 ))
             }
         }
+        // Optional accent color: `color: string | null`. A short hex from
+        // the curated frontend palette. We don't enforce the exact palette
+        // server-side (cosmetic + may grow); only that it's a bounded
+        // string so graph_json can't be stuffed with a giant value. The
+        // frontend normalizer rejects anything off-palette. (2026-05-28)
+        match c.get("color") {
+            None => {}
+            Some(v) if v.is_null() => {}
+            Some(v) if v.is_string() => {
+                let len = v.as_str().map(|s| s.len()).unwrap_or(0);
+                if len > 64 {
+                    return Err(anyhow::anyhow!(
+                        "card {i} field 'color' exceeds 64 bytes ({len})"
+                    ));
+                }
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "card {i} field 'color' must be a string or null"
+                ))
+            }
+        }
     }
 
     for (i, edge) in edges.iter().enumerate() {
@@ -742,6 +764,32 @@ mod tests {
         let huge = "a".repeat(33 * 1024);
         let graph = format!(
             r#"{{"cards":[{{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"systemPrompt":"{huge}"}}],"edges":[]}}"#
+        );
+        assert!(validate_graph_json(&graph).is_err());
+    }
+
+    #[test]
+    fn validate_graph_accepts_optional_card_color() {
+        // Hex string → accepted. Double-hash raw delimiter because the
+        // `"#` in the hex value would close a single-hash `r#"…"#`.
+        assert!(validate_graph_json(
+            r##"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"color":"#6366f1"}],"edges":[]}"##
+        )
+        .is_ok());
+        // Null + absent → accepted.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"color":null}],"edges":[]}"#
+        )
+        .is_ok());
+        // Wrong type → rejected.
+        assert!(validate_graph_json(
+            r#"{"cards":[{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"color":42}],"edges":[]}"#
+        )
+        .is_err());
+        // Oversized (> 64 bytes) → rejected.
+        let huge = "x".repeat(80);
+        let graph = format!(
+            r#"{{"cards":[{{"id":"a","name":"n","preset":"p","prompt":"q","tools":[],"schedule":null,"backend":null,"x":0,"y":0,"color":"{huge}"}}],"edges":[]}}"#
         );
         assert!(validate_graph_json(&graph).is_err());
     }

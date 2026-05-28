@@ -645,7 +645,31 @@ export interface WorkflowCard {
    * Null/absent fields fall back to the backend default.
    */
   params?: { temperature?: number | null; top_p?: number | null; max_tokens?: number | null } | null;
+  /**
+   * Optional accent color for the card's canvas node — a hex string from
+   * {@link WORKFLOW_CARD_COLORS}. Null/absent = the default neutral
+   * surface. Purely cosmetic: lets the user colour-code agents on a
+   * busy canvas (e.g. all researchers blue, all writers green).
+   */
+  color?: string | null;
 }
+
+/**
+ * Curated accent palette for workflow card nodes. Hand-picked, readable on
+ * the dark canvas, and distinct from each other + from the run-state badge
+ * colours (idle grey / running amber / done green / failed red). `value` is
+ * stored verbatim in `WorkflowCard.color`; `null` is the neutral default.
+ */
+export const WORKFLOW_CARD_COLORS: ReadonlyArray<{ name: string; value: string | null }> = [
+  { name: "Default", value: null },
+  { name: "Indigo", value: "#6366f1" },
+  { name: "Sky", value: "#0ea5e9" },
+  { name: "Emerald", value: "#10b981" },
+  { name: "Amber", value: "#f59e0b" },
+  { name: "Rose", value: "#f43f5e" },
+  { name: "Violet", value: "#a855f7" },
+  { name: "Slate", value: "#64748b" },
+];
 
 /** Directed link between two cards (card ids). Linear chains only in v1. */
 export interface WorkflowEdge {
@@ -742,12 +766,20 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
   const rawSys = typeof c.systemPrompt === "string" ? c.systemPrompt : null;
   const systemPrompt =
     rawSys && rawSys.length > SYSTEM_PROMPT_MAX ? rawSys.slice(0, SYSTEM_PROMPT_MAX) : rawSys;
+  // Card accent color: only accept a value that's in the curated palette
+  // (or null). A corrupt/adversarial blob can't inject an arbitrary CSS
+  // string into the node's inline `style` this way.
+  const color =
+    typeof c.color === "string" && WORKFLOW_CARD_COLORS.some((p) => p.value === c.color)
+      ? c.color
+      : null;
   return {
     id: c.id,
     name: c.name,
     preset: c.preset,
     prompt: c.prompt,
     systemPrompt,
+    color,
     tools,
     schedule: typeof c.schedule === "string" ? c.schedule : null,
     backend: typeof c.backend === "string" ? c.backend : null,

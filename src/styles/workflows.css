@@ -159,6 +159,30 @@
 .wf-node[data-state="done"] { border-color: var(--green-border); }
 .wf-node[data-state="failed"] { border-color: var(--danger-border); }
 
+/* User-chosen accent (2026-05-28): a thick left rail + a faint top-edge
+   wash tinted by `--wf-card-accent`, plus a tinted preset chip. Scoped
+   under [data-themed] so a null color keeps the neutral chrome. The
+   run-state border rules above still win on their own edges (running/
+   done/failed) since they set `border-color` directly; the accent lives
+   on the LEFT border which those don't touch, so state + theme coexist. */
+.wf-node[data-themed="true"] {
+  border-left: 3px solid var(--wf-card-accent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--wf-card-accent) 10%, transparent) 0%,
+      transparent 36px
+    ),
+    var(--surface);
+}
+.wf-node[data-themed="true"] .wf-node-name {
+  color: var(--wf-card-accent);
+}
+.wf-node[data-themed="true"] .wf-node-preset {
+  color: var(--wf-card-accent);
+  background: color-mix(in srgb, var(--wf-card-accent) 16%, transparent);
+}
+
 .wf-node-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .wf-node-name {
   font-size: var(--fs-base);
@@ -515,6 +539,73 @@
 }
 .wf-field textarea { resize: vertical; }
 .wf-field-hint { margin: var(--space-1) 0 0; font-size: var(--fs-xs); color: var(--text-2); }
+
+/* Collapsible field (System prompt / Instructions) — native <details>.
+   The summary mimics a `.wf-field > span` label + a disclosure caret so
+   it reads as part of the form, not a generic OS twisty. (2026-05-28) */
+.wf-collapse { gap: 0; }
+.wf-collapse-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  padding: var(--space-1) 0;
+  user-select: none;
+}
+.wf-collapse-summary::-webkit-details-marker { display: none; }
+/* Caret rotates when open. */
+.wf-collapse-summary::before {
+  content: "▸";
+  display: inline-block;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  transition: transform 0.12s ease;
+}
+.wf-collapse[open] > .wf-collapse-summary::before { transform: rotate(90deg); }
+.wf-collapse-summary:hover { color: var(--text); }
+.wf-collapse-badge {
+  font-size: var(--fs-2xs);
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+}
+.wf-collapse-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-top: var(--space-1);
+}
+
+/* Card-color swatch chooser. */
+.wf-color-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.wf-color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--border);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.1s ease, border-color 0.1s ease, box-shadow 0.1s ease;
+}
+.wf-color-swatch:hover { transform: scale(1.12); }
+.wf-color-swatch.selected {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text-3);
+}
+/* The "Default" (null) swatch shows a neutral surface + a slash so it
+   reads as "no accent" rather than a real colour. */
+.wf-color-swatch.wf-color-default {
+  background:
+    linear-gradient(135deg, var(--surface-2) 46%, var(--danger) 46%, var(--danger) 54%, var(--surface-2) 54%);
+}
+.wf-color-swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .wf-tool-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

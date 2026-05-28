@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelEntry, WorkflowCard } from "../../types";
+import { WORKFLOW_CARD_COLORS } from "../../types";
 import { loadAllPresets } from "../../lib/agent-presets";
 import { useModalA11y } from "../../lib/use-modal-a11y";
 import { generateAgentName } from "../../lib/agent-name";
@@ -404,33 +405,75 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                 </small>
               )}
             </label>
-            <label className="wf-field">
-              <span>System prompt (optional)</span>
-              <textarea
-                value={draft.systemPrompt ?? ""}
-                onChange={(e) =>
-                  set("systemPrompt", e.target.value === "" ? null : e.target.value)
-                }
-                rows={3}
-                placeholder="Persona, constraints, output format. Leave blank to inherit from Role."
-                maxLength={16_384}
-              />
-              <small className="wf-field-hint">
-                Overrides the Role's system prompt for THIS card only. Use it to
-                give one agent a different persona, output format, or hard
-                constraints without making a new Role. Blank = use the Role's
-                default.
-              </small>
-            </label>
-            <label className="wf-field">
-              <span>Instructions</span>
-              <textarea
-                value={draft.prompt}
-                onChange={(e) => set("prompt", e.target.value)}
-                rows={4}
-                placeholder="What should this agent do? (sent as the user message)"
-              />
-            </label>
+            {/* System prompt + Instructions are collapsible to tame the
+                form's vertical sprawl. `<details>` is native + a11y-free.
+                System prompt starts COLLAPSED (optional override most
+                cards leave blank); Instructions starts OPEN (the primary
+                field). A "• set" hint on the summary shows when a
+                collapsed System prompt actually carries content so it's
+                not silently hidden. */}
+            <details className="wf-field wf-collapse">
+              <summary className="wf-collapse-summary">
+                <span>System prompt (optional)</span>
+                {(draft.systemPrompt ?? "").trim() !== "" && (
+                  <span className="wf-collapse-badge" title="This card has a custom system prompt">
+                    • set
+                  </span>
+                )}
+              </summary>
+              <div className="wf-collapse-body">
+                <textarea
+                  value={draft.systemPrompt ?? ""}
+                  onChange={(e) =>
+                    set("systemPrompt", e.target.value === "" ? null : e.target.value)
+                  }
+                  rows={3}
+                  placeholder="Persona, constraints, output format. Leave blank to inherit from Role."
+                  maxLength={16_384}
+                />
+                <small className="wf-field-hint">
+                  Overrides the Role's system prompt for THIS card only. Use it to
+                  give one agent a different persona, output format, or hard
+                  constraints without making a new Role. Blank = use the Role's
+                  default.
+                </small>
+              </div>
+            </details>
+            <details className="wf-field wf-collapse" open>
+              <summary className="wf-collapse-summary">
+                <span>Instructions</span>
+              </summary>
+              <div className="wf-collapse-body">
+                <textarea
+                  value={draft.prompt}
+                  onChange={(e) => set("prompt", e.target.value)}
+                  rows={4}
+                  placeholder="What should this agent do? (sent as the user message)"
+                />
+              </div>
+            </details>
+            {/* Card color theme — colour-code agents on a busy canvas. */}
+            <div className="wf-field">
+              <span>Card color</span>
+              <div className="wf-color-row" role="radiogroup" aria-label="Card accent color">
+                {WORKFLOW_CARD_COLORS.map((c) => {
+                  const selected = (draft.color ?? null) === c.value;
+                  return (
+                    <button
+                      key={c.name}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      className={`wf-color-swatch${selected ? " selected" : ""}${c.value === null ? " wf-color-default" : ""}`}
+                      style={c.value ? { background: c.value } : undefined}
+                      title={c.name}
+                      aria-label={c.name}
+                      onClick={() => set("color", c.value)}
+                    />
+                  );
+                })}
+              </div>
+            </div>
             <label className="wf-field">
               <span>Schedule (blank = manual)</span>
               <input
