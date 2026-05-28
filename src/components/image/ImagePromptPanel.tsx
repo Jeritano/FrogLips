@@ -13,6 +13,22 @@ interface Props {
   progress: ImageGenProgress;
   /** Last error message; null hides the inline error row. */
   error: string | null;
+  /**
+   * Optional controlled prompt-state pair. When provided, the parent owns
+   * the prompt string — needed so the LoRA panel's trigger-word chips can
+   * append text into the same textarea. When omitted, the panel falls back
+   * to its original internal-state behavior (tests + standalone use).
+   */
+  prompt?: string;
+  onPromptChange?: (next: string) => void;
+  /**
+   * Optional controlled model-state pair. The LoRA panel needs to know which
+   * base model is currently selected (to pass as `baseRepo` to lora_merge)
+   * and the ImageView needs to read the model so it can substitute in the
+   * merged `<base>+lora:<sha>` id when a LoRA is applied.
+   */
+  model?: string;
+  onModelChange?: (next: string) => void;
 }
 
 const SIZE_OPTIONS: ReadonlyArray<string> = [
@@ -66,9 +82,29 @@ export function ImagePromptPanel({
   running,
   progress,
   error,
+  prompt: controlledPrompt,
+  onPromptChange,
+  model: controlledModel,
+  onModelChange,
 }: Props) {
-  const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState<string>("schnell");
+  // Dual-mode prompt state: when the parent passes `prompt` + `onPromptChange`,
+  // it owns the string (LoRA trigger-word chips need to append into it). When
+  // unset, we keep the original internal-state behavior so existing call
+  // sites and tests don't need updates.
+  const [internalPrompt, setInternalPrompt] = useState("");
+  const isPromptControlled = controlledPrompt !== undefined && onPromptChange !== undefined;
+  const prompt = isPromptControlled ? controlledPrompt : internalPrompt;
+  const setPrompt = (next: string) => {
+    if (isPromptControlled) onPromptChange(next);
+    else setInternalPrompt(next);
+  };
+  const [internalModel, setInternalModel] = useState<string>("schnell");
+  const isModelControlled = controlledModel !== undefined && onModelChange !== undefined;
+  const model = isModelControlled ? controlledModel : internalModel;
+  const setModel = (next: string) => {
+    if (isModelControlled) onModelChange(next);
+    else setInternalModel(next);
+  };
   const [size, setSize] = useState<string>("1024x1024");
   const [offload, setOffload] = useState(false);
   const [unloadStatus, setUnloadStatus] = useState<string | null>(null);

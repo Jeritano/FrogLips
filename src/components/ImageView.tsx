@@ -3,12 +3,13 @@ import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { announce } from "../lib/announce";
 import { useTauriEvent } from "../hooks/useTauriEvent";
-import type { ImageGenOpts, ImageMeta } from "../types";
+import type { ImageGenOpts, ImageMeta, LoraMergeRow } from "../types";
 import type { UseImageGenerationResult } from "../hooks/useImageGeneration";
 import { ImagePromptPanel } from "./image/ImagePromptPanel";
 import { ImageGallery } from "./image/ImageGallery";
 import { ImageDetail } from "./image/ImageDetail";
 import { ImageContextMenu, type ImageContextMenuAction } from "./image/ImageContextMenu";
+import { LoraPanel } from "./image/LoraPanel";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 interface Props {
@@ -73,6 +74,17 @@ export function ImageView({
   const [loadingMore, setLoadingMore] = useState(false);
   const [pageLimit, setPageLimit] = useState(PAGE_LIMIT);
   const [totalCount, setTotalCount] = useState<number>(0);
+
+  // Lifted from ImagePromptPanel so the LoRA subpanel can read the current
+  // base model (to pass as `baseRepo` to lora_merge) and append trigger
+  // words into the prompt textarea state.
+  const [prompt, setPrompt] = useState("");
+  const [model, setModel] = useState<string>("schnell");
+
+  // Applied LoRA merge row. When non-null, the next image_generate's
+  // `model` field becomes `<model>+lora:<sha>` so the dispatcher routes
+  // to the merged variant. Cleared via the LoRA panel's Clear button.
+  const [appliedLora, setAppliedLora] = useState<LoraMergeRow | null>(null);
 
   // Whenever the parent's selected conversation changes, switch the default
   // scope back to "This chat" if a real conv is active. The user can still
@@ -160,9 +172,16 @@ export function ImageView({
   const onGenerate = useCallback(
     async (args: { prompt: string; model: string; opts: ImageGenOpts }) => {
       try {
+        // When a LoRA is applied, the dispatcher routes on the
+        // `<base>+lora:<sha>` selector. The friendly base id (schnell/dev)
+        // is preserved as the `<base>` prefix so the Rust side can still
+        // resolve the underlying repo.
+        const effectiveModel = appliedLora
+          ? `${args.model}+lora:${appliedLora.sha}`
+          : args.model;
         const id = await generate({
           prompt: args.prompt,
-          model: args.model,
+          model: effectiveModel,
           opts: args.opts,
           convId: conversationId,
         });
@@ -179,8 +198,18 @@ export function ImageView({
         });
       }
     },
-    [generate, refresh, conversationId],
+    [generate, refresh, conversationId, appliedLora],
   );
+
+  const onInsertTrigger = useCallback((text: string) => {
+    if (!text) return;
+    setPrompt((cur) => {
+      if (cur.length === 0) return text;
+      // Avoid double-spaces if the user's prompt already ends with whitespace.
+      const sep = /\s$/.test(cur) ? "" : " ";
+      return `${cur}${sep}${text}`;
+    });
+  }, []);
 
   const onDeleted = useCallback(
     (id: number) => {
@@ -388,6 +417,19 @@ export function ImageView({
           running={running}
           progress={progress}
           error={error}
+          prompt={prompt}
+          onPromptChange={setPrompt}
+          model={model}
+          onModelChange={setModel}
+        />
+        {/* LoRA pre-merge panel — Flux.1 dev/schnell only (v1). Feature-
+            detected: hides itself when the Rust IPCs are absent. */}
+        <LoraPanel
+          baseRepo={model}
+          appliedLora={appliedLora}
+          onApplied={setAppliedLora}
+          onCleared={() => setAppliedLora(null)}
+          onInsertTrigger={onInsertTrigger}
         />
       </section>
 

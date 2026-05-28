@@ -75,6 +75,8 @@ import type {
   GitResult,
   HttpReqInput,
   HttpResp,
+  LoraMergeRow,
+  LoraMetadata,
   McpServerInfo,
   McpToolDescriptor,
   Memory,
@@ -838,4 +840,41 @@ export const api = {
    */
   imageRevealInFinder: (id: number) =>
     invoke<void>("image_reveal_in_finder", { id }),
+
+  // ── LoRA merging (Flux.1 [dev] + LoRA) ─────────────────────────────────
+  //
+  // The Rust merger reads the LoRA + base safetensors, applies the deltas at
+  // the user-supplied weight, and writes a content-addressed merged variant
+  // under the app's cache dir. `lora_merge` blocks the IPC until the write
+  // completes — long-running but fire-and-await — while emitting progress
+  // events out of band:
+  //   - `lora-merge-progress { op_id, stage, progress }`
+  //   - `lora-merge-evicted  { sha }` (LRU drop notice for the cached merges)
+  //   - `lora-merge-done     { op_id, row }`
+  //   - `lora-merge-error    { op_id, message }`
+  //
+  // After a successful merge the renderer sets the next image_generate
+  // call's `model` field to `"<base>+lora:<sha>"` and the dispatcher routes
+  // it to the merged variant. Feature-detected via `"loraInspect" in api`
+  // — until the Rust side ships these handlers, the LoRA UI surface
+  // renders an "Unavailable" hint instead.
+  loraInspect: (loraPath: string) =>
+    invoke<LoraMetadata>("lora_inspect", { loraPath }),
+  loraMerge: (
+    baseRepo: string,
+    loraPath: string,
+    weight: number,
+    opId: string,
+  ) =>
+    invoke<LoraMergeRow>("lora_merge", {
+      baseRepo,
+      loraPath,
+      weight,
+      opId,
+    }),
+  loraListMerges: () => invoke<LoraMergeRow[]>("lora_list_merges"),
+  loraDeleteMerge: (sha: string) =>
+    invoke<void>("lora_delete_merge", { sha }),
+  loraRecordUsed: (sha: string) =>
+    invoke<void>("lora_record_used", { sha }),
 };

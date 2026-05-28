@@ -926,6 +926,48 @@ export interface ListImagesPage {
   total: number;
 }
 
+/* ── LoRA merging (Flux.1 [dev] + LoRA) ──────────────────────────────────
+ *
+ * Frontend types for the LoRA inspection + merge-and-apply pipeline.
+ * The Rust side does the actual safetensors parsing + delta application;
+ * the renderer just picks a file, kicks off the merge IPC, listens for
+ * the progress event stream, and then sets the next image_generate's
+ * `model` field to `<base>+lora:<sha>` so the dispatcher routes to the
+ * merged variant.
+ */
+
+/** Result of `lora_inspect` — static metadata read from the .safetensors header. */
+export interface LoraMetadata {
+  /** Trigger-word strings extracted from the safetensors metadata (may be empty). */
+  triggers: string[];
+  /** Detected key-naming convention. `unknown` means the merger may fail. */
+  convention: "diffusers" | "kohya" | "unknown";
+  /** Optional base-model hint from metadata (e.g. "black-forest-labs/FLUX.1-dev"). */
+  base_model_hint: string | null;
+  /** Number of tensors in the file — surfaced so the user can sanity-check the pick. */
+  key_count: number;
+  /** On-disk size of the LoRA file in bytes. */
+  bytes: number;
+}
+
+/**
+ * One persisted merged-variant row. `merged_path` is the absolute path to the
+ * on-disk merged safetensors directory; `sha` is the content hash used in the
+ * `<base>+lora:<sha>` model id the dispatcher routes on.
+ */
+export interface LoraMergeRow {
+  id: number;
+  sha: string;
+  base_repo: string;
+  lora_path: string;
+  lora_sha: string;
+  weight: number;
+  merged_path: string;
+  created_at: number;
+  last_used_at: number | null;
+  bytes: number;
+}
+
 /* ── Workflow skills (procedural memory) ─────────────────────────────── */
 
 /**
