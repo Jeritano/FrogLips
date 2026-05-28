@@ -4,8 +4,11 @@
 #   https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
 #
 # `github` requires the recipient to have a GitHub Sponsors account
-# activated (https://github.com/sponsors/accounts/new). Until that's
-# enabled, the button still renders but the Sponsor flow won't open.
+# activated. Apply at https://github.com/sponsors (click "Get started"
+# / "Join the waitlist") or from profile Settings → Sponsorship.
+# Until activation, the ♥ Sponsor button still renders but the
+# Sponsor flow falls through to whichever other providers are
+# listed below.
 github: [Jeritano]
 
 # Buy Me a Coffee — landing page is
