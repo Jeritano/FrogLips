@@ -58,6 +58,14 @@
 
 use anyhow::anyhow;
 
+// Phase 2 submodules (2026-05-28). Each is a contained piece of the
+// MMDiT port — config + 3D RoPE precompute landed first; the joint-
+// block forward pass (Phase 2b) hangs off `transformer`. None of these
+// allocate model weights yet; weight loading is Phase 4.
+pub mod config;
+pub mod rope;
+pub mod transformer;
+
 /// Canonical HF repo id for the Qwen-Image base model.
 pub const QWEN_IMAGE_REPO: &str = "Qwen/Qwen-Image";
 

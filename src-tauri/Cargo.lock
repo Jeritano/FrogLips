@@ -3969,6 +3969,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "candle-core",
+ "candle-nn",
  "chromiumoxide",
  "dirs 5.0.1",
  "either",

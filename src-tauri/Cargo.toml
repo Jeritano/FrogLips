@@ -74,6 +74,13 @@ mistralrs-core = { version = "0.8.1", default-features = false, features = ["met
 # on stub / no-mistralrs builds. The full mistralrs feature still re-uses
 # the same crate (matched version, no duplicate compile).
 candle-core = { version = "0.10", default-features = false, features = ["metal", "accelerate"] }
+# candle-nn — nn primitives (Linear, LayerNorm, RmsNorm, etc.) used by the
+# Qwen-Image MMDiT port (image_gen::qwen_image::transformer). Matches the
+# candle-core major so we don't double-compile candle. Always-on for the
+# same reason candle-core is: the type skeleton must compile on the stub
+# build too. The forward pass — gated behind native-mistralrs + Metal — is
+# the only thing that won't run on non-Apple-Silicon builds.
+candle-nn = { version = "0.10", default-features = false, features = ["metal", "accelerate"] }
 # safetensors is pulled in by candle-core transitively, but the LoRA module
 # needs the public API directly (serialize + Metadata extraction). Pin the
 # matching 0.4.x line so we don't double-compile two majors.
