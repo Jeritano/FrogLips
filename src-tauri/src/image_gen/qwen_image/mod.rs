@@ -23,7 +23,7 @@
 //! | 3 | Qwen2.5-VL-7B-Instruct text encoder (text-only path is enough for txt2img). Reuse existing Qwen2 plumbing from candle. | pending |
 //! | 4 | `AutoencoderKLQwenImage` VAE port. | pending |
 //! | 5 | Flow-match Euler scheduler. Wire end-to-end forward pass. | pending |
-//! | 6 | Memory offload (mirror `FluxOffloaded`) for ≤16 GiB Macs. | pending |
+//! | 6 | Metal SDPA kernel routing (done — `sdpa_manual` dispatches the fused `nn_ops::sdpa` on Metal tensors, portable math on CPU) + memory offload (mirror `FluxOffloaded`, ≤16 GiB Macs — pending Phase 8). | partial |
 //! | 7 | LoRA dispatch: load the merged variant via the new loader instead of erroring. | pending |
 //!
 //! Phase 1 deliverable contract:

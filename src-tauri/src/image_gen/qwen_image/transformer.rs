@@ -103,21 +103,45 @@ fn gated_add(x: &Tensor, gate: &Tensor, delta: &Tensor) -> CandleResult<Tensor> 
     x.broadcast_add(&delta.broadcast_mul(&gate)?)
 }
 
-/// Manual scaled dot-product attention. Candle 0.10's `nn_ops::sdpa` is
-/// Metal/CUDA-only — invoking it on a CPU tensor panics with "SDPA has
-/// no cpu impl". For Phase 2b we need a path that runs on both Metal
-/// (real inference) and CPU (unit tests), so we open-code the math:
+/// Scaled dot-product attention. Inputs `(batch, heads, seq, head_dim)`;
+/// output matches q's shape.
+///
+/// Phase 6 (2026-05-28) routes this by backend:
+///   * On a `metal` build with a Metal tensor, call candle's fused
+///     `nn_ops::sdpa` — it dispatches a single flash-attention-style
+///     Metal kernel that avoids materializing the full `(seq × seq)`
+///     scores matrix, the dominant memory cost at the 60-layer /
+///     4096-token scale Qwen-Image runs at.
+///   * Otherwise (CPU — unit tests, non-Apple builds) fall back to the
+///     open-coded `sdpa_cpu`, because candle's fused op has no CPU
+///     implementation and panics with "SDPA has no cpu impl".
+///
+/// The split is by `Tensor::device()` rather than a compile-time
+/// `#[cfg]` so a single binary can serve a Metal generate AND a CPU
+/// unit test without separate builds.
+pub(crate) fn sdpa_manual(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> CandleResult<Tensor> {
+    if q.device().is_metal() {
+        // Fused Metal kernel: no mask, non-causal, no softcapping.
+        match candle_nn::ops::sdpa(q, k, v, None, false, scale, 0.0) {
+            Ok(out) => return Ok(out),
+            // Defensive: if the fused kernel rejects the shape (e.g. a
+            // head_dim it doesn't support), fall back to the portable
+            // path rather than failing the whole generation.
+            Err(_) => { /* fall through to CPU-style math on-device */ }
+        }
+    }
+    sdpa_cpu(q, k, v, scale)
+}
+
+/// Portable scaled dot-product attention via plain tensor ops. Runs on
+/// any backend (used directly on CPU, and as the Metal fallback):
 ///
 /// ```text
 /// scores = (q @ k.transpose(-2, -1)) * scale
 /// attn   = softmax(scores, dim=-1)
 /// out    = attn @ v
 /// ```
-///
-/// All inputs are `(batch, heads, seq, head_dim)`; output matches q's
-/// shape. Phase 6 (Metal kernels) replaces this with `nn_ops::sdpa`
-/// behind a `#[cfg]` once the test harness has a Metal-capable runner.
-pub(crate) fn sdpa_manual(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> CandleResult<Tensor> {
+fn sdpa_cpu(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> CandleResult<Tensor> {
     let kt = k.transpose(D::Minus2, D::Minus1)?.contiguous()?;
     let scores = q.matmul(&kt)?;
     let scaled = (scores * scale as f64)?;
