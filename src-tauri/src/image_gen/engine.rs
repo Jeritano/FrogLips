@@ -177,12 +177,24 @@ impl ImageEngine {
     /// Register a cancellation token for `op_id`. Returns the
     /// [`CancellationToken`] the generate loop polls between steps. The IPC
     /// layer stores the op_id and later calls `cancel(op_id)` to fire it.
+    ///
+    /// Audit re-review HIGH (2026-05-28): `register_cancel` is called by
+    /// the IPC layer BEFORE spawning the engine task, AND by
+    /// `engine::generate` itself ("idempotent"-comment at the call site).
+    /// The previous impl always minted a fresh token + overwrote the
+    /// HashMap entry. Window: if the user clicked `image_cancel(op_id)`
+    /// between IPC return and `generate()` entering, the cancel fired
+    /// against the IPC-side token; `generate()` then replaced it with a
+    /// fresh non-cancelled token, the pre-load check saw NOT cancelled,
+    /// and the user's cancel was effectively lost. Fix: reuse an existing
+    /// entry. The map insert only happens for first-time registrations.
     pub fn register_cancel(&self, op_id: &str) -> CancellationToken {
+        let mut map = self.inner.cancellations.lock();
+        if let Some(existing) = map.get(op_id) {
+            return existing.clone();
+        }
         let token = CancellationToken::new();
-        self.inner
-            .cancellations
-            .lock()
-            .insert(op_id.to_string(), token.clone());
+        map.insert(op_id.to_string(), token.clone());
         token
     }
 

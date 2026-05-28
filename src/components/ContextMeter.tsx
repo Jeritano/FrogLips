@@ -30,7 +30,11 @@ function fmt(n: number): string {
 export function ContextMeter({ messages, model, status }: Props) {
   // Bump on a successful backend lookup so the memo below re-resolves and we
   // swap the heuristic total for the authoritative one without remount.
-  const [, setLookupTick] = useState(0);
+  // Audit re-review LOW (2026-05-28): previously `[, setLookupTick]` —
+  // the prefetch-landed tick was never wired into the memo deps, so
+  // the authoritative window didn't paint until messages/status next
+  // changed. Read the value too and include it in deps.
+  const [lookupTick, setLookupTick] = useState(0);
 
   useEffect(() => {
     if (!model || !status?.running) return;
@@ -49,9 +53,11 @@ export function ContextMeter({ messages, model, status }: Props) {
     // and surfaces as a console warning. Clamp the denominator.
     const pct = t > 0 ? Math.min(100, Math.max(0, Math.round((u / t) * 100))) : 0;
     return { used: u, total: t, pct };
-    // setLookupTick triggers a re-render and re-runs resolveContextTokens via
-    // the dep on status (cached value is in module state, not React state).
-  }, [messages, model, status]);
+    // lookupTick is in the dep array even though it's not read directly:
+    // it forces a memo re-run when prefetch lands so resolveContextTokens
+    // returns the authoritative value from the module-state cache.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, model, status, lookupTick]);
 
   if (messages.length === 0) return null;
 

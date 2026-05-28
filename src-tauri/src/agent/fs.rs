@@ -568,7 +568,12 @@ pub(crate) fn write_nofollow_sync(
     // saw `Ok(())` on a failing disk. The bytes might be in-page-cache
     // but not durable; an immediate crash or power loss would discard
     // them. Propagate the error so classify_io can map it.
-    f.sync_data()?;
+    //
+    // Audit re-review LOW (2026-05-28): upgraded from sync_data to
+    // sync_all so metadata (mtime / size) is also durably committed.
+    // The image-gen write path already uses sync_all; matching here
+    // keeps the durability story consistent across all writers.
+    f.sync_all()?;
     Ok(())
 }
 

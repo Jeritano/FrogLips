@@ -14,12 +14,32 @@
 //! TODO(embed): swap hashed-TF for ONNX BAAI/bge-small-en-v1.5 in v1.3.
 
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex as PLMutex;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::history::{get_db, now_unix};
+
+/// Per-corpus-name mutex registry. Two concurrent ingest calls for the
+/// same corpus name would otherwise race the wipe + insert: the
+/// transaction wrap in pass 5 narrowed but didn't eliminate the window
+/// (call A finishes wipe + first inserts, call B then runs its own wipe
+/// + clobbers A's just-inserted chunks). Per-name lock serializes the
+/// full ingest pipeline for the same corpus. Different corpora still
+/// proceed in parallel. Audit re-review MEDIUM (2026-05-28).
+static INGEST_LOCKS: Lazy<PLMutex<HashMap<String, Arc<PLMutex<()>>>>> =
+    Lazy::new(|| PLMutex::new(HashMap::new()));
+
+fn ingest_lock_for(name: &str) -> Arc<PLMutex<()>> {
+    let mut reg = INGEST_LOCKS.lock();
+    reg.entry(name.to_string())
+        .or_insert_with(|| Arc::new(PLMutex::new(())))
+        .clone()
+}
 
 /// Fixed embedding dimensionality. Higher → less hash collision but more
 /// storage per chunk (4 bytes × dim). 512 → 2 KB/chunk; 50k chunks ≈ 100 MB.
@@ -389,6 +409,13 @@ fn walk_files(root: &Path, glob_matcher: Option<&globset::GlobMatcher>, out: &mu
 
 pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     validate_name(&opts.name)?;
+    // Acquire the per-name ingest mutex for the full ingest run. Two
+    // concurrent calls for the same corpus serialize here; calls for
+    // different corpora proceed in parallel. Lock spans the whole
+    // function so the wipe + per-file inserts can't interleave with
+    // another invocation's wipe.
+    let ingest_lock = ingest_lock_for(&opts.name);
+    let _guard = ingest_lock.lock();
     let root = PathBuf::from(&opts.root);
     if !root.is_dir() {
         anyhow::bail!("root '{}' is not a directory", opts.root);

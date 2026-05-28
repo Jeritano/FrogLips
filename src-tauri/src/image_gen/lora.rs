@@ -872,6 +872,18 @@ pub fn delete(sha: &str) -> Result<()> {
 }
 
 /// Public last-used touch. No-op if the sha isn't in the DB.
+/// Look up a merge row by sha. Used by `engine.rs::resolve_lora_merged_path`
+/// to convert `<base>+lora:<sha>` model ids into on-disk merged-variant
+/// paths. Compiled-in unconditionally even though only the
+/// `native-mistralrs` build's engine actually calls it — the `--no-default-
+/// features` build uses the stub engine and never reaches the LoRA dispatch
+/// path, so the function is dead-code-allowed there.
+#[allow(dead_code)]
+pub fn get_by_sha(sha: &str) -> Result<Option<LoraMergeRow>> {
+    let row = history::lora_get_by_sha(sha)?;
+    Ok(row.map(internal_to_public))
+}
+
 pub fn record_used(sha: &str) -> Result<()> {
     history::lora_record_used(sha)
 }

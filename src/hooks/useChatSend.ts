@@ -472,7 +472,12 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           setErr(`Agent run failed: ${e}. Your message was kept — send again to retry.`);
         }
       } finally {
-        abortRef.current = null;
+        // Audit re-review HIGH (2026-05-28): only null out if this send's
+        // controller is still the active one. Otherwise a second send
+        // that already installed its own controller would lose its Stop
+        // affordance — the first send's finally would wipe the second's
+        // abortRef and the next Stop click would be a no-op.
+        if (abortRef.current === ctrl) abortRef.current = null;
         if (isStreamConvActive()) setAgentStatus("idle");
       }
       return;
@@ -537,7 +542,11 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       }
     } finally {
       if (scheduled) cancelAnimationFrame(scheduled);
-      abortRef.current = null;
+      // Only null out if this send's controller is still active. Audit
+      // re-review HIGH (2026-05-28) — same race as the agent-path
+      // finally above; second send's controller must survive the first's
+      // teardown.
+      if (abortRef.current === ctrl) abortRef.current = null;
       // No need to flush the final acc here — the assistant message gets
       // appended to `messages` below from `acc`, which renders the final
       // text via the normal MessageRow path. Clearing streaming hides the
