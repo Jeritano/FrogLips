@@ -4,7 +4,6 @@ import { api } from "./lib/tauri-api";
 import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
 import pkg from "../package.json";
-import { useTwoClickConfirm } from "./lib/use-two-click-confirm";
 import { useModalA11y } from "./lib/use-modal-a11y";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 import { usePlatformChrome } from "./hooks/usePlatformChrome";
@@ -180,7 +179,16 @@ function App() {
   const memoriesModalRef = useRef<HTMLDivElement>(null);
   // Tauri 2 webview disables window.confirm — use an inline two-click pattern
   // for conversation deletion so accidental clicks don't nuke a thread.
-  const deleteConfirm = useTwoClickConfirm();
+  // Right-click context menu on a conversation row. Replaces the inline
+  // pin/tag/detach/delete action chrome that previously hung on every
+  // row — those buttons cost ~24px of vertical real-estate on each row
+  // even when unused. UX refinement 2026-05-28. The two-click confirm
+  // hook is no longer needed here because the existing soft-delete
+  // toast (`pendingDelete`, 5s undo window) already provides the safety
+  // net for accidental delete clicks.
+  const [convContextMenu, setConvContextMenu] = useState<
+    { conv: Conversation; x: number; y: number } | null
+  >(null);
   useModalA11y({
     open: memoriesOpen,
     onClose: () => setMemoriesOpen(false),
@@ -915,7 +923,13 @@ function App() {
                 setView("chat");
               }}
               onDoubleClick={(e) => startEdit(c, e)}
-              title={depth > 0 ? "Branch — forked from another conversation" : "Double-click to rename"}
+              onContextMenu={(e) => {
+                if (editingId === c.id || tagEditingId === c.id) return;
+                e.preventDefault();
+                e.stopPropagation();
+                setConvContextMenu({ conv: c, x: e.clientX, y: e.clientY });
+              }}
+              title={depth > 0 ? "Branch — forked from another conversation" : "Right-click for actions; double-click to rename"}
               style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 14 } : undefined}
             >
               {editingId === c.id ? (
@@ -966,66 +980,97 @@ function App() {
                   ) : null}
                 </span>
               )}
-              <button
-                className="del conv-pin"
-                title={c.pinned ? "Unpin conversation" : "Pin conversation"}
-                aria-label={c.pinned ? "Unpin conversation" : "Pin conversation"}
-                aria-pressed={!!c.pinned}
-                data-testid="pin-conv"
-                onClick={(e) => togglePin(c, e)}
-              >
-                {c.pinned ? "★" : "☆"}
-              </button>
-              <button
-                className="del conv-tag-btn"
-                title="Edit tags"
-                aria-label="Edit conversation tags"
-                data-testid="tag-conv"
-                onClick={(e) => startTagEdit(c, e)}
-              >
-                🏷
-              </button>
-              <button
-                className="del detach"
-                title="Open in a new window"
-                aria-label="Detach into new window"
-                data-testid="detach-conv"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  // Fire-and-forget; the Rust side focuses an existing
-                  // window when one already exists for this conv id.
-                  api.openConversationWindow(c.id, c.title).catch((err) => {
-                    setErr(`Failed to open window: ${err}`);
-                  });
-                }}
-              >
-                ⧉
-              </button>
-              <button
-                className={`del${deleteConfirm.armed === String(c.id) ? " armed" : ""}`}
-                title={
-                  deleteConfirm.armed === String(c.id)
-                    ? "Click again to confirm deletion"
-                    : "Delete"
-                }
-                aria-label={
-                  deleteConfirm.armed === String(c.id)
-                    ? "Click again to confirm deletion"
-                    : "Delete conversation"
-                }
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteConfirm.request(String(c.id), () => {
-                    void deleteConv(c.id);
-                  });
-                }}
-              >
-                {deleteConfirm.labelFor(String(c.id), "×")}
-              </button>
+              {/* Action chrome (pin / tags / detach / delete) now lives in
+                  the right-click context menu rendered below the list. The
+                  pinned `📌` glyph still appears as a left-side indicator
+                  inside `.conv-title-line` for at-a-glance state. */}
             </li>
             );
           })}
         </ul>
+        {convContextMenu && (
+          <>
+            {/* Click-anywhere backdrop closes the menu. Transparent + full-
+                screen + high z so an outside click anywhere on the app
+                dismisses without needing a per-element listener. */}
+            <div
+              className="conv-context-backdrop"
+              data-testid="conv-context-backdrop"
+              onClick={() => setConvContextMenu(null)}
+              onContextMenu={(e) => {
+                // Right-clicking the backdrop also closes the menu;
+                // preventDefault stops the browser's own menu from
+                // popping up on top of ours.
+                e.preventDefault();
+                setConvContextMenu(null);
+              }}
+            />
+            <div
+              className="conv-context-menu"
+              role="menu"
+              data-testid="conv-context-menu"
+              style={{ top: convContextMenu.y, left: convContextMenu.x }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="ctx-pin"
+                onClick={(e) => {
+                  void togglePin(convContextMenu.conv, e);
+                  setConvContextMenu(null);
+                }}
+              >
+                {convContextMenu.conv.pinned ? "📌 Unpin" : "📌 Pin"}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="ctx-tag"
+                onClick={(e) => {
+                  startTagEdit(convContextMenu.conv, e);
+                  setConvContextMenu(null);
+                }}
+              >
+                🏷 Edit tags…
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="ctx-detach"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const conv = convContextMenu.conv;
+                  // Fire-and-forget; the Rust side focuses an existing
+                  // window when one already exists for this conv id.
+                  api.openConversationWindow(conv.id, conv.title).catch((err) => {
+                    setErr(`Failed to open window: ${err}`);
+                  });
+                  setConvContextMenu(null);
+                }}
+              >
+                ⧉ Open in new window
+              </button>
+              <div className="conv-context-divider" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="ctx-delete"
+                className="conv-context-danger"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // deleteConv handles the soft-delete + 5s undo toast
+                  // already in `pendingDelete`, so a single confirm
+                  // here is enough — no two-click arming needed.
+                  void deleteConv(convContextMenu.conv.id);
+                  setConvContextMenu(null);
+                }}
+              >
+                🗑 Delete
+              </button>
+            </div>
+          </>
+        )}
         <div className="sidebar-spacer-bottom" aria-hidden="true" />
       </aside>
       <main className="main">

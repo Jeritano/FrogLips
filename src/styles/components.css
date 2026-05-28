@@ -269,15 +269,10 @@
 }
 
 /* ── Conversation organisation: pin + tags ───────────────────────────────
- * Additive row affordances. The pin/tag buttons reuse the existing `.del`
- * hover-to-reveal pattern, so they do not alter the locked row layout. */
-.conv-pin:hover { color: var(--warn-fg) !important; }
-/* A pinned conversation keeps its pin star visible even without row hover. */
-.conv-list li[data-pinned="true"] .conv-pin {
-  color: var(--warn-fg);
-}
-.conv-tag-btn { font-size: 12px; }
-.conv-tag-btn:hover { color: var(--accent) !important; }
+ * Inline pin/tag buttons removed 2026-05-28 — actions moved to the
+ * right-click context menu (`.conv-context-menu`). The `.conv-pin-dot`
+ * left-side indicator below is the only persistent affordance left,
+ * showing the pinned state at-a-glance. */
 
 .conv-pin-dot {
   font-size: 9px;
@@ -749,4 +744,64 @@
   margin: var(--space-3, 12px);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── Conv-row right-click context menu ─────────────────────────────────
+ * Replaces the persistent inline pin / tag / detach / delete buttons
+ * on every conv row (UX refinement 2026-05-28). Triggered by
+ * `onContextMenu` on the `<li>`; positioned at the cursor via inline
+ * top/left. The backdrop is a transparent overlay above everything
+ * else — clicking anywhere dismisses the menu. */
+.conv-context-backdrop {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  z-index: calc(var(--z-modal) - 1);
+}
+.conv-context-menu {
+  position: fixed;
+  z-index: var(--z-modal);
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-modal);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: inherit;
+}
+.conv-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.conv-context-menu button:hover {
+  background: var(--surface-hover);
+}
+.conv-context-menu button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.conv-context-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 3px 6px;
+}
+.conv-context-menu .conv-context-danger {
+  color: var(--danger-fg);
+}
+.conv-context-menu .conv-context-danger:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
 }

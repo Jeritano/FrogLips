@@ -689,20 +689,14 @@ body {
 }
 
 .conv-list li {
-  /* `position: relative` anchors the absolute-positioned action buttons
-     (pin / tag / detach / delete) anchored to the top-right of the row.
-     With the buttons removed from the flex flow, the .conv-title spans
-     the full row width below them and the ellipsis truncates as late
-     as possible. Top padding adds a 24px gutter so the always-visible
-     pinned ★ never collides with the title baseline. */
-  position: relative;
+  /* Action chrome moved to the right-click context menu (UX refinement
+     2026-05-28) — the row is back to a compact single-line layout. The
+     pinned `📌` glyph inside `.conv-title-line` is the only persistent
+     state indicator; tag chips stack below the title when present. */
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  /* Tightened padding reclaims ~4px after the -45px sidebar trim.
-     Top padding (28px) reserves a corner-zone for the action buttons;
-     6px elsewhere keeps the row compact. */
-  padding: 28px 6px 6px;
+  align-items: center;
+  padding: 6px 6px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
@@ -726,100 +720,11 @@ body {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.conv-list .del {
-  /* Action buttons live in an overlay anchored to the top-right corner
-     of the row. They take no flow space — the title gets the full row
-     width below them. Anchoring to the top (instead of vertical-center)
-     means the always-visible pin star sits ABOVE the title text rather
-     than overlapping it. UX refinement 2026-05-28: previously buttons
-     were vertically centered which made the pin/tag/delete glyphs land
-     on top of the title baseline; the new anchoring keeps glyphs and
-     title text in separate visual zones. */
-  position: absolute;
-  top: 4px;
-  background: transparent;
-  color: transparent;
-  border: 0;
-  cursor: pointer;
-  font-size: 14px;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-xs);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.12s, color 0.1s, background 0.1s;
-}
-
-/* Per-button right offsets — HTML order is (pin, tag, detach, delete),
-   so the rightmost button (delete = last-child) sits closest to the
-   row's right edge. Spacing keeps a 2px visual gap between buttons.
-   Button glyph cells are 22px wide (top-right anchored). */
-.conv-list .del.conv-pin     { right: calc(22px * 3 + 6px); }
-.conv-list .del.conv-tag-btn { right: calc(22px * 2 + 4px); }
-.conv-list .del.detach       { right: calc(22px * 1 + 2px); }
-.conv-list li > .del:last-child { right: 2px; }
-
-/* Reveal on row hover / keyboard focus. The pinned button stays
-   permanently visible when its conv is pinned (aria-pressed="true")
-   so the pinned state is at-a-glance discoverable. The armed delete
-   button also stays visible because the user is mid-confirmation. */
-.conv-list li:hover .del,
-.conv-list li:focus-within .del {
-  opacity: 1;
-  pointer-events: auto;
-  color: var(--text-3);
-}
-.conv-list .del.conv-pin[aria-pressed="true"] {
-  opacity: 1;
-  pointer-events: auto;
-  color: var(--accent);
-}
-
-/* UX refinement 2026-05-28: pin (★/☆) and tag (🏷) are the two everyday
-   actions on a conversation row — keep them dimly visible even without
-   hover so the affordance is discoverable on every row. Detach (⧉) and
-   delete (×) remain hover-only because they're rarer + destructive and
-   benefit from being out of casual reach. Hover bumps them to full
-   opacity via the rule above. */
-.conv-list .del.conv-pin,
-.conv-list .del.conv-tag-btn {
-  opacity: 0.45;
-  pointer-events: auto;
-  color: var(--text-3);
-}
-/* Armed delete (mid-confirmation, "click again to confirm") must stay
-   visible even when the cursor briefly leaves the row, or the user
-   loses the click target. */
-.conv-list .del.armed {
-  opacity: 1;
-  pointer-events: auto;
-}
-/* UI re-review UX-H5: detach (⧉) and delete (×) historically sat
-   adjacent in the row — easy to misclick the destructive one. Add a
-   small left margin to the delete button so the visual gap separates
-   it from the navigation cluster (pin / tag / detach). Hover-only
-   color shift on delete also lands red for clarity. */
-.conv-list li .del:last-child {
-  margin-left: 6px;
-}
-.conv-list li:hover .del:last-child,
-.conv-list li:focus-within .del:last-child {
-  color: var(--danger-fg);
-}
-/* Armed delete = two-click pattern primed. Color shift makes the state
-   discoverable for colorblind users; label changes already too. */
-.conv-list .del.armed,
-.conv-list .del.armed:hover {
-  color: var(--danger) !important;
-  background: var(--danger-bg);
-  font-size: var(--fs-xs);
-  letter-spacing: 0.02em;
-  width: auto;
-  padding: 0 var(--space-2);
-}
+/* Inline action buttons (pin / tag / detach / delete) removed 2026-05-28
+   when the per-row chrome was replaced by a right-click context menu.
+   The `.conv-context-menu` rules in components.css handle the new
+   surface. Keep `.conv-title` + `.conv-rename` rules below — they govern
+   the row's main content layout. */
 
 .conv-title {
   flex: 1;
@@ -842,20 +747,8 @@ body {
   min-width: 0;
 }
 
-.conv-list .del:hover {
-  color: var(--text) !important;
-  background: var(--surface-2);
-}
-
-/* Detach (open-in-new-window) button — shares .del's hover-to-reveal pattern
-   but uses the muted accent color so it reads "secondary action" rather
-   than the destructive-red feel of the delete button. */
-.conv-list .del.detach {
-  font-size: 13px;
-}
-.conv-list .del.detach:hover {
-  color: var(--accent) !important;
-}
+/* Old `.conv-list .del.detach` rules removed alongside the rest of the
+   inline action chrome — see `.conv-context-menu` in components.css. */
 
 /* ── Main ── */
 
