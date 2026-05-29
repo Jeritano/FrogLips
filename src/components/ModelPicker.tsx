@@ -10,6 +10,9 @@ import type { AllModels, CustomBackend, ModelEntry, ServerStatus } from "../type
 const ModelBrowser = lazy(() =>
   import("./ModelBrowser").then((m) => ({ default: m.ModelBrowser })),
 );
+const CustomBackendsSettings = lazy(() =>
+  import("./CustomBackendsSettings").then((m) => ({ default: m.CustomBackendsSettings })),
+);
 
 interface Props {
   status: ServerStatus | null;
@@ -47,6 +50,10 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   // process) and routes chat through `streamCustomChat`.
   const [customBackends, setCustomBackends] = useState<CustomBackend[]>([]);
   const [selectedCustom, setSelectedCustom] = useState<CustomBackend | null>(null);
+  // Cloud-backend manager modal, opened from the "Connect a cloud
+  // backend…" dropdown entry so config is reachable from the picker
+  // (not only the agent-mode gear panel).
+  const [customMgrOpen, setCustomMgrOpen] = useState(false);
 
   // Timestamp of the last successful model-list fetch. The dropdown's
   // onFocus + onMouseDown both fire `loadModels` (so the list is fresh
@@ -155,6 +162,7 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const v = e.target.value;
     if (v === "__browse__") { setBrowserOpen(true); return; }
+    if (v === "__add_custom__") { setCustomMgrOpen(true); return; }
     if (v === "__native__") {
       // window.prompt is blocked in the Tauri webview — use an inline input.
       setNativeRepo((r) => r ?? "NousResearch/Llama-3.2-1B");
@@ -315,6 +323,7 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
           </optgroup>
           <optgroup label="Add model">
             <option value="__browse__">⬇ Browse &amp; download models…</option>
+            <option value="__add_custom__">☁ Connect a cloud backend (OpenRouter…)…</option>
           </optgroup>
         </select>
 
@@ -395,6 +404,30 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
             onPulled={() => { void loadModels(true); setBrowserOpen(false); }}
           />
         </Suspense>
+      )}
+
+      {customMgrOpen && (
+        <div
+          className="memories-overlay"
+          onClick={(e) => { if (e.target === e.currentTarget) { setCustomMgrOpen(false); void loadCustomBackends(); } }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Cloud backends"
+        >
+          <div className="memories-modal custom-mgr-modal">
+            <div className="memories-modal-header">
+              <span>Cloud backends</span>
+              <button
+                onClick={() => { setCustomMgrOpen(false); void loadCustomBackends(); }}
+                aria-label="Close"
+                className="memories-close"
+              >×</button>
+            </div>
+            <Suspense fallback={<div className="lazy-loading">Loading…</div>}>
+              <CustomBackendsSettings />
+            </Suspense>
+          </div>
+        </div>
       )}
     </>
   );
