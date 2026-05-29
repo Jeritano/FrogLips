@@ -22,6 +22,7 @@ const VISION_MODEL_PATTERNS: RegExp[] = [
   /qwen-?vl/i,
   /qwen3[._-]?vl/i,
   /gemma-?3/i,
+  /gemma-?4/i,
   /minicpm-?v/i,
   /pixtral/i,
   /llama-?3\.2-vision/i,

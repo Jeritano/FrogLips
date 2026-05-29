@@ -66,8 +66,10 @@ describe("modelContextTokens", () => {
     // Explicit window markers win.
     expect(modelContextTokens("somemodel-256k")).toBe(256_000);
     expect(modelContextTokens("bigctx-1m")).toBe(1_000_000);
-    // Gemma 2/3 still 8k.
+    // Gemma 2/3 still 8k; gemma4 is the large-window exception.
     expect(modelContextTokens("gemma3:12b")).toBe(8_192);
+    expect(modelContextTokens("gemma4:latest")).toBe(128_000);
+    expect(modelContextTokens("gemma-4-31b")).toBe(128_000);
   });
 });
 

@@ -56,6 +56,11 @@ const CONTEXT_OVERRIDES: Array<{ pattern: RegExp; tokens: number }> = [
   { pattern: /(?:^|[^a-z0-9])(?:mistral|mixtral|mistral-?small)(?![a-z0-9])/i, tokens: 32_768 },
   // Gemma 2/3 → 8k. Phi-3.5/4 → 16k (Phi-3 base stays 4k below).
   { pattern: /(?:^|[^a-z0-9])(?:phi-?3\.5|phi-?4)(?![a-z0-9])/i, tokens: 16_384 },
+  // Gemma 4 ships a large (~128k) window; gemma 2/3 stay 8k. Keep gemma4
+  // ABOVE the gemma-2/3 rule so it wins. (Ollama /api/show is still the
+  // authoritative source when available — this is the fallback for the
+  // agent-loop budgeter, cloud tags, or a failed lookup.)
+  { pattern: /(?:^|[^a-z0-9])gemma-?4(?![a-z0-9])/i, tokens: 128_000 },
   { pattern: /(?:^|[^a-z0-9])gemma-?[23](?![a-z0-9])/i, tokens: 8_192 },
   { pattern: /(?:^|[^a-z0-9])phi-?3(?![a-z0-9])/i, tokens: 4_096 },
   {
