@@ -254,7 +254,20 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
     setText("");
     setImages([]);
     setSlashCtx(null);
-    if (listening) recogRef.current?.stop?.();
+    // Fully tear down dictation BEFORE the async stop. `recogRef.stop()`
+    // is asynchronous: the engine flushes a final `onresult` (and the
+    // `onend`) AFTER this call, and that handler would call
+    // `setText(base + combined)` — repopulating the composer we just
+    // cleared (the leftover-text bug). Flipping `listeningRef` false +
+    // blanking the base/last refs makes the trailing onresult a no-op
+    // (it early-returns on `!listeningRef.current`).
+    listeningRef.current = false;
+    baseTextRef.current = "";
+    lastVoiceTextRef.current = "";
+    if (listening) {
+      recogRef.current?.stop?.();
+      setListening(false);
+    }
   }
 
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -409,6 +422,9 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
       baseTextRef.current = text ? text + (text.endsWith(" ") ? "" : " ") : "";
 
       r.onresult = (e) => {
+        // Ignore a final result flushed after stop() (e.g. send() tore
+        // dictation down) — otherwise it repopulates the cleared input.
+        if (!listeningRef.current) return;
         const segments = [];
         for (let i = 0; i < e.results.length; i++) {
           const seg = e.results[i][0].transcript.trim();
