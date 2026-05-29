@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api } from "./lib/tauri-api";
+import { applySyntaxTheme } from "./lib/syntax-theme";
 import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
 import pkg from "../package.json";
@@ -260,6 +261,9 @@ function App() {
         setTheme(s.theme);
         document.documentElement.dataset.theme = s.theme;
       }
+      // Apply the saved syntax-highlight palette (localStorage-backed,
+      // independent of the app theme).
+      applySyntaxTheme();
     }).catch((err) => {
       if (ignored) return;
       logDiag({

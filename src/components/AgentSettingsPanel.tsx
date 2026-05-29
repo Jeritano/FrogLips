@@ -1,8 +1,14 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import { McpSettings } from "./McpSettings";
 import { CustomBackendsSettings } from "./CustomBackendsSettings";
 import { ErrorBar } from "./ErrorBar";
 import type { AgentSettings } from "../hooks/useAgentSettings";
+import {
+  SYNTAX_THEMES,
+  getSyntaxTheme,
+  setSyntaxTheme,
+  type SyntaxThemeId,
+} from "../lib/syntax-theme";
 
 // AuditLog only renders inside the agent-settings disclosure (gear icon
 // while agent mode is on). Lazy-loaded so first paint of the chat
@@ -55,6 +61,7 @@ export function AgentSettingsPanel({
   onChooseWorkspace,
   onCheckUpdates,
 }: Props) {
+  const [syntaxTheme, setSyntaxThemeState] = useState<SyntaxThemeId>(() => getSyntaxTheme());
   return (
     <div className="agent-settings" data-testid="agent-settings-panel">
       <div className="agent-settings-row">
@@ -129,6 +136,26 @@ export function AgentSettingsPanel({
         <span className="agent-settings-label">Updates:</span>
         <button className="agent-settings-btn" onClick={onCheckUpdates}>Check now</button>
         {updateMsg && <span className="agent-settings-hint">{updateMsg}</span>}
+      </div>
+      <div className="agent-settings-row">
+        <span className="agent-settings-label">Code colors:</span>
+        <select
+          className="agent-settings-select"
+          value={syntaxTheme}
+          aria-label="Code syntax highlight palette"
+          onChange={(e) => {
+            const id = e.target.value as SyntaxThemeId;
+            setSyntaxThemeState(id);
+            setSyntaxTheme(id);
+          }}
+        >
+          {SYNTAX_THEMES.map((t) => (
+            <option key={t.id} value={t.id}>{t.label}</option>
+          ))}
+        </select>
+        <span className="agent-settings-hint">
+          Syntax-highlight palette for code blocks. Adapts to light/dark.
+        </span>
       </div>
       <McpSettings />
       <CustomBackendsSettings />

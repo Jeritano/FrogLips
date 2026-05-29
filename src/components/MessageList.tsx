@@ -5,7 +5,11 @@ import { saveMemory } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
 import { renderMarkdown } from "../lib/markdown";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
-import "highlight.js/styles/github-dark.css";
+// Syntax-highlight colors live in styles/syntax.css as theme-aware CSS
+// vars (was a hardcoded github-dark.css import — its dark-only palette
+// washed out on the light app theme). The chosen palette is applied via
+// `documentElement.dataset.syntaxTheme`; see styles/syntax.css.
+import "../styles/syntax.css";
 
 interface Props {
   messages: Message[];

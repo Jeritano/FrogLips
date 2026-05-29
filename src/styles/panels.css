@@ -176,6 +176,21 @@
 .agent-settings-btn.danger { color: var(--danger); }
 .agent-settings-btn.primary { background: var(--accent); color: #fff; }
 
+.agent-settings-select {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.agent-settings-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* ── Diagnostics: crash log section ── */
 
 .diag-crash {
