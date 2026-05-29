@@ -8,6 +8,7 @@ import { OllamaLibraryView } from "./OllamaLibraryView";
 import { CivitaiBrowserTab } from "./model-browser/CivitaiBrowserTab";
 import { InstalledModelsTab } from "./model-browser/InstalledModelsTab";
 import { RpBrowserTab, RP_CATALOG } from "./model-browser/RpBrowserTab";
+import { OpenRouterBrowserTab } from "./model-browser/OpenRouterBrowserTab";
 /** Type-only re-import for the GGUF tree shape — HuggingFaceLibraryView owns
  *  it now; this stays a type-level import so the lazy() chunk boundary holds. */
 import type { HfTreeEntry } from "./HuggingFaceLibraryView";
@@ -19,7 +20,7 @@ const HuggingFaceLibraryView = lazy(() =>
   import("./HuggingFaceLibraryView").then((m) => ({ default: m.HuggingFaceLibraryView })),
 );
 
-type Backend = "ollama" | "hf" | "rp" | "civitai" | "installed";
+type Backend = "ollama" | "hf" | "rp" | "civitai" | "installed" | "openrouter";
 
 /* GGUF tree shape lives inside HuggingFaceLibraryView now (the GGUF tab
  * routes through that component in `ggufMode`). ModelBrowser keeps
@@ -213,9 +214,12 @@ const OLLAMA: CatalogEntry[] = [
 interface Props {
   onClose: () => void;
   onPulled: () => void;
+  /** Chosen OpenRouter model id → parent activates it (cloud, no
+   *  download) + closes the library. */
+  onSelectOpenRouter?: (modelId: string) => void;
 }
 
-export function ModelBrowser({ onClose, onPulled }: Props) {
+export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
   const [tab, setTab] = useState<Backend>("installed");
   const [query, setQuery] = useState("");
   const [pulling, setPulling] = useState<string | null>(null);
@@ -463,10 +467,11 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
               data-testid="model-search"
               className="mb-search"
               placeholder={
-                tab === "ollama"   ? "Filter Ollama models…" :
-                tab === "rp"       ? "Filter RP / Kobold models…" :
-                tab === "civitai"  ? "Search Civitai…" :
-                                     "Filter installed models…"
+                tab === "ollama"     ? "Filter Ollama models…" :
+                tab === "rp"         ? "Filter RP / Kobold models…" :
+                tab === "civitai"    ? "Search Civitai…" :
+                tab === "openrouter" ? "Filter OpenRouter models…" :
+                                       "Filter installed models…"
               }
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -506,6 +511,9 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
             </option>
             <option value="civitai">
               Civitai (live)
+            </option>
+            <option value="openrouter">
+              OpenRouter (cloud)
             </option>
           </select>
         </div>
@@ -598,6 +606,12 @@ export function ModelBrowser({ onClose, onPulled }: Props) {
 
           {/* Civitai tab */}
           {tab === "civitai" && <CivitaiBrowserTab query={query} />}
+          {tab === "openrouter" && (
+            <OpenRouterBrowserTab
+              query={query}
+              onSelect={(modelId) => { onSelectOpenRouter?.(modelId); onClose(); }}
+            />
+          )}
         </div>
 
       </div>
