@@ -500,7 +500,12 @@ body {
   border-radius: 8px;
   padding: 4px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
-  z-index: 50;
+  /* Above the .view-tabs segmented control (z: --z-popover = 50). The
+     two previously tied at 50, so the later-painted tabs covered the
+     menu's TOP item (Dashboard) — it rendered but sat behind the
+     Chat/Images/Flows row. Bump to --z-modal so the hamburger menu
+     always sits above the tabs. (2026-05-29) */
+  z-index: var(--z-modal);
   display: flex;
   flex-direction: column;
 }
