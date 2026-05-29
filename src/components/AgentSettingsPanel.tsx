@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import { McpSettings } from "./McpSettings";
+import { CustomBackendsSettings } from "./CustomBackendsSettings";
 import { ErrorBar } from "./ErrorBar";
 import type { AgentSettings } from "../hooks/useAgentSettings";
 
@@ -130,6 +131,7 @@ export function AgentSettingsPanel({
         {updateMsg && <span className="agent-settings-hint">{updateMsg}</span>}
       </div>
       <McpSettings />
+      <CustomBackendsSettings />
       <Suspense fallback={<div className="lazy-loading">Loading…</div>}>
         <AuditLog />
       </Suspense>

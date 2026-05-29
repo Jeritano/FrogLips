@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { api } from "../lib/tauri-api";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import { isNonChatRepo } from "../lib/chat-model-filter";
-import type { AllModels, ModelEntry, ServerStatus } from "../types";
+import type { AllModels, CustomBackend, ModelEntry, ServerStatus } from "../types";
 
 // ModelBrowser bundles three large tabs (HF, Civitai, GGUF) plus their data
 // fetchers. Lazy-load so the picker shell stays in the first-paint chunk and
@@ -42,6 +42,11 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   // Native models load in-process (no host:port), so their progress only
   // surfaces via Tauri events rather than the polled ServerStatus.
   const [nativeLoading, setNativeLoading] = useState<string | null>(null);
+  // Configured custom OpenAI-compatible cloud backends (OpenRouter/Groq/…).
+  // Loaded from settings; selecting one synthesizes a status (no local
+  // process) and routes chat through `streamCustomChat`.
+  const [customBackends, setCustomBackends] = useState<CustomBackend[]>([]);
+  const [selectedCustom, setSelectedCustom] = useState<CustomBackend | null>(null);
 
   // Timestamp of the last successful model-list fetch. The dropdown's
   // onFocus + onMouseDown both fire `loadModels` (so the list is fresh
@@ -54,6 +59,19 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   const LIST_STALE_MS = 30_000;
 
   useEffect(() => { void loadModels(true); }, []);
+
+  // Load configured custom backends + refresh when settings change (the
+  // settings panel emits `settings-changed` after a save).
+  const loadCustomBackends = useCallback(async () => {
+    try {
+      const s = await api.settingsGet();
+      setCustomBackends(s.custom_backends ?? []);
+    } catch {
+      setCustomBackends([]);
+    }
+  }, []);
+  useEffect(() => { void loadCustomBackends(); }, [loadCustomBackends]);
+  useTauriEvent<unknown>("settings-changed", useCallback(() => { void loadCustomBackends(); }, [loadCustomBackends]));
 
   // Native models load in-process: progress only surfaces via Tauri events.
   useTauriEvent<string>("native-loading", useCallback((e) => setNativeLoading(e.payload), []));
@@ -142,14 +160,40 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
       setNativeRepo((r) => r ?? "NousResearch/Llama-3.2-1B");
       return;
     }
+    // Custom cloud backend: value is `__custom__:<id>`. These aren't
+    // ModelEntry rows; track them separately and clear the normal pick.
+    if (v.startsWith("__custom__:")) {
+      const id = v.slice("__custom__:".length);
+      const cb = customBackends.find((b) => b.id === id) ?? null;
+      setSelectedCustom(cb);
+      setSelected(null);
+      return;
+    }
     const [backend, ...rest] = v.split(":");
     const id = rest.join(":");
     const all = [...models.mlx, ...models.ollama];
     const entry = all.find(m => m.id === id && m.backend === backend);
     setSelected(entry ?? null);
+    setSelectedCustom(null);
   }
 
   async function start() {
+    // Custom cloud backend: no local process to start — synthesize a
+    // ready status. `model` carries the backend id so `useChatSend`'s
+    // custom dispatch can resolve it; the chat header shows the friendly
+    // name via the running pill text below.
+    if (selectedCustom) {
+      onStatusChange({
+        running: true,
+        ready: true,
+        model: selectedCustom.id,
+        backend: "custom",
+        host: "",
+        port: 0,
+        last_error: null,
+      });
+      return;
+    }
     if (!selected) return;
     setBusy(true); setErr(null);
     try {
@@ -187,7 +231,14 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   async function stop() {
     setBusy(true);
     try {
-      if (status?.backend === "native") {
+      if (status?.backend === "custom") {
+        // No local process — just clear the synthesized status.
+        setSelectedCustom(null);
+        onStatusChange({
+          running: false, ready: false, model: null, backend: null,
+          host: "", port: 0, last_error: null,
+        });
+      } else if (status?.backend === "native") {
         await api.nativeUnloadModel();
         onStatusChange({
           running: false,
@@ -207,7 +258,11 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
     } finally { setBusy(false); }
   }
 
-  const selValue = selected ? `${selected.backend}:${selected.id}` : "";
+  const selValue = selectedCustom
+    ? `__custom__:${selectedCustom.id}`
+    : selected
+    ? `${selected.backend}:${selected.id}`
+    : "";
 
   return (
     <>
@@ -242,6 +297,15 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
               {models.mlx.map((m) => (
                 <option key={`mlx:${m.id}`} value={`mlx:${m.id}`}>
                   {m.id}{formatSize(m.size_bytes)}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {customBackends.length > 0 && (
+            <optgroup label="Custom (cloud)">
+              {customBackends.map((b) => (
+                <option key={`__custom__:${b.id}`} value={`__custom__:${b.id}`}>
+                  ☁ {b.name}
                 </option>
               ))}
             </optgroup>
@@ -290,7 +354,7 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
         {status?.running ? (
           <button onClick={stop} disabled={busy}>Stop</button>
         ) : (
-          <button onClick={start} disabled={busy || !selected} className="start-btn">Start</button>
+          <button onClick={start} disabled={busy || (!selected && !selectedCustom)} className="start-btn">Start</button>
         )}
         <span
           className={`status-dot ${status?.running ? "on" : "off"}`}

@@ -2,6 +2,7 @@ import { useCallback, useRef } from "react";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
 import { streamNativeChat } from "../lib/native-client";
+import { streamCustomChat } from "../lib/custom-client";
 import { runAgentLoop, cancelActiveShell } from "../lib/agent-loop";
 import type { AgentMetrics, AgentStatus, ConfirmDecision } from "../lib/agent-loop";
 import type { ChatImage, Conversation, ConversationParams, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
@@ -496,7 +497,19 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       if (isStreamConvActive()) setStreaming(acc);
     };
     try {
-      const stream = status.backend === "native"
+      // Backend dispatch. `custom` routes to a user-configured
+      // OpenAI-compatible cloud endpoint; `status.model` carries the
+      // CustomBackend id (the picker encodes it there for custom
+      // selections). `native` is in-process mistralrs; everything else
+      // is the MLX/Ollama OpenAI-compat loopback path.
+      const stream = status.backend === "custom"
+        ? streamCustomChat(status.model ?? "", historyForApi, {
+            signal: ctrl.signal,
+            temperature: chatParams.temperature ?? undefined,
+            top_p: chatParams.top_p ?? undefined,
+            maxTokens: chatParams.max_tokens ?? undefined,
+          })
+        : status.backend === "native"
         ? streamNativeChat(historyForApi, {
             signal: ctrl.signal,
             temperature: chatParams.temperature ?? undefined,

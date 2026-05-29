@@ -679,6 +679,32 @@ export const api = {
     tools?: Record<string, unknown>[];
   }) => invoke<string>("native_chat_stream", { args }),
 
+  /**
+   * Stream a chat completion from a custom OpenAI-compatible cloud backend.
+   * The Rust side resolves base_url + model + the Keychain API key from
+   * `backend_id`; only the id crosses IPC. Deltas arrive via
+   * `custom-chunk:{op_id}` events (see `custom-client.ts`); the promise
+   * resolves when generation completes.
+   */
+  customChatStream: (args: {
+    op_id: string;
+    backend_id: string;
+    messages: { role: string; content: string }[];
+    temperature?: number;
+    top_p?: number;
+    max_tokens?: number;
+  }) =>
+    invoke<void>("custom_chat_stream", {
+      opId: args.op_id,
+      backendId: args.backend_id,
+      messages: args.messages,
+      params: {
+        temperature: args.temperature,
+        top_p: args.top_p,
+        max_tokens: args.max_tokens,
+      },
+    }),
+
   // GGUF file picker (Phase 3 — see docs/research/llamacpp-backend.md).
   // `native_download_gguf` streams one quant from HF and emits
   // `gguf-download-progress` events while it runs; the caller wires up
