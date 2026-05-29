@@ -57,7 +57,11 @@
   width: 28px;
   height: 28px;
   align-self: auto;
-  z-index: 10000;
+  /* Chrome band: above page content but BELOW modal overlays
+     (z 100-200) so an open Model Library / Appearance / etc. dialog
+     covers the hamburger instead of it floating on top. Was 10000,
+     which beat every modal (2026-05-29 fix). */
+  z-index: 60;
   -webkit-app-region: no-drag;
 }
 /* In macOS native fullscreen the traffic lights are hidden, so the
@@ -307,7 +311,10 @@ body {
   left: 0;
   right: 0;
   height: 28px;
-  z-index: 9999;
+  /* Chrome band (see hamburger note). Above content, below modals — a
+     modal overlay should cover the drag strip, not sit under it. Was
+     9999. */
+  z-index: 60;
   -webkit-app-region: drag;
   /* Don't intercept clicks on traffic lights — macOS layers them above
      this. We DO want pointer events for the drag itself, so leave
