@@ -9,6 +9,7 @@ import {
   setSyntaxTheme,
   type SyntaxThemeId,
 } from "../lib/syntax-theme";
+import { BUBBLE_COLORS, getBubbleColor, setBubbleColor } from "../lib/bubble-color";
 
 // AuditLog only renders inside the agent-settings disclosure (gear icon
 // while agent mode is on). Lazy-loaded so first paint of the chat
@@ -62,6 +63,7 @@ export function AgentSettingsPanel({
   onCheckUpdates,
 }: Props) {
   const [syntaxTheme, setSyntaxThemeState] = useState<SyntaxThemeId>(() => getSyntaxTheme());
+  const [bubbleColor, setBubbleColorState] = useState<string | null>(() => getBubbleColor());
   return (
     <div className="agent-settings" data-testid="agent-settings-panel">
       <div className="agent-settings-row">
@@ -156,6 +158,27 @@ export function AgentSettingsPanel({
         <span className="agent-settings-hint">
           Syntax-highlight palette for code blocks. Adapts to light/dark.
         </span>
+      </div>
+      <div className="agent-settings-row">
+        <span className="agent-settings-label">Chat bubble:</span>
+        <div className="wf-color-row" role="radiogroup" aria-label="User chat bubble color">
+          {BUBBLE_COLORS.map((c) => {
+            const selected = (bubbleColor ?? null) === c.value;
+            return (
+              <button
+                key={c.name}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                className={`wf-color-swatch${selected ? " selected" : ""}${c.value === null ? " wf-color-default" : ""}`}
+                style={c.value ? { background: c.value } : undefined}
+                title={c.name}
+                aria-label={c.name}
+                onClick={() => { setBubbleColorState(c.value); setBubbleColor(c.value); }}
+              />
+            );
+          })}
+        </div>
       </div>
       <McpSettings />
       <CustomBackendsSettings />

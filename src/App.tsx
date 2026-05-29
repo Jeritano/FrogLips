@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api } from "./lib/tauri-api";
 import { applySyntaxTheme } from "./lib/syntax-theme";
+import { applyBubbleColor } from "./lib/bubble-color";
 import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
 import pkg from "../package.json";
@@ -261,9 +262,10 @@ function App() {
         setTheme(s.theme);
         document.documentElement.dataset.theme = s.theme;
       }
-      // Apply the saved syntax-highlight palette (localStorage-backed,
-      // independent of the app theme).
+      // Apply the saved syntax-highlight palette + chat-bubble color
+      // (both localStorage-backed, independent of the app theme).
       applySyntaxTheme();
+      applyBubbleColor();
     }).catch((err) => {
       if (ignored) return;
       logDiag({

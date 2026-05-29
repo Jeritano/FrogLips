@@ -230,7 +230,10 @@
 }
 
 .message.user .content {
-  background: var(--accent);
+  /* User-selectable bubble color (Settings → gear → Chat bubble).
+     Falls back to the app accent when unset. Applied as an inline
+     `--user-bubble` custom property on <html> by lib/bubble-color.ts. */
+  background: var(--user-bubble, var(--accent));
   color: #fff;
   padding: 7px 14px;
   border-radius: 18px 18px 4px 18px;
