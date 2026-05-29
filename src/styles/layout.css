@@ -815,3 +815,16 @@ header {
   color: var(--text-2);
   font-weight: 600;
 }
+
+/* When a full-screen modal (Model Library) is open, hide the top-chrome
+   cluster. z-index ordering proved unreliable here — the fixed/absolute
+   chrome elements sit in a stacking context that paints above the modal
+   regardless of z. `visibility:hidden` is deterministic + keeps layout.
+   Toggled by ModelBrowserOverlay via the `chrome-hidden` root class.
+   (2026-05-29) */
+:root.chrome-hidden .topbar-hamburger,
+:root.chrome-hidden .topbar-collapse,
+:root.chrome-hidden .view-tabs,
+:root.chrome-hidden .window-drag-strip {
+  visibility: hidden;
+}

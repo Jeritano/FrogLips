@@ -633,6 +633,16 @@ function ModelBrowserOverlay({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useModalA11y({ open: true, onClose, containerRef: ref });
+  // Deterministically hide the top chrome (hamburger / collapse / view-
+  // tabs / drag strip) while the library is open. z-index alone wasn't
+  // enough — the chrome's fixed/absolute elements live in a stacking
+  // context that paints above the modal regardless of z values
+  // (2026-05-29). Toggling a root class + `visibility:hidden` in CSS
+  // sidesteps the stacking quirk entirely.
+  useEffect(() => {
+    document.documentElement.classList.add("chrome-hidden");
+    return () => document.documentElement.classList.remove("chrome-hidden");
+  }, []);
   return (
     <div
       className="mb-overlay"
