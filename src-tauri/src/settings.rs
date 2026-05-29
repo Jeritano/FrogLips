@@ -164,6 +164,18 @@ fn keychain_delete(account: &str) {
         .output();
 }
 
+/// Public wrapper: store a key for `account`. Used by the OpenRouter
+/// built-in backend (custom_backend), which keeps its single key in the
+/// Keychain rather than in `custom_backends`. Returns true on success.
+pub fn keychain_set_account(account: &str, key: &str) -> bool {
+    keychain_set(account, key)
+}
+
+/// Public wrapper: delete a key for `account`. See `keychain_set_account`.
+pub fn keychain_delete_account(account: &str) {
+    keychain_delete(account)
+}
+
 fn settings_path() -> Option<PathBuf> {
     // Test override: allows the cargo test suite to point at a tempdir without
     // clobbering the developer's real ~/Library/Application Support/Froglips

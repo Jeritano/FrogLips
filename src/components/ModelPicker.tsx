@@ -13,6 +13,9 @@ const ModelBrowser = lazy(() =>
 const CustomBackendsSettings = lazy(() =>
   import("./CustomBackendsSettings").then((m) => ({ default: m.CustomBackendsSettings })),
 );
+const OpenRouterPicker = lazy(() =>
+  import("./OpenRouterPicker").then((m) => ({ default: m.OpenRouterPicker })),
+);
 
 interface Props {
   status: ServerStatus | null;
@@ -54,6 +57,7 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   // backend…" dropdown entry so config is reachable from the picker
   // (not only the agent-mode gear panel).
   const [customMgrOpen, setCustomMgrOpen] = useState(false);
+  const [openRouterOpen, setOpenRouterOpen] = useState(false);
 
   // Timestamp of the last successful model-list fetch. The dropdown's
   // onFocus + onMouseDown both fire `loadModels` (so the list is fresh
@@ -162,6 +166,7 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const v = e.target.value;
     if (v === "__browse__") { setBrowserOpen(true); return; }
+    if (v === "__openrouter__") { setOpenRouterOpen(true); return; }
     if (v === "__add_custom__") { setCustomMgrOpen(true); return; }
     if (v === "__native__") {
       // window.prompt is blocked in the Tauri webview — use an inline input.
@@ -239,7 +244,7 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   async function stop() {
     setBusy(true);
     try {
-      if (status?.backend === "custom") {
+      if (status?.backend === "custom" || status?.backend === "openrouter") {
         // No local process — just clear the synthesized status.
         setSelectedCustom(null);
         onStatusChange({
@@ -323,7 +328,8 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
           </optgroup>
           <optgroup label="Add model">
             <option value="__browse__">⬇ Browse &amp; download models…</option>
-            <option value="__add_custom__">☁ Connect a cloud backend (OpenRouter…)…</option>
+            <option value="__openrouter__">☁ OpenRouter — browse &amp; select…</option>
+            <option value="__add_custom__">⚙ Other cloud backend (advanced)…</option>
           </optgroup>
         </select>
 
@@ -428,6 +434,27 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
             </Suspense>
           </div>
         </div>
+      )}
+
+      {openRouterOpen && (
+        <Suspense fallback={null}>
+          <OpenRouterPicker
+            onClose={() => setOpenRouterOpen(false)}
+            onSelect={(modelId) => {
+              // Activate immediately — no local process, route through the
+              // OpenRouter built-in backend with this model.
+              onStatusChange({
+                running: true,
+                ready: true,
+                model: modelId,
+                backend: "openrouter",
+                host: "",
+                port: 0,
+                last_error: null,
+              });
+            }}
+          />
+        </Suspense>
       )}
     </>
   );

@@ -491,6 +491,7 @@ pub async fn custom_chat_stream(
     backend_id: String,
     messages: Vec<crate::custom_backend::ChatMessage>,
     params: Option<crate::custom_backend::CustomChatParams>,
+    model: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     if op_id.is_empty() || op_id.len() > 128 {
@@ -505,8 +506,28 @@ pub async fn custom_chat_stream(
         backend_id,
         messages,
         params.unwrap_or_default(),
+        model,
     )
     .await
+}
+
+/// Fetch the live OpenRouter model catalogue for the picker.
+#[tauri::command]
+pub async fn openrouter_list_models(
+) -> Result<Vec<crate::custom_backend::OpenRouterModel>, String> {
+    crate::custom_backend::list_openrouter_models().await
+}
+
+/// Store (or clear, on empty) the OpenRouter API key in the Keychain.
+#[tauri::command]
+pub fn openrouter_set_key(key: String) -> Result<(), String> {
+    crate::custom_backend::set_openrouter_key(&key)
+}
+
+/// Whether an OpenRouter key is configured (never returns the key itself).
+#[tauri::command]
+pub async fn openrouter_has_key() -> Result<bool, String> {
+    Ok(crate::custom_backend::has_openrouter_key())
 }
 
 /* ── Multi-window: detached conversations ────────────────────────────── */

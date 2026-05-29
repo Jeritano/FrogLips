@@ -690,6 +690,9 @@ export const api = {
     op_id: string;
     backend_id: string;
     messages: { role: string; content: string }[];
+    /** Per-call model override — required for the OpenRouter built-in
+     *  (one backend, any catalogue model); optional for user backends. */
+    model?: string;
     temperature?: number;
     top_p?: number;
     max_tokens?: number;
@@ -698,12 +701,28 @@ export const api = {
       opId: args.op_id,
       backendId: args.backend_id,
       messages: args.messages,
+      model: args.model,
       params: {
         temperature: args.temperature,
         top_p: args.top_p,
         max_tokens: args.max_tokens,
       },
     }),
+
+  /** Live OpenRouter model catalogue (no key needed to list). */
+  openrouterListModels: () =>
+    invoke<{
+      id: string;
+      name: string;
+      context_length: number;
+      prompt_price: string;
+      completion_price: string;
+      vision: boolean;
+    }[]>("openrouter_list_models"),
+  /** Store (or clear, on "") the OpenRouter API key in the Keychain. */
+  openrouterSetKey: (key: string) => invoke<void>("openrouter_set_key", { key }),
+  /** Whether an OpenRouter key is configured (never returns the key). */
+  openrouterHasKey: () => invoke<boolean>("openrouter_has_key"),
 
   // GGUF file picker (Phase 3 — see docs/research/llamacpp-backend.md).
   // `native_download_gguf` streams one quant from HF and emits

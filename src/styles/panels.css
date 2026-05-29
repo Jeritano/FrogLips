@@ -1615,3 +1615,52 @@ button.cancel {
   color: #fff;
 }
 .ctx-rollover-btn-primary:hover { filter: brightness(1.05); }
+
+/* ── OpenRouter model browser (2026-05-29) ───────────────────────────── */
+.openrouter-modal { min-width: 520px; max-width: 640px; }
+.openrouter-keygate { display: flex; flex-direction: column; gap: var(--space-3); }
+.openrouter-key-row { display: flex; gap: var(--space-2); }
+.openrouter-key-row input { flex: 1; }
+.openrouter-filter { margin: var(--space-2) 0; }
+.openrouter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+.openrouter-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  cursor: pointer;
+  width: 100%;
+  font-family: inherit;
+  transition: background 0.1s, border-color 0.1s;
+}
+.openrouter-row:hover { background: var(--surface-hover); border-color: var(--accent); }
+.openrouter-row-main { display: flex; align-items: center; gap: var(--space-2); }
+.openrouter-row-name { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.openrouter-chip {
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+}
+.openrouter-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--fs-2xs);
+  color: var(--text-2);
+}
+.openrouter-row-meta code { font-size: var(--fs-2xs); }

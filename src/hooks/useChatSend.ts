@@ -502,7 +502,17 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       // CustomBackend id (the picker encodes it there for custom
       // selections). `native` is in-process mistralrs; everything else
       // is the MLX/Ollama OpenAI-compat loopback path.
-      const stream = status.backend === "custom"
+      const stream = status.backend === "openrouter"
+        ? // OpenRouter built-in: one backend id, status.model is the
+          // picked catalogue model (passed as the per-call override).
+          streamCustomChat("openrouter", historyForApi, {
+            model: status.model ?? undefined,
+            signal: ctrl.signal,
+            temperature: chatParams.temperature ?? undefined,
+            top_p: chatParams.top_p ?? undefined,
+            maxTokens: chatParams.max_tokens ?? undefined,
+          })
+        : status.backend === "custom"
         ? streamCustomChat(status.model ?? "", historyForApi, {
             signal: ctrl.signal,
             temperature: chatParams.temperature ?? undefined,

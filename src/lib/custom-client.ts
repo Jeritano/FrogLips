@@ -26,7 +26,14 @@ export interface CustomChunk {
 export async function* streamCustomChat(
   backendId: string,
   messages: Message[],
-  opts: { temperature?: number; top_p?: number; maxTokens?: number; signal?: AbortSignal } = {},
+  opts: {
+    /** Per-call model override (required for the OpenRouter built-in). */
+    model?: string;
+    temperature?: number;
+    top_p?: number;
+    maxTokens?: number;
+    signal?: AbortSignal;
+  } = {},
 ): AsyncGenerator<CustomChunk> {
   const opId = `custom-${crypto.randomUUID()}`;
   const queue: string[] = [];
@@ -59,6 +66,7 @@ export async function* streamCustomChat(
     op_id: opId,
     backend_id: backendId,
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    model: opts.model,
     temperature: opts.temperature,
     top_p: opts.top_p,
     max_tokens: opts.maxTokens,

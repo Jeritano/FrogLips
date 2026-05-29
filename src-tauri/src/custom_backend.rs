@@ -139,10 +139,28 @@ fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     StreamProgress { deltas, done: false }
 }
 
-/// Resolve a custom backend by id from settings, returning its base_url +
-/// model + the real API key (from Keychain). Errors when the id is unknown
-/// or the base_url is malformed.
+/// Well-known id for the built-in OpenRouter backend. Unlike user-defined
+/// custom backends it isn't stored in `settings.custom_backends`: the base
+/// URL is fixed and the single API key lives in the Keychain under this
+/// account, so the user just enters a key once and then picks any model
+/// from the live catalogue (see `list_openrouter_models`). Audit
+/// 2026-05-29: the previous "fill in base_url + model + key per model" form
+/// was too fiddly for a catalogue service.
+pub const OPENROUTER_ID: &str = "openrouter";
+const OPENROUTER_BASE: &str = "https://openrouter.ai/api";
+
+/// Resolve a backend id to `(base_url, model, key)`. The OpenRouter
+/// built-in uses a fixed base + its dedicated Keychain key and relies on
+/// the per-call `model` override (it has no single stored model). User
+/// custom backends come from `settings.custom_backends`.
 fn resolve_backend(id: &str) -> Result<(String, String, Option<String>)> {
+    if id == OPENROUTER_ID {
+        return Ok((
+            OPENROUTER_BASE.to_string(),
+            String::new(), // model always supplied via override for OpenRouter
+            settings::keychain_get(OPENROUTER_ID),
+        ));
+    }
     let s = settings::load();
     let backend = s
         .custom_backends
@@ -170,8 +188,9 @@ pub async fn chat_stream(
     backend_id: String,
     messages: Vec<ChatMessage>,
     params: CustomChatParams,
+    model_override: Option<String>,
 ) -> Result<(), String> {
-    let res = chat_stream_inner(&app, &op_id, &backend_id, messages, params).await;
+    let res = chat_stream_inner(&app, &op_id, &backend_id, messages, params, model_override).await;
     match &res {
         Ok(()) => {
             let _ = app.emit(&format!("custom-done:{op_id}"), ());
@@ -189,8 +208,17 @@ async fn chat_stream_inner(
     backend_id: &str,
     messages: Vec<ChatMessage>,
     params: CustomChatParams,
+    model_override: Option<String>,
 ) -> Result<()> {
-    let (base, model, key) = resolve_backend(backend_id)?;
+    let (base, stored_model, key) = resolve_backend(backend_id)?;
+    // Per-call model wins (OpenRouter picks any catalogue model with one
+    // shared backend); fall back to the backend's stored model.
+    let model = model_override
+        .filter(|m| !m.is_empty())
+        .unwrap_or(stored_model);
+    if model.is_empty() {
+        return Err(anyhow!("no model specified for backend {backend_id}"));
+    }
     let url = format!("{base}/v1/chat/completions");
     let body = build_request_body(&model, &messages, &params);
 
@@ -244,6 +272,108 @@ async fn chat_stream_inner(
         }
     }
     Ok(())
+}
+
+/// One row of the OpenRouter catalogue, trimmed for the picker UI.
+#[derive(Serialize, Clone, Debug)]
+pub struct OpenRouterModel {
+    pub id: String,
+    pub name: String,
+    pub context_length: u64,
+    /// Per-1M-token prompt + completion price in USD, pre-formatted for
+    /// display (e.g. "$0.20"). Empty when the catalogue omits pricing.
+    pub prompt_price: String,
+    pub completion_price: String,
+    /// True when the model accepts image input (architecture modality).
+    pub vision: bool,
+}
+
+/// Fetch the live OpenRouter model catalogue. Public endpoint — no key
+/// needed to LIST (only to chat). Bounded + trimmed so the IPC payload
+/// stays small. Routed through Rust (not a webview fetch) because the
+/// Tauri CSP doesn't whitelist openrouter.ai.
+pub async fn list_openrouter_models() -> Result<Vec<OpenRouterModel>, String> {
+    let resp = CUSTOM_HTTP
+        .get(format!("{OPENROUTER_BASE}/v1/models"))
+        .send()
+        .await
+        .map_err(|e| format!("fetch openrouter models: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("openrouter models endpoint: {}", resp.status()));
+    }
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse openrouter models: {e}"))?;
+    let data = json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .ok_or_else(|| "openrouter response missing data[]".to_string())?;
+
+    // Format a per-token price string into per-1M USD. Prices arrive as
+    // decimal strings ("0.0000002" = $0.20 / 1M tokens).
+    let fmt_price = |v: Option<&serde_json::Value>| -> String {
+        let raw = v.and_then(|x| x.as_str()).unwrap_or("");
+        match raw.parse::<f64>() {
+            Ok(p) if p > 0.0 => format!("${:.2}", p * 1_000_000.0),
+            Ok(_) => "free".to_string(),
+            Err(_) => String::new(),
+        }
+    };
+
+    let mut out = Vec::with_capacity(data.len());
+    for m in data {
+        let Some(id) = m.get("id").and_then(|x| x.as_str()) else { continue };
+        let name = m.get("name").and_then(|x| x.as_str()).unwrap_or(id).to_string();
+        let context_length = m
+            .get("context_length")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let pricing = m.get("pricing");
+        let prompt_price = fmt_price(pricing.and_then(|p| p.get("prompt")));
+        let completion_price = fmt_price(pricing.and_then(|p| p.get("completion")));
+        let vision = m
+            .get("architecture")
+            .and_then(|a| a.get("input_modalities"))
+            .and_then(|im| im.as_array())
+            .map(|arr| arr.iter().any(|v| v.as_str() == Some("image")))
+            .unwrap_or(false);
+        out.push(OpenRouterModel {
+            id: id.to_string(),
+            name,
+            context_length,
+            prompt_price,
+            completion_price,
+            vision,
+        });
+    }
+    if out.is_empty() {
+        return Err("openrouter catalogue was empty".into());
+    }
+    Ok(out)
+}
+
+/// Store the OpenRouter API key in the Keychain (under `OPENROUTER_ID`).
+/// Empty string clears it. The key never crosses back to the webview.
+pub fn set_openrouter_key(key: &str) -> Result<(), String> {
+    if key.trim().is_empty() {
+        settings::keychain_delete_account(OPENROUTER_ID);
+        return Ok(());
+    }
+    if key.len() > 512 {
+        return Err("key too long".into());
+    }
+    if settings::keychain_set_account(OPENROUTER_ID, key.trim()) {
+        Ok(())
+    } else {
+        Err("failed to store key in Keychain".into())
+    }
+}
+
+/// Whether an OpenRouter key is present (so the UI can gate the catalogue
+/// behind a one-time key prompt without ever reading the secret).
+pub fn has_openrouter_key() -> bool {
+    settings::keychain_get(OPENROUTER_ID).is_some()
 }
 
 #[cfg(test)]
