@@ -478,6 +478,37 @@ pub fn quick_prompt_hide(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/* ── Custom OpenAI-compatible cloud backend ───────────────────────────── */
+
+/// Stream a chat completion from a user-configured custom backend
+/// (OpenRouter / Groq / etc). Emits `custom-chunk:{op_id}` deltas + a
+/// terminal `custom-done:{op_id}` / `custom-error:{op_id}`. The API key is
+/// pulled from the Keychain inside `custom_backend` and never crosses the
+/// IPC boundary — the webview only ever supplies the backend id.
+#[tauri::command]
+pub async fn custom_chat_stream(
+    op_id: String,
+    backend_id: String,
+    messages: Vec<crate::custom_backend::ChatMessage>,
+    params: Option<crate::custom_backend::CustomChatParams>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if op_id.is_empty() || op_id.len() > 128 {
+        return Err("invalid op_id".into());
+    }
+    if backend_id.is_empty() || backend_id.len() > 128 {
+        return Err("invalid backend_id".into());
+    }
+    crate::custom_backend::chat_stream(
+        app,
+        op_id,
+        backend_id,
+        messages,
+        params.unwrap_or_default(),
+    )
+    .await
+}
+
 /* ── Multi-window: detached conversations ────────────────────────────── */
 
 /// Stable, filesystem/label-safe label for a detached conversation window.

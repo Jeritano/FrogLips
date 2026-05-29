@@ -6,6 +6,7 @@ mod backend_process;
 mod claude_skills;
 mod commands;
 mod crash_log;
+mod custom_backend;
 mod data_backup;
 mod diagnostics;
 mod gguf;
@@ -504,6 +505,7 @@ pub fn run() {
             commands::misc::quick_prompt_submit,
             commands::misc::quick_prompt_open,
             commands::misc::quick_prompt_hide,
+            commands::misc::custom_chat_stream,
             commands::misc::read_crash_log,
             commands::misc::append_diag_log,
             commands::misc::db_recovery_notice,
