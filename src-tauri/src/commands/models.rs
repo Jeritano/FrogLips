@@ -121,17 +121,56 @@ fn strip_ansi_and_progress(input: &str) -> String {
         regex::Regex::new(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)").expect("static OSC regex compiles");
     let stripped = csi.replace_all(input, "");
     let stripped = osc.replace_all(&stripped, "").to_string();
-    // Collapse \r-driven in-place line rewrites to just the final segment.
-    let mut out = String::with_capacity(stripped.len());
-    for line in stripped.split('\n') {
-        let last = line.rsplit('\r').next().unwrap_or(line);
-        out.push_str(last);
-        out.push('\n');
+
+    // Collapse progress frames to ONE line per logical step.
+    //
+    // `\r` collapse alone isn't enough: when its stdout is a pipe (not a
+    // TTY), `ollama pull` emits each progress tick as a fresh `\n` line
+    // rather than a `\r` in-place rewrite — and sometimes runs several
+    // "pulling manifest <spinner>" + "pulling <digest>: NN%" frames onto
+    // a SINGLE physical line with no separator at all. Left unmerged the
+    // user sees a multi-hundred-line wall of near-identical frames
+    // (audit 2026-05-29).
+    //
+    // Strategy: first split the blob on the progress-frame boundary
+    // marker "pulling " so run-together frames become separate units,
+    // then keep only the LAST frame per logical key:
+    //   * `pulling <hex-digest>` frames key on the digest → the final
+    //     `…: 100%` (or last-seen %) wins, in first-seen order.
+    //   * everything else (manifest spinner, "verifying", "writing
+    //     manifest", "success") keys on its trimmed text → de-duped.
+    let normalized = stripped
+        .replace('\r', "\n")
+        // Insert a newline before each "pulling " so concatenated frames
+        // split apart. The leading marker itself is preserved.
+        .replace("pulling ", "\npulling ");
+
+    let digest_re = regex::Regex::new(r"^pulling ([0-9a-f]{8,})").expect("digest regex compiles");
+    // Ordered de-dup: remember insertion order of keys, map key → latest line.
+    let mut order: Vec<String> = Vec::new();
+    let mut latest: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for raw in normalized.split('\n') {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let key = if let Some(c) = digest_re.captures(line) {
+            // All frames for one layer share the digest key → final wins.
+            format!("digest:{}", &c[1])
+        } else {
+            line.to_string()
+        };
+        if !latest.contains_key(&key) {
+            order.push(key.clone());
+        }
+        latest.insert(key, line.to_string());
     }
-    while out.ends_with('\n') {
-        out.pop();
-    }
-    out
+    order
+        .iter()
+        .filter_map(|k| latest.get(k))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -141,18 +180,54 @@ mod strip_tests {
     #[test]
     fn strips_ollama_progress_garbage() {
         let raw = "\x1b[?25l\x1b[?2026l\x1b[2026hpulling manifest \r\x1b[K\
-                   \x1b[2026hpulling abc: 50%\r\x1b[K\
-                   \x1b[2026hpulling abc: 100%\n\x1b[?25h";
+                   \x1b[2026hpulling 4c27e0f5b5ad: 50%\r\x1b[K\
+                   \x1b[2026hpulling 4c27e0f5b5ad: 100%\n\x1b[?25h";
         let clean = strip_ansi_and_progress(raw);
         assert!(!clean.contains('\x1b'), "still has ESC: {clean:?}");
         assert!(
-            clean.contains("pulling abc: 100%"),
+            clean.contains("pulling 4c27e0f5b5ad: 100%"),
             "lost final line: {clean:?}"
         );
         assert!(
-            !clean.contains("pulling abc: 50%"),
-            "kept superseded line: {clean:?}"
+            !clean.contains("50%"),
+            "kept superseded frame: {clean:?}"
         );
+    }
+
+    #[test]
+    fn collapses_run_together_progress_frames() {
+        // Non-TTY ollama pull jams many frames onto one line with no
+        // separator (the 2026-05-29 wall-of-text bug). All frames for one
+        // layer must collapse to the final %.
+        let raw = "pulling manifest pulling manifest \
+                   pulling 4c27e0f5b5ad: 62% 6.0 GB/9.6 GB \
+                   pulling 4c27e0f5b5ad: 63% 6.1 GB/9.6 GB \
+                   pulling 4c27e0f5b5ad: 100% 9.6 GB/9.6 GB";
+        let clean = strip_ansi_and_progress(raw);
+        // Exactly one digest frame survives, and it's the final %.
+        let digest_frames = clean
+            .lines()
+            .filter(|l| l.starts_with("pulling 4c27e0f5b5ad"))
+            .count();
+        assert_eq!(digest_frames, 1, "expected one collapsed frame: {clean:?}");
+        assert!(clean.contains("100%"), "lost final %: {clean:?}");
+        assert!(!clean.contains("62%") && !clean.contains("63%"), "kept superseded: {clean:?}");
+        // The manifest spinner de-dups to a single line too.
+        let manifest = clean.lines().filter(|l| l.trim() == "pulling manifest").count();
+        assert!(manifest <= 1, "manifest not de-duped: {clean:?}");
+    }
+
+    #[test]
+    fn preserves_multiple_distinct_layers() {
+        // A real multi-layer pull: each distinct digest keeps its own
+        // final frame, in first-seen order.
+        let raw = "pulling aaaaaaaa1111: 100% pulling bbbbbbbb2222: 50% \
+                   pulling bbbbbbbb2222: 100% pulling manifest success";
+        let clean = strip_ansi_and_progress(raw);
+        assert!(clean.contains("aaaaaaaa1111: 100%"), "{clean:?}");
+        assert!(clean.contains("bbbbbbbb2222: 100%"), "{clean:?}");
+        assert!(!clean.contains("50%"), "{clean:?}");
+        assert!(clean.contains("success"), "{clean:?}");
     }
 }
 
