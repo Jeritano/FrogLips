@@ -120,6 +120,9 @@ const ForkTreeModal = lazy(() =>
 const AboutYouModal = lazy(() =>
   import("./components/AboutYouModal").then((m) => ({ default: m.AboutYouModal })),
 );
+const AppearanceModal = lazy(() =>
+  import("./components/AppearanceModal").then((m) => ({ default: m.AppearanceModal })),
+);
 // First-run-only flow: never seen by returning users, so it has no business
 // living in the initial chunk. Mounts behind `wizardOpen === true`.
 const SetupWizard = lazy(() =>
@@ -168,6 +171,7 @@ function App() {
   const [forkTreeOpen, setForkTreeOpen] = useState(false);
   const [memoriesOpen, setMemoriesOpen] = useState(false);
   const [aboutYouOpen, setAboutYouOpen] = useState(false);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Main-pane view: chat / workflow canvas / image-gen surface / knowledge library.
@@ -796,6 +800,15 @@ function App() {
                 >
                   <span aria-hidden="true">👤</span> About You
                 </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="menu-appearance"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setAppearanceOpen(true); setMenuOpen(false); }}
+                >
+                  <span aria-hidden="true">🎨</span> Appearance
+                </button>
                 {current && (
                   <button
                     type="button"
@@ -1212,6 +1225,16 @@ function App() {
       {aboutYouOpen && (
         <Suspense fallback={null}>
           <AboutYouModal onClose={() => setAboutYouOpen(false)} />
+        </Suspense>
+      )}
+      {appearanceOpen && (
+        <Suspense fallback={null}>
+          <AppearanceModal
+            open={appearanceOpen}
+            onClose={() => setAppearanceOpen(false)}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+          />
         </Suspense>
       )}
       {diagnosticsOpen && (

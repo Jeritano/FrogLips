@@ -792,3 +792,19 @@ header {
   z-index: 2;
 }
 
+
+/* ── Appearance modal sections (2026-05-29) ──────────────────────────── */
+.appearance-modal { min-width: 360px; max-width: 460px; }
+.appearance-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.appearance-section:last-child { border-bottom: 0; }
+.appearance-label {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  font-weight: 600;
+}
