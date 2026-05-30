@@ -35,6 +35,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+use tokio_util::sync::CancellationToken;
 
 use crate::settings;
 
@@ -55,6 +56,13 @@ static CUSTOM_HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
 /// A hostile or buggy endpoint could stream unbounded bytes; 8 MiB is far
 /// past any real single-turn reply but keeps a runaway stream in RAM.
 const REPLY_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// Hard cap on a single un-terminated SSE line. The `REPLY_MAX_BYTES` ceiling
+/// only counts *emitted deltas*; a hostile endpoint that streams megabytes
+/// with no newline would grow the line buffer without bound (the cap is never
+/// consulted because no delta is ever produced). 1 MiB is far past any real
+/// `data:` frame. MED (2026-05-29).
+const LINE_BUF_MAX: usize = 1024 * 1024;
 
 /// One message in the OpenAI chat-completions request.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -190,7 +198,14 @@ pub async fn chat_stream(
     params: CustomChatParams,
     model_override: Option<String>,
 ) -> Result<(), String> {
-    let res = chat_stream_inner(&app, &op_id, &backend_id, messages, params, model_override).await;
+    // Register a cancel token so `custom_cancel(op_id)` can stop the SSE
+    // stream mid-flight instead of draining the body to the 180s timeout
+    // after a user Stop / navigate-away. Released on every exit. (2026-05-30)
+    let cancel = crate::stream_cancel::register(&op_id);
+    let res =
+        chat_stream_inner(&app, &op_id, &backend_id, messages, params, model_override, &cancel)
+            .await;
+    crate::stream_cancel::release(&op_id);
     match &res {
         Ok(()) => {
             let _ = app.emit(&format!("custom-done:{op_id}"), ());
@@ -209,6 +224,7 @@ async fn chat_stream_inner(
     messages: Vec<ChatMessage>,
     params: CustomChatParams,
     model_override: Option<String>,
+    cancel: &CancellationToken,
 ) -> Result<()> {
     let (base, stored_model, key) = resolve_backend(backend_id)?;
     // Per-call model wins (OpenRouter picks any catalogue model with one
@@ -239,10 +255,31 @@ async fn chat_stream_inner(
     let stream = resp.bytes_stream();
     use futures::StreamExt;
     let mut buf = String::new();
+    let mut decoder = crate::sse_decode::Utf8StreamDecoder::default();
     tokio::pin!(stream);
-    while let Some(chunk) = stream.next().await {
+    loop {
+        // Race the SSE body against the cancel token so a user Stop ends the
+        // stream promptly instead of draining to the client timeout.
+        let chunk = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            next = stream.next() => match next {
+                Some(c) => c,
+                None => break,
+            },
+        };
         let bytes = chunk.context("read chunk")?;
-        let progress = parse_openai_chunk(&mut buf, &String::from_utf8_lossy(&bytes));
+        // Decode incrementally so a codepoint split across network chunks
+        // isn't corrupted into U+FFFD (MED, 2026-05-29).
+        let text = decoder.push(&bytes);
+        let progress = parse_openai_chunk(&mut buf, &text);
+        // Bound the line buffer: a newline-less flood would otherwise defeat
+        // the per-delta REPLY_MAX_BYTES cap and exhaust RAM.
+        if buf.len() > LINE_BUF_MAX {
+            return Err(anyhow!(
+                "stream line exceeded {LINE_BUF_MAX} bytes without a delimiter"
+            ));
+        }
         for delta in progress.deltas {
             // Body cap — bail (gracefully) if the stream would blow past the
             // ceiling. Respect char boundaries so we never emit half a

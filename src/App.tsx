@@ -408,11 +408,19 @@ function App() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [convSearch]);
 
-  // Cancel any in-flight soft-delete timer on unmount so it doesn't fire
-  // against an unmounted tree.
+  // On unmount, COMMIT any pending soft-delete rather than just dropping the
+  // timer. Clicking delete is an intent to delete; the 5s window only exists
+  // for undo. Previously the timer was merely cleared, so deleting then
+  // quitting within the window left the conversation neither deleted nor
+  // restored — it silently reappeared next launch. Fire the IPC directly
+  // (no state updates — the tree is unmounting); best-effort on a real
+  // app-quit but it typically lands before process exit. (2026-05-30)
   useEffect(() => {
     return () => {
-      if (pendingDelete) clearTimeout(pendingDelete.timer);
+      if (pendingDelete) {
+        clearTimeout(pendingDelete.timer);
+        void api.deleteConversation(pendingDelete.conv.id).catch(() => {});
+      }
     };
   }, [pendingDelete]);
 

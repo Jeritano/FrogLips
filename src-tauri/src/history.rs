@@ -1066,6 +1066,69 @@ pub fn delete_image_row(id: i64) -> Result<Option<String>> {
     Ok(path)
 }
 
+/// Delete `images` rows whose stored `path` is in `paths`. Used by gallery
+/// eviction to keep the DB in lock-step with the filesystem after it unlinks
+/// the oldest PNGs — without this the rows orphan (the gallery still lists
+/// them, but opening one fails because the file is gone). Transactional so a
+/// mid-batch failure doesn't leave a partially-synced set. Returns the number
+/// of rows removed (paths with no matching row are silently ignored).
+pub fn delete_image_rows_by_paths(paths: &[String]) -> Result<usize> {
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let mut conn = get_db()?;
+    let tx = conn.transaction()?;
+    let mut removed = 0usize;
+    {
+        let mut stmt = tx.prepare("DELETE FROM images WHERE path = ?1")?;
+        for p in paths {
+            removed += stmt.execute(params![p])?;
+        }
+    }
+    tx.commit()?;
+    Ok(removed)
+}
+
+/// One-shot startup reconciliation: drop `images` rows whose backing file no
+/// longer exists on disk. Heals divergence left by older builds that evicted
+/// files without syncing the DB (pre-fix), or by an external process deleting
+/// gallery files. Bounded — the gallery is byte-capped, so the row count is
+/// too. Returns the number of orphan rows pruned.
+pub fn reconcile_image_rows() -> Result<usize> {
+    let conn = get_db()?;
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare("SELECT id, path FROM images")?;
+        let collected = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        collected
+    };
+    // Only treat a row as orphaned when its file is GENUINELY absent
+    // (NotFound). `Path::exists()` collapses every stat error — permission
+    // denied, an unmounted external/network volume hosting the gallery,
+    // transient I/O — into "false", which would irreversibly delete the
+    // metadata row (prompt, params, seed) for an image that still exists.
+    // LOW (2026-05-30): use symlink_metadata and key off NotFound only.
+    let missing: Vec<i64> = rows
+        .into_iter()
+        .filter(|(_, p)| {
+            matches!(
+                std::fs::symlink_metadata(std::path::Path::new(p)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound
+            )
+        })
+        .map(|(id, _)| id)
+        .collect();
+    if missing.is_empty() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    for id in &missing {
+        removed += conn.execute("DELETE FROM images WHERE id = ?1", params![id])? as usize;
+    }
+    Ok(removed)
+}
+
 fn build_pool() -> Result<Pool<SqliteManager>> {
     let path = db_path()?;
     // Corruption recovery: probe the existing DB before any pooled connection

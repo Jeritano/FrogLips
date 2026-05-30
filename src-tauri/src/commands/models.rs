@@ -422,51 +422,73 @@ pub async fn native_chat_stream(
         top_p: args.top_p,
         max_tokens: args.max_tokens,
     };
-    if args.tools.is_empty() {
+    // Register a cancel token so `native_cancel(op_id)` can stop the stream
+    // mid-flight (otherwise the model runs to max_tokens after a user Stop /
+    // navigate-away). Released on every exit path below. (2026-05-30)
+    let cancel = crate::stream_cancel::register(&args.op_id);
+    let outcome: Result<String, String> = if args.tools.is_empty() {
         let msgs: Vec<(String, String)> = args
             .messages
             .into_iter()
             .map(|m| (m.role, m.content))
             .collect();
-        let final_text = rt
-            .chat_stream(msgs, opts, Box::new(on_chunk))
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-        let _ = app.emit(&format!("native-done:{}", args.op_id), &final_text);
-        return Ok(final_text);
-    }
+        match rt.chat_stream(msgs, opts, Box::new(on_chunk), cancel.clone()).await {
+            Ok(final_text) => {
+                let _ = app.emit(&format!("native-done:{}", args.op_id), &final_text);
+                Ok(final_text)
+            }
+            Err(e) => Err(format!("{e:#}")),
+        }
+    } else {
+        // Agent mode: forward OpenAI-style messages so tool_calls / tool
+        // results round-trip through the model's chat template.
+        let json_msgs: Vec<serde_json::Value> = args
+            .messages
+            .into_iter()
+            .map(|m| {
+                let mut obj = serde_json::Map::new();
+                obj.insert("role".into(), serde_json::Value::String(m.role));
+                obj.insert("content".into(), serde_json::Value::String(m.content));
+                if let Some(tc) = m.tool_calls {
+                    obj.insert("tool_calls".into(), tc);
+                }
+                if let Some(id) = m.tool_call_id {
+                    obj.insert("tool_call_id".into(), serde_json::Value::String(id));
+                }
+                if let Some(name) = m.name {
+                    obj.insert("name".into(), serde_json::Value::String(name));
+                }
+                serde_json::Value::Object(obj)
+            })
+            .collect();
+        match NativeBackend::chat_stream_tools(
+            &rt,
+            json_msgs,
+            args.tools,
+            opts,
+            Box::new(on_chunk),
+            cancel.clone(),
+        )
+        .await
+        {
+            Ok(turn) => {
+                let _ = app.emit(&format!("native-toolcalls:{}", args.op_id), &turn.tool_calls);
+                let _ = app.emit(&format!("native-done:{}", args.op_id), &turn.content);
+                Ok(turn.content)
+            }
+            Err(e) => Err(format!("{e:#}")),
+        }
+    };
+    crate::stream_cancel::release(&args.op_id);
+    outcome
+}
 
-    // Agent mode: forward OpenAI-style messages so tool_calls / tool results
-    // round-trip through the model's chat template.
-    let json_msgs: Vec<serde_json::Value> = args
-        .messages
-        .into_iter()
-        .map(|m| {
-            let mut obj = serde_json::Map::new();
-            obj.insert("role".into(), serde_json::Value::String(m.role));
-            obj.insert("content".into(), serde_json::Value::String(m.content));
-            if let Some(tc) = m.tool_calls {
-                obj.insert("tool_calls".into(), tc);
-            }
-            if let Some(id) = m.tool_call_id {
-                obj.insert("tool_call_id".into(), serde_json::Value::String(id));
-            }
-            if let Some(name) = m.name {
-                obj.insert("name".into(), serde_json::Value::String(name));
-            }
-            serde_json::Value::Object(obj)
-        })
-        .collect();
-    let turn =
-        NativeBackend::chat_stream_tools(&rt, json_msgs, args.tools, opts, Box::new(on_chunk))
-            .await
-            .map_err(|e| format!("{e:#}"))?;
-    let _ = app.emit(
-        &format!("native-toolcalls:{}", args.op_id),
-        &turn.tool_calls,
-    );
-    let _ = app.emit(&format!("native-done:{}", args.op_id), &turn.content);
-    Ok(turn.content)
+/// Cancel an in-flight native chat stream by its `op_id`. Best-effort: returns
+/// `true` if a stream was actually pending. The stream loop races this token
+/// via `tokio::select!` and returns its partial output promptly. (2026-05-30)
+#[tauri::command]
+pub fn native_cancel(op_id: String) -> bool {
+    crate::stream_cancel::cancel(&op_id)
 }
 
 /* ── GGUF file picker (Phase 3 of cross-platform Native rollout) ───────── */

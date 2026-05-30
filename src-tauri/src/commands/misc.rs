@@ -414,6 +414,9 @@ pub fn settings_set(
         .as_object()
         .ok_or("settings patch must be a JSON object")?;
     validate_settings_patch(patch_obj)?;
+    // Hold the update lock across load→patch→save so a concurrent settings
+    // write can't clobber this one (lost update). MED (2026-05-29).
+    let _guard = settings::lock_for_update();
     let mut current = serde_json::to_value(settings::load()).map_err(|e| e.to_string())?;
     if let Some(c) = current.as_object_mut() {
         for (k, v) in patch_obj {
@@ -446,6 +449,7 @@ pub fn setup_complete_get() -> bool {
 ///   * the Settings panel "Re-run setup wizard" button → `false`
 #[tauri::command]
 pub fn setup_complete_set(value: bool) -> Result<(), String> {
+    let _guard = settings::lock_for_update();
     let mut s = settings::load();
     s.setup_complete = Some(value);
     settings::save(&s).map_err(|e| e.to_string())
@@ -509,6 +513,13 @@ pub async fn custom_chat_stream(
         model,
     )
     .await
+}
+
+/// Cancel an in-flight custom/OpenRouter chat stream by its `op_id`.
+/// Best-effort: `true` if a stream was actually pending. (2026-05-30)
+#[tauri::command]
+pub fn custom_cancel(op_id: String) -> bool {
+    crate::stream_cancel::cancel(&op_id)
 }
 
 /// Fetch the live OpenRouter model catalogue for the picker.

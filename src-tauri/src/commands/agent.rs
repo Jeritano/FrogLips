@@ -877,9 +877,11 @@ pub fn policy_evaluate_write(cwd: String, path: String) -> policy::Decision {
 pub fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, String> {
     let previous = agent::get_workspace_root();
     let result = agent::set_workspace_root(path)?;
+    let _guard = crate::settings::lock_for_update();
     let mut s = crate::settings::load();
     s.workspace_root = result.clone();
     let _ = crate::settings::save(&s);
+    drop(_guard);
     // Code re-review M-1: snapshot stack was documented as workspace-
     // scoped but `clear()` was never called from here. Switching projects
     // could otherwise let `agent_undo` later write into the old project.

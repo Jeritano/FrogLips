@@ -117,6 +117,18 @@ impl ServerHandle {
         let id = self.next_request_id().await;
         let (tx, rx) = oneshot::channel();
         self.waiters.lock().await.insert(id, tx);
+        // Re-check liveness AFTER inserting the waiter. The stdout pump sets
+        // status="stopped" then drains all waiters on EOF; if that happened
+        // between the liveness check above and this insert, our waiter lands
+        // AFTER the drain and would never be resolved — a full RPC_TIMEOUT
+        // (120s) hang. Re-checking here closes that window. LOW (2026-05-30).
+        if self.status.read().as_str() != "running" {
+            self.waiters.lock().await.remove(&id);
+            return Err(anyhow!(
+                "MCP server '{}' stopped before the request could be sent",
+                self.name
+            ));
+        }
 
         let msg = json!({
             "jsonrpc": "2.0",
@@ -417,7 +429,16 @@ pub async fn start_server(
                         }
                         match serde_json::from_str::<Value>(&line) {
                             Ok(v) => {
-                                if let Some(id) = v.get("id").and_then(|x| x.as_u64()) {
+                                // JSON-RPC 2.0 permits string ids. We always
+                                // SEND integer ids, but a server that echoes
+                                // them as strings (e.g. "5") would otherwise
+                                // miss correlation and hang the caller the full
+                                // RPC_TIMEOUT. Accept both. LOW (2026-05-30).
+                                let id_opt = v.get("id").and_then(|x| {
+                                    x.as_u64()
+                                        .or_else(|| x.as_str().and_then(|s| s.parse::<u64>().ok()))
+                                });
+                                if let Some(id) = id_opt {
                                     // Response.
                                     let waiter = waiters.lock().await.remove(&id);
                                     if let Some(tx) = waiter {

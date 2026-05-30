@@ -22,6 +22,8 @@ mod policy;
 mod quick_prompt;
 mod rag;
 mod settings;
+mod sse_decode;
+mod stream_cancel;
 mod task_queue;
 mod util;
 mod workflow_skills;
@@ -231,6 +233,40 @@ pub fn run() {
                 tauri::async_runtime::spawn_blocking(|| {
                     image_gen::lora::cleanup_orphan_tmp_dirs();
                 });
+
+                // HIGH-1 (2026-05-29): reconcile the images table against the
+                // filesystem on startup. Heals rows orphaned by an older build
+                // that evicted gallery files without pruning the DB (or by an
+                // external process deleting PNGs). Blocking thread — bounded by
+                // the byte-capped gallery, and off the first-paint path.
+                tauri::async_runtime::spawn_blocking(|| match history::reconcile_image_rows() {
+                    Ok(0) => {}
+                    Ok(n) => crate::diagnostics::info(
+                        "image-gallery",
+                        &format!("startup reconcile: pruned {n} orphan image row(s)"),
+                    ),
+                    Err(e) => crate::diagnostics::warn_with(
+                        "image-gallery",
+                        "startup image reconcile failed",
+                        serde_json::json!({ "error": e.to_string() }),
+                    ),
+                });
+
+                // LOW (2026-05-30): sweep abandoned `*.gguf.part` files left by
+                // interrupted GGUF downloads. No download is in flight in a
+                // fresh process, so any partial is orphaned. Off the first-
+                // paint path.
+                if let Ok(app_data) = app.path().app_data_dir() {
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let n = gguf::cleanup_orphan_part_files(&app_data);
+                        if n > 0 {
+                            crate::diagnostics::info(
+                                "gguf",
+                                &format!("startup sweep: removed {n} abandoned .part file(s)"),
+                            );
+                        }
+                    });
+                }
 
                 let s = state.clone();
                 let shutdown = shutdown_signal();
@@ -468,6 +504,7 @@ pub fn run() {
             commands::models::native_unload_model,
             commands::models::native_current_model,
             commands::models::native_chat_stream,
+            commands::models::native_cancel,
             commands::models::native_download_gguf,
             commands::models::native_list_gguf_files,
             commands::models::native_delete_gguf,
@@ -506,6 +543,7 @@ pub fn run() {
             commands::misc::quick_prompt_open,
             commands::misc::quick_prompt_hide,
             commands::misc::custom_chat_stream,
+            commands::misc::custom_cancel,
             commands::misc::openrouter_list_models,
             commands::misc::openrouter_set_key,
             commands::misc::openrouter_has_key,

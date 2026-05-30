@@ -679,6 +679,10 @@ export const api = {
     tools?: Record<string, unknown>[];
   }) => invoke<string>("native_chat_stream", { args }),
 
+  /** Cancel an in-flight native chat stream by op_id. Best-effort; resolves
+   *  true if a stream was actually pending. (2026-05-30) */
+  nativeCancelChat: (opId: string) => invoke<boolean>("native_cancel", { opId }),
+
   /**
    * Stream a chat completion from a custom OpenAI-compatible cloud backend.
    * The Rust side resolves base_url + model + the Keychain API key from
@@ -708,6 +712,10 @@ export const api = {
         max_tokens: args.max_tokens,
       },
     }),
+
+  /** Cancel an in-flight custom/OpenRouter chat stream by op_id. Best-effort;
+   *  resolves true if a stream was actually pending. (2026-05-30) */
+  customCancel: (opId: string) => invoke<boolean>("custom_cancel", { opId }),
 
   /** Live OpenRouter model catalogue (no key needed to list). */
   openrouterListModels: () =>

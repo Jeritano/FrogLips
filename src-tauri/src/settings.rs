@@ -34,6 +34,13 @@ pub struct Settings {
     /// formatted into a system-prompt block so every chat and workflow agent
     /// knows who the user is. Absent on legacy installs → `None` → not used.
     pub user_profile: Option<UserProfile>,
+    /// HIGH-2 (2026-05-29): forward-compatibility capture. Any top-level key
+    /// this build doesn't recognise (because it was written by a NEWER build)
+    /// is parked here and re-serialized verbatim on save, so opening an old
+    /// build can't silently destroy a newer build's settings. Skipped when
+    /// empty so it never appears in a fresh file.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Explicit, user-edited identity facts (the "Custom Instructions" pattern).
@@ -149,19 +156,12 @@ fn keychain_delete(account: &str) {
         return;
     }
     use security_framework::passwords::delete_generic_password;
+    // Native delete targets the same (service, account) tuple as any legacy
+    // CLI-created entry — Keychain is a single store — so this also clears
+    // keys written by older `security add-generic-password` builds. The
+    // redundant CLI fallback that used to follow was removed (LOW,
+    // 2026-05-29): it spawned a process on every key-clear for no benefit.
     let _ = delete_generic_password(KEYCHAIN_SERVICE, account);
-    // Legacy fallback was a CLI invocation that is now redundant; left
-    // here as a note in case a future tester needs to clear a stale
-    // entry created by older builds.
-    let _ = std::process::Command::new("security")
-        .args([
-            "delete-generic-password",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            account,
-        ])
-        .output();
 }
 
 /// Public wrapper: store a key for `account`. Used by the OpenRouter
@@ -202,8 +202,32 @@ pub fn load() -> Settings {
         return Settings::default();
     };
     let mut s: Settings = match std::fs::read_to_string(&p) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        // Missing/unreadable file → fresh defaults (first run). Not an error.
         Err(_) => return Settings::default(),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(parsed) => parsed,
+            // HIGH-2 (2026-05-29): a corrupt/truncated/hand-broken
+            // settings.json used to deserialize to `Settings::default()`,
+            // and the next `save` would overwrite the user's real config
+            // (workspace_root, custom_backends, mcp_servers, profile) with
+            // those defaults — silent total loss. Quarantine the bad file
+            // aside FIRST so the original survives for recovery, then boot
+            // with defaults against a now-absent path (a fresh file is
+            // written on the next save).
+            Err(e) => {
+                let quarantine = p.with_file_name("settings.json.corrupt");
+                let _ = std::fs::rename(&p, &quarantine);
+                crate::diagnostics::warn_with(
+                    "settings",
+                    "settings.json could not be parsed; moved aside to settings.json.corrupt and booted with defaults",
+                    serde_json::json!({
+                        "error": e.to_string(),
+                        "quarantine": quarantine.display().to_string(),
+                    }),
+                );
+                return Settings::default();
+            }
+        },
     };
 
     let mut migrated = false;
@@ -236,6 +260,22 @@ pub fn load() -> Settings {
         let _ = save(&s);
     }
     s
+}
+
+/// Serializes settings read-modify-write sequences across IPC commands.
+/// `settings_set` / `setup_complete_set` / the agent workspace setter all do
+/// load → mutate → save; without a shared lock two near-simultaneous writes
+/// each load the same base, mutate different fields, and the second `save`
+/// clobbers the first's change (lost update). Callers take this guard for the
+/// whole sequence. std::sync::Mutex is fine — the critical section is a file
+/// read + JSON munge + atomic write, no `.await` inside. MED (2026-05-29).
+static UPDATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquire the settings update lock. Hold the returned guard across a
+/// load → mutate → save sequence. Poison-tolerant (a panic mid-update
+/// shouldn't wedge every future settings write).
+pub fn lock_for_update() -> std::sync::MutexGuard<'static, ()> {
+    UPDATE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Persist settings. API keys are written to the macOS Keychain and replaced
@@ -286,7 +326,14 @@ pub fn save(s: &Settings) -> std::io::Result<()> {
 /// same filesystem. Falls back to the temp file's cleanup on rename failure.
 fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let tmp = dir.join(format!(".settings.json.tmp-{}", std::process::id()));
+    // MED (2026-05-29): unique temp name per write. The old `.tmp-{pid}`
+    // was shared by every write in the process, so two concurrent saves
+    // interleaved their `write_all`s onto the same file and one `rename`d a
+    // half-written temp the other was still filling → torn settings.json. A
+    // per-write counter gives each its own scratch file.
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".settings.json.tmp-{}-{}", std::process::id(), seq));
     {
         use std::io::Write;
         let mut f = std::fs::File::create(&tmp)?;

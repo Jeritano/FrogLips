@@ -213,6 +213,11 @@ pub fn delete_ollama_model(name: &str) -> Result<()> {
     use std::process::Stdio;
     let output = std::process::Command::new("ollama")
         .arg("rm")
+        // `--` end-of-options guard, matching the pull path. The name is
+        // already charset-validated upstream, but this keeps `rm` symmetric
+        // with `pull` so a future validator loosening can't make a
+        // flag-like name injectable here. LOW (2026-05-29).
+        .arg("--")
         .arg(name)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

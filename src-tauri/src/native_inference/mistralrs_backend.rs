@@ -17,6 +17,7 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use tokio_util::sync::CancellationToken;
 
 use super::{ChatMsg, ChatTurn, ModelRef, NativeBackend, NativeToolCall, SamplingOpts};
 
@@ -112,6 +113,7 @@ impl NativeRuntime {
         messages: Vec<ChatMsg>,
         sampling: SamplingOpts,
         mut on_chunk: impl FnMut(String) + Send + 'static,
+        cancel: CancellationToken,
     ) -> Result<String> {
         let req_msgs: Vec<IndexMap<String, mistralrs_core::MessageContent>> = messages
             .into_iter()
@@ -156,13 +158,34 @@ impl NativeRuntime {
             .map_err(|e| anyhow!("send_request failed: {e:?}"))?;
 
         let mut full = String::new();
-        while let Some(resp) = rx.recv().await {
+        // Whether any streaming Chunk already delivered text. The terminal
+        // Done message carries the FULL aggregate; if we streamed it as
+        // chunks, re-emitting would duplicate. The old guard
+        // (`!full.contains(&content)`) tried to dedup by substring, but that
+        // silently DROPS a legitimate Done body that happens to be a substring
+        // already seen (e.g. the model ends on "." or a repeated phrase).
+        // Track streaming explicitly instead. L1 (2026-05-30).
+        let mut streamed_any = false;
+        loop {
+            // Race the model stream against the cancel token so a user Stop /
+            // navigate-away stops decoding promptly instead of running to
+            // `max_tokens`. Dropping `rx` on cancel signals the mistralrs
+            // engine to abandon the request. (2026-05-30)
+            let resp = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(full),
+                maybe = rx.recv() => match maybe {
+                    Some(r) => r,
+                    None => break,
+                },
+            };
             match resp {
                 Response::Chunk(chunk) => {
                     for choice in chunk.choices {
                         if let Some(content) = choice.delta.content {
                             on_chunk(content.clone());
                             full.push_str(&content);
+                            streamed_any = true;
                         }
                         if choice.finish_reason.is_some() {
                             return Ok(full);
@@ -172,7 +195,9 @@ impl NativeRuntime {
                 Response::Done(d) => {
                     for choice in d.choices {
                         if let Some(content) = choice.message.content {
-                            if !full.contains(&content) {
+                            // Only emit the aggregate when nothing streamed
+                            // (non-streaming fallback) — otherwise it's a dup.
+                            if !streamed_any {
                                 on_chunk(content.clone());
                                 full.push_str(&content);
                             }
@@ -204,6 +229,7 @@ impl NativeRuntime {
         tools: Vec<serde_json::Value>,
         sampling: SamplingOpts,
         mut on_chunk: impl FnMut(String) + Send + 'static,
+        cancel: CancellationToken,
     ) -> Result<ChatTurn> {
         let parsed_tools: Vec<Tool> = tools
             .into_iter()
@@ -248,14 +274,26 @@ impl NativeRuntime {
             .map_err(|e| anyhow!("send_request failed: {e:?}"))?;
 
         let mut full = String::new();
+        let mut streamed_any = false; // see chat_stream — explicit dup guard (L1)
         let mut tool_calls: Vec<NativeToolCall> = Vec::new();
-        while let Some(resp) = rx.recv().await {
+        loop {
+            // Cancel-aware receive (see chat_stream). On cancel, return the
+            // partial turn collected so far rather than running to max_tokens.
+            let resp = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(ChatTurn { content: full, tool_calls }),
+                maybe = rx.recv() => match maybe {
+                    Some(r) => r,
+                    None => break,
+                },
+            };
             match resp {
                 Response::Chunk(chunk) => {
                     for choice in chunk.choices {
                         if let Some(content) = choice.delta.content {
                             on_chunk(content.clone());
                             full.push_str(&content);
+                            streamed_any = true;
                         }
                         if let Some(calls) = choice.delta.tool_calls {
                             collect_tool_calls(&mut tool_calls, calls);
@@ -271,7 +309,7 @@ impl NativeRuntime {
                 Response::Done(d) => {
                     for choice in d.choices {
                         if let Some(content) = choice.message.content {
-                            if !full.contains(&content) {
+                            if !streamed_any {
                                 on_chunk(content.clone());
                                 full.push_str(&content);
                             }
@@ -402,10 +440,11 @@ impl NativeBackend for NativeRuntime {
         messages: Vec<ChatMsg>,
         sampling: SamplingOpts,
         on_chunk: Box<dyn FnMut(String) + Send + 'static>,
+        cancel: CancellationToken,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + '_>> {
-        Box::pin(
-            async move { NativeRuntime::chat_stream(self, messages, sampling, on_chunk).await },
-        )
+        Box::pin(async move {
+            NativeRuntime::chat_stream(self, messages, sampling, on_chunk, cancel).await
+        })
     }
 
     fn chat_stream_tools(
@@ -414,9 +453,10 @@ impl NativeBackend for NativeRuntime {
         tools: Vec<serde_json::Value>,
         sampling: SamplingOpts,
         on_chunk: Box<dyn FnMut(String) + Send + 'static>,
+        cancel: CancellationToken,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ChatTurn>> + Send + '_>> {
         Box::pin(async move {
-            NativeRuntime::chat_stream_tools(self, messages, tools, sampling, on_chunk).await
+            NativeRuntime::chat_stream_tools(self, messages, tools, sampling, on_chunk, cancel).await
         })
     }
 }

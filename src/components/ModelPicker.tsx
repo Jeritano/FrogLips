@@ -76,6 +76,16 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   // Native models load in-process: progress only surfaces via Tauri events.
   useTauriEvent<string>("native-loading", useCallback((e) => setNativeLoading(e.payload), []));
   useTauriEvent<string>("native-loaded", useCallback(() => setNativeLoading(null), []));
+  // The backend emits `native-error` when an in-process load fails. Without a
+  // listener the spinner sat on "loading · native" forever (only a later
+  // SUCCESSFUL load cleared it). Clear it here too. MED (2026-05-29).
+  useTauriEvent<{ model?: string; error?: string }>(
+    "native-error",
+    useCallback((e) => {
+      setNativeLoading(null);
+      if (e.payload?.error) setErr(`Could not load native model: ${e.payload.error}`);
+    }, []),
+  );
 
   async function loadModels(force = false) {
     // `performance.now()` is monotonic — immune to wall-clock jumps that
@@ -224,6 +234,9 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
       }
     } catch (e) {
       setErr(`Could not start "${selected.id}" on ${selected.backend}: ${e}. Press Start to retry.`);
+      // A failed native load rejects here; clear the in-process loading
+      // spinner so it doesn't hang on "loading · native". MED (2026-05-29).
+      setNativeLoading(null);
     }
     finally { setBusy(false); }
   }

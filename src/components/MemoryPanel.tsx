@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
@@ -78,7 +78,12 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
   // for memory deletion so the destructive flow can't short-circuit silently.
   const deleteConfirm = useTwoClickConfirm();
 
+  // Monotonic request id so a slower earlier refresh can't paint over a
+  // newer one's results (out-of-order resolution on rapid scope changes).
+  // LOW (2026-05-29).
+  const refreshSeqRef = useRef(0);
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeqRef.current;
     try {
       // Pass workspaceRoot + conversationId so the Rust layer applies the
       // same scope filter the search paths use. Without this the panel
@@ -88,6 +93,7 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
         api.listMemories("active", workspaceRoot ?? null, conversationId ?? null),
         api.listMemories("pending", workspaceRoot ?? null, conversationId ?? null),
       ]);
+      if (seq !== refreshSeqRef.current) return; // superseded by a newer refresh
       setActive(a);
       setPending(p);
     } catch (err) {

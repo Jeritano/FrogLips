@@ -44,6 +44,11 @@ pub const QUICK_LABEL: &str = "quick";
 /// a runaway stream lands inside resident memory.
 const QUICK_REPLY_MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// Hard cap on a single un-terminated stream line. The reply cap only counts
+/// emitted deltas; a newline-less flood would grow the line buffer unbounded.
+/// MED (2026-05-29).
+const QUICK_LINE_BUF_MAX: usize = 1024 * 1024;
+
 #[derive(Serialize, Clone)]
 pub struct QuickPromptChunk {
     pub op_id: String,
@@ -250,10 +255,17 @@ async fn stream_mlx(
     let stream = resp.bytes_stream();
     use futures::StreamExt;
     let mut buf = String::new();
+    let mut decoder = crate::sse_decode::Utf8StreamDecoder::default();
     tokio::pin!(stream);
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read chunk")?;
-        let progress = parse_mlx_chunk(&mut buf, &String::from_utf8_lossy(&bytes));
+        let text = decoder.push(&bytes);
+        let progress = parse_mlx_chunk(&mut buf, &text);
+        if buf.len() > QUICK_LINE_BUF_MAX {
+            return Err(anyhow!(
+                "stream line exceeded {QUICK_LINE_BUF_MAX} bytes without a delimiter"
+            ));
+        }
         for delta in progress.deltas {
             // Body cap: if appending this delta would exceed the per-reply
             // ceiling, append what fits and bail out — defends against a
@@ -334,10 +346,17 @@ async fn stream_ollama(
     let stream = resp.bytes_stream();
     use futures::StreamExt;
     let mut buf = String::new();
+    let mut decoder = crate::sse_decode::Utf8StreamDecoder::default();
     tokio::pin!(stream);
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read ollama chunk")?;
-        let progress = parse_ollama_chunk(&mut buf, &String::from_utf8_lossy(&bytes));
+        let text = decoder.push(&bytes);
+        let progress = parse_ollama_chunk(&mut buf, &text);
+        if buf.len() > QUICK_LINE_BUF_MAX {
+            return Err(anyhow!(
+                "stream line exceeded {QUICK_LINE_BUF_MAX} bytes without a delimiter"
+            ));
+        }
         for delta in progress.deltas {
             // Same body cap as the MLX path — bail at QUICK_REPLY_MAX_BYTES.
             if acc.len() + delta.len() > QUICK_REPLY_MAX_BYTES {

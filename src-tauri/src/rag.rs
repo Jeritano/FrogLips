@@ -437,16 +437,22 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     walk_files(&root_canon, glob_matcher.as_ref(), &mut files);
     let files_seen = files.len();
 
-    // Audit M-R4 (2026-05-28): upsert + lookup + delete previously ran
-    // outside a transaction. Two concurrent `rag_ingest_folder` calls
-    // for the same name could interleave the chunk DELETE with another
-    // ingest's INSERTs, producing a half-deleted corpus the user sees
-    // as corrupt. Wrap upsert+lookup+delete in a single transaction so
-    // either both calls serialize cleanly via SQLite's locking or the
-    // second one fails predictably on BUSY.
+    // Audit M-R4 (2026-05-28): upsert + lookup ran outside a transaction.
+    //
+    // MED (2026-05-29): the original flow ALSO deleted the old chunks here,
+    // up front, before inserting the new ones. A crash, cancel, or
+    // MAX_CHUNKS break between that delete and completion left the corpus
+    // present but empty/partial with a stale `chunk_count` — an interrupted
+    // re-ingest was net DATA LOSS, not a no-op. Reworked to insert-before-
+    // delete with an id watermark: the new chunks land alongside the old
+    // ones (both visible transiently), then a single final transaction
+    // deletes everything at or below the watermark and updates the count —
+    // an atomic old→new swap. If the ingest is interrupted before that final
+    // tx, the OLD corpus is still fully intact; the orphaned new chunks are
+    // reclaimed by the next successful ingest's watermark.
     let mut conn = get_db()?;
     let now = now_unix();
-    let corpus_id: i64 = {
+    let (corpus_id, watermark): (i64, i64) = {
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
@@ -459,12 +465,18 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
             params![&opts.name],
             |r| r.get(0),
         )?;
-        tx.execute(
-            "DELETE FROM rag_chunks WHERE corpus_id = ?1",
-            params![id],
+        // High-water mark BEFORE any new insert. rag_chunks.id is AUTOINCREMENT
+        // (monotonic for the table), so every chunk inserted from here on gets
+        // an id strictly greater than this — the discriminator for the final
+        // swap. Global MAX is intentional (not per-corpus): it's a lower bound
+        // that holds even if a concurrent ingest of another corpus interleaves.
+        let wm: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM rag_chunks",
+            [],
+            |r| r.get(0),
         )?;
         tx.commit()?;
-        id
+        (id, wm)
     };
     drop(conn);
 
@@ -558,10 +570,22 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         files_indexed += 1;
     }
 
-    conn.execute(
-        "UPDATE rag_corpora SET chunk_count = ?1, updated_at = ?2 WHERE id = ?3",
-        params![chunks_created as i64, now_unix(), corpus_id],
-    )?;
+    // Atomic swap: drop the old generation (everything at/below the
+    // watermark) and publish the new count in ONE transaction. Until this
+    // commits, search still sees the old corpus; after, it sees only the new
+    // chunks. An interruption before this point leaves the old corpus whole.
+    {
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM rag_chunks WHERE corpus_id = ?1 AND id <= ?2",
+            params![corpus_id, watermark],
+        )?;
+        tx.execute(
+            "UPDATE rag_corpora SET chunk_count = ?1, updated_at = ?2 WHERE id = ?3",
+            params![chunks_created as i64, now_unix(), corpus_id],
+        )?;
+        tx.commit()?;
+    }
 
     Ok(IngestReport {
         corpus_id,
@@ -844,5 +868,69 @@ mod tests {
         assert!(validate_name("").is_err());
         assert!(validate_name("has spaces").is_err());
         assert!(validate_name("has/slash").is_err());
+    }
+
+    /// MED (2026-05-29): re-ingesting an existing corpus must REPLACE its
+    /// content atomically — the old chunks gone, the new ones in, the count
+    /// reflecting only the new generation. This exercises the insert-before-
+    /// delete watermark swap (no data-loss window). Runs against the shared
+    /// dev DB like the other DB-touching tests; uses a unique name + temp dir
+    /// and cleans up after itself.
+    #[test]
+    fn reingest_swaps_content_not_appends() {
+        let tag = std::process::id();
+        let name = format!("__test_reingest_{tag}");
+        let dir = std::env::temp_dir().join(format!("rag_reingest_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("doc.txt");
+        let opts = || IngestOpts {
+            name: name.clone(),
+            root: dir.to_string_lossy().into_owned(),
+            glob: None,
+        };
+
+        // First ingest — a distinctive token only in this generation.
+        std::fs::write(&file, "alphaunique alphaunique alphaunique filler text here").unwrap();
+        let r1 = ingest_folder(opts()).expect("first ingest");
+        assert!(r1.chunks_created >= 1);
+        let c1 = list_corpora()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.name == name)
+            .expect("corpus listed after first ingest");
+        assert_eq!(c1.chunk_count as usize, r1.chunks_created);
+
+        // Re-ingest with entirely different content.
+        std::fs::write(&file, "betaunique betaunique betaunique filler text here").unwrap();
+        let r2 = ingest_folder(opts()).expect("re-ingest");
+
+        // Count reflects ONLY the new generation, not old+new.
+        let c2 = list_corpora()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.name == name)
+            .expect("corpus listed after re-ingest");
+        assert_eq!(
+            c2.chunk_count as usize, r2.chunks_created,
+            "chunk_count should equal the new generation's chunk count"
+        );
+
+        // Old content must be gone: no surviving chunk text contains it.
+        let after = search(&name, "alphaunique", 50).unwrap();
+        assert!(
+            after.iter().all(|h| !h.snippet.contains("alphaunique")),
+            "old chunks must be swapped out, found: {after:?}"
+        );
+        // New content present.
+        let newh = search(&name, "betaunique", 50).unwrap();
+        assert!(
+            newh.iter().any(|h| h.snippet.contains("betaunique")),
+            "new content should be searchable"
+        );
+
+        // Cleanup.
+        let _ = delete_corpus(&name);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

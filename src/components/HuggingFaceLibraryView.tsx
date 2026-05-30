@@ -194,6 +194,7 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
   const [exhausted, setExhausted] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
   const debounceRef = useRef<number | null>(null);
 
   // Debounce the free-text filter input — 250ms matches the pattern used by
@@ -211,6 +212,10 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
    *  client-side on the existing result set. */
   useEffect(() => {
     abortRef.current?.abort();
+    // Also cancel any in-flight "load more": its result belongs to the OLD
+    // filter and would otherwise append stale rows onto the fresh list.
+    // LOW (2026-05-29).
+    loadMoreAbortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setLoading(true);
@@ -251,6 +256,7 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
     setLoadingMore(true);
     setErr(null);
     const ctrl = new AbortController();
+    loadMoreAbortRef.current = ctrl;
     try {
       const nextOffset = offset + PAGE_SIZE;
       const r = await loadHuggingFace({
@@ -263,6 +269,9 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
         signal: ctrl.signal,
         limit: PAGE_SIZE,
       });
+      // A filter change while this was in flight aborts ctrl and resets the
+      // list — drop the stale page instead of appending it. LOW (2026-05-29).
+      if (ctrl.signal.aborted) return;
       setModels((prev) => {
         const seen = new Set(prev.map((m) => m.id));
         return [...prev, ...r.models.filter((m) => !seen.has(m.id))];
@@ -270,8 +279,10 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
       setOffset(nextOffset);
       if (r.models.length < PAGE_SIZE) setExhausted(true);
     } catch (e: unknown) {
+      if ((e as { name?: string })?.name === "AbortError") return;
       setErr(String((e as { message?: string })?.message ?? e));
     } finally {
+      if (loadMoreAbortRef.current === ctrl) loadMoreAbortRef.current = null;
       setLoadingMore(false);
     }
   }
