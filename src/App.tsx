@@ -408,21 +408,24 @@ function App() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [convSearch]);
 
-  // On unmount, COMMIT any pending soft-delete rather than just dropping the
-  // timer. Clicking delete is an intent to delete; the 5s window only exists
-  // for undo. Previously the timer was merely cleared, so deleting then
-  // quitting within the window left the conversation neither deleted nor
-  // restored — it silently reappeared next launch. Fire the IPC directly
-  // (no state updates — the tree is unmounting); best-effort on a real
-  // app-quit but it typically lands before process exit. (2026-05-30)
+  // On unmount ONLY, commit any pending soft-delete (deleting then quitting
+  // within the 5s undo window should honor the delete). Read the latest pending
+  // delete through a ref with `[]` deps — a `[pendingDelete]` dep array would
+  // run this cleanup on EVERY change of pendingDelete, so clicking Undo
+  // (pendingDelete → null) would fire the captured cleanup and permanently
+  // delete the very conversation the user just restored. Round 12 HIGH fix to
+  // the round-A2 change (2026-05-30).
+  const pendingDeleteRef = useRef(pendingDelete);
+  pendingDeleteRef.current = pendingDelete;
   useEffect(() => {
     return () => {
-      if (pendingDelete) {
-        clearTimeout(pendingDelete.timer);
-        void api.deleteConversation(pendingDelete.conv.id).catch(() => {});
+      const pd = pendingDeleteRef.current;
+      if (pd) {
+        clearTimeout(pd.timer);
+        void api.deleteConversation(pd.conv.id).catch(() => {});
       }
     };
-  }, [pendingDelete]);
+  }, []);
 
   async function refreshStatus() {
     try {
