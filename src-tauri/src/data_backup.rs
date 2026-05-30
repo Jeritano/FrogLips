@@ -352,8 +352,22 @@ pub fn apply_import(conn: &mut Connection, doc: &ExportDoc) -> Result<ImportSumm
     })
 }
 
+/// Hard cap on an import file. The whole file is read into memory then parsed,
+/// so an accidental multi-GB selection would OOM/freeze the app. 256 MiB is far
+/// past any real export (conversations are text). LOW (2026-05-30).
+const MAX_IMPORT_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Read, validate, and import a JSON export file at `src` into the live DB.
 pub fn import_data(src: &Path) -> Result<ImportSummary> {
+    if let Ok(md) = std::fs::metadata(src) {
+        if md.len() > MAX_IMPORT_BYTES {
+            anyhow::bail!(
+                "import file is too large ({} bytes; max {})",
+                md.len(),
+                MAX_IMPORT_BYTES
+            );
+        }
+    }
     let text = std::fs::read_to_string(src)
         .with_context(|| format!("read export file {}", src.display()))?;
     let doc = parse_export(&text)?;

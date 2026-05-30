@@ -857,7 +857,12 @@ fn walk_search(
                 if matcher.matches(line) {
                     let mut trimmed = line.to_string();
                     if trimmed.len() > MAX_GREP_LINE_BYTES {
-                        trimmed.truncate(MAX_GREP_LINE_BYTES);
+                        // Clamp to a char boundary — raw `String::truncate` at a
+                        // fixed byte index PANICS mid-codepoint (a multibyte char
+                        // straddling byte 1024 is common in minified JS / unicode
+                        // comments), which would crash the agent_search_files
+                        // task. MED (2026-05-30).
+                        trimmed.truncate(super::shell::safe_truncate_idx(&trimmed, MAX_GREP_LINE_BYTES));
                         trimmed.push('…');
                     }
                     hits.push(SearchHit {

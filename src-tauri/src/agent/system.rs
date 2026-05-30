@@ -38,12 +38,15 @@ pub async fn applescript_run(script: String) -> Result<ShellResult, String> {
     };
     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    // Char-boundary-safe truncation — raw `String::truncate` panics if the cap
+    // lands mid-codepoint (incl. the 3-byte U+FFFD from the lossy decode above).
+    // MED (2026-05-30).
     if stdout.len() > MAX_SHELL_OUTPUT {
-        stdout.truncate(MAX_SHELL_OUTPUT);
+        stdout.truncate(super::shell::safe_truncate_idx(&stdout, MAX_SHELL_OUTPUT));
         stdout.push_str("\n[truncated]");
     }
     if stderr.len() > MAX_SHELL_OUTPUT {
-        stderr.truncate(MAX_SHELL_OUTPUT);
+        stderr.truncate(super::shell::safe_truncate_idx(&stderr, MAX_SHELL_OUTPUT));
         stderr.push_str("\n[truncated]");
     }
     Ok(ShellResult {

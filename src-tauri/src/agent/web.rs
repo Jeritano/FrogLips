@@ -316,7 +316,10 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
         ).unwrap()
     });
     fn strip_tags(s: &str) -> String {
-        let no_tags = regex::Regex::new(r"<[^>]*>").unwrap().replace_all(s, "");
+        // Compile once, not per search hit (this runs up to 20×/search). (2026-05-30)
+        static TAG_RE: once_cell::sync::Lazy<regex::Regex> =
+            once_cell::sync::Lazy::new(|| regex::Regex::new(r"<[^>]*>").unwrap());
+        let no_tags = TAG_RE.replace_all(s, "");
         no_tags
             .replace("&amp;", "&")
             .replace("&lt;", "<")
