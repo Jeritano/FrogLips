@@ -68,7 +68,13 @@ pub fn classify_applescript_risk(script: &str) -> &'static str {
         let mut search_from = 0;
         while let Some(rel) = lc[search_from..].find("do shell script") {
             let start = search_from + rel;
-            let tail = &script[start..];
+            // Index `lc` (the lowercased string) here, NOT `script`: `start` is
+            // a byte offset into `lc`, and some chars change byte length when
+            // lowercased (Turkish 'İ', …), so slicing the original-case
+            // `script` by an `lc` offset can land mid-codepoint and panic. The
+            // shell-keyword risk heuristic is case-insensitive, so lowercase is
+            // fine here. MED (2026-05-30).
+            let tail = &lc[start..];
             if let Some(q1) = tail.find('"') {
                 let after = &tail[q1 + 1..];
                 if let Some(q2) = after.find('"') {
@@ -404,6 +410,18 @@ pub async fn screenshot(out_path: Option<String>) -> Result<ScreenshotResult, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn applescript_risk_handles_lowercase_byte_length_change() {
+        // 'İ' (U+0130) lowercases to 2 chars, shifting byte offsets between the
+        // original and the lowercased string. A char like this before
+        // "do shell script" must not panic the byte-slice. (regression)
+        let script = "-- İ İ İ comment\ndo shell script \"rm -rf /tmp/x\"";
+        // Must not panic, and the destructive shell inside is still flagged.
+        assert_ne!(classify_applescript_risk(script), "normal");
+        // Benign do-shell-script still classifies without panicking.
+        let _ = classify_applescript_risk("İ\ndo shell script \"echo hi\"");
+    }
 
     #[tokio::test]
     async fn open_path_rejects_relative() {
