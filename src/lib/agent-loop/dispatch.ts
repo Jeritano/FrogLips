@@ -949,11 +949,13 @@ export async function executeTool(
       // fired the two listeners leaked for the page lifetime.
       let offDone: (() => void) | undefined;
       let offErr: (() => void) | undefined;
+      let imageTimeout: ReturnType<typeof setTimeout> | undefined;
       const releaseListeners = () => {
         try { offDone?.(); } catch { /* listener already torn down */ }
         try { offErr?.(); } catch { /* listener already torn down */ }
         offDone = undefined;
         offErr = undefined;
+        if (imageTimeout) { clearTimeout(imageTimeout); imageTimeout = undefined; }
       };
       try {
         const { listen } = await import("@tauri-apps/api/event");
@@ -1007,7 +1009,20 @@ export async function executeTool(
           Number.isFinite(convId as number) ? (convId as number) : null,
           opId,
         );
-        const done = await donePromise;
+        // LOW (2026-05-30): bound the wait. If the engine emits NEITHER
+        // terminal event (a dropped run, a panicked/aborted generate task),
+        // `donePromise` would otherwise hang the agent step forever. Race a
+        // generous ceiling (diffusion on CPU is slow but not unbounded) and
+        // best-effort cancel the backend op on timeout so the tool returns a
+        // structured error instead of wedging the whole loop.
+        const IMAGE_GEN_TIMEOUT_MS = 10 * 60 * 1000;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          imageTimeout = setTimeout(() => {
+            void api.imageCancel(opId).catch(() => {});
+            reject(new Error("image generation timed out"));
+          }, IMAGE_GEN_TIMEOUT_MS);
+        });
+        const done = await Promise.race([donePromise, timeoutPromise]);
         if (!done) {
           return JSON.stringify({ ok: false, kind: "image_gen_failed", message: "image-done missing image_id" });
         }

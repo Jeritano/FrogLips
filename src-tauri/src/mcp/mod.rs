@@ -779,7 +779,17 @@ pub async fn call_tool(server: &str, tool: &str, args_json: Value) -> Result<Str
                 }
             }
             if out.len() > MAX_RESULT_BYTES {
-                out.truncate(MAX_RESULT_BYTES);
+                // Clamp to a char boundary before truncating — `String::truncate`
+                // PANICS if the byte index lands mid-codepoint, which is trivially
+                // reachable for >512 KiB of multibyte text (CJK/emoji). A panic
+                // here unwinds the IPC task and the awaited tool call never
+                // resolves → the agent loop hangs. Mirror the boundary-safe
+                // pattern used elsewhere in this file. MED (2026-05-30).
+                let mut cut = MAX_RESULT_BYTES;
+                while cut > 0 && !out.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                out.truncate(cut);
                 out.push_str("\n[truncated]");
                 break;
             }
