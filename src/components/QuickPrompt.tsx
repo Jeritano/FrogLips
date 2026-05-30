@@ -171,6 +171,9 @@ export function QuickPrompt() {
           onChange={(e) => setText(e.target.value)}
           disabled={phase === "streaming"}
           onKeyDown={(e) => {
+            // Skip Enter-to-submit during IME composition (CJK candidate
+            // confirmation) so the prompt isn't sent mid-composition. (2026-05-30)
+            if (e.nativeEvent.isComposing) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               submit();

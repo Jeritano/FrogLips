@@ -271,6 +271,10 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
   }
 
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Don't treat Enter as "send" (or as a slash-menu pick) while an IME is
+    // composing — for CJK input the Enter that confirms a candidate would
+    // otherwise fire the message mid-composition. (2026-05-30)
+    if (e.nativeEvent.isComposing) return;
     if (slashCtx && matches.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -319,6 +323,11 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
           if (f.size > MAX_IMAGE_BYTES) { rejectedSize++; continue; }
           try {
             const { base64, size_bytes } = await fileToScrubbedPng(f);
+            // Re-check AFTER the canvas PNG re-encode: a lossy source (JPEG/
+            // WebP) routinely balloons 3–6× as lossless PNG, so a sub-4 MiB
+            // file can exceed the cap once scrubbed. Reject rather than ship a
+            // payload several times larger than the stated limit. (2026-05-30)
+            if (size_bytes > MAX_IMAGE_BYTES) { rejectedSize++; continue; }
             accepted.push({
               base64,
               mime: "image/png",
@@ -374,6 +383,25 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
     setDropping(false);
     const files = Array.from(e.dataTransfer.files);
     await ingestFiles(files);
+  }
+
+  // Paste an image (the Cmd+V-after-screenshot flow). The textarea's default
+  // paste handles text; here we pull any image items off the clipboard and
+  // route them through the same vision pipeline as drop / the file picker.
+  // (2026-05-30)
+  async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imgs: File[] = [];
+    for (const it of items) {
+      if (it.kind === "file" && IMAGE_MIME_RE.test(it.type)) {
+        const f = it.getAsFile();
+        if (f) imgs.push(f);
+      }
+    }
+    if (imgs.length === 0) return; // let plain-text paste proceed
+    e.preventDefault();
+    await ingestFiles(imgs);
   }
 
   function onTextChange(v: string, caret: number | null) {
@@ -577,6 +605,7 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
           data-testid="chat-input"
           value={text}
           onChange={(e) => onTextChange(e.target.value, e.target.selectionStart)}
+          onPaste={onPaste}
           onKeyDown={onKey}
           onKeyUp={(e) => {
             // Arrow-key caret moves don't fire onChange; recompute the slash

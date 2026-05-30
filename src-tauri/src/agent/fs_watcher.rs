@@ -55,13 +55,22 @@ pub struct WatchInfo {
     pub dropped: u32,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, Default)]
 pub struct WatchEvent {
     /// "created" | "modified" | "deleted" | "renamed" | "other"
     pub kind: String,
     pub path: String,
-    /// Unix epoch milliseconds.
+    /// Unix epoch milliseconds (display only).
     pub ts: u64,
+    /// Monotonic per-process sequence used as the poll cursor. NOT serialized
+    /// (the frontend round-trips the opaque `next_ts` cursor, which now carries
+    /// this seq). Assigned in `push_event`. Using a strictly-increasing seq
+    /// instead of the ms timestamp fixes silent event loss when >max_events
+    /// events share a millisecond and split across the per-call cap boundary
+    /// (the old `ev.ts > cutoff` filter dropped the buffered same-ms tail).
+    /// MED (2026-05-30).
+    #[serde(skip)]
+    pub seq: u64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -126,8 +135,13 @@ fn classify(kind: &EventKind) -> &'static str {
     }
 }
 
-/// Push an event into the ring, evicting the oldest if full.
-fn push_event(entry: &mut WatchEntry, ev: WatchEvent) {
+/// Push an event into the ring, evicting the oldest if full. Stamps a
+/// monotonic `seq` (the poll cursor) so same-millisecond events stay
+/// individually addressable.
+fn push_event(entry: &mut WatchEntry, mut ev: WatchEvent) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
+    ev.seq = EVENT_SEQ.fetch_add(1, Ordering::Relaxed) + 1; // seqs start at 1
     if entry.ring.len() >= RING_CAPACITY {
         entry.ring.pop_front();
         entry.info.dropped = entry.info.dropped.saturating_add(1);
@@ -243,6 +257,7 @@ pub async fn watch_path(
                 kind: kind.clone(),
                 path: p_str,
                 ts,
+                seq: 0, // assigned in push_event
             };
             let entry_opt = REGISTRY.lock().get(&id_for_cb).cloned();
             if let Some(entry) = entry_opt {
@@ -312,37 +327,45 @@ pub async fn poll_watch(
     let mut g = entry.lock();
     g.last_poll_ms = now_ms();
 
-    // Drain events newer than cutoff; events older than cutoff are discarded
-    // (the caller has implicitly acknowledged them by advancing `since_ms`).
-    let mut matched: Vec<WatchEvent> = Vec::new();
-    for ev in g.ring.drain(..) {
-        if ev.ts > cutoff {
-            matched.push(ev);
-        }
-    }
-    // matched is in time order (ring is FIFO). Take up to `cap`; the rest stay buffered.
-    let dropped: u32;
-    let events: Vec<WatchEvent>;
-    if matched.len() > cap {
-        let tail = matched.split_off(cap);
-        dropped = tail.len() as u32;
-        // Put the overflow back into the ring (preserve order at the front).
-        for ev in tail.into_iter().rev() {
-            g.ring.push_front(ev);
-        }
-        events = matched;
-    } else {
-        dropped = 0;
-        events = matched;
-    }
+    let (events, next_ts, dropped) = take_since(&mut g.ring, cutoff, cap);
     g.info.buffered = g.ring.len() as u32;
-
-    let next_ts = events.last().map(|e| e.ts).unwrap_or(cutoff.max(now_ms()));
     Ok(WatchPoll {
         events,
         next_ts,
         dropped,
     })
+}
+
+/// Cursor logic for `poll_watch`, pure for testability. From `ring`, take
+/// events whose `seq > cutoff`, up to `cap`; push any overflow back to the
+/// front (preserving order). Returns `(events, next_cursor, dropped)`.
+///
+/// `cutoff`/`next_cursor` is an opaque monotonic SEQUENCE, NOT a timestamp:
+/// filtering on `seq` keeps each same-millisecond event individually
+/// addressable, so a burst that splits across the `cap` boundary can never
+/// silently lose the buffered same-ms tail (the old `ts > cutoff` filter did).
+/// MED (2026-05-30).
+fn take_since(
+    ring: &mut std::collections::VecDeque<WatchEvent>,
+    cutoff: u64,
+    cap: usize,
+) -> (Vec<WatchEvent>, u64, u32) {
+    // Drain all; keep only unacked (seq > cutoff). Already-acked events are
+    // intentionally discarded (the caller advanced the cursor past them).
+    let mut matched: Vec<WatchEvent> = ring.drain(..).filter(|ev| ev.seq > cutoff).collect();
+    let dropped = if matched.len() > cap {
+        let tail = matched.split_off(cap);
+        let n = tail.len() as u32;
+        for ev in tail.into_iter().rev() {
+            ring.push_front(ev);
+        }
+        n
+    } else {
+        0
+    };
+    // Advance to the last returned seq; if nothing matched, hold the cursor.
+    let next = matched.last().map(|e| e.seq).unwrap_or(cutoff);
+    (matched, next, dropped)
 }
 
 pub fn stop_watch(id: String) -> Result<(), String> {
@@ -484,6 +507,7 @@ mod tests {
                     kind: "modified".into(),
                     path: format!("/tmp/{i}"),
                     ts: i as u64,
+                    seq: 0,
                 },
             );
         }
@@ -494,6 +518,32 @@ mod tests {
         // Oldest survivor should be index 50 (0..49 dropped).
         assert_eq!(entry.ring.front().unwrap().path, "/tmp/50");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn poll_does_not_lose_same_millisecond_events_at_cap_boundary() {
+        use std::collections::VecDeque;
+        // 5 events, ALL the same ts but distinct seq (as push_event assigns).
+        let mut ring: VecDeque<WatchEvent> = (1..=5u64)
+            .map(|seq| WatchEvent {
+                kind: "modified".into(),
+                path: format!("/p{seq}"),
+                ts: 100, // identical timestamp — the bug condition
+                seq,
+            })
+            .collect();
+        // Poll cap=2: first two, cursor=2, three buffered.
+        let (e1, c1, d1) = take_since(&mut ring, 0, 2);
+        assert_eq!(e1.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!((c1, d1), (2, 3));
+        // Next poll with the returned cursor: the SAME-ts buffered tail MUST
+        // still come through (the old `ts > cutoff` filter silently dropped it).
+        let (e2, c2, _) = take_since(&mut ring, c1, 2);
+        assert_eq!(e2.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(c2, 4);
+        let (e3, _, _) = take_since(&mut ring, c2, 2);
+        assert_eq!(e3.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![5]);
+        // All five delivered exactly once despite the identical timestamp.
     }
 
     /// Make a unique directory under the system temp dir.
