@@ -255,6 +255,30 @@ pub(super) fn within_workspace(p: &Path) -> bool {
     }
 }
 
+/// Validate a directory root for bulk read-ingestion (RAG). Canonicalizes,
+/// requires it to sit inside the workspace, and refuses protected
+/// (credential/system) roots — the same confinement `read_file` enforces.
+/// SEC-MED F2 (2026-05-30): `rag_ingest_folder` previously indexed ANY
+/// readable directory (e.g. `~/.ssh`, `~/.aws`), whose contents could then be
+/// exfiltrated through `rag_search`.
+pub fn confine_ingest_root(root: &Path) -> Result<PathBuf, String> {
+    let canon = std::fs::canonicalize(root)
+        .map_err(|e| format!("ingest root not accessible: {e}"))?;
+    if !within_workspace(&canon) {
+        return Err("ingest root is outside the workspace".into());
+    }
+    if is_protected_for_read(&canon) {
+        return Err("ingest root is a protected directory".into());
+    }
+    Ok(canon)
+}
+
+/// Public predicate so the RAG walker can skip protected files/dirs mid-walk
+/// (a workspace rooted at `$HOME` still contains `~/.ssh`, `~/.aws`, etc.).
+pub fn is_protected_read_path(p: &Path) -> bool {
+    is_protected_for_read(p)
+}
+
 /* ── Structured result types ──────────────────────────────────────────────── */
 
 #[derive(Serialize)]

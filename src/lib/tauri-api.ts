@@ -522,9 +522,14 @@ export const api = {
     }),
   agentStopWatch: (id: string) => invoke<void>("agent_stop_watch", { id }),
 
-  // Task queue
-  taskCreate: (command: string, cwd?: string) =>
-    invoke<TaskInfo>("task_create", { command, cwd: cwd ?? null }),
+  // Task queue. task_create runs `sh -c` like agent_run_shell, so it goes
+  // through the same command-bound approval gate (SEC-HIGH 2026-05-30).
+  taskCreate: async (command: string, cwd?: string) =>
+    invoke<TaskInfo>("task_create", {
+      command,
+      cwd: cwd ?? null,
+      approval: await mintApproval("task_create", { command }),
+    }),
   taskStatus: (id: string) => invoke<TaskInfo>("task_status", { id }),
   taskList: () => invoke<TaskInfo[]>("task_list"),
   taskCancel: (id: string) => invoke<void>("task_cancel", { id }),

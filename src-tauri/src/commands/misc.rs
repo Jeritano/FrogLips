@@ -123,27 +123,84 @@ fn os_description() -> String {
     format!("{os} {arch} {detail}").trim().to_string()
 }
 
-/// Recursively mask values whose key looks secret-bearing. Keeps the JSON
-/// shape so the bundle is still readable, but no plaintext key/token leaks.
+/// A string VALUE that looks like a credential regardless of its key name —
+/// caught so secrets in arbitrarily-named fields don't slip past the name
+/// filter. Conservative on purpose (prefix + embedded-URL-credential only) so
+/// it doesn't over-redact useful debug data like file paths or model ids.
+fn value_looks_secret(s: &str) -> bool {
+    let t = s.trim();
+    const PREFIXES: &[&str] = &[
+        "sk-", "sk_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "xoxb-", "xoxp-",
+        "xapp-", "glpat-", "AKIA", "ASIA", "AIza", "ya29.", "Bearer ", "-----BEGIN",
+        // JWT (base64url of `{"` ) — the near-universal bearer-token shape.
+        "eyJ",
+    ];
+    if PREFIXES.iter().any(|p| t.starts_with(p)) {
+        return true;
+    }
+    // scheme://user:pass@host — credentials embedded in a URL.
+    if let Some(rest) = t.split("://").nth(1) {
+        if let Some(authority) = rest.split('/').next() {
+            if authority.contains('@') && authority.split('@').next().is_some_and(|c| c.contains(':'))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Recursively mask secret-bearing values for the shareable diagnostics
+/// bundle. Redacts when (a) the KEY name looks secret-bearing, (b) the VALUE
+/// looks like a credential, or (c) we're inside an MCP-server `env` block —
+/// those hold arbitrary, often-credential values under names we can't predict
+/// (GH_PAT, DATABASE_URL, …), so every string value there is masked. Keeps the
+/// JSON shape readable; no plaintext key/token leaks. SEC-MED (2026-05-30).
 fn redact_secrets(value: &mut serde_json::Value) {
+    redact_secrets_inner(value, false);
+}
+
+fn redact_secrets_inner(value: &mut serde_json::Value, redact_all_strings: bool) {
     match value {
         serde_json::Value::Object(map) => {
             for (k, v) in map.iter_mut() {
                 let kl = k.to_ascii_lowercase();
-                let secretish = kl.contains("key")
+                let name_secret = kl.contains("key")
                     || kl.contains("token")
                     || kl.contains("secret")
-                    || kl.contains("password");
-                if secretish && v.is_string() {
+                    || kl.contains("password")
+                    || kl.contains("passwd")
+                    || kl.contains("auth")
+                    || kl.contains("credential")
+                    || kl.contains("bearer");
+                // Any object under an `env` key (MCP server environment) →
+                // redact every string value within it.
+                let child_redact_all = redact_all_strings || kl == "env";
+                let redact_this = v.is_string()
+                    && (redact_all_strings
+                        || name_secret
+                        || value_looks_secret(v.as_str().unwrap_or("")));
+                if redact_this {
                     *v = serde_json::Value::String("__redacted__".into());
                 } else {
-                    redact_secrets(v);
+                    redact_secrets_inner(v, child_redact_all);
                 }
             }
         }
         serde_json::Value::Array(items) => {
             for v in items.iter_mut() {
-                redact_secrets(v);
+                // Redact credential-shaped string ELEMENTS too — e.g. an MCP
+                // server's `args: ["--token", "ghp_…"]` or
+                // `["--header", "Authorization: Bearer …"]`. Without this an
+                // array-positioned secret would survive into the shared bundle
+                // (the object-key path never sees it). SEC-MED (2026-05-30).
+                if let serde_json::Value::String(s) = v {
+                    if redact_all_strings || value_looks_secret(s) {
+                        *v = serde_json::Value::String("__redacted__".into());
+                        continue;
+                    }
+                }
+                redact_secrets_inner(v, redact_all_strings);
             }
         }
         _ => {}
@@ -741,5 +798,48 @@ mod multi_window_tests {
         if !open.is_empty() {
             assert!(open.iter().any(|l| l == "conv-7"));
         }
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostics_bundle_redacts_secrets() {
+        let mut v = serde_json::json!({
+            "theme": "dark",
+            "workspace_root": "/Users/joe/proj2",          // path w/ digit: must survive
+            "custom_backends": [
+                { "id": "x", "name": "vLLM", "api_key": "sk-secret123", "base_url": "http://127.0.0.1:8000" }
+            ],
+            "mcp_servers": [
+                {
+                    "name": "gh",
+                    "command": "npx",
+                    "args": ["server", "--token", "ghp_realtoken", "--port", "3000"],
+                    "env": { "GH_PAT": "ghp_envtoken", "REGION": "us-east-1", "DEBUG": "1" }
+                }
+            ],
+            // A standalone credential-shaped value (JWT) under a non-secret key.
+            "session": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        });
+        redact_secrets(&mut v);
+        let s = serde_json::to_string(&v).unwrap();
+
+        // Secrets gone.
+        assert!(!s.contains("sk-secret123"), "api_key leaked");
+        assert!(!s.contains("ghp_realtoken"), "args token leaked");
+        assert!(!s.contains("ghp_envtoken"), "env token leaked");
+        assert!(!s.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"), "JWT leaked");
+
+        // Non-secrets preserved (env blanket redacts REGION/DEBUG too — that's
+        // acceptable over-redaction; the load-bearing checks are paths + names).
+        assert!(s.contains("/Users/joe/proj2"), "workspace path over-redacted");
+        assert!(s.contains("dark"), "theme over-redacted");
+        assert!(s.contains("\"name\":\"gh\""), "server name over-redacted");
+        // Non-secret positional args survive.
+        assert!(s.contains("server"), "non-secret arg over-redacted");
+        assert!(s.contains("3000"), "port arg over-redacted");
     }
 }

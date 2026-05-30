@@ -12,7 +12,9 @@ export { dryRunValidateUrl, normalizeIntegerHost } from "./url-safety";
 export { makeUnifiedDiff } from "./diff";
 
 export const DANGEROUS_TOOLS = new Set([
-  "run_shell", "write_file", "edit_file", "multi_edit",
+  // task_create backgrounds a `sh -c` command — same RCE surface as run_shell,
+  // so it MUST prompt + carry a command-bound approval token (SEC-HIGH).
+  "run_shell", "task_create", "write_file", "edit_file", "multi_edit",
   "git_commit", "clipboard_set", "open_app",
   "applescript_run", "http_request",
   // Spawning a subagent runs a fresh agent loop whose prompt can be

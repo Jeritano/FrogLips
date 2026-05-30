@@ -105,7 +105,16 @@ pub async fn git_log(path: Option<String>, limit: Option<u32>) -> Result<GitResu
 pub async fn git_show(reference: String, path: Option<String>) -> Result<GitResult, String> {
     static REF_RE: once_cell::sync::Lazy<regex::Regex> =
         once_cell::sync::Lazy::new(|| regex::Regex::new(r"^[A-Za-z0-9._/-]+$").unwrap());
-    if reference.is_empty() || reference.len() > 128 || !REF_RE.is_match(&reference) {
+    // SEC-LOW (2026-05-30): reject a leading `-` so a `reference` like
+    // `--stat` / `--output=…` can't be parsed by git as an OPTION instead of
+    // a revision. A `--` end-of-options guard doesn't work for `git show`
+    // (it would force the reference to be interpreted as a PATHSPEC, breaking
+    // the command), so the validator rejects the dash directly.
+    if reference.is_empty()
+        || reference.len() > 128
+        || reference.starts_with('-')
+        || !REF_RE.is_match(&reference)
+    {
         return Err(err_string(ToolError::invalid(
             "ref contains illegal characters",
         )));

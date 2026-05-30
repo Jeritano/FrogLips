@@ -490,6 +490,12 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         if chunks_created >= MAX_CHUNKS_PER_INGEST {
             break;
         }
+        // SEC-MED F2 (2026-05-30): a workspace rooted at $HOME still contains
+        // ~/.ssh, ~/.aws, .env files, etc. Skip protected paths so credentials
+        // never enter the corpus (and can't be exfiltrated via rag_search).
+        if crate::agent::is_protected_read_path(file) {
+            continue;
+        }
         let meta = match std::fs::metadata(file) {
             Ok(m) => m,
             Err(e) => {

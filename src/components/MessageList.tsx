@@ -356,9 +356,20 @@ const StreamingMessage = memo(function StreamingMessage({ text }: { text: string
   // `aria-atomic="false"` so only the delta is re-read, not the
   // entire growing bubble. Screen readers throttle naturally so
   // 100+ tok/s emit doesn't cause a torrent.
+  // PERF (2026-05-30): render PLAIN escaped text while streaming, not markdown.
+  // `cachedMarkdown(text)` was a guaranteed cache miss every frame (the key is
+  // the ever-growing reply), so the full marked → DOMPurify → DOM round-trip
+  // re-ran on the entire accumulated text ~20×/sec — O(n²) over the stream and
+  // the heaviest main-thread work competing with autoscroll. The message
+  // re-renders with full markdown the instant it completes (via MessageRow's
+  // cachedMarkdown, one cached parse). `{text}` is a JSX text child → React
+  // auto-escapes it, so this also removes the per-frame sanitize entirely.
   return (
     <div className="message assistant" data-testid="streaming-bubble" aria-live="polite" aria-atomic="false">
-      <div className="content markdown" dangerouslySetInnerHTML={{ __html: cachedMarkdown(text) + '<span class="cursor">▍</span>' }} />
+      <div className="content markdown streaming-plain">
+        {text}
+        <span className="cursor">▍</span>
+      </div>
     </div>
   );
 });

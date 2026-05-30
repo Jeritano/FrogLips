@@ -90,7 +90,9 @@ pub fn mint_tool_approval(
 /// the actual boundary.
 pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
     match tool {
-        "agent_run_shell" => Some(sha256_hex(&kv(&[(
+        // task_create backgrounds the same `sh -c` execution as
+        // agent_run_shell, so it binds to the exact command string too.
+        "agent_run_shell" | "task_create" => Some(sha256_hex(&kv(&[(
             "command",
             p.command.as_deref().unwrap_or(""),
         )]))),
@@ -780,7 +782,25 @@ pub fn agent_stop_watch(id: String) -> Result<(), String> {
 /* ── Task queue ──────────────────────────────────────────────────────────── */
 
 #[tauri::command]
-pub fn task_create(command: String, cwd: Option<String>) -> Result<task_queue::TaskInfo, String> {
+pub fn task_create(
+    command: String,
+    cwd: Option<String>,
+    approval: String,
+) -> Result<task_queue::TaskInfo, String> {
+    // SEC-HIGH (2026-05-30): task_create runs the command through `sh -c`
+    // exactly like agent_run_shell, so it MUST share the same command-bound
+    // approval gate. Without it a prompt-injected model could background-spawn
+    // arbitrary shell, bypassing the shell-approval mechanism entirely.
+    // Bound to the SHA-256 of the exact command string (same shape as
+    // agent_run_shell) so an approval for one command can't run another.
+    verify_bound(
+        "task_create",
+        &approval,
+        ApprovalPayload {
+            command: Some(command.clone()),
+            ..Default::default()
+        },
+    )?;
     task_queue::create(command, cwd)
 }
 
@@ -911,6 +931,12 @@ pub async fn rag_ingest_folder(
     if root.trim().is_empty() {
         return Err("root must not be empty".into());
     }
+    // SEC-MED F2 (2026-05-30): confine the ingest root to the workspace and
+    // refuse protected roots so the agent can't index credential/system dirs
+    // (~/.ssh, ~/.aws, the Keychain dir) and exfiltrate them via rag_search.
+    // The per-file walk additionally skips protected paths (see rag.rs).
+    let confined = agent::confine_ingest_root(std::path::Path::new(&root))?;
+    let root = confined.to_string_lossy().into_owned();
     blocking(move || {
         rag::ingest_folder(rag::IngestOpts {
             name: trimmed,

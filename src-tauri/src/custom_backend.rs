@@ -123,15 +123,24 @@ struct StreamProgress {
 fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     buf.push_str(chunk);
     let mut deltas = Vec::new();
-    while let Some(nl) = buf.find('\n') {
-        let line = buf[..nl].trim().to_string();
-        buf.drain(..=nl);
+    let mut done = false;
+    // Process every COMPLETE line in one pass over `buf[..=last_nl]` by slices
+    // (no per-line `to_string`), then drain that prefix in a SINGLE shift. The
+    // old `while buf.find('\n') { … buf.drain(..=nl) }` was O(n²) when one
+    // network chunk carried many SSE frames (drain memmoves the whole tail per
+    // line). PERF (2026-05-30).
+    let Some(last_nl) = buf.rfind('\n') else {
+        return StreamProgress { deltas, done };
+    };
+    for line in buf[..=last_nl].split('\n') {
+        let line = line.trim();
         if !line.starts_with("data:") {
             continue;
         }
         let payload = line[5..].trim();
         if payload == "[DONE]" {
-            return StreamProgress { deltas, done: true };
+            done = true;
+            break;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
             if let Some(delta) = v
@@ -144,7 +153,8 @@ fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
             }
         }
     }
-    StreamProgress { deltas, done: false }
+    buf.drain(..=last_nl);
+    StreamProgress { deltas, done }
 }
 
 /// Well-known id for the built-in OpenRouter backend. Unlike user-defined
@@ -180,10 +190,61 @@ fn resolve_backend(id: &str) -> Result<(String, String, Option<String>)> {
     if !(base.starts_with("https://") || base.starts_with("http://")) {
         return Err(anyhow!("custom backend base_url must be http(s): {base}"));
     }
+    // SEC-MED F3 (2026-05-30): a renderer/XSS could register a custom backend
+    // pointing at a cloud-metadata / link-local endpoint and use the
+    // Rust-side fetch as an SSRF proxy that bypasses the webview CSP. Block
+    // the genuine SSRF targets. We deliberately ALLOW loopback (127/8, ::1)
+    // and private/LAN ranges because self-hosted local model servers
+    // (vLLM / LM Studio / llama.cpp / a box on the LAN) are a primary
+    // supported use case for custom backends.
+    reject_ssrf_base(&base)?;
     // The on-disk api_key is the redacted marker after migration; the real
     // secret lives in the Keychain keyed by the backend id.
     let key = settings::keychain_get(id);
     Ok((base, backend.model, key))
+}
+
+/// Reject base URLs whose host is a link-local / unspecified / multicast IP
+/// literal or a known cloud-metadata hostname — none of which is ever a valid
+/// model server, and all of which are classic SSRF/metadata targets. Loopback
+/// and RFC1918/LAN are intentionally permitted (local model servers).
+fn reject_ssrf_base(base: &str) -> Result<()> {
+    use std::net::IpAddr;
+    let url = reqwest::Url::parse(base).map_err(|e| anyhow!("invalid base_url: {e}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("custom backend base_url has no host"))?;
+    // `host_str` may keep brackets for an IPv6 literal; strip for parsing.
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        let blocked = match ip {
+            IpAddr::V4(v4) => v4.is_link_local() || v4.is_unspecified() || v4.is_multicast(),
+            IpAddr::V6(v6) => {
+                let segs = v6.segments();
+                let link_local = (segs[0] & 0xffc0) == 0xfe80;
+                let mapped_bad = v6.to_ipv4().is_some_and(|m| {
+                    m.is_link_local() || m.is_unspecified() || m.is_multicast()
+                });
+                link_local || v6.is_unspecified() || v6.is_multicast() || mapped_bad
+            }
+        };
+        if blocked {
+            return Err(anyhow!("custom backend host {host} is not an allowed address"));
+        }
+    } else {
+        // Hostname — block the well-known cloud-metadata names.
+        let h = host.trim_end_matches('.').to_ascii_lowercase();
+        const METADATA_HOSTS: &[&str] = &[
+            "metadata",
+            "metadata.google.internal",
+            "instance-data",
+            "instance-data.ec2.internal",
+        ];
+        if METADATA_HOSTS.contains(&h.as_str()) {
+            return Err(anyhow!("custom backend host {host} is not allowed"));
+        }
+    }
+    Ok(())
 }
 
 /// Stream a chat completion from a custom OpenAI-compatible backend. Emits
@@ -200,12 +261,20 @@ pub async fn chat_stream(
 ) -> Result<(), String> {
     // Register a cancel token so `custom_cancel(op_id)` can stop the SSE
     // stream mid-flight instead of draining the body to the 180s timeout
-    // after a user Stop / navigate-away. Released on every exit. (2026-05-30)
-    let cancel = crate::stream_cancel::register(&op_id);
-    let res =
-        chat_stream_inner(&app, &op_id, &backend_id, messages, params, model_override, &cancel)
-            .await;
-    crate::stream_cancel::release(&op_id);
+    // after a user Stop / navigate-away. RAII guard releases on every exit
+    // path including a panic. (2026-05-30)
+    let cancel_guard = crate::stream_cancel::CancelGuard::new(&op_id);
+    let res = chat_stream_inner(
+        &app,
+        &op_id,
+        &backend_id,
+        messages,
+        params,
+        model_override,
+        &cancel_guard.token(),
+    )
+    .await;
+    drop(cancel_guard);
     match &res {
         Ok(()) => {
             let _ = app.emit(&format!("custom-done:{op_id}"), ());
@@ -475,6 +544,35 @@ mod tests {
     fn ignores_keepalive_comments() {
         let (acc, _) = collect(&[": keep-alive\n", &line("ok")]);
         assert_eq!(acc, "ok");
+    }
+
+    #[test]
+    fn ssrf_guard_allows_local_and_lan_model_servers() {
+        // Loopback + LAN are legitimate local model servers — must be allowed.
+        for base in [
+            "http://127.0.0.1:11434",
+            "http://localhost:8000/v1",
+            "http://192.168.1.50:1234",
+            "http://10.0.0.7:8080",
+            "https://api.example.com/v1",
+            "http://[::1]:8000",
+        ] {
+            assert!(reject_ssrf_base(base).is_ok(), "should allow {base}");
+        }
+    }
+
+    #[test]
+    fn ssrf_guard_blocks_metadata_and_linklocal() {
+        for base in [
+            "http://169.254.169.254/latest/meta-data/", // AWS/GCP metadata
+            "http://169.254.0.1/",                       // link-local
+            "http://0.0.0.0:8000/",                      // unspecified
+            "http://metadata.google.internal/",          // GCP metadata host
+            "http://metadata/computeMetadata/v1/",       // short metadata host
+            "http://[fe80::1]/",                          // IPv6 link-local
+        ] {
+            assert!(reject_ssrf_base(base).is_err(), "should block {base}");
+        }
     }
 
     #[test]

@@ -44,6 +44,19 @@ export async function* streamNativeChat(
     wake();
   });
 
+  // Abort → tell the native runtime to stop decoding (otherwise it runs to
+  // max_tokens after Stop), and wake the loop so it observes signal.aborted
+  // immediately. CORR-HIGH (2026-05-30): this wiring was present on the agent
+  // path but missing here, so plain native chat Stop was a no-op.
+  const onAbort = () => {
+    void api.nativeCancelChat(opId).catch(() => {});
+    wake();
+  };
+  if (opts.signal) {
+    if (opts.signal.aborted) onAbort();
+    else opts.signal.addEventListener("abort", onAbort, { once: true });
+  }
+
   // Kick off the request without awaiting — it resolves only when generation
   // is fully complete. We consume chunks via events meanwhile.
   const reqPromise = api.nativeChatStream({
@@ -56,10 +69,7 @@ export async function* streamNativeChat(
 
   try {
     while (!done || queue.length > 0) {
-      if (opts.signal?.aborted) {
-        // Best-effort abort: stop draining. Native loop keeps running upstream.
-        break;
-      }
+      if (opts.signal?.aborted) break; // cancel already signalled to the backend
       if (queue.length === 0 && !done) {
         await Promise.race([wait(), reqPromise.catch(() => {})]);
         continue;
@@ -69,6 +79,7 @@ export async function* streamNativeChat(
     }
     yield { delta: "", done: true };
   } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
     offChunk();
     offDone();
     // Surface server-side error if any.

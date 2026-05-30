@@ -40,6 +40,36 @@ pub fn release(op_id: &str) {
         .remove(op_id);
 }
 
+/// RAII guard tying a token's lifetime to a scope. Registers on construction,
+/// releases on Drop — so the registry entry can't leak even if the streaming
+/// task panics or takes an early-return path between register and release.
+/// Mirrors `gguf::InflightGuard`. (CORR-MED 2026-05-30)
+pub struct CancelGuard {
+    op_id: String,
+    token: CancellationToken,
+}
+
+impl CancelGuard {
+    /// Register `op_id` and hold its token for the guard's lifetime.
+    pub fn new(op_id: &str) -> Self {
+        Self {
+            op_id: op_id.to_string(),
+            token: register(op_id),
+        }
+    }
+
+    /// Clone of the cancellation token for use in the stream loop's `select!`.
+    pub fn token(&self) -> CancellationToken {
+        self.token.clone()
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        release(&self.op_id);
+    }
+}
+
 /// Fire the token for `op_id` if one is registered. Returns `true` when an op
 /// was actually pending, `false` when the id was unknown (already finished or
 /// never started).

@@ -424,8 +424,10 @@ pub async fn native_chat_stream(
     };
     // Register a cancel token so `native_cancel(op_id)` can stop the stream
     // mid-flight (otherwise the model runs to max_tokens after a user Stop /
-    // navigate-away). Released on every exit path below. (2026-05-30)
-    let cancel = crate::stream_cancel::register(&args.op_id);
+    // navigate-away). RAII guard releases the registry entry on every exit
+    // path INCLUDING a panic. (2026-05-30)
+    let cancel_guard = crate::stream_cancel::CancelGuard::new(&args.op_id);
+    let cancel = cancel_guard.token();
     let outcome: Result<String, String> = if args.tools.is_empty() {
         let msgs: Vec<(String, String)> = args
             .messages
@@ -479,7 +481,7 @@ pub async fn native_chat_stream(
             Err(e) => Err(format!("{e:#}")),
         }
     };
-    crate::stream_cancel::release(&args.op_id);
+    drop(cancel_guard); // explicit: releases the registry entry
     outcome
 }
 

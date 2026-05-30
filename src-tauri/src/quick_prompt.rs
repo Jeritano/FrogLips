@@ -94,15 +94,21 @@ struct StreamProgress {
 fn parse_mlx_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     buf.push_str(chunk);
     let mut deltas = Vec::new();
-    while let Some(nl) = buf.find('\n') {
-        let line = buf[..nl].trim().to_string();
-        buf.drain(..=nl);
+    let mut done = false;
+    // Single O(n) pass over complete lines + one drain (see parse_openai_chunk
+    // in custom_backend.rs — the old per-line drain was O(n²)). PERF 2026-05-30.
+    let Some(last_nl) = buf.rfind('\n') else {
+        return StreamProgress { deltas, done };
+    };
+    for line in buf[..=last_nl].split('\n') {
+        let line = line.trim();
         if !line.starts_with("data:") {
             continue;
         }
         let payload = line[5..].trim();
         if payload == "[DONE]" {
-            return StreamProgress { deltas, done: true };
+            done = true;
+            break;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
             if let Some(delta) = v
@@ -115,10 +121,8 @@ fn parse_mlx_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
             }
         }
     }
-    StreamProgress {
-        deltas,
-        done: false,
-    }
+    buf.drain(..=last_nl);
+    StreamProgress { deltas, done }
 }
 
 /// Parse Ollama NDJSON streaming frames. Same line-buffering contract as
@@ -126,27 +130,29 @@ fn parse_mlx_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
 fn parse_ollama_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     buf.push_str(chunk);
     let mut deltas = Vec::new();
-    while let Some(nl) = buf.find('\n') {
-        let line = buf[..nl].trim().to_string();
-        buf.drain(..=nl);
+    let mut done = false;
+    let Some(last_nl) = buf.rfind('\n') else {
+        return StreamProgress { deltas, done };
+    };
+    for line in buf[..=last_nl].split('\n') {
+        let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Ok(parsed) = serde_json::from_str::<OllamaStreamLine>(&line) {
+        if let Ok(parsed) = serde_json::from_str::<OllamaStreamLine>(line) {
             if let Some(msg) = parsed.message {
                 if !msg.content.is_empty() {
                     deltas.push(msg.content);
                 }
             }
             if parsed.done {
-                return StreamProgress { deltas, done: true };
+                done = true;
+                break;
             }
         }
     }
-    StreamProgress {
-        deltas,
-        done: false,
-    }
+    buf.drain(..=last_nl);
+    StreamProgress { deltas, done }
 }
 
 /// Create the quick prompt window on demand. If it already exists, just
