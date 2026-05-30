@@ -8,6 +8,7 @@ import { logDiag } from "./lib/diagnostics";
 import pkg from "../package.json";
 import { useModalA11y } from "./lib/use-modal-a11y";
 import { useTauriEvent } from "./hooks/useTauriEvent";
+import { useCommitOnUnmount } from "./hooks/useCommitOnUnmount";
 import { usePlatformChrome } from "./hooks/usePlatformChrome";
 import { useWindowGeometry } from "./hooks/useWindowGeometry";
 import { useImageGeneration } from "./hooks/useImageGeneration";
@@ -409,23 +410,14 @@ function App() {
   }, [convSearch]);
 
   // On unmount ONLY, commit any pending soft-delete (deleting then quitting
-  // within the 5s undo window should honor the delete). Read the latest pending
-  // delete through a ref with `[]` deps — a `[pendingDelete]` dep array would
-  // run this cleanup on EVERY change of pendingDelete, so clicking Undo
-  // (pendingDelete → null) would fire the captured cleanup and permanently
-  // delete the very conversation the user just restored. Round 12 HIGH fix to
-  // the round-A2 change (2026-05-30).
-  const pendingDeleteRef = useRef(pendingDelete);
-  pendingDeleteRef.current = pendingDelete;
-  useEffect(() => {
-    return () => {
-      const pd = pendingDeleteRef.current;
-      if (pd) {
-        clearTimeout(pd.timer);
-        void api.deleteConversation(pd.conv.id).catch(() => {});
-      }
-    };
-  }, []);
+  // within the 5s undo window should honor the delete). The unmount-only
+  // semantics live in `useCommitOnUnmount` — a naive `[pendingDelete]` dep
+  // array would run the cleanup on every change and make Undo delete the row
+  // it just restored (regression-tested in the hook). Round 12 (2026-05-30).
+  useCommitOnUnmount(pendingDelete, (pd) => {
+    clearTimeout(pd.timer);
+    void api.deleteConversation(pd.conv.id).catch(() => {});
+  });
 
   async function refreshStatus() {
     try {
