@@ -2,6 +2,62 @@
 
 All notable changes to Froglips are documented in this file. Format loosely follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.11.2](https://github.com/Jeritano/FrogLips/compare/v0.11.1...v0.11.2) (2026-05-30)
+
+
+### Features
+
+* Appearance settings modal in hamburger menu ([171b679](https://github.com/Jeritano/FrogLips/commit/171b6791a42e5e2ad389c003789724d5b4d0b031))
+* **lora:** Rust pre-merge pipeline for Flux.1 [dev|schnell] LoRA ([11e237e](https://github.com/Jeritano/FrogLips/commit/11e237ee68aa619c54f8522e915486e146291682))
+* OpenRouter as a browse-and-select source (enter key once, pick model, go) ([1033a30](https://github.com/Jeritano/FrogLips/commit/1033a3002848e427284719598e2bf5b79340ea6c))
+* Reach cloud-backend config from the model picker dropdown ([fe077b1](https://github.com/Jeritano/FrogLips/commit/fe077b1e81fa385d267afda7127c8d9be8067346))
+* **skills:** Claude Skills — JS dispatch + runner injection + UI panel ([53f621f](https://github.com/Jeritano/FrogLips/commit/53f621f59293902b3c8bd85c9e5af6395db9b95e))
+* **skills:** Import Claude Skills folders into a global library (Rust) ([9f10c56](https://github.com/Jeritano/FrogLips/commit/9f10c5672b836dbf5ee5fe294e06dc2ba0aacb12))
+* Theme-aware syntax highlighting + code-color palette chooser ([fb09f63](https://github.com/Jeritano/FrogLips/commit/fb09f6362a7e2e295c5f036c4466bf225232b131))
+* User chat-bubble color chooser ([5c66146](https://github.com/Jeritano/FrogLips/commit/5c6614658332eaf152aa2d6798f20b8921f0e913))
+* **workflows:** Phase 1 agent maturity — scratchpad, artifacts, roles, retry, params ([e71ba7a](https://github.com/Jeritano/FrogLips/commit/e71ba7a2342fc977b40e95dd1bdf65897ba910dd))
+* **workflows:** Procedural-memory skills — JS wiring + agent tools + tests ([96b5e61](https://github.com/Jeritano/FrogLips/commit/96b5e6136f5ac75ac93f1740d651248d79349f6b))
+* **workflows:** Procedural-memory skills — schema v14 + module + IPC ([e2297f8](https://github.com/Jeritano/FrogLips/commit/e2297f8527f40c109e5c3aff81dc9fb72bf219b5))
+* **workflows:** Runs survive navigate-away from Workflows view ([d1da6d0](https://github.com/Jeritano/FrogLips/commit/d1da6d0da0f23eb6f0d3b6482d1ff9a2c14fd561))
+* **workflows:** Skills panel — procedural-memory inspector + view/delete ([874b7ee](https://github.com/Jeritano/FrogLips/commit/874b7ee74b52ae499162237b4a7323620e9f68df))
+
+
+### Bug Fixes
+
+* Fix:  ([0ff4565](https://github.com/Jeritano/FrogLips/commit/0ff45659933451eb68cff404ce679f031227a8e2))
+* **ChatWindow:** Unstick UI when model is stopped mid-send ([a5e9208](https://github.com/Jeritano/FrogLips/commit/a5e92086e2ce4d2ee79f051276264f50e8a12f23))
+* Classify_applescript_risk byte-offset cross-slice panic (same class) ([2435669](https://github.com/Jeritano/FrogLips/commit/24356692e4034391074c3c52a266312d6f3f3565))
+* Enforce tool-call/result pairing on agent-loop input (orphan 400) ([c6bbb9e](https://github.com/Jeritano/FrogLips/commit/c6bbb9ee9afeaf874ec39b4d9827e976f485754a))
+* Full SWE review remediation (18 flaws across backend + frontend) ([d17e634](https://github.com/Jeritano/FrogLips/commit/d17e634b56b7660eb01af9431bfc9d013b113442))
+* Gemma4 context-window + vision heuristic fallback ([63e99fe](https://github.com/Jeritano/FrogLips/commit/63e99fee7ac76111b83af821043d0f24335e7208))
+* Hamburger menu Dashboard hidden behind segmented control ([a87fc8d](https://github.com/Jeritano/FrogLips/commit/a87fc8d3c4daef0b68670cd1c18451ccd3660f44))
+* Hide top chrome while Model Library open (z-index alone failed) ([cc8fa69](https://github.com/Jeritano/FrogLips/commit/cc8fa69277ba4058adce9148825cf7cb4287a3be))
+* IPv6 ULA/link-local SSRF bypass in agent web guard ([b02469a](https://github.com/Jeritano/FrogLips/commit/b02469a64e139c412c14c024150cd662df3a481c))
+* **lora:** Clone op_id once more for closure body to resolve E0505 borrow/move conflict ([7736842](https://github.com/Jeritano/FrogLips/commit/773684221a096f03e16f0dd5a573cd6f1334e266))
+* Make_snippet Unicode-lowercase panic in message search ([2e3a6c2](https://github.com/Jeritano/FrogLips/commit/2e3a6c2b28b2eb748aee04869317b8c100d08c9d))
+* MCP result truncate panic on multibyte + bound generate_image wait ([e6869fe](https://github.com/Jeritano/FrogLips/commit/e6869fe20acaa6c2bb1d1bc4c163cd3499d8ecdf))
+* Ollama pull progress renders as a wall of repeated frames ([ce33358](https://github.com/Jeritano/FrogLips/commit/ce33358f97d314568d6a442bf6f37da046236eaa))
+* Round 8 — pipe-deadlock, fs-watch event loss, composer image paste/IME ([e74d25b](https://github.com/Jeritano/FrogLips/commit/e74d25bf6176ffe400e9a84ee696adcbbcbfc57e))
+* Round 9 — remaining String::truncate panics + import cap + regex hoist ([a46d967](https://github.com/Jeritano/FrogLips/commit/a46d967892e55c69b08700ca35e307018fa38b4a))
+* Round-1 senior SE review remediations ([08d9ca2](https://github.com/Jeritano/FrogLips/commit/08d9ca241cdeebd7879f2384daa0bfb20e2a4855))
+* Round-2 senior SE review remediations ([13d5a93](https://github.com/Jeritano/FrogLips/commit/13d5a93f8169823e1d18d23a044470ba6eb8e626))
+* Stop during a tool-confirmation modal no longer hangs or runs the tool ([3f0df0d](https://github.com/Jeritano/FrogLips/commit/3f0df0d12ec2dd49ed2c77da1414b1f2b6d5c696))
+* **tcc:** Add Desktop/Documents/Downloads usage description plist keys ([50fc5f4](https://github.com/Jeritano/FrogLips/commit/50fc5f48436bcd4fe590e092a279dc3e5d955d5e))
+* Top chrome (hamburger, drag strip) floated over modal overlays ([2c4f350](https://github.com/Jeritano/FrogLips/commit/2c4f350df0133354ec49191686b9fc72fb18d18a))
+* Undo of a soft-deleted conversation permanently deleted it (regression) ([133e783](https://github.com/Jeritano/FrogLips/commit/133e783e5f1a1bd357384a080cd0f33c8d5baa9f))
+* Voice dictation leaves text in composer after send ([799f76e](https://github.com/Jeritano/FrogLips/commit/799f76e2d8eca293e906c93ebd8dfb437b9827cb))
+* **workflows:** Force explicit color/font-size on tool-item-name span ([30ef32d](https://github.com/Jeritano/FrogLips/commit/30ef32d938130f1e33d76811b1b7421c679c49ac))
+* **workflows:** Rebuild tool-item layout as explicit 2-col grid ([1d8b613](https://github.com/Jeritano/FrogLips/commit/1d8b613538d6d6970df913cb37aa0bf06bbbf42a))
+* **workflows:** Rewrite tool picker as buttons — native checkbox approach was too brittle ([fc1d81c](https://github.com/Jeritano/FrogLips/commit/fc1d81c7953fd6df5e30860ddb97d969186ce275))
+* **workflows:** Tool-item label was collapsing to invisible ([0ff4565](https://github.com/Jeritano/FrogLips/commit/0ff45659933451eb68cff404ce679f031227a8e2))
+* **workflows:** Update stale in-progress banner ([6493085](https://github.com/Jeritano/FrogLips/commit/64930858bbac3b19c5fef16feaef7d41a7e49fc8))
+
+
+### Performance Improvements
+
+* HIGH audit batch — RAG heap, touch coalesce, stream coalesce, context cache, ctx split, modal a11y ([9209686](https://github.com/Jeritano/FrogLips/commit/9209686d03bd50c7f71d9a4eabc162a8baa213b5))
+* **image:** Move write_atomic to spawn_blocking — stop stalling executor ([97742d8](https://github.com/Jeritano/FrogLips/commit/97742d8beb68e2d7f81b9da41ccf2f52ef81e87e))
+
 ## [Unreleased]
 
 ### Workflow run survives page navigation (2026-05-26)
