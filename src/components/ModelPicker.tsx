@@ -38,7 +38,6 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   const [browserOpen, setBrowserOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [nativeRepo, setNativeRepo] = useState<string | null>(null);
   // Native models load in-process (no host:port), so their progress only
   // surfaces via Tauri events rather than the polled ServerStatus.
   const [nativeLoading, setNativeLoading] = useState<string | null>(null);
@@ -165,11 +164,6 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const v = e.target.value;
     if (v === "__browse__") { setBrowserOpen(true); return; }
-    if (v === "__native__") {
-      // window.prompt is blocked in the Tauri webview — use an inline input.
-      setNativeRepo((r) => r ?? "NousResearch/Llama-3.2-1B");
-      return;
-    }
     // Custom cloud backend: value is `__custom__:<id>`. These aren't
     // ModelEntry rows; track them separately and clear the normal pick.
     if (v.startsWith("__custom__:")) {
@@ -323,46 +317,10 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
               ))}
             </optgroup>
           )}
-          <optgroup label="Native (alpha — in-process Metal inference)">
-            <option value="__native__">⚡ Load a HuggingFace model natively…</option>
-          </optgroup>
           <optgroup label="Add model">
             <option value="__browse__">⬇ Browse &amp; download models…</option>
           </optgroup>
         </select>
-
-        {nativeRepo !== null && (
-          <>
-            <input
-              type="text"
-              value={nativeRepo}
-              placeholder="HuggingFace repo id"
-              aria-label="HuggingFace repo id for native inference"
-              autoFocus
-              onChange={(e) => setNativeRepo(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && nativeRepo.trim()) {
-                  setSelected({ id: nativeRepo.trim(), size_bytes: 0, backend: "native" });
-                  setNativeRepo(null);
-                } else if (e.key === "Escape") {
-                  setNativeRepo(null);
-                }
-              }}
-            />
-            <button
-              onClick={() => {
-                if (nativeRepo.trim()) {
-                  setSelected({ id: nativeRepo.trim(), size_bytes: 0, backend: "native" });
-                  setNativeRepo(null);
-                }
-              }}
-              disabled={!nativeRepo.trim()}
-            >
-              Use
-            </button>
-            <button onClick={() => setNativeRepo(null)}>Cancel</button>
-          </>
-        )}
 
         {status?.running ? (
           <button onClick={stop} disabled={busy}>Stop</button>
