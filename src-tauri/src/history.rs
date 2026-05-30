@@ -1423,10 +1423,26 @@ fn make_snippet(content: &str, needle: &str) -> String {
     if chars.len() <= SEARCH_SNIPPET_CHARS {
         return collapsed;
     }
-    let lower = collapsed.to_lowercase();
-    let hit = lower.find(&needle.to_lowercase()).unwrap_or(0);
-    // Convert the byte offset of the hit into a char index.
-    let hit_char = collapsed[..hit].chars().count();
+    // Case-insensitive match in CHAR space. The old approach (byte offset of
+    // the hit in `collapsed.to_lowercase()`, then slice the ORIGINAL-case
+    // `collapsed` by that offset) was UNSOUND: some chars change byte/char
+    // length when lowercased — e.g. Turkish 'İ' (U+0130) → "i̇" (2 chars) —
+    // which misaligns the offset and panics on a non-boundary slice. Matching
+    // per-char on the already-collected `chars` avoids any byte indexing.
+    // MED (2026-05-30).
+    let needle_chars: Vec<char> = needle.chars().collect();
+    let hit_char = if needle_chars.is_empty() || needle_chars.len() > chars.len() {
+        0
+    } else {
+        chars
+            .windows(needle_chars.len())
+            .position(|w| {
+                w.iter()
+                    .zip(&needle_chars)
+                    .all(|(c, n)| c.to_lowercase().eq(n.to_lowercase()))
+            })
+            .unwrap_or(0)
+    };
     let start = hit_char.saturating_sub(SEARCH_SNIPPET_CHARS / 4);
     let end = (start + SEARCH_SNIPPET_CHARS).min(chars.len());
     let body: String = chars[start..end].iter().collect();
@@ -2443,6 +2459,18 @@ mod tests {
         let snip = make_snippet(&long, "needle");
         assert!(snip.chars().count() <= SEARCH_SNIPPET_CHARS + 2);
         assert!(snip.to_lowercase().contains("needle"));
+    }
+
+    #[test]
+    fn snippet_handles_lowercase_byte_length_change_without_panic() {
+        // 'İ' (U+0130) lowercases to 2 chars ("i̇"). Before the fix, a byte
+        // offset into the lowercased form was used to slice the original →
+        // misaligned, panic. Many such chars BEFORE the needle is the trigger.
+        let content = format!("{} needle here", "İ ".repeat(120));
+        let snip = make_snippet(&content, "needle"); // must not panic
+        assert!(snip.chars().count() <= SEARCH_SNIPPET_CHARS + 2);
+        // A needle that is itself a byte-length-changing char must also work.
+        let _ = make_snippet(&format!("{} İ tail", "a ".repeat(200)), "İ");
     }
 
     #[test]
