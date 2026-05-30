@@ -1045,6 +1045,11 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
         }
       }
 
+      // Re-check abort AFTER the (possibly long) confirmation wait. If the user
+      // hit Stop while the modal was open, do NOT execute the tool they tried
+      // to cancel — even on a late "Allow" click. Round 6 HIGH (2026-05-30).
+      if (signal.aborted) return null;
+
       const toolStart = performance.now();
       let result: string;
       let toolErrorKind: string | null = null;

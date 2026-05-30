@@ -25,6 +25,7 @@ vi.mock("../../tauri-api", () => {
 });
 
 import { policyDecisionFor, runAgentLoop } from "../runner";
+import { api } from "../../tauri-api";
 import type { AgentRunOptions } from "../types";
 
 function ollamaShellToolResponse(id: string, command: string) {
@@ -247,6 +248,52 @@ describe("runAgentLoop with project policy", () => {
     await runAgentLoop(opts);
 
     expect(requestConfirmation).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT execute a tool when the run is aborted during confirmation", async () => {
+    // Round 6 HIGH (2026-05-30): the user hits Stop while the confirm modal is
+    // open, then a late "Allow" resolves the promise. The runner must re-check
+    // abort after the gate and skip execution — otherwise the cancelled tool
+    // (a destructive shell command here) runs anyway.
+    const responses: object[] = [
+      ollamaShellToolResponse("tc-1", "rm -rf /tmp/should-not-run"),
+      ollamaFinalResponse("done"),
+    ];
+    let idx = 0;
+    const fetchMock = vi.fn(async () => {
+      const payload = responses[idx++] ?? ollamaFinalResponse("done");
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    vi.mocked(api.agentRunShell).mockClear(); // drop call history from prior tests
+
+    const ctrl = new AbortController();
+    // Simulate Stop-during-modal then a late approve.
+    const requestConfirmation = vi.fn(async () => {
+      ctrl.abort();
+      return { approve: true as const };
+    });
+
+    const opts: AgentRunOptions = {
+      model: "test",
+      messages: [{ conversation_id: 1, role: "user", content: "go" }],
+      conversationId: 1,
+      workspaceRoot: "/tmp/projx",
+      onUpdate: () => {},
+      onStatusChange: () => {},
+      requestConfirmation,
+      signal: ctrl.signal,
+    };
+
+    await runAgentLoop(opts);
+
+    expect(requestConfirmation).toHaveBeenCalledTimes(1);
+    // The load-bearing assertion: the cancelled tool never reached execution.
+    expect(api.agentRunShell).not.toHaveBeenCalled();
   });
 
   it("blocks denied writes without prompting", async () => {
