@@ -8,6 +8,7 @@ import { logDiag } from "./lib/diagnostics";
 import pkg from "../package.json";
 import { useModalA11y } from "./lib/use-modal-a11y";
 import { useTauriEvent } from "./hooks/useTauriEvent";
+import { useCommitOnUnmount } from "./hooks/useCommitOnUnmount";
 import { usePlatformChrome } from "./hooks/usePlatformChrome";
 import { useWindowGeometry } from "./hooks/useWindowGeometry";
 import { useImageGeneration } from "./hooks/useImageGeneration";
@@ -408,13 +409,15 @@ function App() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [convSearch]);
 
-  // Cancel any in-flight soft-delete timer on unmount so it doesn't fire
-  // against an unmounted tree.
-  useEffect(() => {
-    return () => {
-      if (pendingDelete) clearTimeout(pendingDelete.timer);
-    };
-  }, [pendingDelete]);
+  // On unmount ONLY, commit any pending soft-delete (deleting then quitting
+  // within the 5s undo window should honor the delete). The unmount-only
+  // semantics live in `useCommitOnUnmount` — a naive `[pendingDelete]` dep
+  // array would run the cleanup on every change and make Undo delete the row
+  // it just restored (regression-tested in the hook). Round 12 (2026-05-30).
+  useCommitOnUnmount(pendingDelete, (pd) => {
+    clearTimeout(pd.timer);
+    void api.deleteConversation(pd.conv.id).catch(() => {});
+  });
 
   async function refreshStatus() {
     try {

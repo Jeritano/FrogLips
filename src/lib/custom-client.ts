@@ -19,9 +19,9 @@ export interface CustomChunk {
  * resolves base_url + model + the Keychain-stored API key from it, so the
  * key never crosses into the webview.
  *
- * Abort is best-effort: on `signal`, draining stops. The Rust request may
- * keep running upstream until its natural stop; the caller ignores further
- * deltas once aborted.
+ * Abort: on `signal`, we fire `custom_cancel(opId)` so the Rust SSE loop stops
+ * draining the upstream body promptly (instead of running to the 180s client
+ * timeout), then stop yielding deltas. (2026-05-30)
  */
 export async function* streamCustomChat(
   backendId: string,
@@ -61,6 +61,17 @@ export async function* streamCustomChat(
     wake();
   });
 
+  // Abort → tell Rust to stop the stream, and wake the loop so it observes
+  // `signal.aborted` immediately rather than waiting for the next delta.
+  const onAbort = () => {
+    void api.customCancel(opId).catch(() => {});
+    wake();
+  };
+  if (opts.signal) {
+    if (opts.signal.aborted) onAbort();
+    else opts.signal.addEventListener("abort", onAbort, { once: true });
+  }
+
   // Kick off without awaiting — resolves only when generation completes.
   const reqPromise = api.customChatStream({
     op_id: opId,
@@ -87,6 +98,7 @@ export async function* streamCustomChat(
     if (errMsg) throw new Error(errMsg);
     yield { delta: "", done: true };
   } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
     offChunk();
     offDone();
     offErr();

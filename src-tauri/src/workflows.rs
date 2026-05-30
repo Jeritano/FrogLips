@@ -415,7 +415,16 @@ pub fn delete_workflow(id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Record a workflow run. Returns the new run id.
+/// Number of historical runs kept per workflow. Anything older is pruned on
+/// each insert. Set above `RUNS_LIMIT` (the read cap) so the recent-runs view
+/// never starves, while keeping the table bounded — a scheduled card on a
+/// 1-minute interval would otherwise add ~1440 rows/day forever. MED
+/// (2026-05-29).
+const RUNS_RETAIN: i64 = 250;
+
+/// Record a workflow run. Returns the new run id. Prunes this workflow's runs
+/// to the `RUNS_RETAIN` most recent in the same connection so the table stays
+/// bounded under high-frequency scheduled triggers.
 pub fn record_run(workflow_id: i64, status: &str, results_json: &str) -> Result<i64> {
     let conn = get_db()?;
     conn.execute(
@@ -423,7 +432,20 @@ pub fn record_run(workflow_id: i64, status: &str, results_json: &str) -> Result<
          VALUES (?1, ?2, ?3, ?4)",
         params![workflow_id, now_unix(), status, results_json],
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    // Trim the oldest rows beyond the retention window for this workflow.
+    conn.execute(
+        "DELETE FROM workflow_runs
+         WHERE workflow_id = ?1
+           AND id NOT IN (
+               SELECT id FROM workflow_runs
+               WHERE workflow_id = ?1
+               ORDER BY started_at DESC, id DESC
+               LIMIT ?2
+           )",
+        params![workflow_id, RUNS_RETAIN],
+    )?;
+    Ok(id)
 }
 
 /// Maximum number of recent runs returned per workflow.

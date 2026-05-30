@@ -362,6 +362,14 @@
   animation: blink 1s step-start infinite;
 }
 
+/* Streaming bubble renders plain (un-parsed) text for performance, so preserve
+   newlines/whitespace until the message completes and re-renders as markdown.
+   PERF (2026-05-30). */
+.content.markdown.streaming-plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 @keyframes blink { 50% { opacity: 0; } }
 
 /* ── Input area ── */

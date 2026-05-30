@@ -98,12 +98,18 @@ export function ImageView({
   // `imageList` returns either a paginated `{ rows, total }` page (current
   // BACK contract) or a bare `ImageMeta[]` (legacy/mocked tests). Normalize
   // here so the rest of the component sees a single shape.
+  // Monotonic request id: drop a slower earlier list call that resolves after
+  // a newer scope/filter change, so the gallery can't flash the wrong scope.
+  // LOW (2026-05-29).
+  const refreshSeqRef = useRef(0);
   const refresh = useCallback(
     async (selectId?: number) => {
+      const seq = ++refreshSeqRef.current;
       try {
         const convArg =
           filter === "this-chat" && conversationId != null ? conversationId : null;
         const raw = await api.imageList(convArg, pageLimit);
+        if (seq !== refreshSeqRef.current) return; // superseded by a newer scope/filter refresh
         let rows: import("../types").ImageMeta[];
         let total: number;
         if (Array.isArray(raw)) {

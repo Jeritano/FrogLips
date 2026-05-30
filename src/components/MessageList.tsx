@@ -77,16 +77,24 @@ function cachedMarkdown(text: string): string {
   return rendered;
 }
 
+// Tool-call + tool-result blocks render collapsed by default — agent runs can
+// stack many web_search / write_file steps and most readers only want the
+// final answer. Each is a native <details> disclosure (keyboard-accessible,
+// no JS state for the open/closed toggle); click the summary to expand.
 function ToolCallBlock({ calls }: { calls: ToolCall[] }) {
   return (
     <div className="tool-calls-block">
       {calls.map((tc, i) => {
         const args = parseArgs(tc.function?.arguments);
+        const name = tc.function?.name ?? "unknown";
         return (
-          <div key={tc.id ?? i} className="tool-call-item">
-            <span className="tool-call-name">{tc.function?.name ?? "unknown"}</span>
+          <details key={tc.id ?? i} className="tool-disclosure tool-call-item">
+            <summary className="tool-disclosure-summary">
+              <span className="tool-disclosure-kind">tool</span>
+              <span className="tool-call-name">{name}</span>
+            </summary>
             <pre className="tool-call-args">{JSON.stringify(args, null, 2)}</pre>
-          </div>
+          </details>
         );
       })}
     </div>
@@ -98,15 +106,18 @@ function ToolResultBlock({ name, content }: { name?: string; content: string }) 
   const isLong = content.length > 400;
   const displayed = !isLong || expanded ? content : content.slice(0, 400) + "…";
   return (
-    <div className="tool-result-block" data-testid="tool-result">
-      {name && <span className="tool-result-name">{name} result</span>}
+    <details className="tool-disclosure tool-result-block" data-testid="tool-result">
+      <summary className="tool-disclosure-summary">
+        <span className="tool-disclosure-kind">result</span>
+        <span className="tool-result-name">{name ?? "tool"}</span>
+      </summary>
       <pre className="tool-result-content">{displayed}</pre>
       {isLong && (
         <button className="tool-result-toggle" onClick={() => setExpanded((v) => !v)}>
           {expanded ? "Show less" : "Show more"}
         </button>
       )}
-    </div>
+    </details>
   );
 }
 
@@ -345,9 +356,20 @@ const StreamingMessage = memo(function StreamingMessage({ text }: { text: string
   // `aria-atomic="false"` so only the delta is re-read, not the
   // entire growing bubble. Screen readers throttle naturally so
   // 100+ tok/s emit doesn't cause a torrent.
+  // PERF (2026-05-30): render PLAIN escaped text while streaming, not markdown.
+  // `cachedMarkdown(text)` was a guaranteed cache miss every frame (the key is
+  // the ever-growing reply), so the full marked → DOMPurify → DOM round-trip
+  // re-ran on the entire accumulated text ~20×/sec — O(n²) over the stream and
+  // the heaviest main-thread work competing with autoscroll. The message
+  // re-renders with full markdown the instant it completes (via MessageRow's
+  // cachedMarkdown, one cached parse). `{text}` is a JSX text child → React
+  // auto-escapes it, so this also removes the per-frame sanitize entirely.
   return (
     <div className="message assistant" data-testid="streaming-bubble" aria-live="polite" aria-atomic="false">
-      <div className="content markdown" dangerouslySetInnerHTML={{ __html: cachedMarkdown(text) + '<span class="cursor">▍</span>' }} />
+      <div className="content markdown streaming-plain">
+        {text}
+        <span className="cursor">▍</span>
+      </div>
     </div>
   );
 });

@@ -44,6 +44,11 @@ pub const QUICK_LABEL: &str = "quick";
 /// a runaway stream lands inside resident memory.
 const QUICK_REPLY_MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// Hard cap on a single un-terminated stream line. The reply cap only counts
+/// emitted deltas; a newline-less flood would grow the line buffer unbounded.
+/// MED (2026-05-29).
+const QUICK_LINE_BUF_MAX: usize = 1024 * 1024;
+
 #[derive(Serialize, Clone)]
 pub struct QuickPromptChunk {
     pub op_id: String,
@@ -89,15 +94,21 @@ struct StreamProgress {
 fn parse_mlx_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     buf.push_str(chunk);
     let mut deltas = Vec::new();
-    while let Some(nl) = buf.find('\n') {
-        let line = buf[..nl].trim().to_string();
-        buf.drain(..=nl);
+    let mut done = false;
+    // Single O(n) pass over complete lines + one drain (see parse_openai_chunk
+    // in custom_backend.rs — the old per-line drain was O(n²)). PERF 2026-05-30.
+    let Some(last_nl) = buf.rfind('\n') else {
+        return StreamProgress { deltas, done };
+    };
+    for line in buf[..=last_nl].split('\n') {
+        let line = line.trim();
         if !line.starts_with("data:") {
             continue;
         }
         let payload = line[5..].trim();
         if payload == "[DONE]" {
-            return StreamProgress { deltas, done: true };
+            done = true;
+            break;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) {
             if let Some(delta) = v
@@ -110,10 +121,8 @@ fn parse_mlx_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
             }
         }
     }
-    StreamProgress {
-        deltas,
-        done: false,
-    }
+    buf.drain(..=last_nl);
+    StreamProgress { deltas, done }
 }
 
 /// Parse Ollama NDJSON streaming frames. Same line-buffering contract as
@@ -121,27 +130,29 @@ fn parse_mlx_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
 fn parse_ollama_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     buf.push_str(chunk);
     let mut deltas = Vec::new();
-    while let Some(nl) = buf.find('\n') {
-        let line = buf[..nl].trim().to_string();
-        buf.drain(..=nl);
+    let mut done = false;
+    let Some(last_nl) = buf.rfind('\n') else {
+        return StreamProgress { deltas, done };
+    };
+    for line in buf[..=last_nl].split('\n') {
+        let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Ok(parsed) = serde_json::from_str::<OllamaStreamLine>(&line) {
+        if let Ok(parsed) = serde_json::from_str::<OllamaStreamLine>(line) {
             if let Some(msg) = parsed.message {
                 if !msg.content.is_empty() {
                     deltas.push(msg.content);
                 }
             }
             if parsed.done {
-                return StreamProgress { deltas, done: true };
+                done = true;
+                break;
             }
         }
     }
-    StreamProgress {
-        deltas,
-        done: false,
-    }
+    buf.drain(..=last_nl);
+    StreamProgress { deltas, done }
 }
 
 /// Create the quick prompt window on demand. If it already exists, just
@@ -250,10 +261,17 @@ async fn stream_mlx(
     let stream = resp.bytes_stream();
     use futures::StreamExt;
     let mut buf = String::new();
+    let mut decoder = crate::sse_decode::Utf8StreamDecoder::default();
     tokio::pin!(stream);
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read chunk")?;
-        let progress = parse_mlx_chunk(&mut buf, &String::from_utf8_lossy(&bytes));
+        let text = decoder.push(&bytes);
+        let progress = parse_mlx_chunk(&mut buf, &text);
+        if buf.len() > QUICK_LINE_BUF_MAX {
+            return Err(anyhow!(
+                "stream line exceeded {QUICK_LINE_BUF_MAX} bytes without a delimiter"
+            ));
+        }
         for delta in progress.deltas {
             // Body cap: if appending this delta would exceed the per-reply
             // ceiling, append what fits and bail out — defends against a
@@ -334,10 +352,17 @@ async fn stream_ollama(
     let stream = resp.bytes_stream();
     use futures::StreamExt;
     let mut buf = String::new();
+    let mut decoder = crate::sse_decode::Utf8StreamDecoder::default();
     tokio::pin!(stream);
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read ollama chunk")?;
-        let progress = parse_ollama_chunk(&mut buf, &String::from_utf8_lossy(&bytes));
+        let text = decoder.push(&bytes);
+        let progress = parse_ollama_chunk(&mut buf, &text);
+        if buf.len() > QUICK_LINE_BUF_MAX {
+            return Err(anyhow!(
+                "stream line exceeded {QUICK_LINE_BUF_MAX} bytes without a delimiter"
+            ));
+        }
         for delta in progress.deltas {
             // Same body cap as the MLX path — bail at QUICK_REPLY_MAX_BYTES.
             if acc.len() + delta.len() > QUICK_REPLY_MAX_BYTES {

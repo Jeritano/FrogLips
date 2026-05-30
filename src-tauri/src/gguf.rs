@@ -292,6 +292,49 @@ pub fn list_files(app_data_dir: &Path) -> Result<Vec<GgufFile>> {
     Ok(out)
 }
 
+/// Startup sweep: remove abandoned `*.gguf.part` files from interrupted
+/// downloads. Safe to call only at startup — a fresh process has no download
+/// in flight, so every `.part` is orphaned (a resumable retry re-creates it).
+/// Best-effort; never follows symlinks; returns the count removed.
+/// LOW (2026-05-30).
+pub fn cleanup_orphan_part_files(app_data_dir: &Path) -> usize {
+    let Ok(canon_root) = std::fs::canonicalize(cache_root(app_data_dir)) else {
+        return 0; // cache never created → nothing to sweep
+    };
+    let mut removed = 0usize;
+    let Ok(repos) = std::fs::read_dir(&canon_root) else {
+        return 0;
+    };
+    for repo in repos.flatten() {
+        let canon = match std::fs::canonicalize(repo.path()) {
+            Ok(p) if p.starts_with(&canon_root) && p.is_dir() => p,
+            _ => continue,
+        };
+        let Ok(files) = std::fs::read_dir(&canon) else {
+            continue;
+        };
+        for f in files.flatten() {
+            if !f
+                .file_name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with(".gguf.part")
+            {
+                continue;
+            }
+            // Regular files only — never unlink through a symlink.
+            let p = f.path();
+            let is_regular = std::fs::symlink_metadata(&p)
+                .map(|md| md.is_file())
+                .unwrap_or(false);
+            if is_regular && std::fs::remove_file(&p).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
 /// Delete a single cached GGUF. Path-safety identical to `resolve_target`.
 pub fn delete_file(app_data_dir: &Path, repo: &str, filename: &str) -> Result<()> {
     let target = resolve_target(app_data_dir, repo, filename)?;
@@ -338,13 +381,25 @@ pub async fn download<R: tauri::Runtime>(
     filename: String,
 ) -> Result<PathBuf> {
     let target = resolve_target(&app_data_dir, &repo, &filename)?;
+    // MED (2026-05-30): stream into a `.part` sidecar and only rename to the
+    // final `.gguf` once the full body has landed and its length verified.
+    // Writing straight to the final name left a TRUNCATED `.gguf` on any
+    // interrupted download — and `list_files` reported it as an installed
+    // model, so the user could try to load a corrupt file. `.part` is ignored
+    // by `list_files` (it doesn't end in `.gguf`) and doubles as the resume
+    // buffer.
+    let part = {
+        let mut p = target.clone().into_os_string();
+        p.push(".part");
+        PathBuf::from(p)
+    };
 
     // Inflight guard — one download at a time per (repo, filename).
     let key = format!("{}/{}", repo_to_dir(&repo), filename);
     let _guard = acquire_inflight(key)?;
 
-    // Resume: if a partial file exists, send Range: bytes=N-.
-    let existing = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+    // Resume: if a partial `.part` exists, send Range: bytes=N-.
+    let existing = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     let url = hf_download_url(&repo, &filename);
     let client = reqwest::Client::builder()
         .user_agent("froglips-gguf-downloader/0.1")
@@ -365,6 +420,12 @@ pub async fn download<R: tauri::Runtime>(
     // typically means our `existing` is larger than the remote file and
     // we should restart from scratch.
     if !(status.is_success() || status.as_u16() == 206) {
+        // 416 (Range Not Satisfiable) means our `.part` is at least as large
+        // as the remote file — usually a stale/corrupt partial. Delete it so
+        // the next attempt restarts cleanly instead of looping on 416.
+        if status.as_u16() == 416 {
+            let _ = std::fs::remove_file(&part);
+        }
         return Err(anyhow!("HF returned status {status}"));
     }
     let resuming = status.as_u16() == 206 && existing > 0;
@@ -396,9 +457,9 @@ pub async fn download<R: tauri::Runtime>(
         open_opts.custom_flags(O_NOFOLLOW);
     }
     let mut file = open_opts
-        .open(&target)
+        .open(&part)
         .await
-        .with_context(|| format!("open {} for write", target.display()))?;
+        .with_context(|| format!("open {} for write", part.display()))?;
 
     let mut downloaded: u64 = if resuming { existing } else { 0 };
     let mut last_emit = std::time::Instant::now();
@@ -423,6 +484,27 @@ pub async fn download<R: tauri::Runtime>(
     }
     file.flush().await.context("flush failed")?;
     drop(file);
+
+    // Completeness gate: when the server told us THIS response's body length,
+    // refuse to publish a short file (a cleanly-closed-but-premature stream
+    // wouldn't surface as a chunk error). The `.part` survives for resume.
+    //
+    // Gate on `content_len` (this response's advertised length), NOT `total`:
+    // a 206 resume can omit Content-Length (chunked), in which case
+    // `content_len == 0` and `total` collapses to `existing` — comparing
+    // against that would false-fail a download that actually completed past
+    // the resume offset. When the length is unknown we can't verify, so we
+    // accept and publish. (2026-05-30)
+    if content_len > 0 && downloaded != total {
+        return Err(anyhow!(
+            "incomplete download: got {downloaded} of {total} bytes (partial kept for resume)"
+        ));
+    }
+
+    // Publish atomically: rename the verified `.part` over the final name.
+    tokio::fs::rename(&part, &target)
+        .await
+        .with_context(|| format!("finalize {} -> {}", part.display(), target.display()))?;
 
     // Final progress: ensures the UI sees the terminal frame even if the
     // last chunk landed inside the 100ms throttle window.

@@ -15,6 +15,7 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 /// Identifier for a model the backend should load. The mistralrs backend
 /// accepts `HfRepo` (and rejects `GgufPath`); the llama.cpp backend
@@ -84,6 +85,7 @@ pub trait NativeBackend: Clone + Send + Sync {
         messages: Vec<ChatMsg>,
         sampling: SamplingOpts,
         on_chunk: Box<dyn FnMut(String) + Send + 'static>,
+        cancel: CancellationToken,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + '_>>;
 
     /// Stream a tool-calling chat turn. `messages` and `tools` are
@@ -101,6 +103,7 @@ pub trait NativeBackend: Clone + Send + Sync {
         _tools: Vec<serde_json::Value>,
         _sampling: SamplingOpts,
         _on_chunk: Box<dyn FnMut(String) + Send + 'static>,
+        _cancel: CancellationToken,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<ChatTurn>> + Send + '_>>
     {
         Box::pin(async move {

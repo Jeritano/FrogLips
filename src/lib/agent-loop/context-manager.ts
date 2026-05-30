@@ -207,6 +207,37 @@ function summarizeCollapsedTurns(turns: Message[], conversationId: number): Mess
 }
 
 /**
+ * Snap a desired kept-suffix start index to a turn boundary so the collapse
+ * never splits an assistant `tool_calls` message from its `tool` results.
+ *
+ * The OpenAI tool-calling contract requires every assistant `tool_calls`
+ * message to be immediately followed by a `role:"tool"` message per
+ * `tool_call_id`. If the collapse boundary lands between them, the sent array
+ * begins with an orphan `tool` whose `tool_call_id` references a message that
+ * was folded into the summary — and Ollama / MLX / the cloud routes reject the
+ * whole request with a 400 mid-run (HIGH, 2026-05-30). This precisely defeats
+ * the small-context-plus-long-tool-run scenario this module exists for.
+ *
+ * Rule: a valid start is any non-`tool` message. If `desired` lands on a
+ * `tool` message we move FORWARD, folding the orphaned results into the
+ * summary. If moving forward would consume everything (a degenerate trailing
+ * run of tool messages), we move BACKWARD to include the assistant call that
+ * owns them, so the kept tail is a complete group. May return 0, meaning the
+ * whole tail is one indivisible group and no safe collapse exists.
+ */
+function snapToTurnBoundary(rest: Message[], desired: number): number {
+  let start = desired;
+  while (start < rest.length && rest[start]?.role === "tool") start++;
+  if (start < rest.length) return start;
+  // Everything from `desired` onward was tool results. Back up to the owning
+  // assistant `tool_calls` message so the kept group stays intact.
+  start = desired;
+  while (start > 0 && rest[start - 1]?.role === "tool") start--;
+  if (start > 0 && rest[start - 1]?.role === "assistant") start--;
+  return start;
+}
+
+/**
  * Fit `msgs` inside the model's context window, returning a COPY safe to send.
  *
  * The first message (system prompt) is treated as immutable and always kept
@@ -297,17 +328,32 @@ export function applyContextBudget(
       const keptSum = totalRest - prefix[collapseCount + 1];
       const candidateCost = headCost + summaryCost + keptSum;
       if (candidateCost <= budget) {
-        working = [head, summary, ...rest.slice(collapseCount + 1)];
-        turnsCollapsed = collapsedSlice.length;
+        // Snap the boundary so we never orphan a tool result (HIGH,
+        // 2026-05-30). Folding extra orphaned tool messages into the summary
+        // only shrinks the kept suffix, so the candidate still fits.
+        const keptStart = snapToTurnBoundary(rest, collapseCount + 1);
+        if (keptStart < 1) break; // whole tail is one group — can't collapse safely
+        working = [
+          head,
+          summarizeCollapsedTurns(rest.slice(0, keptStart), convId),
+          ...rest.slice(keptStart),
+        ];
+        turnsCollapsed = keptStart;
         break;
       }
     }
-    // If even collapsing all-but-one didn't fit, take the maximal collapse.
+    // If even collapsing all-but-one didn't fit, take the maximal collapse —
+    // still snapped to a turn boundary so the final group stays paired.
     if (turnsCollapsed === 0 && rest.length > 1) {
-      const collapsed = rest.slice(0, rest.length - 1);
-      const kept = rest.slice(rest.length - 1);
-      working = [head, summarizeCollapsedTurns(collapsed, convId), ...kept];
-      turnsCollapsed = collapsed.length;
+      const keptStart = snapToTurnBoundary(rest, rest.length - 1);
+      if (keptStart >= 1) {
+        working = [
+          head,
+          summarizeCollapsedTurns(rest.slice(0, keptStart), convId),
+          ...rest.slice(keptStart),
+        ];
+        turnsCollapsed = keptStart;
+      }
     }
   }
 

@@ -241,22 +241,38 @@ pub(super) async fn capped_output(
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let mut out = Vec::new();
-    let mut err = Vec::new();
-    if let Some(s) = stdout {
-        let (b, t) = read_capped(s, cap).await?;
-        out = b;
-        if t {
-            out.extend_from_slice(b"\n[truncated]");
+    // Drain stdout and stderr CONCURRENTLY. Reading them sequentially
+    // deadlocks the classic way: a child that fills its stderr pipe buffer
+    // (~64 KiB) while we're still blocked reading stdout stops producing
+    // stdout, so `read_capped(stdout)` waits for an EOF that never comes and
+    // the child blocks on `write(stderr)`. MED (2026-05-30).
+    let drain_out = async move {
+        match stdout {
+            Some(s) => {
+                let (mut b, t) = read_capped(s, cap).await?;
+                if t {
+                    b.extend_from_slice(b"\n[truncated]");
+                }
+                Ok::<Vec<u8>, std::io::Error>(b)
+            }
+            None => Ok(Vec::new()),
         }
-    }
-    if let Some(s) = stderr {
-        let (b, t) = read_capped(s, cap).await?;
-        err = b;
-        if t {
-            err.extend_from_slice(b"\n[truncated]");
+    };
+    let drain_err = async move {
+        match stderr {
+            Some(s) => {
+                let (mut b, t) = read_capped(s, cap).await?;
+                if t {
+                    b.extend_from_slice(b"\n[truncated]");
+                }
+                Ok::<Vec<u8>, std::io::Error>(b)
+            }
+            None => Ok(Vec::new()),
         }
-    }
+    };
+    let (out_r, err_r) = tokio::join!(drain_out, drain_err);
+    let out = out_r?;
+    let err = err_r?;
     let status = child.wait().await?;
     Ok((out, err, status.code().unwrap_or(-1)))
 }

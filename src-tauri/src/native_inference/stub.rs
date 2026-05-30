@@ -7,6 +7,8 @@ use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use tokio_util::sync::CancellationToken;
+
 use super::{ChatMsg, ModelRef, NativeBackend, SamplingOpts};
 
 #[derive(Clone)]
@@ -26,6 +28,7 @@ impl NativeRuntime {
         _messages: Vec<ChatMsg>,
         _sampling: SamplingOpts,
         _on_chunk: impl FnMut(String) + Send + 'static,
+        _cancel: CancellationToken,
     ) -> Result<String> {
         Err(anyhow!("Native backend not available on this platform"))
     }
@@ -55,6 +58,7 @@ impl NativeBackend for NativeRuntime {
         _messages: Vec<ChatMsg>,
         _sampling: SamplingOpts,
         _on_chunk: Box<dyn FnMut(String) + Send + 'static>,
+        _cancel: CancellationToken,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + '_>> {
         Box::pin(async move { Err(anyhow!("Native backend not available on this platform")) })
     }

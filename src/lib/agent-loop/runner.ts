@@ -495,6 +495,42 @@ function isReadFileStalling(
   return { stalling: count > STALL_SAME_PATH_LIMIT, path, count };
 }
 
+/**
+ * Enforce the OpenAI tool-call/result pairing invariant on a message array:
+ * every assistant `tool_calls` id must have a matching `role:"tool"` result.
+ * Drops any assistant `tool_calls` turn that isn't fully paired (keeping its
+ * text as a plain assistant message so context isn't lost) and any orphan tool
+ * result whose call was dropped/absent. A healthy history is returned
+ * unchanged. Round 6 (2026-05-30).
+ */
+export function stripUnpairedToolCalls(messages: Message[]): Message[] {
+  const resultIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role === "tool" && m.tool_call_id) resultIds.add(m.tool_call_id);
+  }
+  const keptCallIds = new Set<string>();
+  const out: Message[] = [];
+  for (const m of messages) {
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      const ids = m.tool_calls.map((tc) => tc.id);
+      if (ids.every((id) => resultIds.has(id))) {
+        ids.forEach((id) => keptCallIds.add(id));
+        out.push(m);
+      } else if (m.content && m.content.trim()) {
+        // Keep any assistant prose, drop the unpaired tool_calls.
+        out.push({ ...m, tool_calls: undefined });
+      }
+      // else: pure orphan tool_calls turn → drop entirely.
+    } else if (m.role === "tool") {
+      if (m.tool_call_id && keptCallIds.has(m.tool_call_id)) out.push(m);
+      // else: orphan result whose call was dropped/absent → drop.
+    } else {
+      out.push(m);
+    }
+  }
+  return out;
+}
+
 export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null> {
   const {
     onUpdate, onStatusChange, onMetrics, onAssistantDelta, requestConfirmation, signal,
@@ -503,7 +539,14 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
     approvedShellPrefixes = [], onApproveShellPrefix,
     dryRun = false,
   } = opts;
-  const msgs: Message[] = [...opts.messages];
+  // Root-cause guard for tool-call/result pairing: drop any incoming
+  // assistant `tool_calls` turn whose ids aren't ALL paired by `tool` results,
+  // and any orphan `tool` result. An aborted run (Stop mid-tool, or mid-
+  // confirmation) can leave such an orphan in the React message list; on the
+  // next same-conversation send it would reach the backend verbatim and 400
+  // ("tool_call_id not found"). Sanitizing the runner input closes every such
+  // path regardless of how the orphan got there. Round 6 (2026-05-30).
+  const msgs: Message[] = stripUnpairedToolCalls([...opts.messages]);
 
   // Project policy: either explicitly supplied (tests / subagents) or loaded
   // lazily from the workspace cwd. Failures are swallowed so a missing
@@ -1043,6 +1086,23 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
             onApproveShellPrefix?.(firstWord);
           }
         }
+      }
+
+      // Re-check abort AFTER the (possibly long) confirmation wait. If the user
+      // hit Stop while the modal was open, do NOT execute the tool they tried
+      // to cancel — even on a late "Allow" click. Pair THIS tool call with a
+      // denied/aborted result before bailing so the assistant tool_calls
+      // message is never left with an unpaired id (which would 400 the next
+      // send). Round 6 HIGH (2026-05-30).
+      if (signal.aborted) {
+        pushToolResult(msgs, opts.conversationId, onUpdate, tc,
+          rejectionBody(
+            "permission_denied",
+            DENY_MESSAGE_BY_REASON.aborted ?? DENY_MESSAGE_BY_REASON.user_deny,
+          ),
+          { approval: "denied", outcome: "denied", errorKind: "aborted", args },
+          opts.workflowRunId ?? null);
+        return null;
       }
 
       const toolStart = performance.now();

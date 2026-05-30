@@ -40,14 +40,16 @@ export function AboutYouModal({ onClose }: Props) {
 
   // Load the saved profile once. A missing/legacy profile falls back to EMPTY.
   useEffect(() => {
+    let cancelled = false;
     api.settingsGet()
       .then((s) => {
-        if (s.user_profile) setProfile({ ...EMPTY, ...s.user_profile });
+        if (!cancelled && s.user_profile) setProfile({ ...EMPTY, ...s.user_profile });
       })
       .catch((e) =>
         logDiag({ level: "warn", source: "user-profile", message: "settingsGet failed", detail: e }),
       )
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, []);
 
   function set<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {

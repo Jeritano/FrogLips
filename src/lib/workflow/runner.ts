@@ -429,13 +429,18 @@ export async function runWorkflow(
   // is sufficient since only one workflow run is in flight at a time.
   beginSkillRun();
 
+  // MED (2026-05-30): everything from here to the run result is wrapped in
+  // try/finally so the scratchpad + skill-run singletons are ALWAYS released —
+  // even if `loadAllPresets`, `buildCardOptions`, or any future addition
+  // throws outside the per-card catch. A leaked singleton would otherwise make
+  // a later chat-mode `workflow_*` tool call resolve against a stale run
+  // instead of returning `not_in_workflow`.
+  try {
   // Optional start-card offset (scheduler triggers a workflow from one card).
   let cards = order;
   if (opts.startCardId) {
     const idx = order.findIndex((c) => c.id === opts.startCardId);
     if (idx < 0) {
-      endScratchpadRun();
-      endSkillRun();
       throw new Error(`Start card "${opts.startCardId}" is not in the workflow graph.`);
     }
     cards = order.slice(idx);
@@ -632,11 +637,13 @@ export async function runWorkflow(
   }
 
   safeHook("onWorkflowDone", () => hooks.onWorkflowDone?.(runResult));
-  // Phase 1.1: release the scratchpad. The workflow_* tools will now
-  // return {ok:false, kind:"not_in_workflow"} for any subsequent
-  // chat-mode call, which is the correct posture (they're workflow-
-  // scoped by design).
-  endScratchpadRun();
-  endSkillRun();
   return runResult;
+  } finally {
+    // Phase 1.1: release the scratchpad + skill-run gate. The workflow_*
+    // tools now return {ok:false, kind:"not_in_workflow"} for any subsequent
+    // chat-mode call, which is the correct posture (they're workflow-scoped).
+    // In `finally` so an exception anywhere above still releases them.
+    endScratchpadRun();
+    endSkillRun();
+  }
 }

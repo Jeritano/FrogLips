@@ -76,7 +76,7 @@ describe("modelContextTokens", () => {
 describe("applyContextBudget", () => {
   it("under budget — returns the array unchanged", () => {
     const msgs = [sys("rules"), user("hi"), asst("hello")];
-    const r = applyContextBudget(msgs, { contextTokens: 8192 });
+    const r = applyContextBudget(msgs, { contextTokens: 4096 });
     expect(r.trimmed).toBe(false);
     expect(r.messages).toHaveLength(3);
     expect(r.messages.map((m) => m.content)).toEqual(["rules", "hi", "hello"]);
@@ -142,5 +142,72 @@ describe("applyContextBudget", () => {
     const msgs = [sys("rules"), tool(blob(9000)), user(blob(9000)), asst("a"), user("b")];
     const r = applyContextBudget(msgs, { contextTokens: 4096 });
     expect(r.estimatedAfter).toBeLessThanOrEqual(r.estimatedBefore);
+  });
+});
+
+describe("collapse preserves tool-call/result pairing (HIGH 2026-05-30)", () => {
+  function asstCall(id: string, content: string): Message {
+    return {
+      conversation_id: CONV,
+      role: "assistant",
+      content,
+      tool_calls: [{ id, type: "function", function: { name: "read_file", arguments: "{}" } }],
+    };
+  }
+  function toolRes(id: string, content: string): Message {
+    return { conversation_id: CONV, role: "tool", content, tool_call_id: id, tool_name: "read_file" };
+  }
+
+  /** Every kept `tool` message must have a preceding assistant `tool_calls`
+   *  that owns its id — otherwise the backend 400s on an orphaned tool_call_id. */
+  function assertNoOrphanToolResults(msgs: Message[]) {
+    const seen = new Set<string>();
+    for (const m of msgs) {
+      if (m.role === "assistant" && m.tool_calls?.length) {
+        for (const c of m.tool_calls) seen.add(c.id);
+      } else if (m.role === "tool") {
+        expect(
+          seen.has(m.tool_call_id!),
+          `orphan tool result ${m.tool_call_id} has no preceding assistant call`,
+        ).toBe(true);
+      }
+    }
+  }
+
+  it("never leaves the kept suffix starting with an orphaned tool result", () => {
+    const msgs: Message[] = [sys(blob(80))];
+    // 12 tool-call turns with large result bodies → forces collapse at 8k.
+    for (let i = 0; i < 12; i++) {
+      msgs.push(user(blob(40)));
+      msgs.push(asstCall(`call_${i}`, ""));
+      msgs.push(toolRes(`call_${i}`, blob(800)));
+    }
+    msgs.push(user("final question"));
+
+    const r = applyContextBudget(msgs, { contextTokens: 4096 });
+    expect(r.trimmed).toBe(true);
+    expect(r.turnsCollapsed).toBeGreaterThan(0);
+    // Real system prompt still first.
+    expect(r.messages[0].role).toBe("system");
+    // No orphaned tool results anywhere in the budgeted array.
+    assertNoOrphanToolResults(r.messages);
+    // The first non-system message must not be a bare tool result.
+    const firstNonSystem = r.messages.find((m, i) => i > 0 && m.role !== "system");
+    expect(firstNonSystem?.role).not.toBe("tool");
+    // Live user request preserved at the tail.
+    expect(r.messages[r.messages.length - 1].content).toBe("final question");
+  });
+
+  it("backs up to the owning call when the tail is all tool results", () => {
+    // Degenerate: a final assistant call followed by several tool results and
+    // nothing after — the snap must keep the assistant call with them.
+    const msgs: Message[] = [sys(blob(80))];
+    for (let i = 0; i < 10; i++) {
+      msgs.push(user(blob(40)));
+      msgs.push(asstCall(`c${i}`, ""));
+      msgs.push(toolRes(`c${i}`, blob(800)));
+    }
+    const r = applyContextBudget(msgs, { contextTokens: 4096 });
+    assertNoOrphanToolResults(r.messages);
   });
 });

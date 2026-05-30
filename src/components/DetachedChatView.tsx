@@ -24,11 +24,14 @@ export function DetachedChatView({ conversationId }: Props) {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Bumped to re-run the initial fetch (e.g. after a transient load failure).
+  const [retryTick, setRetryTick] = useState(0);
 
   // Initial fetch: pull the conversation row + memory client config + status.
   // Failure here is fatal for this window (we can't show a chat we can't load).
   useEffect(() => {
     let cancelled = false;
+    setLoadError(null);
     (async () => {
       try {
         const [convs, s, settings] = await Promise.all([
@@ -56,7 +59,7 @@ export function DetachedChatView({ conversationId }: Props) {
       }
     })();
     return () => { cancelled = true; };
-  }, [conversationId]);
+  }, [conversationId, retryTick]);
 
   // Cross-window sync: any window that mutates this conversation fires
   // `conversation-updated`. We don't track messages locally — ChatWindow
@@ -97,7 +100,10 @@ export function DetachedChatView({ conversationId }: Props) {
   if (loadError) {
     return (
       <div className="app detached" data-testid="detached-error">
-        <ErrorBar message={loadError} onDismiss={() => setLoadError(null)} />
+        {/* Dismiss RE-RUNS the fetch instead of dead-ending on "Loading…"
+            forever (the effect only re-fires on conversationId, which never
+            changes for a window). 2026-05-30 */}
+        <ErrorBar message={`${loadError} — dismiss to retry.`} onDismiss={() => setRetryTick((t) => t + 1)} />
       </div>
     );
   }

@@ -267,6 +267,23 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     confirmResolveRef.current = null;
   }
 
+  // Settle a pending tool-confirmation as a deny-aborted when the run is
+  // stopped. Without this the agent loop stays parked on `await
+  // requestConfirmation` forever (modal lingers over a dead loop) and, on a
+  // late "Allow", would execute the very tool the user tried to cancel. The
+  // runner also re-checks abort after the gate, so this is the un-park half.
+  // Round 6 HIGH (2026-05-30).
+  const abortWithConfirm = useEvent(() => {
+    if (confirmResolveRef.current) {
+      confirmResolveRef.current({ approve: false, reason: "aborted" });
+      confirmResolveRef.current = null;
+    }
+    setConfirmState(null);
+    setRememberPrefix(false);
+    setDestructiveAck(false);
+    abort();
+  });
+
   const isWorking = streaming !== undefined || agentStatus === "thinking" || agentStatus === "tool";
   // Agent mode (tool-calling loop) runs on Ollama and MLX. The native
   // (mistralrs) backend has no tool-call support — agent mode is disabled.
@@ -329,11 +346,11 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     const nowRunning = !!status?.running;
     wasRunningRef.current = nowRunning;
     if (wasRunning && !nowRunning && isWorking) {
-      abort();
+      abortWithConfirm();
       setStreaming(undefined);
       setAgentStatus("idle");
     }
-  }, [status?.running, isWorking, abort]);
+  }, [status?.running, isWorking, abortWithConfirm]);
 
   // Stable handler identity for MessageRow's React.memo — `useEvent` keeps the
   // reference fixed while the body always sees the latest state.
@@ -509,7 +526,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           <ChatInput
             disabled={!status?.running}
             onSend={send}
-            onAbort={abort}
+            onAbort={abortWithConfirm}
             streaming={isWorking}
             currentModel={status?.running ? status.model : null}
             status={status}

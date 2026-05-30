@@ -68,12 +68,17 @@ fn is_safe_ip(ip: &std::net::IpAddr) -> bool {
             if segs[0] == 0x0064 && segs[1] == 0xff9b {
                 return false;
             }
+            // PREFIX-mask checks, not exact equality. SEC-MED (2026-05-30):
+            // `segs[0] == 0xfc00 || == 0xfd00` missed virtually every real ULA
+            // (fc00::/7 carries a random 40-bit global id, so the first segment
+            // is almost never exactly fc00/fd00), and `== 0xfe80` missed
+            // fe81..febf — an SSRF bypass to internal IPv6 services. Mirrors the
+            // correct masked check in custom_backend.rs.
             !(a.is_loopback()
                 || a.is_unspecified()
                 || a.is_multicast()
-                || segs[0] == 0xfe80
-                || segs[0] == 0xfc00
-                || segs[0] == 0xfd00)
+                || (segs[0] & 0xffc0) == 0xfe80  // link-local fe80::/10
+                || (segs[0] & 0xfe00) == 0xfc00) // unique-local fc00::/7 (incl. fd00::/8)
         }
     }
 }
@@ -316,7 +321,10 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
         ).unwrap()
     });
     fn strip_tags(s: &str) -> String {
-        let no_tags = regex::Regex::new(r"<[^>]*>").unwrap().replace_all(s, "");
+        // Compile once, not per search hit (this runs up to 20×/search). (2026-05-30)
+        static TAG_RE: once_cell::sync::Lazy<regex::Regex> =
+            once_cell::sync::Lazy::new(|| regex::Regex::new(r"<[^>]*>").unwrap());
+        let no_tags = TAG_RE.replace_all(s, "");
         no_tags
             .replace("&amp;", "&")
             .replace("&lt;", "<")
@@ -614,5 +622,20 @@ mod tests {
         assert!(!is_safe_public_host("169.254.169.254"));
         assert!(!is_safe_public_host("localhost"));
         assert!(!is_safe_public_host("::1"));
+    }
+
+    #[test]
+    fn ipv6_ula_and_linklocal_rejected_via_prefix_mask() {
+        // SEC-MED (2026-05-30): the old exact-equality check missed these.
+        // Unique-local fc00::/7 with a realistic random global id:
+        assert!(!is_safe_public_host("fd12:3456:789a::1"));
+        assert!(!is_safe_public_host("fdab::1"));
+        assert!(!is_safe_public_host("fc01::1"));
+        // Link-local fe80::/10 beyond the exact fe80 segment:
+        assert!(!is_safe_public_host("fe81::1"));
+        assert!(!is_safe_public_host("feb0::1"));
+        // Public IPv6 must still be allowed (not over-blocked by the mask).
+        assert!(is_safe_public_host("2001:4860:4860::8888")); // Google DNS
+        assert!(is_safe_public_host("2606:2800:220:1:248:1893:25c8:1946"));
     }
 }

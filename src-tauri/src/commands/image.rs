@@ -980,6 +980,7 @@ fn evict_until_under_cap(incoming_bytes: u64) -> Result<usize, String> {
         return Ok(0);
     }
     let mut evicted = 0usize;
+    let mut evicted_paths: Vec<String> = Vec::new();
     for (path, size, _mtime) in files {
         if total + incoming_bytes <= GALLERY_BYTES_CAP {
             break;
@@ -1021,6 +1022,7 @@ fn evict_until_under_cap(incoming_bytes: u64) -> Result<usize, String> {
             Ok(_) => {
                 total = total.saturating_sub(size);
                 evicted += 1;
+                evicted_paths.push(path.to_string_lossy().to_string());
             }
             Err(e) => {
                 crate::diagnostics::warn_with(
@@ -1029,6 +1031,25 @@ fn evict_until_under_cap(incoming_bytes: u64) -> Result<usize, String> {
                     serde_json::json!({ "path": path.display().to_string(), "error": e.to_string() }),
                 );
             }
+        }
+    }
+    // HIGH-1 (2026-05-29): keep the DB in lock-step with the filesystem.
+    // Eviction unlinks the oldest PNGs; the matching `images` rows must go
+    // too or the gallery lists dead paths (open/save/export then fail on a
+    // missing file). Best-effort — a DB sync failure is logged but doesn't
+    // abort the write that triggered eviction; the startup reconciliation
+    // (`history::reconcile_image_rows`) is the backstop.
+    if !evicted_paths.is_empty() {
+        match crate::history::delete_image_rows_by_paths(&evicted_paths) {
+            Ok(n) => crate::diagnostics::info(
+                "image-gallery",
+                &format!("evicted {} file(s); pruned {} DB row(s)", evicted, n),
+            ),
+            Err(e) => crate::diagnostics::warn_with(
+                "image-gallery",
+                "evicted files but failed to prune DB rows (orphans will heal at next startup)",
+                serde_json::json!({ "error": e.to_string() }),
+            ),
         }
     }
     if evicted > 0 {

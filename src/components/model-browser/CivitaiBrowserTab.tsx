@@ -171,8 +171,13 @@ export function CivitaiBrowserTab({ query }: Props) {
       if (e?.name === "AbortError") return;
       setCivitaiErr(String(e?.message || e));
     } finally {
-      if (fetchAbortRef.current === ctrl) fetchAbortRef.current = null;
-      setCivitaiLoading(false);
+      // Only clear the loading flag if WE are still the current request. A
+      // superseded (aborted) fetch finishing later must not flip the spinner
+      // off while the newer request is still loading. LOW (2026-05-29).
+      if (fetchAbortRef.current === ctrl) {
+        fetchAbortRef.current = null;
+        setCivitaiLoading(false);
+      }
     }
   }
 
