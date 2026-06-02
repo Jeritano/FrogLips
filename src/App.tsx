@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "./lib/tauri-api";
 import { applyAllAppearance, applyCodeTheme } from "./lib/appearance";
 import { applyBubbleColor } from "./lib/bubble-color";
@@ -184,6 +184,21 @@ function App() {
   const [convContextMenu, setConvContextMenu] = useState<
     { conv: Conversation; x: number; y: number } | null
   >(null);
+  // Viewport-clamped render position for the conversation context menu. The
+  // raw click coords (convContextMenu.x/y) can put the menu off the right/
+  // bottom edge; after it mounts we measure it and shift it back on-screen.
+  const convMenuRef = useRef<HTMLDivElement>(null);
+  const [convMenuPos, setConvMenuPos] = useState<{ top: number; left: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!convContextMenu) return;
+    const el = convMenuRef.current;
+    if (!el) return;
+    const M = 8; // keep an 8px gutter from each edge
+    const r = el.getBoundingClientRect();
+    const left = Math.max(M, Math.min(convContextMenu.x, window.innerWidth - r.width - M));
+    const top = Math.max(M, Math.min(convContextMenu.y, window.innerHeight - r.height - M));
+    setConvMenuPos({ top, left });
+  }, [convContextMenu]);
   useModalA11y({
     open: memoriesOpen,
     onClose: () => setMemoriesOpen(false),
@@ -863,6 +878,7 @@ function App() {
                 if (editingId === c.id || tagEditingId === c.id) return;
                 e.preventDefault();
                 e.stopPropagation();
+                setConvMenuPos(null);
                 setConvContextMenu({ conv: c, x: e.clientX, y: e.clientY });
               }}
               title={depth > 0 ? "Branch — forked from another conversation" : "Right-click for actions; double-click to rename"}
@@ -942,10 +958,17 @@ function App() {
               }}
             />
             <div
+              ref={convMenuRef}
               className="conv-context-menu"
               role="menu"
               data-testid="conv-context-menu"
-              style={{ top: convContextMenu.y, left: convContextMenu.x }}
+              style={{
+                top: convMenuPos?.top ?? convContextMenu.y,
+                left: convMenuPos?.left ?? convContextMenu.x,
+                // Hide the pre-measure frame so the menu never flashes at the
+                // raw (possibly off-screen) click point before clamping.
+                visibility: convMenuPos ? "visible" : "hidden",
+              }}
               onClick={(e) => e.stopPropagation()}
             >
               <button
