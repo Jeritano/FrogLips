@@ -39,6 +39,16 @@ export interface GgufDownloadProgress {
   total_bytes: number;
 }
 
+/** Live progress for an `ollama pull`, emitted as `ollama-pull-progress`. */
+export interface OllamaPullProgress {
+  /** Model id being pulled (matches the pull arg). */
+  name: string;
+  /** ANSI-stripped status line, e.g. "pulling f5ee… 24% · 5.7 GB/23 GB · 126 MB/s · 2m24s". */
+  status: string;
+  /** Parsed percent 0–100, or null for non-percentage frames (manifest, verify…). */
+  percent: number | null;
+}
+
 export interface ServerStatus {
   running: boolean;
   ready: boolean;

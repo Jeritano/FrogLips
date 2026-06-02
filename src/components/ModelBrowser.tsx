@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
-import type { GgufDownloadProgress, GgufFile, ModelEntry } from "../types";
+import type { GgufDownloadProgress, GgufFile, ModelEntry, OllamaPullProgress } from "../types";
 import { OllamaLibraryView } from "./OllamaLibraryView";
 import { InstalledModelsTab } from "./model-browser/InstalledModelsTab";
 import { OpenRouterBrowserTab } from "./model-browser/OpenRouterBrowserTab";
@@ -265,6 +265,8 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
   >(new Map());
   /** Live download progress, keyed by `${repo}/${filename}`. */
   const [ggufProgress, setGgufProgress] = useState<Map<string, GgufDownloadProgress>>(new Map());
+  /** Live progress for the in-flight ollama pull (one at a time). */
+  const [ollamaProgress, setOllamaProgress] = useState<OllamaPullProgress | null>(null);
   /** Locally-cached `.gguf` files, populated from `nativeListGgufFiles`. */
   const [ggufInstalled, setGgufInstalled] = useState<GgufFile[]>([]);
   const [ggufInstalledErr, setGgufInstalledErr] = useState<string | null>(null);
@@ -296,6 +298,24 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
       } catch {
         // listen() can fail in non-Tauri test environments — that's fine,
         // the progress display just stays at 0 in that case.
+      }
+    })();
+    return () => { cancelled = true; off?.(); };
+  }, []);
+
+  // Live ollama-pull progress. One pull runs at a time, so a single latest
+  // payload is enough; the active card matches it by `name`.
+  useEffect(() => {
+    let off: UnlistenFn | undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        off = await listen<OllamaPullProgress>("ollama-pull-progress", (e) => {
+          if (cancelled) return;
+          setOllamaProgress(e.payload);
+        });
+      } catch {
+        // listen() unavailable in non-Tauri test env — bar just stays hidden.
       }
     })();
     return () => { cancelled = true; off?.(); };
@@ -418,6 +438,7 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
       setErrors((m) => new Map([...m, [id, String(e)]]));
     } finally {
       setPulling(null);
+      setOllamaProgress(null);
     }
   }
 
@@ -509,6 +530,7 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
               pull={(name) => void pull(name, "ollama")}
               requestRemove={(name) => requestRemove(name, "ollama")}
               pulling={pulling}
+              pullProgress={ollamaProgress}
               deleting={deleting}
               done={done}
               errors={errors}

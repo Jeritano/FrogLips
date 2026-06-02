@@ -231,8 +231,78 @@ mod strip_tests {
     }
 }
 
+/// Live progress for an `ollama pull`, emitted on `app` as
+/// `ollama-pull-progress`. `percent` is parsed from the CLI's `NN%` frame
+/// when present; `status` is the ANSI-stripped frame text (carries the
+/// human-readable `5.7 GB / 23 GB · 126 MB/s · 2m24s` tail).
+#[derive(Debug, serde::Serialize, Clone)]
+pub struct OllamaPullProgress {
+    pub name: String,
+    pub status: String,
+    pub percent: Option<u8>,
+}
+
+// ANSI/VT100 strip regexes for the live-progress hot path. Compiled once
+// (the frame parser runs many times a second) rather than per call like
+// `strip_ansi_and_progress`.
+static ANSI_CSI_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"\x1b\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]").expect("CSI regex compiles")
+});
+static ANSI_OSC_RE: Lazy<regex::Regex> = Lazy::new(|| {
+    regex::Regex::new(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)").expect("OSC regex compiles")
+});
+static PULL_PERCENT_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"(\d{1,3})%").expect("percent regex compiles"));
+
+/// Strip CSI + OSC escape sequences out of a single progress frame.
+fn strip_ansi_codes(s: &str) -> String {
+    let s = ANSI_CSI_RE.replace_all(s, "");
+    ANSI_OSC_RE.replace_all(&s, "").into_owned()
+}
+
+/// Parse the first `NN%` token in a cleaned frame, clamped to 0–100.
+fn parse_pull_percent(line: &str) -> Option<u8> {
+    PULL_PERCENT_RE
+        .captures(line)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<u16>().ok())
+        .map(|p| p.min(100) as u8)
+}
+
+/// Clean one raw frame and emit it as `ollama-pull-progress`. Emits on any
+/// percent change, else throttles to ~10 Hz so the speed/ETA tail can still
+/// update without flooding the IPC channel.
+fn emit_pull_frame(
+    app: &tauri::AppHandle,
+    name: &str,
+    raw_frame: &str,
+    last_percent: &mut Option<u8>,
+    last_emit: &mut std::time::Instant,
+) {
+    let clean = strip_ansi_codes(raw_frame);
+    let line = clean.trim();
+    if line.is_empty() {
+        return;
+    }
+    let percent = parse_pull_percent(line);
+    let percent_changed = percent != *last_percent;
+    if !percent_changed && last_emit.elapsed() < std::time::Duration::from_millis(100) {
+        return;
+    }
+    *last_percent = percent;
+    *last_emit = std::time::Instant::now();
+    let _ = app.emit(
+        "ollama-pull-progress",
+        OllamaPullProgress {
+            name: name.to_string(),
+            status: line.to_string(),
+            percent,
+        },
+    );
+}
+
 #[tauri::command]
-pub async fn pull_ollama_model(name: String) -> Result<String, String> {
+pub async fn pull_ollama_model(app: tauri::AppHandle, name: String) -> Result<String, String> {
     validate_ollama_name(&name)?;
     // Cloud models (`<name>:cloud`) aren't a local download — Ollama serves
     // them remotely and the pull only resolves once the user is signed in to
@@ -241,12 +311,12 @@ pub async fn pull_ollama_model(name: String) -> Result<String, String> {
     // and retry once — so the whole flow happens through the Pull button with
     // no terminal commands.
     let is_cloud = name.contains(":cloud") || name.ends_with("-cloud");
-    match run_ollama_pull_once(&name).await {
+    match run_ollama_pull_once(&app, &name).await {
         Ok((true, _)) => Ok(format!("Pulled {name}")),
         Ok((false, stderr)) => {
             if is_cloud && is_ollama_auth_error(&stderr) {
                 run_ollama_signin().await?;
-                match run_ollama_pull_once(&name).await {
+                match run_ollama_pull_once(&app, &name).await {
                     Ok((true, _)) => Ok(format!("Pulled {name}")),
                     Ok((false, e)) => Err(e),
                     Err(e) => Err(e),
@@ -259,15 +329,94 @@ pub async fn pull_ollama_model(name: String) -> Result<String, String> {
     }
 }
 
-/// One `ollama pull <name>` attempt with the standard 30-minute cap.
-async fn run_ollama_pull_once(name: &str) -> Result<(bool, String), String> {
+/// One `ollama pull <name>` attempt with the standard 30-minute cap, streaming
+/// live progress to the frontend as `ollama-pull-progress` events.
+async fn run_ollama_pull_once(
+    app: &tauri::AppHandle,
+    name: &str,
+) -> Result<(bool, String), String> {
     const PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
     let mut cmd = tokio::process::Command::new("ollama");
     cmd.arg("pull").arg("--").arg(name);
-    match tokio::time::timeout(PULL_TIMEOUT, run_capped_pull(cmd)).await {
+    match tokio::time::timeout(PULL_TIMEOUT, run_streaming_pull(app, name, cmd)).await {
         Ok(r) => r,
         Err(_) => Err(format!("pull timed out after {}s", PULL_TIMEOUT.as_secs())),
     }
+}
+
+/// Run `ollama pull` to completion, streaming stderr live: split into frames
+/// on `\r`/`\n`, strip ANSI per frame, parse the percent, and emit
+/// `ollama-pull-progress`. stdout is drained (capped) concurrently so a full
+/// pipe can't deadlock the child. Returns `(success, cleaned_stderr)`; the
+/// cleaned stderr is only surfaced on failure.
+async fn run_streaming_pull(
+    app: &tauri::AppHandle,
+    name: &str,
+    mut cmd: tokio::process::Command,
+) -> Result<(bool, String), String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().map_err(|e| format!("{e:#}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    // Defensive: drain stdout (capped). `ollama pull` writes progress to
+    // stderr, but an unread full stdout pipe would block the child.
+    let out_fut = async move {
+        if let Some(mut s) = stdout {
+            let mut sunk = 0usize;
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = s.read(&mut chunk).await {
+                if n == 0 || sunk >= PULL_OUTPUT_CAP {
+                    break;
+                }
+                sunk += n;
+            }
+        }
+    };
+
+    // Live stderr parser → progress events; keep a capped tail for errors.
+    let err_fut = async {
+        let mut tail: Vec<u8> = Vec::new();
+        let mut frame = String::new();
+        let mut last_percent: Option<u8> = None;
+        // Start "in the past" so the very first frame always emits.
+        let mut last_emit = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        if let Some(mut s) = stderr {
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = match s.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                if tail.len() < PULL_OUTPUT_CAP {
+                    let take = n.min(PULL_OUTPUT_CAP - tail.len());
+                    tail.extend_from_slice(&chunk[..take]);
+                }
+                for ch in String::from_utf8_lossy(&chunk[..n]).chars() {
+                    if ch == '\r' || ch == '\n' {
+                        emit_pull_frame(app, name, &frame, &mut last_percent, &mut last_emit);
+                        frame.clear();
+                    } else {
+                        frame.push(ch);
+                    }
+                }
+            }
+            emit_pull_frame(app, name, &frame, &mut last_percent, &mut last_emit);
+        }
+        String::from_utf8_lossy(&tail).into_owned()
+    };
+
+    let (_out, raw_err) = tokio::join!(out_fut, err_fut);
+    let status = child.wait().await.map_err(|e| format!("{e:#}"))?;
+    let cleaned = strip_ansi_and_progress(&raw_err);
+    Ok((status.success(), cleaned))
 }
 
 /// True if an `ollama pull` failure looks like "you're not signed in".

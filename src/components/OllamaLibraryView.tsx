@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/tauri-api";
-import type { ModelEntry, OllamaLibraryEntry } from "../types";
+import type { ModelEntry, OllamaLibraryEntry, OllamaPullProgress } from "../types";
 
 /* ── color palette ──────────────────────────────────────────────────────
    Matches the colored chips on ollama.com/library:
@@ -40,6 +40,8 @@ interface OllamaLibraryViewProps {
   requestRemove: (name: string) => void;
   /** Set of model id currently being pulled (parent state). */
   pulling: string | null;
+  /** Live progress for the in-flight pull (matches the active card by name). */
+  pullProgress?: OllamaPullProgress | null;
   /** Set of model id currently being deleted. */
   deleting: string | null;
   /** Set of model ids that finished pulling this session. */
@@ -144,6 +146,7 @@ export function OllamaLibraryView({
   pull,
   requestRemove,
   pulling,
+  pullProgress,
   deleting,
   done,
   errors,
@@ -335,6 +338,21 @@ export function OllamaLibraryView({
                   </div>
                 )}
                 {err && <div className="mb-card-err">{err}</div>}
+                {isPulling && pullProgress && pullProgress.name === pullId && (
+                  <div className="mb-pull-progress">
+                    <div className="mb-pull-track">
+                      <div
+                        className={`mb-pull-fill${pullProgress.percent == null ? " indeterminate" : ""}`}
+                        style={
+                          pullProgress.percent != null
+                            ? { width: `${pullProgress.percent}%` }
+                            : undefined
+                        }
+                      />
+                    </div>
+                    <div className="mb-pull-status">{pullProgress.status}</div>
+                  </div>
+                )}
               </div>
               <div className="mb-card-actions">
                 {isInstalled ? (
