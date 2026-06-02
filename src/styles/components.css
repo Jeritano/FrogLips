@@ -1,0 +1,807 @@
+/* ── Side panels: RAG / Audit log / Diagnostics ──────────────────────────
+ *
+ * Styles extracted from inline `style={{…}}` props in RagPanel.tsx,
+ * AuditLog.tsx and DiagnosticsPanel.tsx. All colors use the design tokens
+ * from tokens.css so they adapt to the light theme — the previous inline
+ * hex literals (#c33 / #2a7 / #ddd) did not.
+ */
+
+/* ── RagPanel ── */
+.rag-title { margin: 8px 0; }
+.rag-intro {
+  font-size: var(--fs-sm);
+  opacity: 0.75;
+  margin: 4px 0 12px;
+}
+.rag-msg {
+  font-size: var(--fs-sm);
+  margin-bottom: 8px;
+}
+.rag-msg-err { color: var(--danger-fg); }
+.rag-msg-info { color: var(--green-fg); }
+
+.rag-ingest-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-xs);
+  outline: none;
+  padding: 0;
+}
+.rag-ingest-form.drag-over {
+  padding: 4px;
+  outline: 2px dashed var(--accent);
+}
+
+.rag-corpora { margin-bottom: 16px; }
+.rag-empty {
+  font-size: var(--fs-sm);
+  opacity: 0.6;
+}
+.rag-table {
+  width: 100%;
+  font-size: var(--fs-sm);
+  border-collapse: collapse;
+}
+.rag-col-l { text-align: left; }
+.rag-col-r { text-align: right; }
+
+.rag-search {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.rag-search-label {
+  font-size: var(--fs-sm);
+  margin-bottom: 6px;
+  opacity: 0.7;
+}
+.rag-search-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.rag-search-corpus { flex: 0 0 auto; }
+.rag-search-query { flex: 1; }
+.rag-hits {
+  font-size: var(--fs-sm);
+  padding-left: 18px;
+  margin: 0;
+}
+.rag-hits li { margin-bottom: 6px; }
+.rag-hit-path {
+  font-family: var(--mono);
+  opacity: 0.7;
+}
+.rag-hit-score { opacity: 0.5; }
+.rag-hit-snippet {
+  white-space: pre-wrap;
+  background: var(--overlay-softer);
+  padding: 4px;
+  border-radius: 3px;
+}
+
+/* ── AuditLog ── */
+.audit-log-panel {
+  border-top: 1px solid var(--border);
+  padding: 8px;
+}
+.audit-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.audit-log-title { font-weight: 600; }
+.audit-log-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.audit-log-body { margin-top: 8px; }
+.audit-log-stats {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.audit-log-filters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.audit-log-field { font-size: var(--fs-xs); }
+.audit-input-tool { width: 140px; }
+.audit-input-conv { width: 100px; }
+.audit-input-days { width: 56px; }
+.audit-log-purge {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+}
+.audit-log-err {
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+.audit-log-table-wrap {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+}
+.audit-log-table {
+  width: 100%;
+  font-size: var(--fs-xs);
+  border-collapse: collapse;
+}
+.audit-log-table thead tr { background: var(--surface); }
+.audit-log-table th { padding: 2px 6px; }
+.audit-log-table td { padding: 2px 6px; }
+.audit-log-table tbody tr { border-top: 1px solid var(--border); }
+.audit-col-l { text-align: left; }
+.audit-col-r { text-align: right; }
+.audit-log-empty {
+  padding: 8px;
+  color: var(--text-muted);
+}
+.audit-cell-nowrap { white-space: nowrap; }
+.audit-cell-args {
+  font-family: var(--mono);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audit-outcome-denied { color: var(--accent); }
+.audit-outcome-dryrun { color: var(--accent); }
+.audit-outcome-warn { color: var(--warn-fg); }
+
+/* ── DiagnosticsPanel ── */
+.diag-modal { max-width: 960px; }
+.diag-controls {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.diag-field { font-size: var(--fs-sm); }
+.diag-clear-armed { color: var(--accent); }
+.diag-copy-status { color: var(--accent); }
+.diag-list {
+  max-height: 70vh;
+  overflow: auto;
+}
+.diag-table {
+  width: 100%;
+  font-size: var(--fs-sm);
+  border-collapse: collapse;
+}
+.diag-table thead tr { background: var(--surface); }
+.diag-table th {
+  text-align: left;
+  padding: 4px 6px;
+}
+.diag-table td { padding: 4px 6px; }
+.diag-table tbody tr { border-top: 1px solid var(--border); }
+.diag-cell-nowrap { white-space: nowrap; }
+.diag-detail {
+  margin: 4px 0 0;
+  padding: 6px;
+  font-size: var(--fs-xs);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: var(--radius-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+.diag-footer {
+  font-size: var(--fs-xs);
+  padding: 6px 0;
+  color: var(--text-muted);
+}
+
+/* ── Accessibility: visually-hidden live region ──────────────────────────
+ * Off-screen but still read by assistive tech. Used by <LiveRegion>. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Toast (reusable bottom-right notification) ──────────────────────────
+ * Used for the undo-delete affordance. Mirrors .quick-toast geometry but
+ * carries an action + close button. */
+.toast {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: var(--z-toast);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 360px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-toast);
+  font-size: var(--fs-md);
+  color: var(--text);
+  animation: toastIn 200ms ease-out;
+}
+.toast-msg {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toast-action {
+  flex-shrink: 0;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-strong);
+  border-radius: var(--radius-xs);
+  padding: 3px 10px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.toast-action:hover { background: var(--accent-strong); }
+.toast-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  font-size: var(--fs-lg);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.toast-close:hover { color: var(--text); }
+@keyframes toastIn {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+
+/* ── Conversation organisation: pin + tags ───────────────────────────────
+ * Inline pin/tag buttons removed 2026-05-28 — actions moved to the
+ * right-click context menu (`.conv-context-menu`). The `.conv-pin-dot`
+ * left-side indicator below is the only persistent affordance left,
+ * showing the pinned state at-a-glance. */
+
+.conv-pin-dot {
+  font-size: 9px;
+  margin-right: 3px;
+}
+/* conv-title becomes a vertical stack: title line on top, optional tag
+   chips below. It keeps `flex: 1` from layout.css so the row is unchanged. */
+.conv-title { display: flex; flex-direction: column; gap: 2px; }
+.conv-title-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.conv-title-text {
+  /* Single-line ellipsis. Trailing action buttons are absolute-positioned
+     so the title spans the full row width and ellipsis triggers as late
+     as possible. Buttons fade in over the title's right edge on hover —
+     see .conv-list .del position rules below. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.conv-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.conv-tag-chip {
+  font-size: var(--fs-2xs);
+  line-height: 1.4;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--accent-bg);
+  color: var(--accent);
+  white-space: nowrap;
+}
+.conv-tag-input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  font-size: var(--fs-2xs);
+  font-family: inherit;
+  outline: none;
+  min-width: 0;
+}
+
+/* ── Motion polish ───────────────────────────────────────────────────────
+ * Tasteful entrance motion for modal surfaces + message rows. `fadeIn` is
+ * referenced by panels.css; defining it here makes those existing rules
+ * actually animate. Every animation below is gated under
+ * prefers-reduced-motion at the end of this file. */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes convRowIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* NOTE: blanket entrance animations on [class$="-overlay"] / [class$="-modal"]
+   and on .message were removed — they re-ran on React re-renders and
+   dismissed native <select> popups (the model-browser Source dropdown)
+   mid-interaction. Motion polish must never disrupt interaction; if
+   re-introduced, scope it to mount-only and exclude interactive surfaces. */
+
+/* Honour the OS "reduce motion" setting: all non-essential animation and
+ * transition becomes instant. Scoped broadly but intentionally — none of
+ * these animations convey information, so removing them loses nothing. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Dashboard card actions ──────────────────────────────────────────────
+ * Inline action buttons inside a dashboard-card (e.g. "Manage Claude
+ * Skills"). Keeps the card padded but lets the button sit flush-left
+ * under the empty/description copy. */
+.dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.dashboard-action-btn {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.dashboard-action-btn:hover {
+  background: var(--surface-hover);
+}
+.dashboard-action-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── Claude Skills panel ─────────────────────────────────────────────────
+ * Global library inspector opened from the dashboard. Mirrors the
+ * frosted-glass treatment used on the workflows CardForm / SkillsPanel so
+ * the chrome reads as the same family. The inner box is a centered card
+ * with a header row, an optional ErrorBar, and either an EmptyState or
+ * the skills table. The body viewer (sub-modal) renders on top of the
+ * panel with a higher z-index so the focus trap on the inner viewer or
+ * ConfirmDialog correctly receives keyboard focus.
+ */
+.cs-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh var(--space-4, 16px) var(--space-4, 16px);
+  overflow: auto;
+}
+.cs-panel-box {
+  width: min(960px, 100%);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 88vh;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+}
+.cs-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border-bottom: 1px solid var(--border);
+}
+.cs-panel-title {
+  margin: 0;
+  font-size: var(--fs-lg, 16px);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cs-panel-import {
+  background: var(--accent);
+  color: var(--accent-fg, white);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm, 4px);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.cs-panel-import:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.cs-panel-import:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.cs-panel-import:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.cs-panel-close {
+  background: transparent;
+  color: var(--text-2, var(--text));
+  border: 1px solid transparent;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.cs-panel-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.cs-panel-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.cs-panel-body {
+  padding: var(--space-3, 12px) var(--space-4, 16px) var(--space-4, 16px);
+  overflow: auto;
+  min-height: 0;
+}
+
+/* ── Table ── */
+.cs-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface);
+}
+.cs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm, 13px);
+}
+.cs-table thead th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-2, var(--text));
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  white-space: nowrap;
+}
+.cs-table tbody td {
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.cs-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.cs-table-loading {
+  text-align: center;
+  color: var(--text-2, var(--text));
+  padding: var(--space-4, 16px);
+}
+.cs-col-name {
+  width: 18%;
+}
+.cs-col-desc {
+  width: auto;
+}
+.cs-col-path {
+  width: 22%;
+}
+.cs-col-status {
+  width: 130px;
+}
+.cs-col-actions {
+  width: 260px;
+  text-align: right;
+  white-space: nowrap;
+}
+.cs-cell-name {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-sm, 13px);
+  color: var(--text);
+  word-break: break-word;
+}
+.cs-cell-desc {
+  color: var(--text);
+}
+.cs-cell-desc-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2, var(--text));
+  line-height: 1.4;
+}
+.cs-cell-path {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--text-2, var(--text));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+.cs-cell-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cs-cell-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+.cs-cell-actions .cs-btn + .cs-btn {
+  margin-left: 4px;
+}
+
+/* ── Chips ── */
+.cs-chip {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  line-height: 1.4;
+}
+.cs-chip-enabled {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.cs-chip-disabled {
+  background: var(--surface-2);
+  color: var(--text-3, var(--text-2, var(--text)));
+  border-color: var(--border);
+  opacity: 0.7;
+}
+.cs-chip-pinned {
+  background: var(--accent);
+  color: var(--accent-fg, white);
+  border-color: var(--accent);
+}
+.cs-chip-tool {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border);
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.cs-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  padding: 4px var(--space-2, 8px);
+  font-size: var(--fs-xs, 12px);
+  cursor: pointer;
+  font-family: inherit;
+}
+.cs-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.cs-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.cs-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.cs-btn-danger {
+  color: var(--danger, #d62828);
+  border-color: color-mix(in srgb, var(--danger, #d62828) 35%, var(--border));
+}
+.cs-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger, #d62828) 12%, transparent);
+}
+
+.cs-confirm-body {
+  font-size: var(--fs-sm, 13px);
+  color: var(--text-2, var(--text));
+  padding: var(--space-2, 8px) 0;
+}
+
+/* ── Body viewer (sub-modal) ── */
+.cs-body-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 610;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4, 16px);
+}
+.cs-body-box {
+  width: min(820px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  display: flex;
+  flex-direction: column;
+  max-height: 86vh;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.38);
+  overflow: hidden;
+}
+.cs-body-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border-bottom: 1px solid var(--border);
+}
+.cs-body-title {
+  margin: 0;
+  font-size: var(--fs-base, 14px);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cs-body-meta {
+  padding: var(--space-3, 12px) var(--space-4, 16px) 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-sm, 13px);
+}
+.cs-body-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cs-body-meta-label {
+  color: var(--text-2, var(--text));
+  font-weight: 600;
+}
+.cs-body-meta-path {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--text-2, var(--text));
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cs-body-meta-note {
+  font-size: 11px;
+  color: var(--text-3, var(--text-2, var(--text)));
+  font-style: italic;
+}
+.cs-body-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cs-body-pre {
+  background: var(--surface-2);
+  color: var(--text);
+  padding: var(--space-3, 12px);
+  border-radius: var(--radius-sm, 4px);
+  max-height: 60vh;
+  overflow: auto;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: var(--space-3, 12px);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Conv-row right-click context menu ─────────────────────────────────
+ * Replaces the persistent inline pin / tag / detach / delete buttons
+ * on every conv row (UX refinement 2026-05-28). Triggered by
+ * `onContextMenu` on the `<li>`; positioned at the cursor via inline
+ * top/left. The backdrop is a transparent overlay above everything
+ * else — clicking anywhere dismisses the menu. */
+.conv-context-backdrop {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  z-index: calc(var(--z-modal) - 1);
+}
+.conv-context-menu {
+  position: fixed;
+  z-index: var(--z-modal);
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-modal);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: inherit;
+}
+.conv-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.conv-context-menu button:hover {
+  background: var(--surface-hover);
+}
+.conv-context-menu button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.conv-context-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 3px 6px;
+}
+.conv-context-menu .conv-context-danger {
+  color: var(--danger-fg);
+}
+.conv-context-menu .conv-context-danger:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}

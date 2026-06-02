@@ -1,0 +1,977 @@
+/* ── Workflows (agent orchestration canvas) ──────────────────────────────
+ * React Flow is skinned with the app design tokens so the canvas reads as
+ * native dark/light chrome rather than default React Flow styling. All
+ * motion is non-essential and already covered by the global
+ * prefers-reduced-motion rule in components.css. */
+
+/* Live-run badge: small pulsing dot inside the Workflows tab in the
+ * segmented control when a workflow run is in flight. User can be on
+ * another tab (Froglips / Images) and still see at a glance that a run
+ * is going. Click on the Workflows tab returns to that view.
+ * (Stand-alone .workflows-entry sidebar button removed 2026-05-28 when
+ * the VIEWS group was replaced by the segmented control in App.tsx.) */
+.workflows-running-badge {
+  color: var(--green, #10b981);
+  font-size: 10px;
+  line-height: 1;
+  animation: workflows-running-pulse 1.6s ease-in-out infinite;
+}
+@keyframes workflows-running-pulse {
+  0%, 100% { opacity: 1.0; }
+  50%      { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workflows-running-badge { animation: none; }
+}
+
+/* ── Page shell ── */
+.wf-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.wf-picker { padding: var(--space-6); gap: var(--space-4); overflow-y: auto; }
+.wf-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.wf-picker-head h2 { margin: 0; font-size: var(--fs-xl); }
+
+.wf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.wf-list-item {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+.wf-list-open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: var(--fs-base);
+}
+.wf-list-open:hover { background: var(--surface-hover); }
+.wf-list-meta { color: var(--text-2); font-size: var(--fs-sm); }
+.wf-list-del {
+  width: 38px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: var(--fs-lg);
+}
+.wf-list-del:hover { background: var(--danger-bg); color: var(--danger-fg); }
+
+/* ── Editor ──
+   The editor top-bar (back button, name input, warnings) lives in the
+   global <header> via createPortal so the chrome height stays at parity
+   with chat's ModelPicker. Styles below are scoped to elements that
+   live INSIDE that portal target. */
+.wf-name-input {
+  flex: 1;
+  max-width: 320px;
+  padding: 4px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+}
+.wf-warning {
+  margin-left: auto;
+  padding: 2px 10px;
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.wf-editor-body { flex: 1; display: flex; min-height: 0; }
+
+.wf-error {
+  margin: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+/* ── Canvas (the table-top) ── */
+.wf-canvas { flex: 1; min-width: 0; position: relative; }
+.wf-canvas .react-flow { background: var(--bg); }
+.wf-canvas .react-flow__background { color: var(--border-subtle); }
+.wf-canvas .react-flow__edge .react-flow__edge-path {
+  stroke: var(--text-2);
+  stroke-width: 2;
+}
+.wf-canvas .react-flow__edge.selected .react-flow__edge-path,
+.wf-canvas .react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--accent);
+}
+.wf-canvas .react-flow__controls {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: none;
+  overflow: hidden;
+}
+.wf-canvas .react-flow__controls-button {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.wf-canvas .react-flow__controls-button:hover { background: var(--surface-hover); }
+.wf-canvas .react-flow__controls-button svg { fill: var(--text); }
+
+/* ── Agent card node ── */
+.wf-node {
+  width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-shadow: var(--shadow-toast);
+}
+.wf-node[data-state="running"] { border-color: var(--accent); }
+.wf-node[data-state="done"] { border-color: var(--green-border); }
+.wf-node[data-state="failed"] { border-color: var(--danger-border); }
+
+/* User-chosen accent (2026-05-28): a thick left rail + a faint top-edge
+   wash tinted by `--wf-card-accent`, plus a tinted preset chip. Scoped
+   under [data-themed] so a null color keeps the neutral chrome. The
+   run-state border rules above still win on their own edges (running/
+   done/failed) since they set `border-color` directly; the accent lives
+   on the LEFT border which those don't touch, so state + theme coexist. */
+.wf-node[data-themed="true"] {
+  border-left: 3px solid var(--wf-card-accent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--wf-card-accent) 10%, transparent) 0%,
+      transparent 36px
+    ),
+    var(--surface);
+}
+.wf-node[data-themed="true"] .wf-node-name {
+  color: var(--wf-card-accent);
+}
+.wf-node[data-themed="true"] .wf-node-preset {
+  color: var(--wf-card-accent);
+  background: color-mix(in srgb, var(--wf-card-accent) 16%, transparent);
+}
+
+.wf-node-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.wf-node-name {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wf-node-meta { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.wf-node-preset {
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  background: var(--surface-2);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+}
+.wf-node-schedule {
+  font-size: var(--fs-2xs);
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+}
+
+.wf-badge {
+  font-size: var(--fs-2xs);
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.wf-badge-idle { color: var(--text-2); background: var(--surface-2); }
+.wf-badge-running {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  animation: wfPulse 1.4s ease-in-out infinite;
+}
+.wf-badge-done { color: var(--green-fg); background: var(--green-bg); border-color: var(--green-border); }
+.wf-badge-failed { color: var(--danger-fg); background: var(--danger-bg); border-color: var(--danger-border); }
+
+@keyframes wfPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Card body is a button — clicking it opens the centered edit form. */
+.wf-node-open {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+
+.wf-node-actions { display: flex; gap: var(--space-1); }
+.wf-node-btn {
+  flex: 1;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.wf-node-btn:hover:not(:disabled) { background: var(--surface-hover); }
+.wf-node-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.wf-node-btn-danger { flex: 0 0 28px; }
+.wf-node-btn-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  border-color: var(--danger-border);
+}
+
+.wf-handle {
+  width: 9px;
+  height: 9px;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+}
+
+/* ── Run panel ── */
+.wf-run-panel {
+  /* Was 260px; user trimmed 50px to give the canvas more room. */
+  width: 210px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.wf-run-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.wf-run-list { flex: 1; overflow-y: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.wf-run-empty { color: var(--text-2); font-size: var(--fs-sm); text-align: center; margin: var(--space-5) 0; }
+.wf-run-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  background: var(--surface-2);
+}
+.wf-run-item-head { display: flex; align-items: center; gap: var(--space-2); }
+.wf-run-item-name { font-size: var(--fs-sm); font-weight: 500; }
+.wf-run-icon-idle { color: var(--text-2); }
+.wf-run-icon-running { color: var(--accent); }
+.wf-run-icon-done { color: var(--green-fg); }
+.wf-run-icon-failed { color: var(--danger-fg); }
+.wf-run-output {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  background: var(--bg);
+  border-radius: var(--radius-xs);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.wf-run-error { color: var(--danger-fg); }
+
+/* ── Shared buttons ── */
+.wf-btn {
+  padding: var(--space-1) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.wf-btn:hover:not(:disabled) { background: var(--surface-hover); }
+.wf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.wf-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.wf-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+.wf-btn-danger { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-fg); }
+.wf-btn-danger:hover:not(:disabled) { background: var(--danger-bg-strong); }
+
+/* ── Card deck (corner of the table) ── */
+.wf-deck {
+  position: absolute;
+  left: var(--space-4);
+  bottom: var(--space-4);
+  width: 132px;
+  height: 168px;
+  z-index: 6;
+}
+.wf-deck-stack { position: absolute; inset: 0; }
+.wf-deck-card {
+  position: absolute;
+  width: 124px;
+  height: 156px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-toast);
+}
+/* The two cards under the top card — offset to read as a stack. */
+.wf-deck-card-3 { left: 8px; top: 8px; opacity: 0.55; }
+.wf-deck-card-2 { left: 4px; top: 4px; opacity: 0.8; }
+.wf-deck-top {
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  cursor: grab;
+  color: var(--text-2);
+  background: var(--surface);
+  transition: transform 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.wf-deck-top:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.wf-deck-top:active { cursor: grabbing; }
+.wf-deck-top:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wf-deck-plus { font-size: var(--fs-2xl); line-height: 1; font-weight: 300; }
+.wf-deck-label { font-size: var(--fs-sm); }
+
+/* ── Centered card form (supersedes the old config drawer) ── */
+.wf-form-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal);
+  padding: var(--space-4);
+}
+.wf-form-card {
+  width: 420px;
+  max-width: 100%;
+  max-height: 88vh;
+  /* Translucent surface — was solid var(--surface), now mixes the surface
+     token with ~25% transparency so the workflow canvas stays faintly
+     visible behind the panel. Backdrop-filter blurs the canvas so the
+     translucency reads as "frosted glass" instead of "leaky content". */
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  backdrop-filter: saturate(140%) blur(18px);
+  -webkit-backdrop-filter: saturate(140%) blur(18px);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  /* Fly transform: from the deck/node origin to the resting centered state. */
+  transform-origin: center center;
+  transition: transform 0.26s cubic-bezier(0.2, 0.7, 0.3, 1), opacity 0.2s ease;
+}
+/* The card starts shrunk + translated toward its origin, then settles. */
+.wf-form-card.is-entering,
+.wf-form-card.is-leaving {
+  opacity: 0;
+  transform:
+    translate(
+      calc(var(--wf-fly-x, 50vw) - 50vw),
+      calc(var(--wf-fly-y, 50vh) - 50vh)
+    )
+    scale(var(--wf-fly-scale, 0.2));
+}
+.wf-form-card.is-entered {
+  opacity: 1;
+  transform: translate(0, 0) scale(1);
+}
+/* Saving a new card: the card materializes on the canvas, not in the deck —
+   so the form fades out in place rather than flying back to the deck. */
+.wf-form-card.is-leaving-fade {
+  opacity: 0;
+  transform: translate(0, 0) scale(0.96);
+}
+.wf-form-inner {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+}
+.wf-form-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.wf-form-title { font-weight: 600; font-size: var(--fs-lg); }
+.wf-form-close {
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-size: var(--fs-xl);
+  cursor: pointer;
+  line-height: 1;
+}
+.wf-form-close:hover { color: var(--text); }
+.wf-form-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.wf-form-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+.wf-name-row { display: flex; gap: var(--space-2); align-items: stretch; }
+.wf-name-row input { flex: 1; }
+.wf-reroll {
+  flex: 0 0 auto;
+  padding: var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--fs-base);
+  line-height: 1;
+}
+.wf-reroll:hover { background: var(--surface-hover); }
+
+.wf-field-error { margin: var(--space-1) 0 0; font-size: var(--fs-xs); color: var(--danger-fg); }
+.wf-field-check { flex-direction: row; align-items: flex-start; gap: var(--space-2); }
+.wf-field-check span { font-size: var(--fs-sm); color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-deck-top,
+  .wf-form-card { transition: none; }
+  .wf-form-card.is-entering,
+  .wf-form-card.is-leaving,
+  .wf-form-card.is-leaving-fade { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+
+.wf-field { display: flex; flex-direction: column; gap: var(--space-1); }
+.wf-field > span { font-size: var(--fs-sm); color: var(--text-2); }
+.wf-field input,
+.wf-field select,
+.wf-field textarea {
+  padding: var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-base);
+  font-family: inherit;
+  /* Grids set the outer width via fr units; let inputs shrink within
+     their grid cell instead of forcing the cell wider (was producing
+     squished number-spinners on the params + retry rows). */
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+/* Inline labels inside a grid wf-field (params row + retry row) stack
+   their span over their input — otherwise the label wraps inline next
+   to the input and the layout looks crammed. */
+.wf-field > label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.wf-field > label > span {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  /* Single-line label text — long copy like "Temperature (0–2)" was
+     wrapping to two rows and pushing the input off-grid. Truncate
+     visually so the row stays one line; the full text is still
+     available as a tooltip via the title attribute on the label. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wf-field textarea { resize: vertical; }
+.wf-field-hint { margin: var(--space-1) 0 0; font-size: var(--fs-xs); color: var(--text-2); }
+
+/* Collapsible field (System prompt / Instructions) — native <details>.
+   The summary mimics a `.wf-field > span` label + a disclosure caret so
+   it reads as part of the form, not a generic OS twisty. (2026-05-28) */
+.wf-collapse { gap: 0; }
+.wf-collapse-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  padding: var(--space-1) 0;
+  user-select: none;
+}
+.wf-collapse-summary::-webkit-details-marker { display: none; }
+/* Caret rotates when open. */
+.wf-collapse-summary::before {
+  content: "▸";
+  display: inline-block;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  transition: transform 0.12s ease;
+}
+.wf-collapse[open] > .wf-collapse-summary::before { transform: rotate(90deg); }
+.wf-collapse-summary:hover { color: var(--text); }
+.wf-collapse-badge {
+  font-size: var(--fs-2xs);
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+}
+.wf-collapse-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-top: var(--space-1);
+}
+
+/* Card-color swatch chooser. */
+.wf-color-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.wf-color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--border);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.1s ease, border-color 0.1s ease, box-shadow 0.1s ease;
+}
+.wf-color-swatch:hover { transform: scale(1.12); }
+.wf-color-swatch.selected {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text-3);
+}
+/* The "Default" (null) swatch shows a neutral surface + a slash so it
+   reads as "no accent" rather than a real colour. */
+.wf-color-swatch.wf-color-default {
+  background:
+    linear-gradient(135deg, var(--surface-2) 46%, var(--danger) 46%, var(--danger) 54%, var(--surface-2) 54%);
+}
+.wf-color-swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.wf-tool-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+/* Grouped tool picker (workflows ToolPicker). Sits inside .wf-field and
+   replaces the legacy .wf-tool-grid. Each .wf-tool-cat has a clickable
+   header row (disclosure + master checkbox + N/M count) and an optional
+   body of per-tool checkboxes. Closed groups render only the header so
+   the form stays compact when most categories are at their extremes. */
+.wf-tool-categories {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+.wf-tool-cat {
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+}
+.wf-tool-cat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+.wf-tool-cat-disclose {
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+}
+.wf-tool-cat-disclose:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+/* Master toggle — a button (not a checkbox-in-label) so the click
+   path is unambiguous and the visual state can't be hidden by
+   native-control theming. `data-state` carries none|some|all so CSS
+   can paint the right glyph color without JS. */
+.wf-tool-cat-master {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+}
+.wf-tool-cat-master:hover {
+  background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
+  color: var(--text);
+}
+.wf-tool-cat-master:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.wf-tool-cat-master-glyph { font-size: 14px; line-height: 1; }
+.wf-tool-cat-master[data-state="all"] .wf-tool-cat-master-glyph,
+.wf-tool-cat-master[data-state="some"] .wf-tool-cat-master-glyph {
+  color: var(--accent, #4f9eed);
+}
+.wf-tool-cat-count { font-variant-numeric: tabular-nums; }
+.wf-tool-cat-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-1);
+  padding: 0 var(--space-2) var(--space-2);
+}
+/* Per-tool row — also a button. Name on the left, glyph indicator
+   (☐/☑) on the right. `aria-pressed` + `data-on` carry selection
+   state for assistive tech + the CSS [data-on='true'] selector that
+   paints the glyph in the accent color. */
+.wf-tool-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 4px var(--space-2);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  text-align: left;
+}
+.wf-tool-item:hover {
+  background: color-mix(in srgb, var(--surface-hover) 60%, transparent);
+  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+}
+.wf-tool-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.wf-tool-item[data-on="true"] {
+  background: color-mix(in srgb, var(--accent, #4f9eed) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #4f9eed) 35%, transparent);
+}
+.wf-tool-item-name {
+  color: var(--text);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.wf-tool-item-check {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-2);
+}
+.wf-tool-item[data-on="true"] .wf-tool-item-check {
+  color: var(--accent, #4f9eed);
+}
+
+/* ── SkillsPanel ───────────────────────────────────────────────────────
+ * Procedural-memory inspector opened from the editor header. Mirrors the
+ * frosted-glass treatment used on CardForm so the chrome reads as the
+ * same family. The inner box is a centered card with a header row, an
+ * optional ErrorBar, and either an EmptyState or a table of skills.
+ *
+ * The steps viewer (sub-modal) renders on top of the panel as a second
+ * dialog with its own scrollable <pre>. Sub-modal layering uses higher
+ * z-index than the parent so the focus trap on the inner ConfirmDialog
+ * / steps viewer correctly receives keyboard focus.
+ */
+.skills-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh var(--space-4) var(--space-4);
+  overflow: auto;
+}
+.skills-panel-box {
+  width: min(880px, 100%);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 88vh;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+}
+.skills-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.skills-panel-title {
+  margin: 0;
+  font-size: var(--fs-lg, 16px);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skills-panel-wf {
+  color: var(--text-2);
+  font-weight: 500;
+}
+.skills-panel-close {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid transparent;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.skills-panel-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.skills-panel-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.skills-panel-body {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  overflow: auto;
+  min-height: 0;
+}
+
+/* ── Skills table ── */
+.skills-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.skills-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm, 13px);
+}
+.skills-table thead th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  white-space: nowrap;
+}
+.skills-table tbody td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.skills-table tbody tr:last-child td { border-bottom: none; }
+.skills-table-loading {
+  text-align: center;
+  color: var(--text-2);
+  padding: var(--space-4);
+}
+.skills-col-name { width: 22%; }
+.skills-col-desc { width: auto; }
+.skills-col-num { width: 70px; text-align: right; }
+.skills-col-time { width: 110px; }
+.skills-col-actions { width: 180px; text-align: right; white-space: nowrap; }
+.skills-cell-name {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--fs-sm, 13px);
+  color: var(--text);
+  word-break: break-word;
+}
+.skills-cell-desc { color: var(--text); }
+.skills-cell-desc-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+.skills-cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.skills-cell-time {
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.skills-cell-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+.skills-cell-actions .skills-btn + .skills-btn { margin-left: var(--space-1); }
+.skills-btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px var(--space-2);
+  font-size: var(--fs-xs, 12px);
+  cursor: pointer;
+  font-family: inherit;
+}
+.skills-btn:hover { background: var(--surface-hover); }
+.skills-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.skills-btn-danger {
+  color: var(--danger, #d62828);
+  border-color: color-mix(in srgb, var(--danger, #d62828) 35%, var(--border));
+}
+.skills-btn-danger:hover {
+  background: color-mix(in srgb, var(--danger, #d62828) 12%, transparent);
+}
+
+/* Confirm-dialog body wrapper (the title carries the question; this is
+ * the explanatory line under it). */
+.skills-confirm-body {
+  font-size: var(--fs-sm, 13px);
+  color: var(--text-2);
+  padding: var(--space-2) 0;
+}
+
+/* ── Steps viewer (sub-modal) ── */
+.skills-steps-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 610;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+}
+.skills-steps-box {
+  width: min(760px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.38);
+}
+.skills-steps-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.skills-steps-title {
+  margin: 0;
+  font-size: var(--fs-base, 14px);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skills-steps-pre {
+  background: var(--surface-2);
+  color: var(--text);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  max-height: 60vh;
+  overflow: auto;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: var(--space-3);
+  white-space: pre;
+}

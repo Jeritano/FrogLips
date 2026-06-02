@@ -1,0 +1,98 @@
+[package]
+name = "local-llm-app"
+version = "0.11.1"
+description = "Froglips — local LLM chat, MLX backend"
+authors = ["Joseph D Eritano"]
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "local_llm_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+# `test` feature exposes `tauri::test::mock_app` for unit-testing the
+# WebviewWindow plumbing in lib.rs (multi_window_tests).
+#
+# Verified safe: Cargo unifies features *per-target*, so dev-dep feature flags
+# (here, "test") do NOT propagate into release/runtime builds.
+# `cargo tree --edges normal -e features` shows zero occurrences of
+# `tauri feature "test"` outside the dev-deps subtree, confirming the
+# tray-icon-only feature set is what ships. No `[features] test-utils = …`
+# refactor needed; this comment is the documentation requested by the audit.
+tauri = { version = "2", features = ["tray-icon", "test"] }
+tempfile = "3"
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Used for keychain access without passing secrets via argv (see
+# `settings::keychain_set`). Sec re-review H-2 / M-NEW-2 — the prior
+# `security` CLI invocation exposed the key in argv to any same-uid
+# `ps`-style snoop. security-framework is the native macOS binding.
+security-framework = "3"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt-multi-thread", "macros", "time", "net"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+anyhow = "1"
+dirs = "5"
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+r2d2 = "0.8"
+once_cell = "1"
+parking_lot = "0.12"
+url = "2"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate", "stream", "json"] }
+futures = "0.3"
+base64 = "0.22"
+pdf-extract = "0.7"
+html2text = "0.13"
+sha2 = "0.10"
+notify = "8"
+globset = "0.4"
+scraper = "0.20"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# Native inference — fast in-process LLM on Apple Silicon: mistralrs +
+# candle + Metal. Build with --features native-mistralrs.
+# Pinned to 0.8.1 from crates.io.
+mistralrs-core = { version = "=0.8.1", default-features = false, features = ["metal", "accelerate"], optional = true }
+# Candle-core provides the tensor / device types used by the native backend
+# (mistralrs_backend::candle_device). The full mistralrs feature re-uses the
+# same crate (matched version, no duplicate compile).
+candle-core = { version = "0.10", default-features = false, features = ["metal", "accelerate"] }
+indexmap = { version = "2", optional = true }
+either = { version = "1", optional = true }
+# `serde_yaml` is used by both the native-mistralrs chat-template parser and
+# the (always-on) Claude Skills frontmatter parser. The crate ships with no
+# default features, so a direct dep is cheap and avoids depending on a
+# feature-flag transitive path. Listed once at the top level instead of as
+# `optional = true` so the dep graph stays uniform across feature sets.
+serde_yaml = "0.9"
+
+# Browser automation (alpha) — agent-controlled headless Chrome via CDP.
+# Enabled via the "browser-automation" feature; requires a Chrome/Chromium
+# binary on the user's machine (chromiumoxide does NOT bundle one).
+chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
+futures-util = { version = "0.3", optional = true }
+
+[features]
+default = []
+# Umbrella flag — no-op base. Real backends opt in below.
+native-inference = []
+native-mistralrs = ["native-inference", "dep:mistralrs-core", "dep:indexmap", "dep:either"]
+browser-automation = ["dep:chromiumoxide", "dep:futures-util"]

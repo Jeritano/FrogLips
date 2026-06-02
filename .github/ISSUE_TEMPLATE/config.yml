@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Jeritano/FrogLips/security/advisories/new
+    about: |
+      Do NOT file security issues in the public tracker. Use GitHub's
+      private vulnerability reporting flow. See SECURITY.md for details.
+  - name: Discussion / question
+    url: https://github.com/Jeritano/FrogLips/discussions
+    about: General questions, ideas, or "is this a bug?" before filing.

@@ -1,0 +1,414 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Froglips UI kit styles. Every value resolves to a design token (tokens.css);
+   no raw colors/spacing here. Class names are prefixed `ui-` to namespace the
+   kit away from the legacy per-feature CSS so the two can coexist during the
+   incremental migration.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Button ─────────────────────────────────────────────────────────────── */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: inherit;
+  font-weight: var(--fw-medium);
+  line-height: var(--leading-tight);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+.ui-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ui-btn--block {
+  width: 100%;
+}
+
+/* Sizes */
+.ui-btn--sm {
+  font-size: var(--fs-xs);
+  padding: var(--space-1) var(--space-2);
+}
+.ui-btn--md {
+  font-size: var(--fs-md);
+  padding: var(--space-2) var(--space-3);
+}
+.ui-btn--lg {
+  font-size: var(--fs-base);
+  padding: var(--space-3) var(--space-5);
+}
+
+/* Variants */
+.ui-btn--primary {
+  background: var(--accent);
+  color: #fff;
+}
+.ui-btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+.ui-btn--secondary {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+.ui-btn--secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.ui-btn--subtle {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.ui-btn--subtle:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+.ui-btn--ghost {
+  background: transparent;
+  color: var(--text-2);
+}
+.ui-btn--ghost:hover:not(:disabled) {
+  background: var(--overlay-soft);
+  color: var(--text);
+}
+.ui-btn--danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
+}
+.ui-btn--danger:hover:not(:disabled) {
+  background: var(--danger-bg-strong);
+}
+
+/* ── IconButton ─────────────────────────────────────────────────────────── */
+.ui-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+.ui-icon-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.ui-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ui-icon-btn--sm {
+  width: 22px;
+  height: 22px;
+}
+.ui-icon-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+}
+.ui-icon-btn--ghost:hover:not(:disabled) {
+  background: var(--overlay-soft);
+}
+
+/* ── Input / Textarea ───────────────────────────────────────────────────── */
+.ui-input {
+  width: 100%;
+  font-family: inherit;
+  font-size: var(--fs-base);
+  line-height: var(--leading-normal);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  transition: border-color var(--dur-fast) var(--ease-standard);
+}
+.ui-input::placeholder {
+  color: var(--text-3);
+}
+.ui-input:focus {
+  border-color: var(--accent);
+}
+.ui-input--invalid {
+  border-color: var(--danger-border);
+}
+.ui-textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+
+/* ── Badge ──────────────────────────────────────────────────────────────── */
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  padding: 3px var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+}
+.ui-badge--neutral {
+  background: var(--surface-2);
+  color: var(--text-2);
+  border-color: var(--border);
+}
+.ui-badge--accent {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.ui-badge--success {
+  background: var(--green-bg);
+  color: var(--green-fg);
+}
+.ui-badge--warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.ui-badge--danger {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+/* ── Card ───────────────────────────────────────────────────────────────── */
+.ui-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+.ui-card--flat {
+  box-shadow: none;
+}
+.ui-card--elev-1 {
+  box-shadow: var(--elev-1);
+}
+.ui-card--elev-2 {
+  box-shadow: var(--elev-2);
+}
+.ui-card--elev-3 {
+  box-shadow: var(--elev-3);
+}
+
+/* ── Spinner / Kbd ──────────────────────────────────────────────────────── */
+.ui-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--spinner-track);
+  border-top-color: var(--accent);
+  border-radius: var(--radius-full);
+  animation: ui-spin var(--dur-slow) linear infinite;
+}
+.ui-spinner--md {
+  width: 20px;
+  height: 20px;
+}
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ui-kbd {
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+
+/* ── Dialog (Radix) ─────────────────────────────────────────────────────── */
+.ui-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: var(--z-modal);
+  animation: ui-fade-in var(--dur-fast) var(--ease-out);
+}
+.ui-dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(92vw, 440px);
+  max-height: 85vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-4);
+  padding: var(--space-5);
+  z-index: var(--z-modal);
+  animation: ui-pop-in var(--dur-base) var(--ease-out);
+}
+.ui-dialog-content--destructive .ui-dialog-title {
+  color: var(--danger-fg);
+}
+.ui-dialog-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.ui-dialog-desc {
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-md);
+  line-height: var(--leading-normal);
+  color: var(--text-2);
+}
+.ui-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+
+/* ── Tooltip (Radix) ────────────────────────────────────────────────────── */
+.ui-tooltip {
+  font-size: var(--fs-xs);
+  line-height: var(--leading-snug);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  box-shadow: var(--elev-2);
+  max-width: 260px;
+  z-index: var(--z-popover);
+  animation: ui-fade-in var(--dur-fast) var(--ease-out);
+}
+.ui-tooltip-arrow {
+  fill: var(--surface-2);
+}
+
+/* ── DropdownMenu (Radix) ───────────────────────────────────────────────── */
+.ui-menu-content {
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--elev-3);
+  padding: var(--space-1);
+  z-index: var(--z-popover);
+  animation: ui-fade-in var(--dur-fast) var(--ease-out);
+}
+.ui-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-md);
+  color: var(--text);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+.ui-menu-item[data-highlighted] {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.ui-menu-item--danger {
+  color: var(--danger-fg);
+}
+.ui-menu-item--danger[data-highlighted] {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+.ui-menu-separator {
+  height: 1px;
+  background: var(--border);
+  margin: var(--space-1) 0;
+}
+
+/* ── Tabs (Radix) ───────────────────────────────────────────────────────── */
+.ui-tabs-list {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+.ui-tabs-trigger {
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+.ui-tabs-trigger:hover {
+  color: var(--text);
+}
+.ui-tabs-trigger[data-state="active"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.ui-tabs-content {
+  padding-top: var(--space-4);
+}
+
+/* ── Switch (Radix) ─────────────────────────────────────────────────────── */
+.ui-switch {
+  all: unset;
+  width: 36px;
+  height: 20px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  position: relative;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+.ui-switch[data-state="checked"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.ui-switch-thumb {
+  display: block;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: var(--radius-full);
+  transform: translateX(3px);
+  transition: transform var(--dur-fast) var(--ease-out);
+  will-change: transform;
+}
+.ui-switch[data-state="checked"] .ui-switch-thumb {
+  transform: translateX(18px);
+}
+
+/* ── Shared keyframes ───────────────────────────────────────────────────── */
+@keyframes ui-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ui-pop-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}

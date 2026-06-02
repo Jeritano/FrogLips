@@ -1,0 +1,120 @@
+# Froglips
+
+![Froglips](assets/banner.png)
+
+**Froglips — the local-LLM power workstation.** A native macOS app that turns a model running entirely on your own machine into a real working environment. Plain chat is the substrate; the product is built on four pillars:
+
+- **Agent** — a tool-calling loop with filesystem/shell/web/code/task tools, MCP servers, an optional workspace sandbox, dry-run mode, and risk-classified confirmation.
+- **Workflows** — an agent-orchestration canvas: place agent cards on a table-top, wire them into a chain, hand output→input between them, and run (or schedule) multi-agent pipelines.
+- **Knowledge** — vector-recall memory, project RAG, and a searchable, taggable conversation history.
+- **Models** — manage a fleet of local models, with per-conversation parameters and a live context-usage meter.
+
+Froglips ships its own **native backend** — an in-process engine (`mistralrs` + candle + Metal) that runs models directly on Apple Silicon with zero install — alongside agent mode, agent-orchestration workflows, vector-recall memory, and signed auto-updates.
+
+![version](https://img.shields.io/badge/version-0.11.1-22c55e) ![platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-blue) ![stack](https://img.shields.io/badge/stack-Tauri%202%20%C2%B7%20React%2019%20%C2%B7%20Rust-orange)
+
+## What it does
+
+- Native desktop app (Tauri 2 + React 19 + Rust) — no Electron, ~66 MB binary
+- **Built-in native backend**: an in-process engine (`mistralrs` + candle + Metal) that runs models directly on your hardware — no subprocess, no daemon, zero install
+- Conversation history in SQLite with WAL + connection pooling, a numbered `user_version` migration ladder, and DB-corruption recovery (integrity-check + quarantine on startup)
+- **Markdown rendering** w/ syntax highlighting via `marked` + `highlight.js` (20+ languages). DOMPurify-sanitized.
+- **Light + dark themes**, ☀/☾ toggle in sidebar, persisted; reduced-motion support
+- **Conversation organization**: pin, tag, and message-content search (not just titles); pinned conversations sort first; auto-titling from the first message; **Markdown export** per conversation; undo toast for conversation delete
+- **Memory system**: vector recall (`nomic-embed-text`), automatic fact extraction, dedup at 0.85 cosine, Unicode injection sanitization
+- **Agent mode**: tool-calling loop — filesystem (`read_file`/`list_dir`/`search_files` literal+regex/`file_exists`/`edit_file`/`multi_edit`/`write_file`), shell (`run_shell` + `applescript_run`), full git (`status`/`diff`/`log`/`show`/`branches`/`commit`), web (`web_fetch` + `web_search` + `http_request`, all SSRF-guarded), code intel (`find_definition`/`find_references`/`format_code`), macOS (`screenshot`/`clipboard_get`+`set`/`open_app`/`show_notification`), docs (`read_pdf`), background tasks (`task_create`/`status`/`list`/`cancel`), and recursive `spawn_subagent` + `ask_user` for human-in-the-loop. Sandboxed by optional workspace root, structured errors, untrusted-content injection scanning, an agent-loop context-window manager (budgets messages so small-context models don't overflow), a consecutive-error budget, per-call confirmation w/ destructive-pattern badges, and risk-classified MCP tools that always require confirmation.
+- **Roundtable**: multi-model conversations — several models (local or cloud) take turns on a shared transcript with a director/moderator, round-robin turn control, per-turn budget ($) and time caps, recent+summary memory, and graceful per-turn failure handling. The run state is lifted to App level so it survives view navigation.
+- **Agent presets**: General / Coder / Researcher / Shell — selectable per turn
+- **Workflows**: an agent-orchestration canvas — a corner card deck and a table-top where you create agent cards, wire them into a left→right chain, hand each card's output to the next as input, run the whole pipeline or a single card, and schedule unattended runs. Each card carries its own model, role/preset, **optional custom system prompt** (overrides the preset's role for that card only), prompt, tool allowlist, and schedule. The **Run workflow / Stop** button lives in the global top-bar next to the theme toggle; per-card status renders in the right-hand status panel. Approval is unified to a single per-card **Unattended** checkbox — when ticked the card blanket-bypasses confirmation for its own tool calls; when not, every dangerous tool call surfaces the same confirm modal as chat agent mode. There is no separate session-level toggle. Click any edge to disconnect (confirmation prompted). Scheduled runs refuse `run_shell`, `applescript_run`, `delete_path`, `kill_process`, `agent_undo`, `http_request`, `spawn_subagent`, and all MCP tools by design.
+- **MCP servers (Tools)**: a management hub to browse MCP servers from public registries (the official `registry.modelcontextprotocol.io` + PulseMCP), install **stdio** servers (`npx`/`uvx`) or add **remote** streamable-HTTP endpoints (bearer token in Keychain, SSRF-guarded + DNS-pinned), and view/start/stop/remove them. Connected servers' tools become available to the agent (always confirmation-gated, refused on unattended scheduled runs).
+- **About You**: a local user profile (name, occupation, preferences, response style) injected into every chat so the model knows who it is talking to — stored on-device, never auto-populated. (Workflows intentionally skip the profile injection — agents there are task-focused and some models were observed picking the profile's name as a literal filename.)
+- **Per-conversation model parameters**: temperature / top-p / max-tokens / system-prompt overrides, with a live context-usage meter by the composer
+- **Auto-continue**: when a conversation crosses ~85% of the active model's context window, a banner above the composer summarizes the prior turns via the same backend and forks the chat into a fresh "Continued: …" conversation seeded with that summary — the original thread stays intact
+- **Tool-history slide-out panel** for debugging agent runs (⌖ Tools button)
+- **Data backup**: online SQLite backup, versioned JSON export (conversations + messages + memory), and additive import
+- **Diagnostics**: local crash logging (`~/.local-llm-app/crash.log`), a rolling `app.log`, a crash-log viewer, and an export-diagnostics-bundle command — all on-disk, no telemetry
+- **Model library**: live HuggingFace search, inline pull/delete, dedicated *Installed* tab w/ sizes + total disk usage
+- **Auto-updater**: signed minisign releases via GitHub Releases
+- **Keyboard shortcuts**: Cmd+N (new chat), Cmd+L (model library), Cmd+K (focus picker)
+- macOS-native bits: tray icon, file drag-drop, voice input, `open -a` shell
+
+## Quick start
+
+1. Go to the [latest release](https://github.com/Jeritano/FrogLips/releases/latest)
+2. Download `Froglips_X.Y.Z_aarch64.dmg`
+3. Open the DMG, drag `Froglips.app` into `/Applications`, eject the DMG
+4. **First-launch warning:** macOS will refuse to open the app because it's not notarized.
+   - Right-click `/Applications/Froglips.app` → **Open** → click **Open** in the dialog
+   - Or strip Gatekeeper quarantine in one line:
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/Froglips.app
+     ```
+5. Open Froglips → model dropdown → **⚡ Load a HuggingFace model natively…** → enter a small repo id like `NousResearch/Llama-3.2-1B` → **Start**
+
+That's it. No daemon, no Python, no separate downloads — Froglips's native backend runs the model in-process via embedded Metal kernels. First model load pulls weights from HuggingFace into `~/.cache/huggingface/hub`; subsequent loads are instant.
+
+See [User Guide](docs/USER_GUIDE.md) for full walkthrough.
+
+## Requirements
+
+### Runtime (end user)
+- Apple Silicon Mac (M1+)
+- **Zero install.** Froglips's native backend loads models directly via embedded mistralrs + Metal kernels. HuggingFace model weights download on demand into `~/.cache/huggingface/hub`.
+
+### Build (developer)
+- Full **Xcode** (from App Store, not just Command Line Tools — `mistralrs` needs the `metal` compiler)
+- `sudo xcodebuild -runFirstLaunch && xcodebuild -downloadComponent MetalToolchain`
+- Node 22+, Rust stable
+
+## Development
+
+```bash
+npm install
+npm run tauri dev   # HMR for frontend, Tauri restart for Rust
+```
+
+Skip native inference for faster iteration:
+
+```bash
+FROGLIPS_SKIP_NATIVE=1 npm run tauri dev
+```
+
+## Build a release
+
+```bash
+npm run release     # kills running app, builds, signs, installs to /Applications
+```
+
+Then upload `src-tauri/target/release/bundle/macos/Froglips.app.tar.gz{,.sig}` and the DMG to a new GitHub Release. See [Release Process](docs/RELEASE_PROCESS.md).
+
+## Documentation
+
+- [User Guide](docs/USER_GUIDE.md) — getting started, every feature explained
+- [Architecture](docs/ARCHITECTURE.md) — how the pieces fit together
+- [Agent Layer](docs/AGENT_LAYER.md) — tools, security, sandboxing, presets
+- [Release Process](docs/RELEASE_PROCESS.md) — versioning, signing, publishing
+- [Architecture Decision Records](docs/adr/) — permanent record of architectural choices (Tauri 2 stack, macOS-only, local-only no telemetry, MCP-as-extension-story, etc.)
+
+## Contributing
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) and the relevant ADR(s) before opening a PR.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, `docs:`) so [release-please](https://github.com/googleapis/release-please) can draft the next release automatically.
+- Security issues: do NOT file in the public tracker. Use GitHub's private vulnerability reporting flow — see [SECURITY.md](SECURITY.md).
+
+## Data locations
+
+| What | Where |
+|---|---|
+| App settings (workspace root) | `~/Library/Application Support/Froglips/settings.json` |
+| Conversation + memory DB | Tauri app data dir |
+| Model weights | `~/.cache/huggingface/hub/` |
+| Updater private key (DO NOT COMMIT) | `~/.tauri/froglips.key` |
+
+## License
+
+MIT License — Copyright (c) 2026 Joseph D Eritano.
+
+Open source. You may use, modify, and distribute Froglips freely; the only
+condition is that the copyright notice and license text are kept in copies.
+See [LICENSE](LICENSE) for the full terms. Bundled third-party dependencies
+remain under their own respective licenses.

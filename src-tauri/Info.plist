@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Froglips uses the microphone for voice-to-text dictation in chat.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Froglips uses speech recognition to convert dictated audio into text.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Froglips agents read and write to your Desktop when you ask them to — for example saving a generated report or reading a file you mentioned.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Froglips agents read and write to your Documents folder when you ask them to — for example saving a generated report or reading a file you mentioned.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Froglips agents read and write to your Downloads folder when you ask them to — for example reading a file you just downloaded.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>Froglips agents read and write to external drives when you ask them to.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>Froglips agents read and write to network volumes when you ask them to.</string>
+</dict>
+</plist>

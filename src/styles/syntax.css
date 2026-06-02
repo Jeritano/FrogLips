@@ -1,0 +1,143 @@
+/* ── Syntax highlighting (highlight.js token colors) ──────────────────────
+ *
+ * Theme-aware replacement for the old hardcoded `github-dark.css` import,
+ * whose dark-only palette rendered as faint pastels on the light app theme
+ * (washed out, hard to read — user report 2026-05-29).
+ *
+ * Colors are driven by `--hl-*` custom properties so they adapt to BOTH the
+ * app theme (dark / light, via `:root[data-theme]`) AND a user-selected
+ * syntax palette (`:root[data-syntax-theme]`). The palette chooser lives in
+ * Settings → Agent panel; it writes `documentElement.dataset.syntaxTheme`
+ * and persists to localStorage.
+ *
+ * Default (no/`auto` palette): GitHub-style colors tuned for contrast on the
+ * code block background (`--surface`) in each theme.
+ */
+
+:root {
+  /* Dark theme defaults (readable on the dark --surface). */
+  --hl-text: #e6edf3;
+  --hl-comment: #8b949e;
+  --hl-keyword: #ff7b72;
+  --hl-string: #a5d6ff;
+  --hl-number: #79c0ff;
+  --hl-title: #d2a8ff;
+  --hl-type: #ffa657;
+  --hl-meta: #8b949e;
+  --hl-variable: #ffa657;
+}
+
+:root[data-theme="light"] {
+  /* Light theme: dark, saturated tokens on the near-white --surface. */
+  --hl-text: #1f2328;
+  --hl-comment: #6e7781;
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-number: #0550ae;
+  --hl-title: #8250df;
+  --hl-type: #953800;
+  --hl-meta: #6e7781;
+  --hl-variable: #953800;
+}
+
+/* ── Palette: Vivid (high-saturation, bolder separation) ── */
+:root[data-syntax-theme="vivid"] {
+  --hl-text: #f0f0f0;
+  --hl-comment: #7c8694;
+  --hl-keyword: #ff5d8f;
+  --hl-string: #8ce99a;
+  --hl-number: #ffd43b;
+  --hl-title: #74c0fc;
+  --hl-type: #ffa94d;
+  --hl-meta: #7c8694;
+  --hl-variable: #ffa94d;
+}
+:root[data-theme="light"][data-syntax-theme="vivid"] {
+  --hl-text: #1a1a1a;
+  --hl-comment: #768390;
+  --hl-keyword: #d6336c;
+  --hl-string: #2b8a3e;
+  --hl-number: #e67700;
+  --hl-title: #1971c2;
+  --hl-type: #d9480f;
+  --hl-meta: #768390;
+  --hl-variable: #d9480f;
+}
+
+/* ── Palette: Mono (grayscale; weight + a single accent carry meaning) ── */
+:root[data-syntax-theme="mono"] {
+  --hl-text: #d4d4d4;
+  --hl-comment: #6a6a6a;
+  --hl-keyword: #ffffff;
+  --hl-string: #b0b0b0;
+  --hl-number: #b0b0b0;
+  --hl-title: #ffffff;
+  --hl-type: #c8c8c8;
+  --hl-meta: #6a6a6a;
+  --hl-variable: #c8c8c8;
+}
+:root[data-theme="light"][data-syntax-theme="mono"] {
+  --hl-text: #24292f;
+  --hl-comment: #8a8a8a;
+  --hl-keyword: #000000;
+  --hl-string: #4a4a4a;
+  --hl-number: #4a4a4a;
+  --hl-title: #000000;
+  --hl-type: #2a2a2a;
+  --hl-meta: #8a8a8a;
+  --hl-variable: #2a2a2a;
+}
+
+/* `mono` leans on weight to distinguish keywords/titles since hues collapse. */
+:root[data-syntax-theme="mono"] .hljs-keyword,
+:root[data-syntax-theme="mono"] .hljs-title,
+:root[data-syntax-theme="mono"] .hljs-title.function_,
+:root[data-syntax-theme="mono"] .hljs-section {
+  font-weight: 600;
+}
+
+/* ── Token → var mapping (highlight.js class names) ── */
+.hljs { color: var(--hl-text); background: transparent; }
+
+.hljs-comment,
+.hljs-quote { color: var(--hl-comment); font-style: italic; }
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-name { color: var(--hl-keyword); }
+
+.hljs-string,
+.hljs-attr,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition,
+.hljs-regexp { color: var(--hl-string); }
+
+.hljs-number,
+.hljs-meta .hljs-number { color: var(--hl-number); }
+
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.function_,
+.hljs-section,
+.hljs-selector-id,
+.hljs-selector-class { color: var(--hl-title); }
+
+.hljs-built_in,
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-tag { color: var(--hl-type); }
+
+.hljs-meta,
+.hljs-comment.hljs-meta { color: var(--hl-meta); }
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params,
+.hljs-attribute { color: var(--hl-variable); }
+
+.hljs-deletion { color: var(--hl-keyword); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }

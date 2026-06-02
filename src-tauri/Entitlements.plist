@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Microphone entitlement is required: src/components/ChatInput.tsx exposes a
+  voice-dictation toggle that calls webkitSpeechRecognition inside WKWebView.
+  On macOS that path goes through the system Speech framework, which the OS
+  gates on this entitlement (paired with NSMicrophoneUsageDescription /
+  NSSpeechRecognitionUsageDescription in Info.plist). If voice dictation is
+  ever removed from the app, drop this key — and also strip the usage
+  descriptions from Info.plist so the App Store / notarization checks don't
+  flag an unused privacy-sensitive declaration.
+
+  Network client is required for: Hugging Face / ModelScope model browsing,
+  Ollama HTTP, and the auto-updater fetch.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.microphone</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

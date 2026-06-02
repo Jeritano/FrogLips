@@ -1,0 +1,231 @@
+name: Release builds
+
+# Builds + publishes the macOS (Apple Silicon) binary on tag push.
+# Froglips is a native macOS app — `native-mistralrs` (mistralrs + candle +
+# Metal) is the only backend, so there is a single build target.
+#
+# The build job signs the bundle (via TAURI_SIGNING_PRIVATE_KEY), uploads the
+# artifacts, then `publish` assembles the updater `latest.json` manifest and
+# attaches everything to the GitHub release.
+#
+# The local dev path (`scripts/release.sh`) produces the same artifact shape
+# (DMG + .app.tar.gz + .sig), so either path can ship a release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Two simultaneous tag pushes (e.g. an accidental re-push, or a fast retag)
+# would race on `gh release upload --clobber` and could leave the release with
+# a half-updated asset set. Serialize per-ref. We do *not* cancel in-progress
+# runs — finishing the active release safely is more important than the
+# latency win from preemption.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    # Build job only emits workflow artifacts via actions/upload-artifact,
+    # which uses an internal API and does not need `contents: write`.
+    # Maturity review C2: tightened from contents:write to read-only so a
+    # compromised step in this job cannot push to the repo.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: aarch64-apple-darwin-native-mistralrs
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Build Tauri app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npm run tauri build -- --features native-mistralrs --target aarch64-apple-darwin
+
+      - name: Collect bundle artifacts
+        shell: bash
+        run: |
+          set -e
+          DEST="dist-artifacts"
+          mkdir -p "$DEST"
+          BASE="src-tauri/target/aarch64-apple-darwin/release/bundle"
+          [ -d "$BASE" ] || BASE="src-tauri/target/release/bundle"
+          echo "Scanning $BASE"
+          find "$BASE" -maxdepth 4 -type f \( \
+            -name '*.dmg' -o \
+            -name '*.app.tar.gz' -o \
+            -name '*.app.tar.gz.sig' \
+          \) -print -exec cp {} "$DEST/" \;
+          ls -la "$DEST"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: froglips-aarch64-apple-darwin
+          path: dist-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Flatten artifacts
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find all-artifacts -type f -exec cp {} release-assets/ \;
+          ls -la release-assets
+
+      # Updater manifest — macOS Apple Silicon only (darwin-aarch64).
+      - name: Build latest.json
+        shell: bash
+        run: |
+          set -e
+          VERSION="${GITHUB_REF##*/v}"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          REPO="${{ github.repository }}"
+          BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
+
+          find_one() {
+            find release-assets -maxdepth 1 -type f -name "$1" | head -n1
+          }
+          MAC_ARM=$(find_one '*aarch64*.app.tar.gz')
+          MAC_ARM_SIG=$(find_one '*aarch64*.app.tar.gz.sig')
+
+          # Fail loudly instead of publishing a manifest with an empty
+          # `platforms` map. A missing signature here almost always means the
+          # build job ran without TAURI_SIGNING_PRIVATE_KEY — shipping the
+          # resulting latest.json would silently break the in-app updater for
+          # everyone on the previous version.
+          if [ -z "$MAC_ARM" ] || [ ! -s "$MAC_ARM" ] || [ -z "$MAC_ARM_SIG" ] || [ ! -s "$MAC_ARM_SIG" ]; then
+            echo "::error::missing signed mac-arm64 artifact"
+            exit 1
+          fi
+
+          export VERSION PUB_DATE BASE_URL MAC_ARM MAC_ARM_SIG
+
+          python3 <<'PY' > release-assets/latest.json
+          import json, os
+          base = os.environ["BASE_URL"]
+          p = os.environ.get("MAC_ARM", "")
+          s = os.environ.get("MAC_ARM_SIG", "")
+          plats = {}
+          if p and s and os.path.isfile(s):
+              plats["darwin-aarch64"] = {
+                  "signature": open(s).read().strip(),
+                  "url": f"{base}/{os.path.basename(p)}",
+              }
+          print(json.dumps({
+              "version": os.environ["VERSION"],
+              "notes": "See release notes on GitHub.",
+              "pub_date": os.environ["PUB_DATE"],
+              "platforms": plats,
+          }, indent=2))
+          PY
+          echo "--- latest.json ---"
+          cat release-assets/latest.json
+
+      # Integrity manifest: a single SHA256SUMS covering every release asset
+      # so a manual download can be verified with `sha256sum -c SHA256SUMS`.
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -e
+          cd release-assets
+          : > SHA256SUMS
+          for f in *; do
+            [ "$f" = "SHA256SUMS" ] && continue
+            [ "$f" = "latest.json" ] && continue
+            [ -f "$f" ] || continue
+            sha256sum "$f" >> SHA256SUMS
+          done
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      # Sign the integrity manifest with the same minisign key Tauri uses for
+      # updater signatures. Without this, an attacker with repo-write access
+      # could swap a DMG and rewrite SHA256SUMS undetected — the hash file is
+      # only as trustworthy as its source. The .minisig file ships alongside
+      # SHA256SUMS so downloaders can verify with the published pubkey.
+      #
+      # minisign reads the secret key from a file, not stdin, so we write it
+      # to a tempfile under $RUNNER_TEMP, sign, then shred+delete. The key
+      # never lands on disk in the workspace.
+      - name: Sign SHA256SUMS
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY missing — cannot sign SHA256SUMS"
+            exit 1
+          fi
+          # Install minisign (ubuntu-latest runner)
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+
+          KEYFILE="$(mktemp "${RUNNER_TEMP:-/tmp}/froglips-signing-key.XXXXXX")"
+          # The Tauri secret is the raw minisign secret-key file contents.
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$KEYFILE"
+          chmod 600 "$KEYFILE"
+
+          cleanup() {
+            if [ -f "$KEYFILE" ]; then
+              shred -u "$KEYFILE" 2>/dev/null || rm -f "$KEYFILE"
+            fi
+          }
+          trap cleanup EXIT
+
+          cd release-assets
+          # -W disables password prompt; the key uses a password supplied via
+          # MINISIGN_PASSWORD env if set, else assumes empty password.
+          export MINISIGN_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+          # Use printf to feed the password (minisign reads from /dev/tty by
+          # default; piping stdin works for non-interactive runs).
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$KEYFILE" -m SHA256SUMS
+          ls -la SHA256SUMS SHA256SUMS.minisig
+          echo "--- SHA256SUMS.minisig ---"
+          cat SHA256SUMS.minisig
+
+      - name: Attach artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF##*/}"
+          gh release upload "$TAG" release-assets/* --clobber --repo "${{ github.repository }}"

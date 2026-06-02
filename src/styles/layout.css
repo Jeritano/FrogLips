@@ -1,0 +1,880 @@
+.sidebar-top {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  /* Drag strip at the sidebar's top edge. The hamburger it contains is
+     position:fixed (see .topbar-hamburger), so this row's main job is
+     to provide a -webkit-app-region drag surface AND reserve enough
+     vertical space below the traffic lights for the absolutely-
+     positioned .view-tabs segmented control to sit at top: 38px without
+     the conv-search block (centered via flex spacers below) creeping
+     underneath. ~74px = 38 (tabs y-offset) + 32 (tabs height) + 4
+     (visual breathing). */
+  padding: 12px 0 0 64px;
+  min-height: 74px;
+  -webkit-app-region: drag;
+  position: relative;
+}
+.sidebar-top button,
+.sidebar-top a,
+.sidebar-top input,
+.sidebar-top select,
+.sidebar-top .topbar-menu-wrap,
+.sidebar-top .topbar-menu {
+  -webkit-app-region: no-drag;
+}
+/* Header no longer drag-capable — the data-tauri-drag-region attribute
+   on the parent was eating mousedown events on the model-picker <select>.
+   Window dragging from the top of the main pane is handled by the
+   fixed .window-drag-strip (top 28 px of the window). */
+.topbar-btn.topbar-hamburger {
+  /* Stretch to the row height (== .new-chat height) and keep a square
+     footprint by matching aspect-ratio. Borderless ghost icon button
+     so it doesn't compete visually with the bordered + New chat chip
+     next to it. Double-class selector bumps specificity over the
+     bare `.topbar-btn` border rule defined later in this file. */
+  align-self: stretch;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  border-radius: var(--radius-sm);
+}
+.topbar-btn.topbar-hamburger:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.topbar-btn.topbar-hamburger {
+  position: fixed;
+  top: 19px;
+  left: 82px;
+  width: 28px;
+  height: 28px;
+  align-self: auto;
+  /* Chrome band: above page content but BELOW modal overlays
+     (z 100-200) so an open Model Library / Appearance / etc. dialog
+     covers the hamburger instead of it floating on top. Was 10000,
+     which beat every modal (2026-05-29 fix). */
+  z-index: 60;
+  -webkit-app-region: no-drag;
+}
+/* In macOS native fullscreen the traffic lights are hidden, so the
+   hamburger slides left into the freed corner. JS toggles
+   data-fullscreen on <html> via the Tauri window onResized event. */
+:root[data-fullscreen="true"] .topbar-btn.topbar-hamburger {
+  left: 12px;
+}
+/* Sidebar collapse/expand toggle — fixed in the title-bar strip, just
+   right of the hamburger. position:fixed so it survives the sidebar
+   grid track shrinking to 0 when collapsed. */
+.topbar-btn.topbar-collapse {
+  position: fixed;
+  top: 19px;
+  left: 116px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  border-radius: var(--radius-sm);
+  /* Below modal overlays (--z-modal) so it can't float over an open modal. */
+  z-index: var(--z-popover);
+  -webkit-app-region: no-drag;
+}
+.topbar-btn.topbar-collapse:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+:root[data-fullscreen="true"] .topbar-btn.topbar-collapse {
+  left: 46px;
+}
+.theme-toggle {
+  width: 32px;
+  height: 32px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.theme-toggle:hover { background: var(--surface-hover); color: var(--text); }
+
+/* Flex spacers above + below the conv search/list block sandwich it at
+   the vertical midpoint of the sidebar column. Both grow equally so the
+   block sits in the middle regardless of how tall the conv list is. */
+.sidebar-spacer-top,
+.sidebar-spacer-bottom {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.conv-search {
+  margin: 6px 0;
+  padding: 6px 10px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.conv-search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.tool-history-overlay {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: 420px;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -8px 0 24px rgba(0,0,0,0.3);
+}
+.tool-history-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.tool-history-title { font-weight: 600; font-size: 14px; }
+.tool-history-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+}
+.tool-history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+.tool-history-item {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.tool-history-call-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.tool-history-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.tool-history-status {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.tool-history-status.ok { background: var(--green-bg); color: var(--green); }
+.tool-history-status.err { background: rgba(239,68,68,0.15); color: var(--danger); }
+.tool-history-args, .tool-history-result {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 2px 0;
+}
+.tool-history-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 40px 20px;
+  font-size: 13px;
+}
+.tool-history-toggle {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.tool-history-toggle:hover { background: var(--surface-hover); color: var(--text); }
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  /* Lock out document-level scroll — a fresh load was scrolling the
+     body down a few px, hiding .app's top padding (the top-gap bug). */
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Layout ── */
+
+.app {
+  display: grid;
+  /* Sidebar narrowed by 45px total (was 248–260, now 203–215) — extra
+     horizontal room for the main pane content. */
+  grid-template-columns: minmax(203px, 215px) 1fr;
+  /* height:100% (not 100vh) — in the macOS Overlay webview 100vh is
+     ~44px taller than the real window, which made .app overflow and
+     the body scroll, pushing the panel top off-screen. 100% chains
+     html→body→#root→.app to the exact window height. */
+  height: 100%;
+  overflow: hidden;
+  /* Uniform 12px gap on all 4 sides. */
+  padding: 12px;
+  gap: 12px;
+  background: var(--bg);
+  box-sizing: border-box;
+}
+/* Collapsed sidebar — the grid track shrinks to 0 and the panel border
+   is dropped. The hamburger + collapse buttons are position:fixed, so
+   they stay visible to expand the sidebar again. */
+.app[data-sidebar-collapsed="true"] {
+  grid-template-columns: 0 1fr;
+  gap: 0;
+}
+
+/* ── Stacked view-nav buttons (top of the sidebar) ────────────────────── */
+.view-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.view-nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.view-nav-btn:hover {
+  background: var(--surface-hover, var(--surface));
+  color: var(--text);
+}
+.view-nav-btn.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.view-nav-icon {
+  font-size: 15px;
+  line-height: 1;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.view-nav-label {
+  flex: 1;
+  min-width: 0;
+}
+.view-nav-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+}
+.app[data-sidebar-collapsed="true"] > .sidebar {
+  border: 0;
+  overflow: hidden;
+}
+/* Collapsed: the main pane goes full-width, so its header would slide
+   under the traffic lights + hamburger + collapse button (cluster ends
+   ~x=144). Shift the header content right to clear them. */
+.app[data-sidebar-collapsed="true"] header {
+  padding-left: 143px;
+}
+/* Fullscreen hides the traffic lights and slides the two buttons left
+   (hamburger 12, collapse 46 → cluster ends ~x=74), so less offset. */
+:root[data-fullscreen="true"] .app[data-sidebar-collapsed="true"] header {
+  padding-left: 73px;
+}
+/* Platform-specific top inset for the Overlay titlebar treatment. */
+:root[data-platform="win"] .app,
+:root[data-platform="linux"] .app,
+:root[data-platform="other"] .app {
+  padding-top: 6px;
+}
+:root[data-platform="win"] .window-drag-strip,
+:root[data-platform="linux"] .window-drag-strip,
+:root[data-platform="other"] .window-drag-strip {
+  /* Drag strip is a no-op outside macOS — Overlay titlebar is mac-only. */
+  display: none;
+}
+:root[data-platform="win"] .sidebar-top,
+:root[data-platform="linux"] .sidebar-top,
+:root[data-platform="other"] .sidebar-top {
+  /* Drop the top padding that was reserved for the macOS traffic lights. */
+  padding-top: 6px;
+}
+
+/* Always-on drag handle across the top of the window. Sits ABOVE the
+   sidebar / main content visually (high z-index) but only at the very
+   top so it doesn't block interaction with the real UI below. macOS
+   only — on win/linux this is a no-op zone. */
+.window-drag-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  /* Chrome band (see hamburger note). Above content, below modals — a
+     modal overlay should cover the drag strip, not sit under it. Was
+     9999. */
+  z-index: 60;
+  -webkit-app-region: drag;
+  /* Don't intercept clicks on traffic lights — macOS layers them above
+     this. We DO want pointer events for the drag itself, so leave
+     pointer-events default. */
+}
+
+.app > .sidebar,
+.app > .main {
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface);
+  overflow: hidden;
+}
+.app > .sidebar { border-right: 1px solid var(--border-subtle); }
+.app > .main {
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  /* No top border on the main pane — the 1 px was pushing the model
+     picker BOX top below the macOS traffic-light tops. */
+  border-top: 0;
+}
+
+/* ── Sidebar actions stack (Dashboard then Menu, above search) ── */
+.sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+.sidebar-actions .topbar-btn { justify-content: center; width: 100%; }
+.sidebar-actions .topbar-menu-wrap { display: block; }
+.sidebar-actions .topbar-menu-wrap > .topbar-btn { width: 100%; }
+
+/* Theme toggle pinned to far right of the model picker bar. */
+.topbar-theme { margin-left: auto; }
+
+/* Portal target for view-specific top-bar controls. WorkflowsPage renders
+   its picker title / editor controls here so the chrome height stays at
+   parity with chat's ModelPicker (one row, 10px+content+10px padding).
+   Filling the row with flex:1 lets `.topbar-theme { margin-left: auto }`
+   keep the theme toggle pinned right. */
+.topbar-slot {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Tighten action buttons rendered in the top-bar (e.g. "+ New workflow")
+   so they line up vertically with the title + the rest of the header
+   chrome instead of pushing the row taller. */
+.topbar-action {
+  padding: 4px 10px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* UI review U-C2: per-view title that fills the header on non-chat views
+   so the user always knows where they are. Sized to sit at parity with
+   the ModelPicker (Chat's header) so the chrome height is constant. */
+.topbar-view-title {
+  /* UI re-review M2: was 14px/600 — header chrome grew 1-2px taller on
+     non-chat views. ModelPicker controls in chat are 13px so match. */
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+  padding: 0 8px;
+  line-height: 1;
+}
+
+/* UI redesign 2026-05-28: Claude-style segmented control replacing the
+   three stacked emoji-prefixed sidebar entries. Anchored to the very
+   top of the sidebar column, ~6px below the macOS traffic-light row
+   (lights occupy roughly 12-32px from window top; 38px keeps a 6px
+   gap). `position: absolute` so the segmented control sits in the top
+   chrome zone without contributing to the flex flow that centers the
+   conv-search block in the column below. */
+.view-tabs {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2px;
+  gap: 2px;
+  background: var(--surface);
+  position: absolute;
+  top: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 16px);
+  z-index: var(--z-popover);
+  /* Pulled out of the document flow above, so the menu-icon-style
+     buttons that hang at `top: 19px` (hamburger, collapse) sit cleanly
+     above the segmented control without overlap. */
+}
+.view-tab {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  border-radius: var(--radius-sm);
+  position: relative;
+  transition: background 0.1s, color 0.1s;
+  /* Inline-flex so per-tab badges (running dot, activity pulse) sit on
+     the same baseline as the label without breaking equal-width layout.
+     `min-width: 0` lets each segment shrink below its content width so
+     `text-overflow: ellipsis` can engage when the sidebar is narrow. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.view-tab:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.view-tab.active {
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.view-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* UX re-review U-C3 / H6: secondary actions sitting next to the model
+   <select> (Native loader trigger + Browse models). Lower contrast than
+   the select so the model list reads as the primary surface. */
+.topbar-action-secondary {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+}
+.topbar-action-secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.topbar-action-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Top-bar menu (now used inside .sidebar-actions) ── */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.topbar-btn {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.topbar-btn:hover { background: var(--surface-2, rgba(255,255,255,0.04)); }
+.topbar-menu-wrap { position: relative; }
+.topbar-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  /* Anchor to the LEFT edge of the trigger so the menu flies out into the
+     sidebar (the hamburger now lives in the top-left of the sidebar; the
+     old right: 0 pushed the menu off-screen to the left of the window). */
+  left: 0;
+  min-width: 220px;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  /* Above the .view-tabs segmented control (z: --z-popover = 50). The
+     two previously tied at 50, so the later-painted tabs covered the
+     menu's TOP item (Dashboard) — it rendered but sat behind the
+     Chat/Images/Flows row. Bump to --z-modal so the hamburger menu
+     always sits above the tabs. (2026-05-29) */
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+}
+/* The hamburger is position:fixed, so .topbar-menu-wrap collapses to 0×0
+   and can't anchor this menu. Pin the menu to the hamburger's fixed
+   coords: top 19 + height 28 + 4px gap = 51; left matches the button. */
+.sidebar-top .topbar-menu {
+  position: fixed;
+  top: 51px;
+  left: 82px;
+}
+:root[data-fullscreen="true"] .sidebar-top .topbar-menu {
+  left: 12px;
+}
+.topbar-menu button {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.topbar-menu button:hover { background: var(--surface-2, rgba(255,255,255,0.06)); }
+
+/* ── Memories modal ── */
+.memories-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+.memories-modal {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  width: min(640px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 12px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+.memories-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 12px;
+  font-weight: 600;
+}
+.memories-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+}
+.memories-close:hover { color: var(--text); }
+
+/* ── About You profile modal ── */
+.profile-intro {
+  margin: 0 4px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.profile-loading {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.profile-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0 4px 4px;
+}
+.profile-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.profile-field input,
+.profile-field textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 9px;
+  resize: vertical;
+}
+.profile-field input:focus,
+.profile-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.profile-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.profile-save {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ── Sidebar ── */
+
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  /* Bottom 12 keeps room for the memory panel; top 0 lets .sidebar-top
+     control the exact gap below the macOS traffic lights. */
+  padding: 0 8px 12px 8px;
+  overflow-y: auto;
+  /* Anchor for the absolutely-positioned .view-tabs control that sits in
+     the chrome zone (top: 38px, just below the traffic lights). */
+  position: relative;
+}
+
+.new-chat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* Span the full sidebar width as a primary action row below the
+     hamburger / traffic-light row. */
+  width: 100%;
+  background: transparent;
+  color: var(--text-2);
+  /* Solid 1 px border (not dashed) — dashed reads as a drop-zone /
+     placeholder convention; this is a real primary action. */
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: var(--fs-md);
+  margin: 6px 0 10px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  /* Keep "+ New chat" on a single line — when the sidebar gets narrow
+     ellipsis is preferable to wrapping the button label. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.new-chat:hover {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--surface-hover);
+}
+
+.conv-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.conv-list li {
+  /* Action chrome moved to the right-click context menu (UX refinement
+     2026-05-28) — the row is back to a compact single-line layout. The
+     pinned `📌` glyph inside `.conv-title-line` is the only persistent
+     state indicator; tag chips stack below the title when present. */
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-2);
+  transition: background 0.1s, color 0.1s;
+}
+
+.conv-list li.conv-list-empty {
+  height: auto;
+  display: block;
+}
+
+.conv-list li:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.conv-list li.active {
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Inline action buttons (pin / tag / detach / delete) removed 2026-05-28
+   when the per-row chrome was replaced by a right-click context menu.
+   The `.conv-context-menu` rules in components.css handle the new
+   surface. Keep `.conv-title` + `.conv-rename` rules below — they govern
+   the row's main content layout. */
+
+.conv-title {
+  flex: 1;
+  min-width: 0;
+  /* `display: flex; flex-direction: column` is set in components.css to
+     stack the title-line above the tag-chip row. Leave the column-flex
+     intact — the 2-line clamp lives on .conv-title-text. */
+}
+
+.conv-rename {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  min-width: 0;
+}
+
+/* Old `.conv-list .del.detach` rules removed alongside the rest of the
+   inline action chrome — see `.conv-context-menu` in components.css. */
+
+/* ── Main ── */
+
+.main {
+  display: flex;
+  flex-direction: column;
+  /* No height:100vh — that forced the grid row to full-window height,
+     overflowing .app's padded content box and dragging the sidebar
+     past the top gap. Grid align-self:stretch sizes it correctly. */
+  min-height: 0;
+  overflow: hidden;
+}
+
+header {
+  /* 10px above + below the model-picker row — compact header bar. */
+  padding: 10px 20px;
+  /* Smooth slide when the sidebar collapses (header padding-left jumps
+     to clear the title-bar buttons). */
+  transition: padding-left 0.18s ease;
+  /* Fully translucent header — drops the solid surface fill + border so
+     the buttons/menus inside appear to float over the underlying view.
+     Backdrop-blur is intentionally absent here (per spec '100%
+     translucent'); if a frosted-glass effect is wanted later, add
+     `backdrop-filter: saturate(140%) blur(14px)` plus a 12% surface
+     tint via `color-mix`. */
+  background: transparent;
+  border-bottom: 0;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  /* Stack above the view body so any negative-margin / overlapping
+     content under it (chat top edge) doesn't paint over the
+     floating buttons. */
+  position: relative;
+  z-index: 2;
+}
+
+
+/* ── Appearance modal sections (2026-05-29) ──────────────────────────── */
+.appearance-modal { min-width: 360px; max-width: 460px; }
+.appearance-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.appearance-section:last-child { border-bottom: 0; }
+.appearance-label {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+/* When a full-screen modal (Model Library) is open, hide the top-chrome
+   cluster. z-index ordering proved unreliable here — the fixed/absolute
+   chrome elements sit in a stacking context that paints above the modal
+   regardless of z. `visibility:hidden` is deterministic + keeps layout.
+   Toggled by ModelBrowserOverlay via the `chrome-hidden` root class.
+   (2026-05-29) */
+:root.chrome-hidden .topbar-hamburger,
+:root.chrome-hidden .topbar-collapse,
+:root.chrome-hidden .view-tabs,
+:root.chrome-hidden .window-drag-strip {
+  visibility: hidden;
+}

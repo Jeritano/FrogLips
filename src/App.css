@@ -1,0 +1,20 @@
+/* ── App stylesheet aggregator ───────────────────────────────────────────
+ *
+ * The styles were split out of this single ~3500-line file into concern-
+ * scoped files under src/styles/. This file stays the single import site
+ * (App.tsx imports "./App.css"); these @import rules pull every rule in.
+ *
+ * Import order matters: tokens.css must load first so the design tokens
+ * (:root custom properties + light-theme overrides) are defined before any
+ * rule references them.
+ */
+@import "./styles/tokens.css";
+@import "./styles/layout.css";
+@import "./styles/chat.css";
+@import "./styles/panels.css";
+@import "./styles/modals.css";
+@import "./styles/components.css";
+@import "./styles/workflows.css";
+@import "./styles/ui.css";
+@import "./styles/appearance.css";
+@import "./styles/roundtable.css";
