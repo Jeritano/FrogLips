@@ -229,6 +229,32 @@ export function McpView() {
     }
   }, [form, configs, refresh]);
 
+  // One-click OAuth: authorize a remote server in the browser — no API key.
+  const submitOauth = useCallback(async () => {
+    if (!form || form.kind !== "remote") return;
+    const name = deriveName(form.name.trim() || "server");
+    if (configs.some((c) => c.name === name)) {
+      setErr(`A server named '${name}' already exists.`);
+      return;
+    }
+    if (!form.url.trim()) {
+      setErr("Remote URL required.");
+      return;
+    }
+    setBusy(name);
+    setErr(null);
+    try {
+      await api.mcpOauthConnect(name, form.url.trim());
+      persist([...configs.filter((c) => c.name !== name), { name, command: "", url: form.url.trim(), enabled: true }]);
+      setForm(null);
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [form, configs, refresh]);
+
   // One-click add from a registry card.
   const addFromEntry = useCallback(
     (e: McpRegistryEntry) => {
@@ -300,7 +326,7 @@ export function McpView() {
           {form.kind === "remote" ? (
             <>
               <Input placeholder="https://…/mcp endpoint URL" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} />
-              <Input type="password" placeholder="bearer token (optional → Keychain)" value={form.token} onChange={(e) => setForm({ ...form, token: e.target.value })} />
+              <Input type="password" placeholder="bearer token (optional — or use Connect with browser)" value={form.token} onChange={(e) => setForm({ ...form, token: e.target.value })} />
             </>
           ) : (
             <>
@@ -316,6 +342,17 @@ export function McpView() {
             <Button size="sm" variant="primary" onClick={() => void submitForm()} disabled={busy !== null}>
               {busy ? <Spinner label="Connecting" /> : "Connect"}
             </Button>
+            {form.kind === "remote" && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void submitOauth()}
+                disabled={busy !== null}
+                title="Authorize in your browser — no API key needed (if the server supports OAuth)"
+              >
+                {busy ? <Spinner label="Authorizing" /> : "🔓 Connect with browser"}
+              </Button>
+            )}
             <Button size="sm" variant="ghost" onClick={() => setForm(null)}>Cancel</Button>
           </div>
         </div>

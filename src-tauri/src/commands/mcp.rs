@@ -142,10 +142,67 @@ pub fn mcp_remote_has_token(name: String) -> bool {
     crate::settings::keychain_get(&format!("mcp:{name}")).is_some()
 }
 
-/// Drop a remote MCP server's stored token (call when removing the server).
+/// Drop a remote MCP server's stored token + any OAuth creds (call on remove).
 #[tauri::command]
 pub fn mcp_delete_remote_token(name: String) {
     crate::settings::keychain_delete_account(&format!("mcp:{name}"));
+    crate::settings::keychain_delete_account(&format!("mcp_oauth:{name}"));
+}
+
+/// One-click OAuth connect for a remote MCP server: run the browser auth flow
+/// (discover → register → PKCE → token), persist the tokens, then start the
+/// server. Same approval gate as `mcp_start_remote_server` (consumed up front,
+/// before the browser wait).
+#[tauri::command]
+pub async fn mcp_oauth_connect(
+    app: tauri::AppHandle,
+    name: String,
+    url: String,
+    approval: String,
+) -> Result<Vec<mcp::ToolDescriptor>, String> {
+    let payload = ApprovalPayload {
+        mcp_command: Some(url.clone()),
+        mcp_args: Some(Vec::new()),
+        mcp_env_keys: Some(Vec::new()),
+        ..Default::default()
+    };
+    let Some(expected) = binding_for("mcp_start_server", &payload) else {
+        return Err("internal: mcp_oauth_connect binding missing".into());
+    };
+    if !approval::consume_with_binding("mcp_start_server", &approval, &expected) {
+        return Err("tool approval required or expired".into());
+    }
+
+    let creds = mcp::oauth::connect(&app, &url)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    crate::settings::keychain_set_account(&format!("mcp:{name}"), &creds.access_token);
+    if let Ok(json) = serde_json::to_string(&creds) {
+        crate::settings::keychain_set_account(&format!("mcp_oauth:{name}"), &json);
+    }
+    mcp::start_remote_server(name, url, Some(creds.access_token))
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Refresh a stored OAuth access token for a remote MCP server. Returns true
+/// if a refreshed token was stored (false if no OAuth creds exist).
+#[tauri::command]
+pub async fn mcp_oauth_refresh(name: String) -> Result<bool, String> {
+    let key = format!("mcp_oauth:{name}");
+    let Some(json) = crate::settings::keychain_get(&key) else {
+        return Ok(false);
+    };
+    let creds: mcp::oauth::OauthCreds =
+        serde_json::from_str(&json).map_err(|e| format!("stored oauth creds: {e}"))?;
+    let fresh = mcp::oauth::refresh(&creds)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    crate::settings::keychain_set_account(&format!("mcp:{name}"), &fresh.access_token);
+    if let Ok(j) = serde_json::to_string(&fresh) {
+        crate::settings::keychain_set_account(&key, &j);
+    }
+    Ok(true)
 }
 
 /// A normalized MCP registry listing (from the official registry or PulseMCP).

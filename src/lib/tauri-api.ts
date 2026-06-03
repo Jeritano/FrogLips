@@ -665,6 +665,17 @@ export const api = {
       approval,
     });
   },
+  // One-click OAuth: opens the system browser, runs discovery + PKCE, persists
+  // the token, and starts the server. Same approval binding as the remote start.
+  mcpOauthConnect: async (name: string, url: string) => {
+    const approval = await mintApproval("mcp_start_server", {
+      mcp_command: url,
+      mcp_args: [],
+      mcp_env_keys: [],
+    });
+    return invoke<McpToolDescriptor[]>("mcp_oauth_connect", { name, url, approval });
+  },
+  mcpOauthRefresh: (name: string) => invoke<boolean>("mcp_oauth_refresh", { name }),
   mcpRemoteHasToken: (name: string) =>
     invoke<boolean>("mcp_remote_has_token", { name }),
   mcpDeleteRemoteToken: (name: string) =>

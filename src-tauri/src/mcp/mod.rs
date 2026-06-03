@@ -9,6 +9,8 @@
 //! with the app's full user privileges. Servers are NEVER auto-discovered or
 //! pulled from the network — the user must explicitly add a config.
 
+pub mod oauth;
+
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
