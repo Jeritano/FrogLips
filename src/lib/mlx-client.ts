@@ -97,6 +97,13 @@ export async function* streamChat(
   const decoder = new TextDecoder();
   let buf = "";
   const MAX_BUF = 1 << 20; // 1 MB — guard against malformed server output
+  // Reasoning-model fallback: capture `delta.reasoning` / `reasoning_content`
+  // and, if the turn produces NO `content` (e.g. gemma4 and other "thinking"
+  // models that stream only reasoning), surface the reasoning so the reply
+  // isn't dropped as an empty response.
+  let anyContent = false;
+  let reasoningAcc = "";
+  const REASONING_CAP = 1 << 20;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -116,18 +123,27 @@ export async function* streamChat(
 
       const payload = line.slice(5).trim();
       if (payload === "[DONE]") {
+        if (!anyContent && reasoningAcc) yield { delta: reasoningAcc, done: false };
         yield { delta: "", done: true };
         return;
       }
       try {
         const obj = JSON.parse(payload);
-        const delta = obj?.choices?.[0]?.delta?.content ?? "";
-        if (delta) yield { delta, done: false };
+        const d = obj?.choices?.[0]?.delta ?? {};
+        const content: string = d?.content ?? "";
+        if (content) {
+          anyContent = true;
+          yield { delta: content, done: false };
+        } else if (!anyContent) {
+          const r: string = d?.reasoning ?? d?.reasoning_content ?? "";
+          if (r && reasoningAcc.length < REASONING_CAP) reasoningAcc += r;
+        }
       } catch {
         // skip keepalives
       }
     }
   }
+  if (!anyContent && reasoningAcc) yield { delta: reasoningAcc, done: false };
   yield { delta: "", done: true };
 }
 
