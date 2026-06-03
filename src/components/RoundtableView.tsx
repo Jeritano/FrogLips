@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../lib/tauri-api";
 import { Button, Input, Spinner, Badge } from "./ui";
 import { usePersistedState } from "../hooks/usePersistedState";
@@ -189,6 +190,11 @@ export function RoundtableView() {
   // user who edited the config gets warned again instead of starting a
   // different bad config on the first click.
   useEffect(() => setConfirmLocal(false), [seats]);
+
+  // Portal target in the App header — lets the Roundtable header (title +
+  // presets/Reset, or the live meter/actions) share the theme-toggle's row.
+  const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => setTopbarSlot(document.getElementById("roundtable-topbar-slot")), []);
   const [setupErr, setSetupErr] = useState<string | null>(null);
   const [injectText, setInjectText] = useState("");
 
@@ -385,30 +391,35 @@ export function RoundtableView() {
 
   // ── Live view ──
   if (showLive) {
+    const liveHead = (
+      <>
+        <div className="rt-live-title">
+          Roundtable {run.statusLabel && <span className="rt-status">· {run.statusLabel}</span>}
+        </div>
+        <div className="rt-meter">
+          <span>{run.totals.turns} turns</span>
+          <span>{(run.totals.tokensIn + run.totals.tokensOut).toLocaleString()} tok</span>
+          <span title={run.totals.usdPartial ? "Some models have no published price — lower bound" : undefined}>
+            {formatUsd(run.totals.usd)}{run.totals.usdPartial ? "+" : ""}
+          </span>
+        </div>
+        <div className="rt-live-actions">
+          {run.running ? (
+            <Button size="sm" variant="danger" onClick={run.stop}>Stop</Button>
+          ) : (
+            <>
+              <Button size="sm" variant="ghost" onClick={run.clear}>New table</Button>
+              <Button size="sm" variant="ghost" onClick={resetAll} title="Clear the run and restore default seats, topic, and settings">↺ Reset</Button>
+            </>
+          )}
+        </div>
+      </>
+    );
     return (
       <div className="rt-root" data-testid="roundtable-live">
-        <div className="rt-live-head">
-          <div className="rt-live-title">
-            Roundtable {run.statusLabel && <span className="rt-status">· {run.statusLabel}</span>}
-          </div>
-          <div className="rt-meter">
-            <span>{run.totals.turns} turns</span>
-            <span>{(run.totals.tokensIn + run.totals.tokensOut).toLocaleString()} tok</span>
-            <span title={run.totals.usdPartial ? "Some models have no published price — lower bound" : undefined}>
-              {formatUsd(run.totals.usd)}{run.totals.usdPartial ? "+" : ""}
-            </span>
-          </div>
-          <div className="rt-live-actions">
-            {run.running ? (
-              <Button size="sm" variant="danger" onClick={run.stop}>Stop</Button>
-            ) : (
-              <>
-                <Button size="sm" variant="ghost" onClick={run.clear}>New table</Button>
-                <Button size="sm" variant="ghost" onClick={resetAll} title="Clear the run and restore default seats, topic, and settings">↺ Reset</Button>
-              </>
-            )}
-          </div>
-        </div>
+        {topbarSlot
+          ? createPortal(<div className="rt-live-head in-topbar">{liveHead}</div>, topbarSlot)
+          : <div className="rt-live-head">{liveHead}</div>}
 
         {run.config && (
           <div className="rt-roster">
@@ -459,17 +470,22 @@ export function RoundtableView() {
   }
 
   // ── Setup view ──
+  const setupHead = (
+    <>
+      <div className="rt-live-title">Roundtable</div>
+      <div className="rt-presets">
+        {PRESETS.map((p) => (
+          <button key={p.id} className="rt-preset-btn" onClick={() => applyPreset(p)}>{p.label}</button>
+        ))}
+        <button className="rt-preset-btn" onClick={resetAll} title="Restore default seats, topic, and settings">↺ Reset</button>
+      </div>
+    </>
+  );
   return (
     <div className="rt-root" data-testid="roundtable-setup">
-      <div className="rt-setup-head">
-        <div className="rt-live-title">Roundtable</div>
-        <div className="rt-presets">
-          {PRESETS.map((p) => (
-            <button key={p.id} className="rt-preset-btn" onClick={() => applyPreset(p)}>{p.label}</button>
-          ))}
-          <button className="rt-preset-btn" onClick={resetAll} title="Restore default seats, topic, and settings">↺ Reset</button>
-        </div>
-      </div>
+      {topbarSlot
+        ? createPortal(<div className="rt-setup-head in-topbar">{setupHead}</div>, topbarSlot)
+        : <div className="rt-setup-head">{setupHead}</div>}
 
       {modelErr && <div className="rt-err-banner" role="alert">{modelErr}</div>}
 

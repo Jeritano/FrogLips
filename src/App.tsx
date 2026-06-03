@@ -1069,6 +1069,15 @@ function App() {
               data-testid="mcp-topbar-slot"
             />
           )}
+          {/* Roundtable view portals its title + presets/Reset (or live
+              meter/actions) here so they share the theme-toggle's row. */}
+          {view === "roundtable" && (
+            <div
+              id="roundtable-topbar-slot"
+              className="topbar-slot"
+              data-testid="roundtable-topbar-slot"
+            />
+          )}
           <button
             className="theme-toggle topbar-theme"
             onClick={toggleTheme}
