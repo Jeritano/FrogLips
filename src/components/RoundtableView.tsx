@@ -343,6 +343,21 @@ export function RoundtableView() {
     }
   }, [seats, topic, optionByKey, turnControl, memoryMode, maxRounds, maxUsd, confirmLocal, run]);
 
+  // Full "start over": clear any finished run AND restore the default config
+  // (seats / topic / rounds / budget / memory). No-op mid-run — Stop first.
+  const resetAll = useCallback(() => {
+    if (run.running) return;
+    run.clear();
+    setSeats([newSeat(PRESETS[0].personas[0]), newSeat(PRESETS[0].personas[1])]);
+    setTopic(PRESETS[0].topic);
+    setMaxRounds(4);
+    setMaxUsd(0.5);
+    setMemoryMode("recent");
+    setSetupErr(null);
+    setConfirmLocal(false);
+    setInjectText("");
+  }, [run, setSeats, setTopic, setMaxRounds, setMaxUsd, setMemoryMode]);
+
   const exportTranscript = useCallback(() => {
     const md = run.turns
       .filter((t) => t.status === "done")
@@ -372,7 +387,10 @@ export function RoundtableView() {
             {run.running ? (
               <Button size="sm" variant="danger" onClick={run.stop}>Stop</Button>
             ) : (
-              <Button size="sm" variant="ghost" onClick={run.clear}>New table</Button>
+              <>
+                <Button size="sm" variant="ghost" onClick={run.clear}>New table</Button>
+                <Button size="sm" variant="ghost" onClick={resetAll} title="Clear the run and restore default seats, topic, and settings">↺ Reset</Button>
+              </>
             )}
           </div>
         </div>
@@ -434,6 +452,7 @@ export function RoundtableView() {
           {PRESETS.map((p) => (
             <button key={p.id} className="rt-preset-btn" onClick={() => applyPreset(p)}>{p.label}</button>
           ))}
+          <button className="rt-preset-btn" onClick={resetAll} title="Restore default seats, topic, and settings">↺ Reset</button>
         </div>
       </div>
 
