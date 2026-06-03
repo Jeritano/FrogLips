@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
@@ -79,6 +80,11 @@ export function McpView() {
     for (const s of servers) m[s.name] = s;
     return m;
   }, [servers]);
+
+  // Portal target in the App header — lets the tab bar + "Add manually" share
+  // the theme-toggle's row instead of stacking a second bar below it.
+  const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => setTopbarSlot(document.getElementById("mcp-topbar-slot")), []);
 
   const refreshing = useRef(false);
   const refresh = useCallback(async () => {
@@ -296,22 +302,28 @@ export function McpView() {
     [],
   );
 
+  const tabBarInner = (
+    <>
+      <button role="tab" aria-selected={tab === "installed"} className={`mcp-tab${tab === "installed" ? " sel" : ""}`} onClick={() => { setErr(null); setTab("installed"); }}>
+        Installed{configs.length ? ` (${configs.length})` : ""}
+      </button>
+      <button role="tab" aria-selected={tab === "browse"} className={`mcp-tab${tab === "browse" ? " sel" : ""}`} onClick={() => { setForm(null); setErr(null); setTab("browse"); }}>
+        Browse
+      </button>
+      <div className="mcp-tabspacer" />
+      {tab === "installed" && (
+        <Button size="sm" variant="secondary" onClick={() => setForm({ open: true, kind: "stdio", name: "", command: "", args: "", env: "", url: "", token: "" })}>
+          + Add manually
+        </Button>
+      )}
+    </>
+  );
+
   return (
     <div className="mcp-root" data-testid="mcp-view">
-      <div className="mcp-tabs" role="tablist">
-        <button role="tab" aria-selected={tab === "installed"} className={`mcp-tab${tab === "installed" ? " sel" : ""}`} onClick={() => { setErr(null); setTab("installed"); }}>
-          Installed{configs.length ? ` (${configs.length})` : ""}
-        </button>
-        <button role="tab" aria-selected={tab === "browse"} className={`mcp-tab${tab === "browse" ? " sel" : ""}`} onClick={() => { setForm(null); setErr(null); setTab("browse"); }}>
-          Browse
-        </button>
-        <div className="mcp-tabspacer" />
-        {tab === "installed" && (
-          <Button size="sm" variant="secondary" onClick={() => setForm({ open: true, kind: "stdio", name: "", command: "", args: "", env: "", url: "", token: "" })}>
-            + Add manually
-          </Button>
-        )}
-      </div>
+      {topbarSlot
+        ? createPortal(<div className="mcp-tabs in-topbar" role="tablist">{tabBarInner}</div>, topbarSlot)
+        : <div className="mcp-tabs" role="tablist">{tabBarInner}</div>}
 
       {err && (
         <div className="mcp-err" role="alert">

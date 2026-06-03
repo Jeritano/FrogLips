@@ -15,6 +15,14 @@
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
+/* When portaled into the App header row (shares the theme-toggle's row): drop
+   the standalone padding/border + fill the slot so "+ Add manually" lands at
+   the right, just left of the theme toggle. Collapses the second top bar. */
+.mcp-tabs.in-topbar {
+  padding: 0;
+  border-bottom: none;
+  flex: 1;
+}
 .mcp-tab {
   background: transparent;
   border: none;

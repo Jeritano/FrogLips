@@ -1060,6 +1060,15 @@ function App() {
               data-testid="workflow-topbar-slot"
             />
           )}
+          {/* Tools view portals its tabs + "Add manually" here so they share
+              this header row with the theme toggle (no second stacked bar). */}
+          {view === "mcp" && (
+            <div
+              id="mcp-topbar-slot"
+              className="topbar-slot"
+              data-testid="mcp-topbar-slot"
+            />
+          )}
           <button
             className="theme-toggle topbar-theme"
             onClick={toggleTheme}
