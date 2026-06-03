@@ -64,7 +64,7 @@ The Tauri command layer — every `#[tauri::command]` wrapper that JS reaches vi
 - `commands/models.rs` — model list / pull / delete.
 - `commands/history.rs` — conversation + message persistence.
 - `commands/memory.rs` — memory store and recall.
-- `commands/mcp.rs` — MCP server management: stdio (`mcp_start_server`) and remote streamable-HTTP (`mcp_start_remote_server`) start/stop, tool listing + `mcp_call_tool`, remote bearer-token Keychain helpers (`mcp_remote_has_token` / `mcp_delete_remote_token`, account `mcp:<name>`), and `mcp_registry_search` — a cached (5-min TTL, per-source) proxy over the official `registry.modelcontextprotocol.io` registry and PulseMCP, normalized into `McpRegistryEntry { transport, remote_url, package_registry, package_name, stars, … }`.
+- `commands/mcp.rs` — MCP server management: stdio (`mcp_start_server`) and remote streamable-HTTP (`mcp_start_remote_server`) start/stop, tool listing + `mcp_call_tool`, remote bearer-token secret-store helpers (`mcp_remote_has_token` / `mcp_delete_remote_token`, account `mcp:<name>` in `secrets.json`), and `mcp_registry_search` — a cached (5-min TTL, per-source) proxy over the official `registry.modelcontextprotocol.io` registry and PulseMCP, normalized into `McpRegistryEntry { transport, remote_url, package_registry, package_name, stars, … }`.
 - `commands/data.rs` — data backup, JSON export, and additive import.
 - `commands/workflows.rs` — workflow CRUD, scheduler control, and run history (backs the Workflows canvas).
 - `commands/misc.rs` — settings, diagnostics, crash-log read, the diagnostics bundle, and the remaining odds and ends.
@@ -126,14 +126,14 @@ Owns the spawned model-server child (formerly `mlx_server.rs`; renamed because i
 
 ### `settings.rs`
 
-JSON file at `~/Library/Application Support/Froglips/settings.json`. Stores `workspace_root` and other persisted prefs. Custom-backend API keys are **not** kept in this file — they live in the macOS Keychain, with a one-time migration off any legacy plaintext key and redaction of keys from the settings blob returned to the webview. Load on startup, save on change.
+JSON file at `~/Library/Application Support/Froglips/settings.json`. Stores `workspace_root` and other persisted prefs. Custom-backend (and MCP remote) API keys are **not** kept in this file — they live in a sibling `0600` `secrets.json` (account → key), redacted from the settings blob returned to the webview. Load on startup, save on change. (Keys formerly used the macOS login Keychain; dropped because ad-hoc re-signed builds reset the Keychain ACL and re-prompted on every access — the local owner-only file avoids that.)
 
 ### `mcp/mod.rs` (native remote transport)
 
 The MCP client abstracts over a `Transport` enum with two arms behind one `ServerHandle` + RPC path:
 
 - **`Stdio`** — line-delimited JSON-RPC over a spawned child (env stripped to a safe allowlist, dynamic-linker keys rejected).
-- **`Remote`** — the MCP **streamable-HTTP** transport: one HTTP POST of the JSON-RPC envelope per request; the reply is a single JSON object or an SSE stream (`parse_sse_for_id` correlates by request id, accepts string ids). The server's `Mcp-Session-Id` is captured on `initialize` and echoed afterward; an optional bearer token (Keychain, never logged) authenticates; teardown best-effort `DELETE`s the session. Bodies are read chunk-bounded against `MAX_RESULT_BYTES`.
+- **`Remote`** — the MCP **streamable-HTTP** transport: one HTTP POST of the JSON-RPC envelope per request; the reply is a single JSON object or an SSE stream (`parse_sse_for_id` correlates by request id, accepts string ids). The server's `Mcp-Session-Id` is captured on `initialize` and echoed afterward; an optional bearer token (`secrets.json`, never logged) authenticates; teardown best-effort `DELETE`s the session. Bodies are read chunk-bounded against `MAX_RESULT_BYTES`.
 
 Remote endpoints are **SSRF-guarded and DNS-pinned**: `validate_remote_url` does a cheap scheme + literal-IP + metadata-hostname check, then `resolve_pinned_addrs` (on `spawn_blocking`) resolves the host, rejects any address in blocked space (link-local incl. `169.254.169.254`, unspecified, multicast, Alibaba's `100.100.100.200`), and pins the reqwest client to exactly those addresses to close the rebind TOCTOU. Loopback + RFC1918 LAN stay allowed. Both transports share `finish_start` (initialize → `notifications/initialized` → `tools/list`, 256-tool cap, prompt-injection sanitization of tool names/descriptions/schema strings) and register in the global `REGISTRY`.
 
@@ -298,7 +298,7 @@ ModelBrowser.pull()
 | External URL opening (`open_external`) | Any `http(s)` URL with a valid host (the old host allowlist was removed so registry/model links resolve); non-http schemes rejected |
 | MCP remote SSRF / DNS-rebinding | `validate_remote_url` + `resolve_pinned_addrs`: resolve host, reject blocked IPs (link-local incl. `169.254.169.254`, unspecified, multicast, Alibaba `100.100.100.200`), pin the client to the validated addresses |
 | MCP remote response flooding | Chunk-bounded body read against `MAX_RESULT_BYTES`; 256-tool-per-server cap; tool name/description/schema sanitized for prompt injection |
-| Cloud API keys (custom backends, MCP remotes) | macOS Keychain only (accounts `mcp:<name>`, …); read server-side per request, redacted from settings + logs |
+| Cloud API keys (custom backends, MCP remotes) | `0600` `secrets.json` (account → key, e.g. `mcp:<name>`); read server-side per request, redacted from settings + logs |
 | Subprocess leaks | All children use `kill_on_drop(true)` + timeouts |
 
 ## Configuration

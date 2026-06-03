@@ -288,15 +288,15 @@ On **Installed**, click **+ Add manually** and choose a type:
   optional **env JSON** field. Local servers run with your full user
   privileges — only add commands you trust.
 - **Remote (URL)** — a **name** and a streamable-HTTP endpoint URL
-  (`https://…/mcp`). An optional **bearer token** is stored in the macOS
-  **Keychain**, not in the app.
+  (`https://…/mcp`). An optional **bearer token** is stored in a local
+  `0600` **secret store** (`secrets.json`), never in plaintext settings.
 
 ### Managing installed servers
 
 The **Installed** tab lists every server with a colored status dot and a
 `stdio` / `remote` badge. For each you can **Start** / **Stop** it, see its live
 tool count + tool chips, and **Remove** it (two-click confirm; removing a remote
-server also deletes its Keychain token). A failed start shows its error inline.
+server also deletes its stored token). A failed start shows its error inline.
 
 > **Note.** MCP tools are always confirmation-gated in the agent — they can
 > never be auto-approved even with a session "approve all" active, and they're
