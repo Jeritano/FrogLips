@@ -38,6 +38,9 @@ pub struct OauthCreds {
     pub refresh_token: Option<String>,
     pub token_endpoint: String,
     pub client_id: String,
+    /// Set only if the AS issued a confidential client (ignored our `none`
+    /// auth-method request); sent on token exchange + refresh when present.
+    pub client_secret: Option<String>,
     /// The MCP server URL — used as the RFC 8707 `resource` indicator.
     pub resource: String,
 }
@@ -45,6 +48,7 @@ pub struct OauthCreds {
 #[derive(Deserialize)]
 struct ProtectedResourceMeta {
     authorization_servers: Option<Vec<String>>,
+    scopes_supported: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -88,25 +92,30 @@ fn origin_of(raw: &str) -> Result<String> {
 /// Discover the authorization-server endpoints for an MCP server URL. Every
 /// fetch goes through the SSRF-pinned client; a discovered (server-controlled)
 /// URL pointing at blocked space is rejected before any request is made.
-async fn discover(server_url: &str) -> Result<AuthServerMeta> {
+async fn discover(server_url: &str) -> Result<(AuthServerMeta, Option<String>)> {
     let origin = origin_of(server_url)?;
 
-    // 1. Protected-resource metadata → authorization server base (best-effort;
-    //    fall back to the server's own origin if absent).
+    // 1. Protected-resource metadata → authorization server base + the scopes
+    //    the resource advertises (best-effort; fall back to the server origin).
     let prm_url = format!("{origin}/.well-known/oauth-protected-resource");
-    let as_base = match super::build_pinned_client(&prm_url).await {
+    let prm: Option<ProtectedResourceMeta> = match super::build_pinned_client(&prm_url).await {
         Ok(c) => match c.get(&prm_url).send().await {
-            Ok(r) if r.status().is_success() => r
-                .json::<ProtectedResourceMeta>()
-                .await
-                .ok()
-                .and_then(|m| m.authorization_servers)
-                .and_then(|v| v.into_iter().next()),
+            Ok(r) if r.status().is_success() => r.json().await.ok(),
             _ => None,
         },
         Err(_) => None,
-    }
-    .unwrap_or_else(|| origin.clone());
+    };
+    // Request the scopes the resource declares — some authorization servers
+    // reject a request with no scope or issue an unusable token without it.
+    let scope = prm
+        .as_ref()
+        .and_then(|m| m.scopes_supported.as_ref())
+        .map(|v| v.join(" "))
+        .filter(|s| !s.is_empty());
+    let as_base = prm
+        .and_then(|m| m.authorization_servers)
+        .and_then(|v| v.into_iter().next())
+        .unwrap_or_else(|| origin.clone());
     let as_base = as_base.trim_end_matches('/');
 
     // 2. Authorization-server metadata (OAuth, then OIDC fallback).
@@ -119,7 +128,7 @@ async fn discover(server_url: &str) -> Result<AuthServerMeta> {
             if let Ok(r) = c.get(&meta_url).send().await {
                 if r.status().is_success() {
                     if let Ok(m) = r.json::<AuthServerMeta>().await {
-                        return Ok(m);
+                        return Ok((m, scope));
                     }
                 }
             }
@@ -128,8 +137,12 @@ async fn discover(server_url: &str) -> Result<AuthServerMeta> {
     bail!("could not discover OAuth endpoints for {server_url} (no authorization-server metadata, or it resolves to blocked space)")
 }
 
-/// Dynamic Client Registration (RFC 7591) → returns the issued `client_id`.
-async fn register(reg_ep: &str, redirect_uri: &str) -> Result<String> {
+/// Dynamic Client Registration (RFC 7591) → `(client_id, client_secret?)`.
+async fn register(
+    reg_ep: &str,
+    redirect_uri: &str,
+    scope: Option<&str>,
+) -> Result<(String, Option<String>)> {
     let client = super::build_pinned_client(reg_ep).await?;
     #[derive(Serialize)]
     struct Req<'a> {
@@ -138,10 +151,13 @@ async fn register(reg_ep: &str, redirect_uri: &str) -> Result<String> {
         grant_types: Vec<&'a str>,
         response_types: Vec<&'a str>,
         token_endpoint_auth_method: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<&'a str>,
     }
     #[derive(Deserialize)]
     struct Resp {
         client_id: String,
+        client_secret: Option<String>,
     }
     let body = Req {
         client_name: "Froglips",
@@ -149,6 +165,7 @@ async fn register(reg_ep: &str, redirect_uri: &str) -> Result<String> {
         grant_types: vec!["authorization_code", "refresh_token"],
         response_types: vec!["code"],
         token_endpoint_auth_method: "none",
+        scope,
     };
     let r = client
         .post(reg_ep)
@@ -163,13 +180,14 @@ async fn register(reg_ep: &str, redirect_uri: &str) -> Result<String> {
             r.text().await.unwrap_or_default().chars().take(300).collect::<String>()
         );
     }
-    Ok(r.json::<Resp>().await.context("DCR response")?.client_id)
+    let resp = r.json::<Resp>().await.context("DCR response")?;
+    Ok((resp.client_id, resp.client_secret))
 }
 
 /// Run the full flow: discover → register → browser auth (PKCE) → token.
 /// Opens the system browser and blocks on the loopback callback (5-min cap).
 pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCreds> {
-    let meta = discover(server_url).await?;
+    let (meta, scope) = discover(server_url).await?;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -181,21 +199,25 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
         .registration_endpoint
         .as_deref()
         .context("server does not support dynamic client registration; paste an API key instead")?;
-    let client_id = register(reg_ep, &redirect_uri).await?;
+    let (client_id, client_secret) = register(reg_ep, &redirect_uri, scope.as_deref()).await?;
 
     let (verifier, challenge) = pkce()?;
     let state = random_b64(16)?;
 
     let mut auth_url = url::Url::parse(&meta.authorization_endpoint).context("parse auth endpoint")?;
-    auth_url
-        .query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", &client_id)
-        .append_pair("redirect_uri", &redirect_uri)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("state", &state)
-        .append_pair("resource", server_url);
+    {
+        let mut q = auth_url.query_pairs_mut();
+        q.append_pair("response_type", "code")
+            .append_pair("client_id", &client_id)
+            .append_pair("redirect_uri", &redirect_uri)
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", &state)
+            .append_pair("resource", server_url);
+        if let Some(s) = &scope {
+            q.append_pair("scope", s);
+        }
+    }
 
     app.opener()
         .open_url(auth_url.as_str(), None::<&str>)
@@ -208,7 +230,7 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
         bail!("OAuth state mismatch — possible CSRF, aborting");
     }
 
-    let params = [
+    let mut params: Vec<(&str, &str)> = vec![
         ("grant_type", "authorization_code"),
         ("code", code.as_str()),
         ("redirect_uri", redirect_uri.as_str()),
@@ -216,6 +238,9 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
         ("code_verifier", verifier.as_str()),
         ("resource", server_url),
     ];
+    if let Some(secret) = &client_secret {
+        params.push(("client_secret", secret));
+    }
     let r = super::build_pinned_client(&meta.token_endpoint)
         .await?
         .post(&meta.token_endpoint)
@@ -236,6 +261,7 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
         refresh_token: tok.refresh_token,
         token_endpoint: meta.token_endpoint,
         client_id,
+        client_secret,
         resource: server_url.to_string(),
     })
 }
@@ -246,12 +272,15 @@ pub async fn refresh(creds: &OauthCreds) -> Result<OauthCreds> {
         .refresh_token
         .as_deref()
         .context("no refresh token stored")?;
-    let params = [
+    let mut params: Vec<(&str, &str)> = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", rt),
         ("client_id", creds.client_id.as_str()),
         ("resource", creds.resource.as_str()),
     ];
+    if let Some(secret) = &creds.client_secret {
+        params.push(("client_secret", secret));
+    }
     let r = super::build_pinned_client(&creds.token_endpoint)
         .await?
         .post(&creds.token_endpoint)
@@ -278,9 +307,26 @@ async fn accept_callback(listener: tokio::net::TcpListener) -> Result<(String, S
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     loop {
         let (mut sock, _) = listener.accept().await.context("accept callback")?;
-        let mut buf = vec![0u8; 8192];
-        let n = sock.read(&mut buf).await.unwrap_or(0);
-        let req = String::from_utf8_lossy(&buf[..n]);
+        // Read until we have a complete request line (the GET line can split
+        // across TCP segments — a long `code` query makes this real). Cap at
+        // 64 KiB so a misbehaving client can't grow the buffer unbounded.
+        let mut raw: Vec<u8> = Vec::with_capacity(8192);
+        let mut chunk = [0u8; 8192];
+        loop {
+            if raw.windows(2).any(|w| w == b"\r\n") || raw.iter().any(|&b| b == b'\n') {
+                break;
+            }
+            match sock.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(k) => {
+                    raw.extend_from_slice(&chunk[..k]);
+                    if raw.len() >= 64 * 1024 {
+                        break;
+                    }
+                }
+            }
+        }
+        let req = String::from_utf8_lossy(&raw);
         let path = req
             .lines()
             .next()
