@@ -173,6 +173,10 @@ export function RoundtableView() {
     (v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0,
   );
   const [confirmLocal, setConfirmLocal] = useState(false);
+  // Re-arm the 2-local-models confirm whenever the seat set changes, so a
+  // user who edited the config gets warned again instead of starting a
+  // different bad config on the first click.
+  useEffect(() => setConfirmLocal(false), [seats]);
   const [setupErr, setSetupErr] = useState<string | null>(null);
   const [injectText, setInjectText] = useState("");
 
@@ -493,7 +497,7 @@ export function RoundtableView() {
         </label>
         <label className="rt-ctl">
           <span>Max rounds</span>
-          <Input type="number" min={1} max={30} value={maxRounds} onChange={(e) => setMaxRounds(Math.max(1, Number(e.target.value) || 1))} />
+          <Input type="number" min={1} max={30} value={maxRounds} onChange={(e) => setMaxRounds(Math.min(30, Math.max(1, Number(e.target.value) || 1)))} />
         </label>
         <label className="rt-ctl">
           <span>$ budget (0 = none)</span>
@@ -510,7 +514,7 @@ export function RoundtableView() {
         <Button variant="primary" onClick={startRun} disabled={loadingModels}>
           {loadingModels ? <Spinner label="Loading" /> : "▶ Start roundtable"}
         </Button>
-        <Badge tone="neutral">{seats.length} seats · {maxRounds} rounds · cloud-first</Badge>
+        <Badge tone="neutral">{seats.length} seats · {Math.min(30, Math.max(1, maxRounds))} rounds · cloud-first</Badge>
       </div>
     </div>
   );
