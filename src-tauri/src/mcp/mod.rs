@@ -131,7 +131,9 @@ struct RemoteTransport {
     session: RwLock<Option<String>>,
     /// Bearer token (read from the Keychain at start time), if the server
     /// requires auth. Never serialized; never logged.
-    auth: Option<String>,
+    /// Bearer token; behind a lock so an OAuth 401 can refresh it in place
+    /// (the access token expires ~1h after connect).
+    auth: RwLock<Option<String>>,
 }
 
 struct ServerHandle {
@@ -291,7 +293,7 @@ impl ServerHandle {
                 if let Some(sid) = sid {
                     req = req.header("Mcp-Session-Id", sid);
                 }
-                if let Some(auth) = &t.auth {
+                if let Some(auth) = t.auth.read().clone() {
                     req = req.bearer_auth(auth);
                 }
                 let _ = req.send().await;
@@ -304,6 +306,40 @@ impl ServerHandle {
     /// is either a single JSON object (`application/json`) or an SSE stream
     /// (`text/event-stream`) carrying the JSON-RPC reply. The session id from
     /// `initialize` is captured and echoed on subsequent requests.
+    /// Refresh this server's OAuth access token (if it has stored creds),
+    /// persist the new token, and update the live transport's bearer in place.
+    /// Returns true iff a new token was obtained. Best-effort.
+    async fn try_oauth_refresh(&self, t: &RemoteTransport) -> bool {
+        let key = format!("mcp_oauth:{}", self.name);
+        let Some(json) = crate::settings::keychain_get(&key) else {
+            return false;
+        };
+        let Ok(creds) = serde_json::from_str::<oauth::OauthCreds>(&json) else {
+            return false;
+        };
+        match oauth::refresh(&creds).await {
+            Ok(fresh) => {
+                crate::settings::keychain_set_account(
+                    &format!("mcp:{}", self.name),
+                    &fresh.access_token,
+                );
+                if let Ok(j) = serde_json::to_string(&fresh) {
+                    crate::settings::keychain_set_account(&key, &j);
+                }
+                *t.auth.write() = Some(fresh.access_token);
+                true
+            }
+            Err(e) => {
+                crate::diagnostics::warn_with(
+                    "mcp",
+                    &format!("oauth token refresh failed for '{}'", self.name),
+                    json!({ "server": self.name, "error": e.to_string() }),
+                );
+                false
+            }
+        }
+    }
+
     async fn send_rpc_remote(
         &self,
         t: &RemoteTransport,
@@ -317,34 +353,48 @@ impl ServerHandle {
             "method": method,
             "params": params,
         });
-        let mut req = t
-            .client
-            .post(&t.url)
-            .header("Accept", "application/json, text/event-stream")
-            .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
-            .json(&msg);
-        let sid = t.session.read().clone();
-        if let Some(sid) = sid {
-            req = req.header("Mcp-Session-Id", sid);
-        }
-        if let Some(auth) = &t.auth {
-            req = req.bearer_auth(auth);
-        }
-
-        let mut resp = timeout(RPC_TIMEOUT, req.send())
-            .await
-            .map_err(|_| anyhow!("rpc '{}' timed out after {}s", method, RPC_TIMEOUT.as_secs()))?
-            .with_context(|| format!("remote rpc '{method}' transport error"))?;
-
-        // Capture / refresh the session id (servers set it on `initialize`).
-        if let Some(sid) = resp
-            .headers()
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-        {
-            *t.session.write() = Some(sid);
-        }
+        // Up to 2 attempts: on a 401 with stored OAuth creds, refresh the token
+        // in place and retry ONCE (access tokens expire ~1h after connect).
+        let mut resp = {
+            let mut attempt = 0u8;
+            loop {
+                attempt += 1;
+                let mut req = t
+                    .client
+                    .post(&t.url)
+                    .header("Accept", "application/json, text/event-stream")
+                    .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
+                    .json(&msg);
+                if let Some(sid) = t.session.read().clone() {
+                    req = req.header("Mcp-Session-Id", sid);
+                }
+                if let Some(auth) = t.auth.read().clone() {
+                    req = req.bearer_auth(auth);
+                }
+                let resp = timeout(RPC_TIMEOUT, req.send())
+                    .await
+                    .map_err(|_| {
+                        anyhow!("rpc '{}' timed out after {}s", method, RPC_TIMEOUT.as_secs())
+                    })?
+                    .with_context(|| format!("remote rpc '{method}' transport error"))?;
+                // Capture / refresh the session id (servers set it on `initialize`).
+                if let Some(sid) = resp
+                    .headers()
+                    .get("mcp-session-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+                {
+                    *t.session.write() = Some(sid);
+                }
+                if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                    && attempt == 1
+                    && self.try_oauth_refresh(t).await
+                {
+                    continue;
+                }
+                break resp;
+            }
+        };
 
         let status = resp.status();
         let ctype = resp
@@ -426,7 +476,7 @@ impl ServerHandle {
                         .delete(&r.url)
                         .header("Mcp-Session-Id", sid)
                         .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION);
-                    if let Some(auth) = &r.auth {
+                    if let Some(auth) = r.auth.read().clone() {
                         req = req.bearer_auth(auth);
                     }
                     let _ = timeout(Duration::from_secs(3), req.send()).await;
@@ -874,6 +924,29 @@ fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// Build an SSRF-hardened HTTP client for ONE url: validate the scheme/host,
+/// resolve + reject blocked IPs, pin the client to exactly those addresses, and
+/// refuse redirects (a followed redirect re-resolves UNPINNED → an SSRF/rebind
+/// bypass). Reused by the remote transport AND the OAuth flow so every
+/// server-controlled URL (discovery / token / refresh endpoints) gets the same
+/// protection. Build a fresh client per target host.
+pub(crate) async fn build_pinned_client(url: &str) -> Result<reqwest::Client> {
+    validate_remote_url(url)?;
+    let url_owned = url.to_string();
+    let (pin_host, pin_addrs) =
+        tokio::task::spawn_blocking(move || resolve_pinned_addrs(&url_owned))
+            .await
+            .map_err(|e| anyhow!("dns resolve task failed: {e}"))??;
+    let mut builder = reqwest::Client::builder()
+        .timeout(RPC_TIMEOUT)
+        .connect_timeout(INIT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none());
+    if !pin_addrs.is_empty() {
+        builder = builder.resolve_to_addrs(&pin_host, &pin_addrs);
+    }
+    builder.build().map_err(|e| anyhow!("build http client: {e}"))
+}
+
 /// Cheap, network-free pre-validation of a remote MCP URL: scheme + literal-IP
 /// block + metadata-hostname block. This is the first gate; the authoritative
 /// SSRF defense is [`resolve_pinned_addrs`], which resolves the hostname and
@@ -957,17 +1030,9 @@ pub async fn start_remote_server(
     token: Option<String>,
 ) -> Result<Vec<ToolDescriptor>> {
     validate_name(&name)?;
-    validate_remote_url(&url)?;
 
-    // SSRF / DNS-rebinding defense: resolve the host now, reject if any
-    // resolved IP is in blocked space, then PIN the client to exactly those
-    // addresses so the connect can't be redirected by a rebind between the
-    // check and the request. Blocking DNS → run off the async executor.
-    let url_for_resolve = url.clone();
-    let (pin_host, pin_addrs) =
-        tokio::task::spawn_blocking(move || resolve_pinned_addrs(&url_for_resolve))
-            .await
-            .map_err(|e| anyhow!("dns resolve task failed: {e}"))??;
+    // SSRF / DNS-rebinding-hardened client (validate + pin + no redirects).
+    let client = build_pinned_client(&url).await?;
 
     if let Some(existing) = REGISTRY.write().remove(&name) {
         let h = existing.clone();
@@ -980,16 +1045,6 @@ pub async fn start_remote_server(
         json!({ "server": name, "url": url, "transport": "remote", "auth": token.is_some() }),
     );
 
-    let mut builder = reqwest::Client::builder()
-        .timeout(RPC_TIMEOUT)
-        .connect_timeout(INIT_TIMEOUT);
-    if !pin_addrs.is_empty() {
-        builder = builder.resolve_to_addrs(&pin_host, &pin_addrs);
-    }
-    let client = builder
-        .build()
-        .map_err(|e| anyhow!("build http client: {e}"))?;
-
     let handle = Arc::new(ServerHandle {
         name: name.clone(),
         command: url.clone(),
@@ -999,7 +1054,7 @@ pub async fn start_remote_server(
             client,
             url,
             session: RwLock::new(None),
-            auth: token.filter(|t| !t.is_empty()),
+            auth: RwLock::new(token.filter(|t| !t.is_empty())),
         }),
         tools: RwLock::new(Vec::new()),
         stderr_buf: Arc::new(Mutex::new(String::new())),

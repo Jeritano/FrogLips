@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
@@ -80,23 +80,32 @@ export function McpView() {
     return m;
   }, [servers]);
 
+  const refreshing = useRef(false);
   const refresh = useCallback(async () => {
+    // Skip if a previous poll is still in flight — with several (or slow /
+    // restarting) servers a refresh can exceed the 4s interval and overlap,
+    // stacking N+1 IPC calls. Per-server tool fetches run in parallel.
+    if (refreshing.current) return;
+    refreshing.current = true;
     try {
       const raw = await api.mcpListServers();
       const list = Array.isArray(raw) ? raw : [];
       setServers(list);
-      const toolMap: Record<string, string[]> = {};
-      for (const s of list) {
-        try {
-          const ts = await api.mcpListTools(s.name);
-          toolMap[s.name] = Array.isArray(ts) ? ts.map((t) => t.name) : [];
-        } catch {
-          /* mid-restart */
-        }
-      }
-      setTools(toolMap);
+      const pairs = await Promise.all(
+        list.map(async (s) => {
+          try {
+            const ts = await api.mcpListTools(s.name);
+            return [s.name, Array.isArray(ts) ? ts.map((t) => t.name) : []] as const;
+          } catch {
+            return [s.name, [] as string[]] as const; // mid-restart
+          }
+        }),
+      );
+      setTools(Object.fromEntries(pairs));
     } catch (e) {
       setErr(String(e));
+    } finally {
+      refreshing.current = false;
     }
   }, []);
 
@@ -290,10 +299,10 @@ export function McpView() {
   return (
     <div className="mcp-root" data-testid="mcp-view">
       <div className="mcp-tabs" role="tablist">
-        <button role="tab" aria-selected={tab === "installed"} className={`mcp-tab${tab === "installed" ? " sel" : ""}`} onClick={() => setTab("installed")}>
+        <button role="tab" aria-selected={tab === "installed"} className={`mcp-tab${tab === "installed" ? " sel" : ""}`} onClick={() => { setErr(null); setTab("installed"); }}>
           Installed{configs.length ? ` (${configs.length})` : ""}
         </button>
-        <button role="tab" aria-selected={tab === "browse"} className={`mcp-tab${tab === "browse" ? " sel" : ""}`} onClick={() => setTab("browse")}>
+        <button role="tab" aria-selected={tab === "browse"} className={`mcp-tab${tab === "browse" ? " sel" : ""}`} onClick={() => { setForm(null); setErr(null); setTab("browse"); }}>
           Browse
         </button>
         <div className="mcp-tabspacer" />
@@ -312,7 +321,7 @@ export function McpView() {
       )}
 
       {/* Add / edit form */}
-      {form?.open && (
+      {tab === "installed" && form?.open && (
         <div className="mcp-form">
           <div className="mcp-form-row">
             <label className="mcp-kind">
@@ -386,6 +395,7 @@ export function McpView() {
                   <Button
                     size="sm"
                     variant={removeConfirm.armed === cfg.name ? "danger" : "ghost"}
+                    disabled={busy === cfg.name}
                     onClick={() => removeConfirm.request(cfg.name, () => void removeConfig(cfg))}
                   >
                     {removeConfirm.labelFor(cfg.name, "Remove")}
@@ -421,7 +431,7 @@ export function McpView() {
             <div className="mcp-empty"><Spinner /> Loading registry…</div>
           ) : (
             <div className="mcp-cards">
-              {entries.map((e) => {
+              {entries.slice(0, 60).map((e) => {
                 const installed = configs.some((c) => c.name === deriveName(e.id));
                 const launch = e.transport === "package" ? packageLaunch(e) : null;
                 const canAdd = e.transport === "remote" || launch !== null;
@@ -449,6 +459,9 @@ export function McpView() {
                 );
               })}
               {!browseLoading && entries.length === 0 && <div className="mcp-empty">No servers found.</div>}
+              {entries.length > 60 && (
+                <div className="mcp-empty">Showing 60 of {entries.length} — refine your search to narrow.</div>
+              )}
             </div>
           )}
         </div>

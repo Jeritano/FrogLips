@@ -27,7 +27,6 @@ use tauri_plugin_opener::OpenerExt as _;
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
-const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Credentials persisted after a successful flow. Stored as JSON under the
@@ -61,13 +60,6 @@ struct TokenResp {
     refresh_token: Option<String>,
 }
 
-fn http() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .context("build http client")
-}
-
 /// Fill `buf` with CSPRNG bytes, base64url (no pad) encoded.
 fn random_b64(len: usize) -> Result<String> {
     let mut buf = vec![0u8; len];
@@ -93,21 +85,26 @@ fn origin_of(raw: &str) -> Result<String> {
     })
 }
 
-/// Discover the authorization-server endpoints for an MCP server URL.
-async fn discover(client: &reqwest::Client, server_url: &str) -> Result<AuthServerMeta> {
+/// Discover the authorization-server endpoints for an MCP server URL. Every
+/// fetch goes through the SSRF-pinned client; a discovered (server-controlled)
+/// URL pointing at blocked space is rejected before any request is made.
+async fn discover(server_url: &str) -> Result<AuthServerMeta> {
     let origin = origin_of(server_url)?;
 
     // 1. Protected-resource metadata → authorization server base (best-effort;
     //    fall back to the server's own origin if absent).
     let prm_url = format!("{origin}/.well-known/oauth-protected-resource");
-    let as_base = match client.get(&prm_url).send().await {
-        Ok(r) if r.status().is_success() => r
-            .json::<ProtectedResourceMeta>()
-            .await
-            .ok()
-            .and_then(|m| m.authorization_servers)
-            .and_then(|v| v.into_iter().next()),
-        _ => None,
+    let as_base = match super::build_pinned_client(&prm_url).await {
+        Ok(c) => match c.get(&prm_url).send().await {
+            Ok(r) if r.status().is_success() => r
+                .json::<ProtectedResourceMeta>()
+                .await
+                .ok()
+                .and_then(|m| m.authorization_servers)
+                .and_then(|v| v.into_iter().next()),
+            _ => None,
+        },
+        Err(_) => None,
     }
     .unwrap_or_else(|| origin.clone());
     let as_base = as_base.trim_end_matches('/');
@@ -118,19 +115,22 @@ async fn discover(client: &reqwest::Client, server_url: &str) -> Result<AuthServ
         ".well-known/openid-configuration",
     ] {
         let meta_url = format!("{as_base}/{path}");
-        if let Ok(r) = client.get(&meta_url).send().await {
-            if r.status().is_success() {
-                if let Ok(m) = r.json::<AuthServerMeta>().await {
-                    return Ok(m);
+        if let Ok(c) = super::build_pinned_client(&meta_url).await {
+            if let Ok(r) = c.get(&meta_url).send().await {
+                if r.status().is_success() {
+                    if let Ok(m) = r.json::<AuthServerMeta>().await {
+                        return Ok(m);
+                    }
                 }
             }
         }
     }
-    bail!("could not discover OAuth endpoints for {server_url} (no authorization-server metadata)")
+    bail!("could not discover OAuth endpoints for {server_url} (no authorization-server metadata, or it resolves to blocked space)")
 }
 
 /// Dynamic Client Registration (RFC 7591) → returns the issued `client_id`.
-async fn register(client: &reqwest::Client, reg_ep: &str, redirect_uri: &str) -> Result<String> {
+async fn register(reg_ep: &str, redirect_uri: &str) -> Result<String> {
+    let client = super::build_pinned_client(reg_ep).await?;
     #[derive(Serialize)]
     struct Req<'a> {
         client_name: &'a str,
@@ -169,8 +169,7 @@ async fn register(client: &reqwest::Client, reg_ep: &str, redirect_uri: &str) ->
 /// Run the full flow: discover → register → browser auth (PKCE) → token.
 /// Opens the system browser and blocks on the loopback callback (5-min cap).
 pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCreds> {
-    let client = http()?;
-    let meta = discover(&client, server_url).await?;
+    let meta = discover(server_url).await?;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -182,7 +181,7 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
         .registration_endpoint
         .as_deref()
         .context("server does not support dynamic client registration; paste an API key instead")?;
-    let client_id = register(&client, reg_ep, &redirect_uri).await?;
+    let client_id = register(reg_ep, &redirect_uri).await?;
 
     let (verifier, challenge) = pkce()?;
     let state = random_b64(16)?;
@@ -217,7 +216,8 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
         ("code_verifier", verifier.as_str()),
         ("resource", server_url),
     ];
-    let r = client
+    let r = super::build_pinned_client(&meta.token_endpoint)
+        .await?
         .post(&meta.token_endpoint)
         .form(&params)
         .send()
@@ -246,14 +246,14 @@ pub async fn refresh(creds: &OauthCreds) -> Result<OauthCreds> {
         .refresh_token
         .as_deref()
         .context("no refresh token stored")?;
-    let client = http()?;
     let params = [
         ("grant_type", "refresh_token"),
         ("refresh_token", rt),
         ("client_id", creds.client_id.as_str()),
         ("resource", creds.resource.as_str()),
     ];
-    let r = client
+    let r = super::build_pinned_client(&creds.token_endpoint)
+        .await?
         .post(&creds.token_endpoint)
         .form(&params)
         .send()
