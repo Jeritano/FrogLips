@@ -20,6 +20,11 @@ import type {
 } from "./types";
 
 const DEFAULT_PER_TURN_TIMEOUT_MS = 120_000;
+// Local models (Ollama) cold-load or reload between turns — swapping a 7B+
+// model can take minutes. A flat cloud-grade 120s cap pre-empted the client's
+// own ~300s local-load budget and turned 2-local-model tables into instant
+// "all failed". Give local seats a much longer per-turn window.
+const LOCAL_PER_TURN_TIMEOUT_MS = 360_000;
 const DEFAULT_OUTPUT_CAP_TOKENS = 512;
 
 export interface RoundtableHooks {
@@ -62,7 +67,9 @@ export async function runRoundtable(
   opts: RunRoundtableOpts,
 ): Promise<RoundtableResult> {
   const { signal, prices } = opts;
-  const perTurnTimeoutMs = opts.perTurnTimeoutMs ?? DEFAULT_PER_TURN_TIMEOUT_MS;
+  // Explicit override applies to all seats; otherwise the per-turn budget is
+  // backend-aware (local reloads need far longer than cloud TTFT).
+  const optTimeout = opts.perTurnTimeoutMs;
   const turns: Turn[] = [];
   const totals: RoundtableTotals = {
     turns: 0,
@@ -98,7 +105,6 @@ export async function runRoundtable(
       const promptTokens = estimateTokens(messagesText(messages));
       const capTokens = seat.maxTokens ?? DEFAULT_OUTPUT_CAP_TOKENS;
       const price = prices[seat.id] ?? null;
-      if (!price) totals.usdPartial = true;
 
       // Budget gate — refuse to START a turn that would cross a cap.
       if (config.stop.maxTokens != null) {
@@ -127,11 +133,20 @@ export async function runRoundtable(
       turns.push(turn);
       hooks.onTurnStart(turn);
 
-      // Per-turn timeout layered on the run-level abort signal.
+      // Per-turn timeout layered on the run-level abort signal. Backend-aware:
+      // local seats get a far longer window for cold-load/reload.
+      const seatTimeoutMs =
+        optTimeout ?? (seat.backend === "ollama" ? LOCAL_PER_TURN_TIMEOUT_MS : DEFAULT_PER_TURN_TIMEOUT_MS);
       const ac = new AbortController();
       const onAbort = () => ac.abort();
       signal.addEventListener("abort", onAbort);
-      const timer = setTimeout(() => ac.abort(), perTurnTimeoutMs);
+      // Flag the timeout explicitly: cloud clients don't throw on abort, so a
+      // timed-out cloud turn can't be detected from a thrown error alone.
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        ac.abort();
+      }, seatTimeoutMs);
       let acc = "";
       try {
         acc = await streamSeatTurn(seat, messages, {
@@ -156,7 +171,11 @@ export async function runRoundtable(
         }
         // Timeout or transport/provider error → skip this seat, keep going.
         turn.status = "error";
-        turn.error = e instanceof Error ? e.message : String(e);
+        turn.error = timedOut
+          ? `timed out after ${Math.round(seatTimeoutMs / 1000)}s`
+          : e instanceof Error
+            ? e.message
+            : String(e);
         hooks.onTurnDone(turn);
         continue;
       }
@@ -173,19 +192,30 @@ export async function runRoundtable(
         return finishReason("stopped");
       }
 
+      // Per-turn timeout on a CLOUD seat: the client breaks the stream and
+      // returns the partial WITHOUT throwing, so the catch never fired. Treat
+      // it as an error (don't commit/bill a truncated turn), matching local.
+      if (timedOut) {
+        turn.status = "error";
+        turn.error = `timed out after ${Math.round(seatTimeoutMs / 1000)}s`;
+        hooks.onTurnDone(turn);
+        continue;
+      }
+
       const clean = sanitizeTurn(acc, seat, config.seats);
       turn.text = clean;
-      turn.status = clean ? "done" : "error";
       if (!clean) {
         turn.status = "error";
         turn.error = "empty response";
         hooks.onTurnDone(turn);
         continue;
       }
+      turn.status = "done";
       roundSuccess = true;
       turn.tokensOut = estimateTokens(clean);
       turn.usd = turnUsd(turn.tokensIn, turn.tokensOut, price);
       totals.turns++;
+      if (!price) totals.usdPartial = true;
       totals.tokensIn += turn.tokensIn;
       totals.tokensOut += turn.tokensOut;
       totals.usd += turn.usd;

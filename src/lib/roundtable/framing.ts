@@ -87,25 +87,51 @@ function escapeRe(s: string): string {
  * Conservative by design: when unsure, keep the text.
  */
 export function sanitizeTurn(raw: string, seat: Seat, allSeats: Seat[]): string {
-  let text = raw.trim();
+  const original = raw.trim();
+  let text = original;
   // 1. Strip a leading self-prefix the model added despite the rule.
   const selfRe = new RegExp(`^${escapeRe(seat.name)}\\s*:\\s*`, "i");
   text = text.replace(selfRe, "");
 
-  // 2. Trim a hijacked second speaker. Build a name alternation of OTHER seats
-  //    + the meta speakers, and cut at the first line that starts one.
+  // 2. Trim a hijacked second speaker. Alternation of OTHER seats + the meta
+  //    speakers, sorted LONGEST-first so a short name that is a prefix of a
+  //    longer one ("Adversary" vs "Adversary X") can't match inside it. Only
+  //    cut at a genuine TURN BOUNDARY — a speaker label that opens a paragraph
+  //    (preceded by a blank line) — so a mid-sentence vocative addressing
+  //    another participant ("The Proposer: you assume adoption is linear…") is
+  //    NOT mistaken for a hijack and deleted.
   const names = [
     ...allSeats.filter((s) => s.id !== seat.id).map((s) => s.name),
     "Moderator",
     "Director",
-  ].map(escapeRe);
-  if (names.length === 0) return text.trim();
-  const lines = text.split("\n");
-  const speakerLine = new RegExp(`^\\s*(${names.join("|")})\\s*:`, "i");
-  for (let i = 1; i < lines.length; i++) {
-    if (speakerLine.test(lines[i])) {
-      return lines.slice(0, i).join("\n").trim();
+  ]
+    .filter((n) => n.trim().length > 0)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRe);
+  if (names.length > 0) {
+    const lines = text.split("\n");
+    const speakerLine = new RegExp(`^\\s*(${names.join("|")})\\s*:`, "i");
+    for (let i = 1; i < lines.length; i++) {
+      if (!speakerLine.test(lines[i])) continue;
+      const afterColon = lines[i].slice(lines[i].indexOf(":") + 1).trim();
+      // A real hijack = the model writing ANOTHER speaker's turn: either a new
+      // paragraph block (blank line before) or a fresh capitalized/quoted
+      // sentence after the label ("Optimist: But consider…"). A mid-sentence
+      // vocative that merely addresses a participant ("The Proposer: you
+      // assume…") continues in lowercase/second-person → keep it.
+      const boundary = lines[i - 1].trim() === "";
+      const newSentence = /^["“(A-Z]/.test(afterColon);
+      if (boundary || newSentence) {
+        text = lines.slice(0, i).join("\n");
+        break;
+      }
     }
   }
-  return text.trim();
+
+  // Never let sanitization MANUFACTURE an empty turn. If our strips ate
+  // everything, the model genuinely produced content — keep the original.
+  // The engine's "empty response" must mean the MODEL returned nothing, not a
+  // sanitize artifact (the cause of real replies showing as "empty response").
+  const cleaned = text.trim();
+  return cleaned.length > 0 ? cleaned : original;
 }

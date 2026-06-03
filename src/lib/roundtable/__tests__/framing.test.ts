@@ -85,4 +85,16 @@ describe("sanitizeTurn", () => {
     const raw = "A multi-line\nreply with no speaker prefixes.";
     expect(sanitizeTurn(raw, seatB, [seatA, seatB])).toBe(raw);
   });
+  it("keeps a vocative addressing another participant (not a hijack)", () => {
+    // Lowercase / second-person continuation after the colon = the speaker
+    // addressing someone, NOT writing their turn — must not be truncated.
+    const raw = "My plan holds.\nOptimist: you ignore the compounding risk that sinks it.";
+    expect(sanitizeTurn(raw, seatB, [seatA, seatB])).toBe(raw);
+  });
+  it("never manufactures an empty turn — falls back to the original", () => {
+    // A reply that is only the self-prefix would strip to "" — must fall back
+    // to the original so the engine never mislabels it "empty response".
+    expect(sanitizeTurn("Skeptic:", seatB, [seatA, seatB])).toBe("Skeptic:");
+    expect(sanitizeTurn("Skeptic: ", seatB, [seatA, seatB]).length).toBeGreaterThan(0);
+  });
 });

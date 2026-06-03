@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -57,10 +58,31 @@ export function RoundtableRunProvider({ children }: { children: ReactNode }) {
   // The engine drains this once per round (RT-1) so a mid-run steer reaches
   // the next seat — not just the display.
   const injectionBuf = useRef<Turn[]>([]);
+  // Live delta-coalescing flush timer, tracked so unmount can clear it.
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Unmount safety net (HMR / full teardown mid-run): abort the in-flight run
+  // so it stops streaming + spending, and clear any pending flush timer so it
+  // can't setState on an unmounted tree. The provider sits App-high and rarely
+  // unmounts, but when it does this prevents a leaked run + controller.
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      if (flushTimerRef.current != null) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const start = useCallback((cfg: RoundtableConfig, prices: PriceTable) => {
     if (runningRef.current) return false;
     runningRef.current = true;
+    // Reset the inject buffer so a moderator turn stranded at the tail of a
+    // PRIOR run (injected after its last round drained) can't bleed into this
+    // run's round-0 transcript.
+    injectionBuf.current = [];
     setRunning(true);
     setConfig(cfg);
     setTurns([]);
@@ -74,9 +96,8 @@ export function RoundtableRunProvider({ children }: { children: ReactNode }) {
 
     // Per-turn delta coalescing.
     const buf = new Map<string, string[]>();
-    let timer: ReturnType<typeof setTimeout> | null = null;
     const flush = () => {
-      timer = null;
+      flushTimerRef.current = null;
       if (buf.size === 0) return;
       const batch = new Map(buf);
       buf.clear();
@@ -88,8 +109,8 @@ export function RoundtableRunProvider({ children }: { children: ReactNode }) {
       );
     };
     const schedule = () => {
-      if (timer != null) return;
-      timer = setTimeout(flush, 16);
+      if (flushTimerRef.current != null) return;
+      flushTimerRef.current = setTimeout(flush, 16);
     };
 
     const hooks: RoundtableHooks = {
@@ -102,9 +123,9 @@ export function RoundtableRunProvider({ children }: { children: ReactNode }) {
         schedule();
       },
       onTurnDone: (turn) => {
-        if (timer != null) {
-          clearTimeout(timer);
-          timer = null;
+        if (flushTimerRef.current != null) {
+          clearTimeout(flushTimerRef.current);
+          flushTimerRef.current = null;
         }
         flush();
         setTurns((ts) => ts.map((t) => (t.id === turn.id ? { ...turn } : t)));

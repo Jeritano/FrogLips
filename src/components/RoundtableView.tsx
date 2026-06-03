@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { Button, Input, Spinner, Badge } from "./ui";
 import { usePersistedState } from "../hooks/usePersistedState";
@@ -11,8 +11,35 @@ import type {
   SeatBackend,
   MemoryMode,
   TurnControl,
+  Turn,
 } from "../lib/roundtable/types";
 import "../styles/roundtable.css";
+
+/**
+ * One transcript bubble. Memoized: done turns keep referential identity across
+ * the 16ms delta flushes (the provider's flush map returns unchanged turns by
+ * reference), so a completed bubble's markdown is parsed once, not re-parsed
+ * ~60×/sec for every prior turn while a later turn streams.
+ */
+const RtTurnBubble = memo(function RtTurnBubble({ turn: t }: { turn: Turn }) {
+  return (
+    <div
+      className={`rt-bubble rt-${t.kind}${t.status === "error" ? " rt-err" : ""}`}
+      style={{ ["--seat" as string]: t.color }}
+    >
+      <div className="rt-bubble-head">
+        <span className="rt-dot" /> {t.speaker}
+        {t.status === "streaming" && <span className="rt-typing"> · typing…</span>}
+        {t.status === "error" && <span className="rt-typing"> · {t.error ?? "failed"}</span>}
+      </div>
+      {t.status === "streaming" ? (
+        <div className="rt-bubble-body rt-streaming">{t.text}<span className="rt-cursor">▍</span></div>
+      ) : (
+        <div className="rt-bubble-body markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(t.text) }} />
+      )}
+    </div>
+  );
+});
 
 const SEAT_COLORS = ["#22c55e", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444", "#14b8a6"];
 
@@ -135,8 +162,17 @@ export function RoundtableView() {
   const [topic, setTopic] = usePersistedState<string>("roundtable.topic", PRESETS[0].topic);
   const [turnControl] = useState<TurnControl>("round-robin");
   const [memoryMode, setMemoryMode] = usePersistedState<MemoryMode>("roundtable.memory", "recent");
-  const [maxRounds, setMaxRounds] = usePersistedState<number>("roundtable.rounds", 4);
-  const [maxUsd, setMaxUsd] = usePersistedState<number>("roundtable.maxusd", 0.5);
+  const [maxRounds, setMaxRounds] = usePersistedState<number>(
+    "roundtable.rounds",
+    4,
+    (v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 1,
+  );
+  const [maxUsd, setMaxUsd] = usePersistedState<number>(
+    "roundtable.maxusd",
+    0.5,
+    (v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0,
+  );
+  const [confirmLocal, setConfirmLocal] = useState(false);
   const [setupErr, setSetupErr] = useState<string | null>(null);
   const [injectText, setInjectText] = useState("");
 
@@ -176,8 +212,13 @@ export function RoundtableView() {
           opts.push({ key: `ollama::${e.id}`, backend: "ollama", model: e.id, label: e.id, group: "Ollama" });
         }
         if (!cancelled) {
-          cachedOptions = opts;
-          cachedOptionsAt = Date.now();
+          // Don't cache an empty/failed list — a transient backend hiccup would
+          // otherwise pin the picker empty for the whole TTL even after the
+          // backend recovers.
+          if (opts.length > 0) {
+            cachedOptions = opts;
+            cachedOptionsAt = Date.now();
+          }
           setOptions(opts);
           if (opts.length === 0) setModelErr("No cloud or Ollama models found. Add a custom backend or an OpenRouter key in Settings.");
         }
@@ -229,7 +270,13 @@ export function RoundtableView() {
             color: SEAT_COLORS[i % SEAT_COLORS.length],
           };
         });
-        return [...mapped, ...cur.slice(p.personas.length)];
+        // Recolor preserved extra seats by their final index too, so applying
+        // a preset can't leave two seats sharing a color.
+        const extra = cur.slice(p.personas.length).map((s, j) => ({
+          ...s,
+          color: SEAT_COLORS[(p.personas.length + j) % SEAT_COLORS.length],
+        }));
+        return [...mapped, ...extra];
       });
     },
     [setSeats, setTopic, setMaxRounds],
@@ -240,9 +287,22 @@ export function RoundtableView() {
   const startRun = useCallback(() => {
     setSetupErr(null);
     if (!topic.trim()) return setSetupErr("Enter a topic.");
+    if (seats.length < 2) return setSetupErr("A roundtable needs at least 2 seats.");
     const resolved = seats.map((d) => ({ d, opt: optionByKey.get(d.optionKey) }));
     const unset = resolved.find((r) => !r.opt);
     if (unset) return setSetupErr(`Pick a model for "${unset.d.name}".`);
+
+    // Gate the known-bad "2+ local models" config (resolved backends, not the
+    // possibly-stale draft): Ollama keeps ~1 model resident, so each turn
+    // reloads the other and usually times out → "all failed". Two-click confirm
+    // so a user with the VRAM for it can still proceed.
+    const localSeats = resolved.filter((r) => r.opt?.backend === "ollama").length;
+    if (localSeats >= 2 && !confirmLocal) {
+      setConfirmLocal(true);
+      return setSetupErr(
+        `${localSeats} local models will reload every turn and usually time out ("all failed"). Use cloud models, or click Start again to run anyway.`,
+      );
+    }
 
     const builtSeats: Seat[] = resolved.map(({ d, opt }) => ({
       id: d.id,
@@ -266,8 +326,12 @@ export function RoundtableView() {
       recentWindow: 6,
       stop: { maxRounds, maxTokens: null, maxUsd: maxUsd > 0 ? maxUsd : null },
     };
-    if (!run.start(config, prices)) setSetupErr("A roundtable is already running.");
-  }, [seats, topic, optionByKey, turnControl, memoryMode, maxRounds, maxUsd, run]);
+    if (!run.start(config, prices)) {
+      setSetupErr("A roundtable is already running.");
+    } else {
+      setConfirmLocal(false); // run launched — disarm the local-models confirm
+    }
+  }, [seats, topic, optionByKey, turnControl, memoryMode, maxRounds, maxUsd, confirmLocal, run]);
 
   const exportTranscript = useCallback(() => {
     const md = run.turns
@@ -310,28 +374,15 @@ export function RoundtableView() {
                 <span className="rt-dot" /> {s.name}
               </span>
             ))}
-            {localCount >= 2 && <span className="rt-warn">⚠ 2+ local models reload each turn</span>}
+            {run.config.seats.filter((s) => s.backend === "ollama").length >= 2 && (
+              <span className="rt-warn">⚠ 2+ local models reload each turn</span>
+            )}
           </div>
         )}
 
         <div className="rt-transcript">
           {run.turns.map((t) => (
-            <div
-              key={t.id}
-              className={`rt-bubble rt-${t.kind}${t.status === "error" ? " rt-err" : ""}`}
-              style={{ ["--seat" as string]: t.color }}
-            >
-              <div className="rt-bubble-head">
-                <span className="rt-dot" /> {t.speaker}
-                {t.status === "streaming" && <span className="rt-typing"> · typing…</span>}
-                {t.status === "error" && <span className="rt-typing"> · {t.error ?? "failed"}</span>}
-              </div>
-              {t.status === "streaming" ? (
-                <div className="rt-bubble-body rt-streaming">{t.text}<span className="rt-cursor">▍</span></div>
-              ) : (
-                <div className="rt-bubble-body markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(t.text) }} />
-              )}
-            </div>
+            <RtTurnBubble key={t.id} turn={t} />
           ))}
           {run.turns.length === 0 && <div className="rt-empty">Starting…</div>}
         </div>
@@ -350,7 +401,9 @@ export function RoundtableView() {
               value={injectText}
               onChange={(e) => setInjectText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && injectText.trim()) {
+                // Ignore the Enter that commits an IME composition (CJK), and
+                // allow Shift+Enter for a newline.
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && injectText.trim()) {
                   run.inject(injectText);
                   setInjectText("");
                 }

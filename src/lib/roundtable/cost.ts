@@ -47,17 +47,19 @@ export function projectTurnUsd(
 /** Parse an OpenRouter price string (USD per token) into a number; bad/absent
  *  → 0. OpenRouter ships e.g. "0.0000004". */
 export function parsePrice(v: unknown): number {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
+  // Clamp to >= 0: a malformed/negative price would make turnUsd negative,
+  // LOWERING totals.usd and potentially letting the maxUsd gate never trip.
+  if (typeof v === "number" && Number.isFinite(v)) return v >= 0 ? v : 0;
   if (typeof v === "string") {
     const n = Number.parseFloat(v);
-    return Number.isFinite(n) ? n : 0;
+    return Number.isFinite(n) && n >= 0 ? n : 0;
   }
   return 0;
 }
 
 /** Format a small USD amount for the meter. <$0.01 shows extra precision. */
 export function formatUsd(usd: number): string {
-  if (usd <= 0) return "$0.00";
+  if (!Number.isFinite(usd) || usd <= 0) return "$0.00";
   if (usd < 0.01) return `$${usd.toFixed(4)}`;
   return `$${usd.toFixed(2)}`;
 }
