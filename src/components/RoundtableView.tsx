@@ -148,6 +148,18 @@ let cachedOptions: ModelOption[] | null = null;
 let cachedOptionsAt = 0;
 const OPTIONS_TTL_MS = 30 * 1000;
 
+/** Ollama Cloud models (`…:cloud` / `…-cloud`) run remotely on ollama.com —
+ *  they don't occupy local VRAM. */
+function isCloudOllama(model: string | undefined): boolean {
+  return !!model && (model.includes(":cloud") || model.endsWith("-cloud"));
+}
+/** A genuinely LOCAL Ollama seat that reloads between turns. Excludes Ollama
+ *  Cloud, which is served remotely and never reloads — so it must NOT trigger
+ *  the "2+ local models reload each turn" warning/gate. */
+function isLocalReloading(backend: SeatBackend | undefined, model: string | undefined): boolean {
+  return backend === "ollama" && !isCloudOllama(model);
+}
+
 export function RoundtableView() {
   const run = useRoundtableRun();
   const [options, setOptions] = useState<ModelOption[]>(() => cachedOptions ?? []);
@@ -286,7 +298,10 @@ export function RoundtableView() {
     [setSeats, setTopic, setMaxRounds],
   );
 
-  const localCount = seats.filter((s) => optionByKey.get(s.optionKey)?.backend === "ollama").length;
+  const localCount = seats.filter((s) => {
+    const o = optionByKey.get(s.optionKey);
+    return isLocalReloading(o?.backend, o?.model);
+  }).length;
 
   const startRun = useCallback(() => {
     setSetupErr(null);
@@ -300,7 +315,7 @@ export function RoundtableView() {
     // possibly-stale draft): Ollama keeps ~1 model resident, so each turn
     // reloads the other and usually times out → "all failed". Two-click confirm
     // so a user with the VRAM for it can still proceed.
-    const localSeats = resolved.filter((r) => r.opt?.backend === "ollama").length;
+    const localSeats = resolved.filter((r) => isLocalReloading(r.opt?.backend, r.opt?.model)).length;
     if (localSeats >= 2 && !confirmLocal) {
       setConfirmLocal(true);
       return setSetupErr(
@@ -402,7 +417,7 @@ export function RoundtableView() {
                 <span className="rt-dot" /> {s.name}
               </span>
             ))}
-            {run.config.seats.filter((s) => s.backend === "ollama").length >= 2 && (
+            {run.config.seats.filter((s) => isLocalReloading(s.backend, s.model)).length >= 2 && (
               <span className="rt-warn">⚠ 2+ local models reload each turn</span>
             )}
           </div>
