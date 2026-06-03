@@ -113,7 +113,9 @@ export function sanitizeTurn(raw: string, seat: Seat, allSeats: Seat[]): string 
     const speakerLine = new RegExp(`^\\s*(${names.join("|")})\\s*:`, "i");
     for (let i = 1; i < lines.length; i++) {
       if (!speakerLine.test(lines[i])) continue;
-      const afterColon = lines[i].slice(lines[i].indexOf(":") + 1).trim();
+      // Strip exactly the matched `Name:` prefix (not the first `:` found) so a
+      // persona name that itself contains a colon doesn't mis-slice.
+      const afterColon = lines[i].replace(speakerLine, "").trim();
       // A real hijack = the model writing ANOTHER speaker's turn: either a new
       // paragraph block (blank line before) or a fresh capitalized/quoted
       // sentence after the label ("Optimist: But consider…"). A mid-sentence

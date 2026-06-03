@@ -139,14 +139,14 @@ function isDraftSeatArray(v: unknown): v is DraftSeat[] {
   return Array.isArray(v) && v.every((s) => s && typeof s === "object" && "id" in s && "optionKey" in s);
 }
 
-// Module-level cache for the picker's model list. `api.settingsGet()` resolves
-// each custom backend's API key from the macOS Keychain, which pops a keychain
-// prompt — so calling it on every Table mount prompted repeatedly. Cache the
-// resolved list across mounts (5-min TTL) so we hit settings/Keychain at most
-// once per window.
+// Short-lived module-level cache for the picker's model list — a fetch-dedupe
+// across quick remounts (settings IPC + OpenRouter catalogue fetch). The 5-min
+// TTL was to dodge a per-mount macOS Keychain prompt, but keys now live in a
+// local secrets file (no prompt), so a tight 30s TTL is enough to dedupe rapid
+// remounts while keeping the list fresh after a Settings change.
 let cachedOptions: ModelOption[] | null = null;
 let cachedOptionsAt = 0;
-const OPTIONS_TTL_MS = 5 * 60 * 1000;
+const OPTIONS_TTL_MS = 30 * 1000;
 
 export function RoundtableView() {
   const run = useRoundtableRun();
@@ -324,7 +324,13 @@ export function RoundtableView() {
       turnControl,
       memoryMode,
       recentWindow: 6,
-      stop: { maxRounds, maxTokens: null, maxUsd: maxUsd > 0 ? maxUsd : null },
+      stop: {
+        // Enforce the 1–30 cap even if a stale/hand-edited persisted value
+        // slipped past the input's max.
+        maxRounds: Math.min(30, Math.max(1, Math.round(maxRounds))),
+        maxTokens: null,
+        maxUsd: maxUsd > 0 ? maxUsd : null,
+      },
     };
     if (!run.start(config, prices)) {
       setSetupErr("A roundtable is already running.");

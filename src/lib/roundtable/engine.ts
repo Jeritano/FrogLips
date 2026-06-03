@@ -133,6 +133,17 @@ export async function runRoundtable(
       turns.push(turn);
       hooks.onTurnStart(turn);
 
+      // A failed / timed-out / empty turn still SENT its prompt — those input
+      // tokens were really consumed. Fold them into totals before skipping so
+      // the budget gate (which projects off totals) can't be overshot by a run
+      // of failures. Output isn't counted (none was committed).
+      const chargeFailedInput = () => {
+        totals.tokensIn += turn.tokensIn;
+        if (price) totals.usd += turnUsd(turn.tokensIn, 0, price);
+        else totals.usdPartial = true;
+        hooks.onTotals({ ...totals });
+      };
+
       // Per-turn timeout layered on the run-level abort signal. Backend-aware:
       // local seats get a far longer window for cold-load/reload.
       const seatTimeoutMs =
@@ -177,6 +188,7 @@ export async function runRoundtable(
             ? e.message
             : String(e);
         hooks.onTurnDone(turn);
+        chargeFailedInput();
         continue;
       }
       clearTimeout(timer);
@@ -199,6 +211,7 @@ export async function runRoundtable(
         turn.status = "error";
         turn.error = `timed out after ${Math.round(seatTimeoutMs / 1000)}s`;
         hooks.onTurnDone(turn);
+        chargeFailedInput();
         continue;
       }
 
@@ -208,6 +221,7 @@ export async function runRoundtable(
         turn.status = "error";
         turn.error = "empty response";
         hooks.onTurnDone(turn);
+        chargeFailedInput();
         continue;
       }
       turn.status = "done";
