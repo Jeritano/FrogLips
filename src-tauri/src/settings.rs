@@ -93,9 +93,64 @@ fn default_true() -> bool {
     true
 }
 
-/// macOS Keychain service name for custom-backend API keys. Stable so that
-/// `security find-generic-password` can locate keys across app restarts.
-const KEYCHAIN_SERVICE: &str = "Froglips-custom-backend";
+/// Local secret store: a mode-0600 JSON file (account → key) kept next to
+/// settings.json. Replaces the macOS login Keychain so the OS never prompts
+/// for access — the Keychain ACL reset on every ad-hoc re-sign, re-prompting
+/// despite "Always Allow". Trade-off (accepted 2026-06-02): keys sit in a
+/// local file readable by any process running as the user, vs the Keychain's
+/// per-app ACL. Single-user local build; the file is mode 0600.
+fn secrets_path() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("FROGLIPS_SETTINGS_DIR") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir).join("secrets.json"));
+        }
+    }
+    dirs::config_dir().map(|d| d.join("Froglips/secrets.json"))
+}
+
+/// Serializes secret-file read-modify-write so concurrent set/delete can't
+/// clobber each other.
+static SECRETS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn load_secrets() -> std::collections::BTreeMap<String, String> {
+    secrets_path()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Atomically persist the secret map as a mode-0600 file (tmp write + rename).
+fn write_secrets(map: &std::collections::BTreeMap<String, String>) -> bool {
+    let Some(p) = secrets_path() else {
+        return false;
+    };
+    if let Some(parent) = p.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    let Ok(json) = serde_json::to_vec_pretty(map) else {
+        return false;
+    };
+    let tmp = p.with_extension("json.tmp");
+    use std::io::Write as _;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let Ok(mut f) = opts.open(&tmp) else {
+        return false;
+    };
+    if f.write_all(&json).and_then(|_| f.sync_all()).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    drop(f);
+    std::fs::rename(&tmp, &p).is_ok()
+}
 
 /// Masked marker returned to the webview in place of a real API key — the
 /// frontend never needs the plaintext, only whether a key is set.
@@ -108,67 +163,52 @@ fn keychain_disabled() -> bool {
     std::env::var("FROGLIPS_SETTINGS_DIR").is_ok_and(|d| !d.is_empty())
 }
 
-/// Write an API key into the macOS Keychain under (KEYCHAIN_SERVICE, account).
-///
-/// Sec re-review H-2: previously called `security add-generic-password -w
-/// &lt;key&gt;` which passed the secret as an argv element — any same-uid
-/// process running `ps auxww` or `proc_pidinfo` could read it during the
-/// brief window. Now uses the native `security-framework` binding directly
-/// so the secret never crosses an argv boundary.
-/// Returns true iff the key landed in Keychain. Caller MUST check the
-/// result before blanking the plaintext copy on disk — infra audit M11.
+/// Store an API key for `account` in the local secret store. Returns true iff
+/// the write landed — the caller MUST check before blanking the on-disk
+/// plaintext (infra audit M11), else the only copy of the key is lost.
 fn keychain_set(account: &str, key: &str) -> bool {
     if keychain_disabled() {
         // Test mode treats success as "do nothing" so the disk path keeps
         // its plaintext (which is the contract the test suite relies on).
         return true;
     }
-    use security_framework::passwords::set_generic_password;
-    match set_generic_password(KEYCHAIN_SERVICE, account, key.as_bytes()) {
-        Ok(()) => true,
-        Err(e) => {
-            // Non-fatal at the diagnostic layer, but the caller must NOT
-            // blank the on-disk plaintext when this fires — otherwise the
-            // key is lost. P1 #34 + infra audit M11.
-            crate::diagnostics::warn_with(
-                "settings",
-                &format!("keychain_set({account}): {e}"),
-                serde_json::json!({ "account": account, "error": e.to_string() }),
-            );
-            false
-        }
+    let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = load_secrets();
+    map.insert(account.to_string(), key.to_string());
+    if write_secrets(&map) {
+        true
+    } else {
+        crate::diagnostics::warn_with(
+            "settings",
+            &format!("secret_set({account}) failed"),
+            serde_json::json!({ "account": account }),
+        );
+        false
     }
 }
 
-/// Fetch an API key from the macOS Keychain. Returns `None` if absent.
-///
-/// Sec re-review H-2 (symmetric with `keychain_set`): the previous CLI
-/// invocation read the value from `security`'s stdout, which carried the
-/// secret into a pipe a same-uid process could in principle attach to.
-/// The native binding keeps the secret in-process.
+/// Fetch an API key for `account` from the local secret store. `None` if absent.
 pub fn keychain_get(account: &str) -> Option<String> {
     if keychain_disabled() {
         return None;
     }
-    use security_framework::passwords::get_generic_password;
-    match get_generic_password(KEYCHAIN_SERVICE, account) {
-        Ok(bytes) => String::from_utf8(bytes).ok().filter(|s| !s.is_empty()),
-        Err(_) => None,
-    }
+    let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    load_secrets()
+        .get(account)
+        .filter(|s| !s.is_empty())
+        .cloned()
 }
 
-/// Delete an API key from the macOS Keychain (best-effort).
+/// Delete an API key for `account` from the local secret store (best-effort).
 fn keychain_delete(account: &str) {
     if keychain_disabled() {
         return;
     }
-    use security_framework::passwords::delete_generic_password;
-    // Native delete targets the same (service, account) tuple as any legacy
-    // CLI-created entry — Keychain is a single store — so this also clears
-    // keys written by older `security add-generic-password` builds. The
-    // redundant CLI fallback that used to follow was removed (LOW,
-    // 2026-05-29): it spawned a process on every key-clear for no benefit.
-    let _ = delete_generic_password(KEYCHAIN_SERVICE, account);
+    let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = load_secrets();
+    if map.remove(account).is_some() {
+        let _ = write_secrets(&map);
+    }
 }
 
 /// Public wrapper: store a key for `account`. Used by the OpenRouter

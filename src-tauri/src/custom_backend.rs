@@ -113,7 +113,12 @@ fn build_request_body(
 
 /// Outcome of feeding one network chunk into the SSE line parser.
 struct StreamProgress {
+    /// `delta.content` text — the actual answer.
     deltas: Vec<String>,
+    /// `delta.reasoning` / `delta.reasoning_content` text from reasoning
+    /// ("thinking") models. Used as a fallback when a turn produces no
+    /// `content` at all, so reasoning-only replies aren't dropped as empty.
+    reasoning: Vec<String>,
     done: bool,
 }
 
@@ -123,6 +128,7 @@ struct StreamProgress {
 fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     buf.push_str(chunk);
     let mut deltas = Vec::new();
+    let mut reasoning = Vec::new();
     let mut done = false;
     // Process every COMPLETE line in one pass over `buf[..=last_nl]` by slices
     // (no per-line `to_string`), then drain that prefix in a SINGLE shift. The
@@ -130,7 +136,7 @@ fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     // network chunk carried many SSE frames (drain memmoves the whole tail per
     // line). PERF (2026-05-30).
     let Some(last_nl) = buf.rfind('\n') else {
-        return StreamProgress { deltas, done };
+        return StreamProgress { deltas, reasoning, done };
     };
     for line in buf[..=last_nl].split('\n') {
         let line = line.trim();
@@ -151,10 +157,23 @@ fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
                     deltas.push(delta.to_string());
                 }
             }
+            // Reasoning/"thinking" models stream their text under `reasoning`
+            // (OpenRouter) or `reasoning_content` (DeepSeek-style) rather than
+            // `content`. Capture it so a reasoning-only turn isn't dropped.
+            for ptr in [
+                "/choices/0/delta/reasoning",
+                "/choices/0/delta/reasoning_content",
+            ] {
+                if let Some(r) = v.pointer(ptr).and_then(|x| x.as_str()) {
+                    if !r.is_empty() {
+                        reasoning.push(r.to_string());
+                    }
+                }
+            }
         }
     }
     buf.drain(..=last_nl);
-    StreamProgress { deltas, done }
+    StreamProgress { deltas, reasoning, done }
 }
 
 /// Well-known id for the built-in OpenRouter backend. Unlike user-defined
@@ -321,6 +340,11 @@ async fn chat_stream_inner(
     }
 
     let mut acc_len = 0usize;
+    // Track whether any `content` arrived. If none did, fall back to the
+    // model's reasoning text at stream end so a reasoning-only reply (common
+    // for "thinking" models) isn't dropped as "empty response".
+    let mut any_content = false;
+    let mut reasoning_acc = String::new();
     let stream = resp.bytes_stream();
     use futures::StreamExt;
     let mut buf = String::new();
@@ -350,6 +374,7 @@ async fn chat_stream_inner(
             ));
         }
         for delta in progress.deltas {
+            any_content = true;
             // Body cap — bail (gracefully) if the stream would blow past the
             // ceiling. Respect char boundaries so we never emit half a
             // codepoint.
@@ -373,8 +398,32 @@ async fn chat_stream_inner(
                 CustomChunk { delta },
             );
         }
+        // Stash reasoning (capped) while no content has arrived — fallback only.
+        if !any_content && reasoning_acc.len() < REPLY_MAX_BYTES {
+            for r in progress.reasoning {
+                reasoning_acc.push_str(&r);
+                if reasoning_acc.len() >= REPLY_MAX_BYTES {
+                    break;
+                }
+            }
+        }
         if progress.done {
-            return Ok(());
+            break;
+        }
+    }
+    // Reasoning-only reply: the model streamed `reasoning` but never `content`.
+    // Emit the accumulated reasoning as the turn body so it isn't dropped as
+    // empty. Char-boundary-safe truncation at the cap.
+    if !any_content && !reasoning_acc.is_empty() {
+        let mut take = reasoning_acc.len().min(REPLY_MAX_BYTES);
+        while take > 0 && !reasoning_acc.is_char_boundary(take) {
+            take -= 1;
+        }
+        if take > 0 {
+            let _ = app.emit(
+                &format!("custom-chunk:{op_id}"),
+                CustomChunk { delta: reasoning_acc[..take].to_string() },
+            );
         }
     }
     Ok(())
@@ -508,6 +557,48 @@ mod tests {
             }
         }
         (acc, done)
+    }
+
+    fn reasoning_line(text: &str) -> String {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"reasoning\":{}}}}}]}}\n",
+            serde_json::Value::String(text.into())
+        )
+    }
+
+    /// Collect content + reasoning separately across chunks.
+    fn collect_both(chunks: &[&str]) -> (String, String) {
+        let mut buf = String::new();
+        let (mut content, mut reasoning) = (String::new(), String::new());
+        for c in chunks {
+            let p = parse_openai_chunk(&mut buf, c);
+            for d in p.deltas {
+                content.push_str(&d);
+            }
+            for r in p.reasoning {
+                reasoning.push_str(&r);
+            }
+            if p.done {
+                break;
+            }
+        }
+        (content, reasoning)
+    }
+
+    #[test]
+    fn reasoning_only_captured_not_dropped() {
+        // A "thinking" model that streams only `reasoning` (no `content`) must
+        // surface its text via the reasoning channel, not vanish.
+        let (content, reasoning) = collect_both(&[&reasoning_line("thinking...")]);
+        assert_eq!(content, "");
+        assert_eq!(reasoning, "thinking...");
+    }
+
+    #[test]
+    fn content_and_reasoning_parsed_separately() {
+        let (content, reasoning) = collect_both(&[&reasoning_line("ponder"), &line("answer")]);
+        assert_eq!(content, "answer");
+        assert_eq!(reasoning, "ponder");
     }
 
     #[test]
