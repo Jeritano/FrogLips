@@ -140,6 +140,26 @@ function isDraftSeatArray(v: unknown): v is DraftSeat[] {
   return Array.isArray(v) && v.every((s) => s && typeof s === "object" && "id" in s && "optionKey" in s);
 }
 
+/** A user-saved roundtable config (a reusable template, persisted locally). */
+interface SavedTable {
+  id: string;
+  name: string;
+  seats: DraftSeat[];
+  topic: string;
+  memoryMode: MemoryMode;
+  maxRounds: number;
+  maxUsd: number;
+}
+function isSavedTableArray(v: unknown): v is SavedTable[] {
+  return (
+    Array.isArray(v) &&
+    v.every(
+      (t) =>
+        t && typeof t === "object" && "id" in t && "name" in t && "seats" in t && Array.isArray((t as SavedTable).seats),
+    )
+  );
+}
+
 // Short-lived module-level cache for the picker's model list — a fetch-dedupe
 // across quick remounts (settings IPC + OpenRouter catalogue fetch). The 5-min
 // TTL was to dodge a per-mount macOS Keychain prompt, but keys now live in a
@@ -197,6 +217,62 @@ export function RoundtableView() {
   useEffect(() => setTopbarSlot(document.getElementById("roundtable-topbar-slot")), []);
   const [setupErr, setSetupErr] = useState<string | null>(null);
   const [injectText, setInjectText] = useState("");
+
+  // Saved-table library: name + save the current config, load any saved one
+  // to tinker later, keep multiple. Persisted locally.
+  const [savedTables, setSavedTables] = usePersistedState<SavedTable[]>(
+    "roundtable.saved",
+    [],
+    isSavedTableArray,
+  );
+  const [loadedId, setLoadedId] = useState<string | null>(null);
+  const [saveName, setSaveName] = useState("");
+
+  const saveTable = useCallback(() => {
+    const name = saveName.trim();
+    if (!name) {
+      setSetupErr("Name the table before saving.");
+      return;
+    }
+    // Overwrite a table with the same id (the loaded one) OR the same name.
+    const id = loadedId ?? `rt${Date.now()}`;
+    const entry: SavedTable = { id, name, seats, topic, memoryMode, maxRounds, maxUsd };
+    setSavedTables((cur) =>
+      [...cur.filter((t) => t.id !== id && t.name !== name), entry].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      ),
+    );
+    setLoadedId(id);
+    setSetupErr(null);
+  }, [saveName, loadedId, seats, topic, memoryMode, maxRounds, maxUsd, setSavedTables]);
+
+  const loadTable = useCallback(
+    (id: string) => {
+      const t = savedTables.find((x) => x.id === id);
+      if (!t) return;
+      setSeats(t.seats.map((s) => ({ ...s }))); // copy so edits don't mutate the saved one
+      setTopic(t.topic);
+      setMemoryMode(t.memoryMode);
+      setMaxRounds(t.maxRounds);
+      setMaxUsd(t.maxUsd);
+      setLoadedId(t.id);
+      setSaveName(t.name);
+      setConfirmLocal(false);
+      setSetupErr(null);
+    },
+    [savedTables, setSeats, setTopic, setMemoryMode, setMaxRounds, setMaxUsd],
+  );
+
+  const deleteTable = useCallback(
+    (id: string) => {
+      setSavedTables((cur) => cur.filter((t) => t.id !== id));
+      if (loadedId === id) {
+        setLoadedId(null);
+        setSaveName("");
+      }
+    },
+    [loadedId, setSavedTables],
+  );
 
   // ── Load available models once (cloud-first: custom + OpenRouter + Ollama) ──
   useEffect(() => {
@@ -377,6 +453,8 @@ export function RoundtableView() {
     setSetupErr(null);
     setConfirmLocal(false);
     setInjectText("");
+    setLoadedId(null);
+    setSaveName("");
   }, [run, setSeats, setTopic, setMaxRounds, setMaxUsd, setMemoryMode]);
 
   const exportTranscript = useCallback(() => {
@@ -488,6 +566,41 @@ export function RoundtableView() {
         : <div className="rt-setup-head">{setupHead}</div>}
 
       {modelErr && <div className="rt-err-banner" role="alert">{modelErr}</div>}
+
+      <div className="rt-saved">
+        <span className="rt-section-label">Saved tables</span>
+        <select
+          className="rt-saved-select"
+          value={loadedId ?? ""}
+          onChange={(e) => {
+            if (e.target.value) loadTable(e.target.value);
+            else {
+              setLoadedId(null);
+              setSaveName("");
+            }
+          }}
+        >
+          <option value="">{savedTables.length ? "— Load a saved table —" : "— None saved yet —"}</option>
+          {savedTables.map((t) => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
+        <Input
+          className="rt-saved-name"
+          placeholder="name this table"
+          value={saveName}
+          onChange={(e) => setSaveName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) saveTable();
+          }}
+        />
+        <Button size="sm" variant="secondary" onClick={saveTable}>
+          {loadedId && savedTables.some((t) => t.id === loadedId && t.name === saveName.trim()) ? "Update" : "Save"}
+        </Button>
+        {loadedId && (
+          <Button size="sm" variant="ghost" onClick={() => deleteTable(loadedId)}>Delete</Button>
+        )}
+      </div>
 
       <div className="rt-section-label">Participants <span className="rt-hint">(order = turn order)</span></div>
       <div className="rt-seats">

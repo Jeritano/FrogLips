@@ -38,6 +38,20 @@
 .rt-section-label { font-size: 13px; font-weight: 600; color: var(--text-2); margin-top: 4px; }
 .rt-hint { font-weight: 400; color: var(--text-muted); font-size: 12px; }
 
+/* Saved-table library row */
+.rt-saved { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rt-saved .rt-section-label { margin: 0; }
+.rt-saved-select {
+  flex: 0 1 220px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+}
+.rt-saved-name { flex: 1 1 160px; max-width: 260px; }
+
 /* ── Setup: seats ── */
 .rt-seats { display: flex; flex-direction: column; gap: 8px; }
 .rt-seat {
