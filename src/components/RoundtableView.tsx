@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../lib/tauri-api";
 import { Button, Input, Spinner, Badge } from "./ui";
@@ -227,24 +227,36 @@ export function RoundtableView() {
   );
   const [loadedId, setLoadedId] = useState<string | null>(null);
   const [saveName, setSaveName] = useState("");
+  // false = list landing (saved roundtables); true = config editor.
+  const [editing, setEditing] = useState(false);
 
-  const saveTable = useCallback(() => {
-    const name = saveName.trim();
-    if (!name) {
-      setSetupErr("Name the table before saving.");
-      return;
+  // One-time import: if no saved tables exist yet but a non-empty draft does
+  // (older single-draft persistence), seed it as a saved table so the user's
+  // in-progress config isn't stranded by the new list UI.
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current) return;
+    seeded.current = true;
+    if (savedTables.length === 0 && seats.length >= 2) {
+      setSavedTables([
+        { id: `rt${Date.now()}`, name: "My roundtable", seats, topic, memoryMode, maxRounds, maxUsd },
+      ]);
     }
-    // Overwrite a table with the same id (the loaded one) OR the same name.
-    const id = loadedId ?? `rt${Date.now()}`;
-    const entry: SavedTable = { id, name, seats, topic, memoryMode, maxRounds, maxUsd };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // While editing, auto-save the config back into its saved entry.
+  useEffect(() => {
+    if (!editing || !loadedId) return;
     setSavedTables((cur) =>
-      [...cur.filter((t) => t.id !== id && t.name !== name), entry].sort((a, b) =>
-        a.name.localeCompare(b.name),
+      cur.map((t) =>
+        t.id === loadedId
+          ? { ...t, name: saveName.trim() || t.name, seats, topic, memoryMode, maxRounds, maxUsd }
+          : t,
       ),
     );
-    setLoadedId(id);
-    setSetupErr(null);
-  }, [saveName, loadedId, seats, topic, memoryMode, maxRounds, maxUsd, setSavedTables]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, loadedId, saveName, seats, topic, memoryMode, maxRounds, maxUsd]);
 
   const loadTable = useCallback(
     (id: string) => {
@@ -272,6 +284,34 @@ export function RoundtableView() {
       }
     },
     [loadedId, setSavedTables],
+  );
+
+  // Create a fresh roundtable (default config), register it, and open the editor.
+  const newRoundtable = useCallback(() => {
+    const seats0 = [newSeat(PRESETS[0].personas[0]), newSeat(PRESETS[0].personas[1])];
+    const id = `rt${Date.now()}`;
+    setSavedTables((cur) => [
+      ...cur,
+      { id, name: "Untitled roundtable", seats: seats0, topic: PRESETS[0].topic, memoryMode: "recent", maxRounds: 4, maxUsd: 0.5 },
+    ]);
+    setSeats(seats0);
+    setTopic(PRESETS[0].topic);
+    setMemoryMode("recent");
+    setMaxRounds(4);
+    setMaxUsd(0.5);
+    setLoadedId(id);
+    setSaveName("Untitled roundtable");
+    setConfirmLocal(false);
+    setSetupErr(null);
+    setEditing(true);
+  }, [setSavedTables, setSeats, setTopic, setMemoryMode, setMaxRounds, setMaxUsd]);
+
+  const openTable = useCallback(
+    (id: string) => {
+      loadTable(id);
+      setEditing(true);
+    },
+    [loadTable],
   );
 
   // ── Load available models once (cloud-first: custom + OpenRouter + Ollama) ──
@@ -453,8 +493,6 @@ export function RoundtableView() {
     setSetupErr(null);
     setConfirmLocal(false);
     setInjectText("");
-    setLoadedId(null);
-    setSaveName("");
   }, [run, setSeats, setTopic, setMaxRounds, setMaxUsd, setMemoryMode]);
 
   const exportTranscript = useCallback(() => {
@@ -548,9 +586,64 @@ export function RoundtableView() {
   }
 
   // ── Setup view ──
+  // ── List landing (saved roundtables) ──
+  if (!editing) {
+    const listHead = (
+      <>
+        <div className="rt-live-title">Roundtable</div>
+        <div className="rt-presets">
+          <Button size="sm" variant="primary" onClick={newRoundtable}>+ New roundtable</Button>
+        </div>
+      </>
+    );
+    return (
+      <div className="rt-root" data-testid="roundtable-list">
+        {topbarSlot
+          ? createPortal(<div className="rt-setup-head in-topbar">{listHead}</div>, topbarSlot)
+          : <div className="rt-setup-head">{listHead}</div>}
+        {savedTables.length === 0 ? (
+          <div className="rt-empty">
+            No roundtables yet. <button className="rt-link" onClick={newRoundtable}>Create one →</button>
+          </div>
+        ) : (
+          <div className="rt-list">
+            {savedTables.map((t) => (
+              <div
+                key={t.id}
+                className="rt-list-item"
+                role="button"
+                tabIndex={0}
+                onClick={() => openTable(t.id)}
+                onKeyDown={(e) => { if (e.key === "Enter") openTable(t.id); }}
+              >
+                <span className="rt-list-name">{t.name}</span>
+                <span className="rt-list-meta">{t.seats.length} seat{t.seats.length === 1 ? "" : "s"}</span>
+                <button
+                  className="rt-list-x"
+                  onClick={(e) => { e.stopPropagation(); deleteTable(t.id); }}
+                  aria-label={`Delete ${t.name}`}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Editor view ──
   const setupHead = (
     <>
-      <div className="rt-live-title">Roundtable</div>
+      <button className="rt-back" onClick={() => setEditing(false)} title="Back to saved roundtables">← Tables</button>
+      <Input
+        className="rt-name-input"
+        value={saveName}
+        onChange={(e) => setSaveName(e.target.value)}
+        placeholder="Roundtable name"
+        aria-label="Roundtable name"
+      />
       <div className="rt-presets">
         {PRESETS.map((p) => (
           <button key={p.id} className="rt-preset-btn" onClick={() => applyPreset(p)}>{p.label}</button>
@@ -566,41 +659,6 @@ export function RoundtableView() {
         : <div className="rt-setup-head">{setupHead}</div>}
 
       {modelErr && <div className="rt-err-banner" role="alert">{modelErr}</div>}
-
-      <div className="rt-saved">
-        <span className="rt-section-label">Saved tables</span>
-        <select
-          className="rt-saved-select"
-          value={loadedId ?? ""}
-          onChange={(e) => {
-            if (e.target.value) loadTable(e.target.value);
-            else {
-              setLoadedId(null);
-              setSaveName("");
-            }
-          }}
-        >
-          <option value="">{savedTables.length ? "— Load a saved table —" : "— None saved yet —"}</option>
-          {savedTables.map((t) => (
-            <option key={t.id} value={t.id}>{t.name}</option>
-          ))}
-        </select>
-        <Input
-          className="rt-saved-name"
-          placeholder="name this table"
-          value={saveName}
-          onChange={(e) => setSaveName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) saveTable();
-          }}
-        />
-        <Button size="sm" variant="secondary" onClick={saveTable}>
-          {loadedId && savedTables.some((t) => t.id === loadedId && t.name === saveName.trim()) ? "Update" : "Save"}
-        </Button>
-        {loadedId && (
-          <Button size="sm" variant="ghost" onClick={() => deleteTable(loadedId)}>Delete</Button>
-        )}
-      </div>
 
       <div className="rt-section-label">Participants <span className="rt-hint">(order = turn order)</span></div>
       <div className="rt-seats">

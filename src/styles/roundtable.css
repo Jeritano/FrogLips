@@ -38,19 +38,36 @@
 .rt-section-label { font-size: 13px; font-weight: 600; color: var(--text-2); margin-top: 4px; }
 .rt-hint { font-weight: 400; color: var(--text-muted); font-size: 12px; }
 
-/* Saved-table library row */
-.rt-saved { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.rt-saved .rt-section-label { margin: 0; }
-.rt-saved-select {
-  flex: 0 1 220px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+/* ── Saved-roundtable list landing (Flows-style) ── */
+.rt-list { display: flex; flex-direction: column; gap: 8px; }
+.rt-list-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
   background: var(--surface-2);
-  color: var(--text);
-  font-size: 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  cursor: pointer;
 }
-.rt-saved-name { flex: 1 1 160px; max-width: 260px; }
+.rt-list-item:hover { border-color: var(--border); }
+.rt-list-name { font-weight: 600; color: var(--text); }
+.rt-list-meta { margin-left: auto; color: var(--text-muted); font-size: 12.5px; }
+.rt-list-x {
+  background: transparent; border: none; color: var(--text-3);
+  cursor: pointer; font-size: 14px; padding: 4px 6px; border-radius: 6px;
+}
+.rt-list-x:hover { color: var(--danger, #ef4444); background: rgba(239, 68, 68, 0.08); }
+.rt-empty { color: var(--text-muted); font-size: 14px; padding: 24px 4px; }
+.rt-link { background: none; border: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
+
+/* Editor head: back button + name field */
+.rt-back {
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2);
+  font-size: 12px; padding: 5px 10px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+}
+.rt-back:hover { border-color: var(--border-strong, var(--border)); }
+.rt-name-input { flex: 0 1 240px; min-width: 120px; }
 
 /* ── Setup: seats ── */
 .rt-seats { display: flex; flex-direction: column; gap: 8px; }
