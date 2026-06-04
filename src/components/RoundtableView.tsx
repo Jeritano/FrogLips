@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { EmptyState } from "./EmptyState";
 import { api } from "../lib/tauri-api";
 import { Button, Input, Spinner, Badge } from "./ui";
 import { usePersistedState } from "../hooks/usePersistedState";
@@ -586,48 +587,49 @@ export function RoundtableView() {
   }
 
   // ── Setup view ──
-  // ── List landing (saved roundtables) ──
+  // ── List landing (saved roundtables) — mirrors the Workflows picker ──
   if (!editing) {
     const listHead = (
       <>
-        <div className="rt-live-title">Roundtable</div>
-        <div className="rt-presets">
-          <Button size="sm" variant="primary" onClick={newRoundtable}>+ New roundtable</Button>
-        </div>
+        <h1 className="topbar-view-title">Roundtable</h1>
+        <button
+          type="button"
+          className="wf-btn wf-btn-primary topbar-action"
+          onClick={newRoundtable}
+          style={{ marginLeft: "auto" }}
+        >
+          + New roundtable
+        </button>
       </>
     );
     return (
-      <div className="rt-root" data-testid="roundtable-list">
-        {topbarSlot
-          ? createPortal(<div className="rt-setup-head in-topbar">{listHead}</div>, topbarSlot)
-          : <div className="rt-setup-head">{listHead}</div>}
+      <div className="wf-page wf-picker" data-testid="roundtable-list">
+        {topbarSlot ? createPortal(listHead, topbarSlot) : <div className="rt-setup-head">{listHead}</div>}
         {savedTables.length === 0 ? (
-          <div className="rt-empty">
-            No roundtables yet. <button className="rt-link" onClick={newRoundtable}>Create one →</button>
-          </div>
+          <EmptyState
+            icon="🎙"
+            heading="No roundtables yet"
+            sub="Create a roundtable to have several models debate or brainstorm a topic."
+          />
         ) : (
-          <div className="rt-list">
+          <ul className="wf-list">
             {savedTables.map((t) => (
-              <div
-                key={t.id}
-                className="rt-list-item"
-                role="button"
-                tabIndex={0}
-                onClick={() => openTable(t.id)}
-                onKeyDown={(e) => { if (e.key === "Enter") openTable(t.id); }}
-              >
-                <span className="rt-list-name">{t.name}</span>
-                <span className="rt-list-meta">{t.seats.length} seat{t.seats.length === 1 ? "" : "s"}</span>
+              <li key={t.id} className="wf-list-item">
+                <button type="button" className="wf-list-open" onClick={() => openTable(t.id)}>
+                  <span className="wf-list-name">{t.name}</span>
+                  <span className="wf-list-meta">{t.seats.length} seats</span>
+                </button>
                 <button
-                  className="rt-list-x"
-                  onClick={(e) => { e.stopPropagation(); deleteTable(t.id); }}
+                  type="button"
+                  className="wf-list-del"
+                  onClick={() => deleteTable(t.id)}
                   aria-label={`Delete ${t.name}`}
                 >
-                  ✕
+                  ×
                 </button>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
     );
@@ -636,9 +638,9 @@ export function RoundtableView() {
   // ── Editor view ──
   const setupHead = (
     <>
-      <button className="rt-back" onClick={() => setEditing(false)} title="Back to saved roundtables">← Tables</button>
-      <Input
-        className="rt-name-input"
+      <button type="button" className="wf-btn" onClick={() => setEditing(false)}>← Tables</button>
+      <input
+        className="wf-name-input"
         value={saveName}
         onChange={(e) => setSaveName(e.target.value)}
         placeholder="Roundtable name"
