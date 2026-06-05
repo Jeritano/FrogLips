@@ -189,10 +189,6 @@ export function OllamaLibraryView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const installedIds = useMemo(
-    () => new Set(installedOllama.map((m) => m.id)),
-    [installedOllama],
-  );
 
   const toggleFilter = (f: string) => {
     setFilters((prev) => {
@@ -303,8 +299,21 @@ export function OllamaLibraryView({
           // 404 on a missing local manifest ("file does not exist").
           const isCloud = entry.capabilities.includes("cloud");
           const pullId = isCloud && !entry.name.includes(":") ? `${entry.name}:cloud` : entry.name;
-          const isInstalled = installedIds.has(pullId) || installedIds.has(entry.name);
-          const removeId = installedIds.has(pullId) ? pullId : entry.name;
+          // Installed-match: a catalog row names a model FAMILY ("gemma4"), but
+          // a local install carries a tag ("gemma4:latest"). Match the exact
+          // pull id, the bare name, OR any installed variant whose base name
+          // (before the first ':') equals this family — so a locally-pulled
+          // `gemma4:latest` correctly marks the cloud-capable "gemma4" row as
+          // installed instead of showing "Get cloud". Use the REAL installed id
+          // for Remove so it targets the right tag.
+          const installedMatch =
+            installedOllama.find((m) => m.id === pullId) ??
+            installedOllama.find((m) => m.id === entry.name) ??
+            (entry.name.includes(":")
+              ? undefined
+              : installedOllama.find((m) => m.id.split(":")[0] === entry.name));
+          const isInstalled = installedMatch != null;
+          const removeId = installedMatch ? installedMatch.id : entry.name;
           const isPulling = pulling === pullId;
           const isDeleting = deleting === removeId;
           const isDone = done.has(pullId);

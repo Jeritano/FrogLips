@@ -143,7 +143,7 @@ describe("ClaudeSkillsPanel", () => {
     const h = await mount();
     const empty = h.container.querySelector('[data-testid="claude-skills-empty"]');
     expect(empty).not.toBeNull();
-    expect(empty?.textContent).toContain("No Claude Skills imported");
+    expect(empty?.textContent).toContain("No Skills imported");
     expect(empty?.textContent).toContain("list_claude_skills()");
     expect(empty?.textContent).toContain("load_claude_skill(name)");
 

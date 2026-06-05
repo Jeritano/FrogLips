@@ -289,14 +289,14 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
       ref={overlayRef}
       role="dialog"
       aria-modal="true"
-      aria-label="Claude Skills"
+      aria-label="Skills"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="cs-panel-box">
         <header className="cs-panel-header">
-          <h2 className="cs-panel-title">Claude Skills</h2>
+          <h2 className="cs-panel-title">Skills</h2>
           <button
             type="button"
             className="cs-panel-import"
@@ -310,7 +310,7 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
             type="button"
             className="cs-panel-close"
             onClick={onClose}
-            aria-label="Close Claude Skills panel"
+            aria-label="Close Skills panel"
             data-testid="claude-skills-close"
           >
             <X size={16} />
@@ -323,14 +323,14 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
           {!supported ? (
             <EmptyState
               icon="🧩"
-              heading="Claude Skills not yet available"
+              heading="Skills not yet available"
               sub="(claude skills feature not yet available)"
               data-testid="claude-skills-unsupported"
             />
           ) : list.length === 0 && !loading ? (
             <EmptyState
               icon="🧩"
-              heading="No Claude Skills imported"
+              heading="No Skills imported"
               sub="Import a folder containing a SKILL.md file. The agent in chat mode can then call list_claude_skills() and load_claude_skill(name) to use it."
               data-testid="claude-skills-empty"
             />

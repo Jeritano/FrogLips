@@ -350,11 +350,11 @@ export function Dashboard({ open, onClose }: Props) {
             className="dashboard-card"
             data-testid="dashboard-claude-skills"
           >
-            <h3>Claude Skills</h3>
+            <h3>Skills</h3>
             <div className="dashboard-empty">
-              Manage the Anthropic-format skills available to chat-mode agents.
-              Imported folders are stored in the global library and surfaced to
-              agents via <code>list_claude_skills()</code>.
+              Manage the skills available to chat-mode agents. Imported folders
+              are stored in the global library and surfaced to agents via
+              <code>list_claude_skills()</code>.
             </div>
             <div className="dashboard-actions">
               <button
@@ -363,7 +363,7 @@ export function Dashboard({ open, onClose }: Props) {
                 data-testid="dashboard-open-claude-skills"
                 onClick={() => setClaudeSkillsOpen(true)}
               >
-                Manage Claude Skills
+                Manage Skills
               </button>
             </div>
           </section>
