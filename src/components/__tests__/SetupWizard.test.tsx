@@ -18,6 +18,7 @@ const apiMocks = vi.hoisted(() => ({
   nativeSupported: vi.fn(async () => true),
   mlxProbe: vi.fn(async () => false),
   ollamaProbe: vi.fn(async () => true),
+  ollamaStatus: vi.fn(async () => "running"),
   openExternal: vi.fn(async () => undefined),
   pullOllamaModel: vi.fn(async () => "Pulled"),
   pullHfModel: vi.fn(async () => "Downloaded"),
@@ -67,6 +68,7 @@ describe("SetupWizard", () => {
     apiMocks.nativeSupported.mockClear().mockResolvedValue(true);
     apiMocks.mlxProbe.mockClear().mockResolvedValue(false);
     apiMocks.ollamaProbe.mockClear().mockResolvedValue(true);
+    apiMocks.ollamaStatus.mockClear().mockResolvedValue("running");
     apiMocks.openExternal.mockClear();
     apiMocks.pullOllamaModel.mockClear();
     apiMocks.pullHfModel.mockClear();
@@ -108,7 +110,7 @@ describe("SetupWizard", () => {
     // Each probe IPC was called exactly once.
     expect(apiMocks.nativeSupported).toHaveBeenCalledTimes(1);
     expect(apiMocks.mlxProbe).toHaveBeenCalledTimes(1);
-    expect(apiMocks.ollamaProbe).toHaveBeenCalledTimes(1);
+    expect(apiMocks.ollamaStatus).toHaveBeenCalledTimes(1);
 
     await act(async () => { root.unmount(); });
   });

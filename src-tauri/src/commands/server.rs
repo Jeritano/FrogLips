@@ -87,3 +87,45 @@ pub async fn ollama_probe() -> bool {
         Err(_) => false,
     }
 }
+
+/// Tri-state Ollama detection for the setup wizard: distinguishes a RUNNING
+/// daemon from "installed but not started" from "not installed" — so the wizard
+/// can tell the user to *run* Ollama (`ollama serve`) vs *download* it. Returns
+/// `"running" | "stopped" | "absent"`.
+#[tauri::command]
+pub async fn ollama_status() -> &'static str {
+    if ollama_probe().await {
+        return "running";
+    }
+    if ollama_binary_present() {
+        "stopped"
+    } else {
+        "absent"
+    }
+}
+
+/// True if the Ollama binary/app appears installed. Checks the common install
+/// locations + `~/.ollama` + every PATH entry (Finder-launched apps get a
+/// minimal PATH, hence the fixed-path fallback).
+fn ollama_binary_present() -> bool {
+    use std::path::Path;
+    const FIXED: &[&str] = &[
+        "/usr/local/bin/ollama",
+        "/opt/homebrew/bin/ollama",
+        "/Applications/Ollama.app",
+    ];
+    if FIXED.iter().any(|p| Path::new(p).exists()) {
+        return true;
+    }
+    if let Some(home) = dirs::home_dir() {
+        if home.join(".ollama").exists() {
+            return true;
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        if std::env::split_paths(&path).any(|d| d.join("ollama").exists()) {
+            return true;
+        }
+    }
+    false
+}

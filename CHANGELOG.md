@@ -27,6 +27,52 @@ All notable changes to Froglips are documented in this file. Format loosely foll
   (custom backends + MCP remote tokens). The Keychain ACL reset on every
   ad-hoc re-signed build and re-prompted on access; the local owner-only file
   removes the prompt. `security-framework` dependency dropped.
+- A corrupt `secrets.json` is now quarantined to `secrets.json.corrupt` + logged
+  instead of silently wiping (then overwriting) stored keys.
+- SSRF hardening: block IPv4-mapped IPv6 (`::ffff:169.254.169.254`) + the
+  Alibaba metadata IP `100.100.100.200` across the MCP and custom-backend
+  guards; the custom backend now DNS-resolves + pins (no rebind TOCTOU).
+- Path-safety write denylist extended to browser-profile dirs (Chrome/Firefox/
+  Safari) to match the agent fs layer.
+
+### MCP / Tools
+- **One-click OAuth** for remote MCP servers — browser authorization
+  (discovery → dynamic client registration → PKCE/S256 → loopback callback →
+  token + refresh), all SSRF-pinned. No more pasting API keys for OAuth servers.
+- OAuth endpoints require https (loopback http allowed); 401 → auto-refresh → retry.
+
+### Table (outcomes) / Flows
+- **Saved roundtables** — keep multiple named roundtables; the Table landing is
+  a Flows-style list.
+- **Persisted outcomes** — a completed run auto-saves (transcript + totals) to
+  the DB (migration v17), with per-table run history, a read-only viewer,
+  **Save to file** (Markdown/JSON), and **Run again**.
+- Fixed: cloud-capable rows (e.g. `gemma4`) show as Installed when a local tag
+  (`gemma4:latest`) is present; Remove targets the real tag.
+
+### Chat
+- Tool calls/results hidden from the transcript; the stream shows only the
+  answer + a live **Thinking… / Running tools…** status. Expand the full call
+  history via the toolbar **History** button.
+- Cold-start: the landing shows on first launch (no conversation yet) and guides
+  "pick a model + Start"; backend-crash/restart messages now surface.
+
+### UI / premium pass
+- Two-layer elevation shadows, tactile `:active` press, tinted selection + thin
+  scrollbars, shell gradient frame, soft input focus rings, card hover-lift,
+  premium Flows canvas (selection ring, arrowhead edges, grabbable handles),
+  unified modal enter-animation + frosted backdrop.
+- **lucide-react icon system** replaces ~90 emoji/Unicode glyph icons app-wide.
+- EmptyState + skeleton loaders; readable agent-toolbar metrics; "Claude
+  Skills" → "Skills".
+
+### Production / reliability
+- App version + a "Report an issue" link in Diagnostics.
+- `release.sh` documents the Developer ID signing + notarization env contract.
+- Setup wizard distinguishes Ollama running / installed-but-stopped (→ run
+  `ollama serve`) / not-installed (→ download).
+- HuggingFace library load failures get a Retry; the native-chat error path no
+  longer hangs the spinner.
 
 ### Fixes
 - Ollama model pulls stream a clean progress bar (ANSI/`\r` stripped) instead

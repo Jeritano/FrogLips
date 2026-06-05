@@ -205,15 +205,33 @@ export function SetupWizard({ onDone }: Props) {
           if (!cancelled) updateProbe("mlx", false);
         }),
       api
-        .ollamaProbe()
-        .then((v) => {
-          if (!cancelled) updateProbe("ollama", v);
+        .ollamaStatus()
+        .then((s) => {
+          if (cancelled) return;
+          if (s === "stopped") {
+            // Installed but daemon not running — tell the user to START it, not
+            // re-download it (the most common Ollama cold state).
+            setProbes((prev) =>
+              prev.map((p) =>
+                p.key === "ollama"
+                  ? {
+                      ...p,
+                      available: false,
+                      hint: "Installed, but the daemon isn't running.",
+                      installAction: { kind: "inline", text: "Run: ollama serve — then re-run setup." },
+                    }
+                  : p,
+              ),
+            );
+          } else {
+            updateProbe("ollama", s === "running");
+          }
         })
         .catch((err) => {
           logDiag({
             level: "info",
             source: "setup-wizard",
-            message: "ollama_probe failed — treating as unavailable",
+            message: "ollama_status failed — treating as unavailable",
             detail: err,
           });
           if (!cancelled) updateProbe("ollama", false);

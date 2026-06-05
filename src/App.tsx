@@ -22,6 +22,7 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
+import { Kbd } from "./components/ui";
 import { api } from "./lib/tauri-api";
 import { applyAllAppearance, applyCodeTheme } from "./lib/appearance";
 import { applyBubbleColor } from "./lib/bubble-color";
@@ -884,7 +885,9 @@ function App() {
         {/* Stacked view-nav buttons (one per view). Knowledge stays in the
             hamburger menu (less-frequent editorial surface). */}
         <ViewNav view={view} setView={setView} />
-        <button className="new-chat" onClick={newChat} data-testid="new-chat-btn">+ New chat</button>
+        <button className="new-chat" onClick={newChat} data-testid="new-chat-btn" title="New chat (⌘N)">
+          + New chat <Kbd>⌘N</Kbd>
+        </button>
         <input
           className="conv-search"
           type="search"

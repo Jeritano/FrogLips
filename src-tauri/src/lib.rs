@@ -494,6 +494,7 @@ pub fn run() {
             commands::misc::setup_complete_set,
             commands::server::mlx_probe,
             commands::server::ollama_probe,
+            commands::server::ollama_status,
             commands::models::native_supported,
             commands::models::native_load_model,
             commands::models::native_unload_model,

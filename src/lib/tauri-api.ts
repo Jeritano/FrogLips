@@ -621,6 +621,7 @@ export const api = {
     invoke<void>("setup_complete_set", { value }),
   mlxProbe: () => invoke<boolean>("mlx_probe"),
   ollamaProbe: () => invoke<boolean>("ollama_probe"),
+  ollamaStatus: () => invoke<"running" | "stopped" | "absent">("ollama_status"),
 
   // MCP (Model Context Protocol)
   mcpStartServer: async (

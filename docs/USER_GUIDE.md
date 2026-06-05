@@ -402,8 +402,9 @@ Open the **Diagnostics** panel from the menu.
   crash-log section showing recorded panics (or an empty state when there are
   none). Everything stays on disk — there is no telemetry.
 - **Diagnostics bundle**: export a single archive (logs + crash log + redacted
-  settings + version info) to attach to a bug report. API keys and other
-  secrets are redacted before it is written.
+  settings) to attach to a bug report. API keys and other secrets are redacted
+  before it is written. The app version is shown in the Diagnostics header
+  (next to the title), and a **Report an issue** link opens the GitHub tracker.
 - **Data backup**: take an online backup of the conversation database.
 - **Export / import**: export your conversations, messages, and memory to a
   versioned JSON file, and import one back. Import is **additive** — it merges
