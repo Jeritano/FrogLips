@@ -301,8 +301,12 @@ pub async fn mcp_registry_search(
 }
 
 async fn fetch_official(client: &reqwest::Client) -> Result<Vec<McpRegistryEntry>, String> {
+    // Smaller page than PulseMCP's: the official registry's `/v0/servers` route
+    // has been observed to hang on large `limit` values (server-side). 30 keeps
+    // the response light; the frontend falls back to PulseMCP if this still
+    // fails.
     let v: serde_json::Value = client
-        .get("https://registry.modelcontextprotocol.io/v0/servers?limit=100")
+        .get("https://registry.modelcontextprotocol.io/v0/servers?limit=30")
         .send()
         .await
         .map_err(|e| format!("registry request failed: {e}"))?

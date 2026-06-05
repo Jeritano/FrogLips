@@ -64,6 +64,8 @@ export function McpView() {
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<McpRegistryEntry[]>([]);
   const [browseLoading, setBrowseLoading] = useState(false);
+  // Soft info banner (e.g. "fell back to PulseMCP") — distinct from the red err.
+  const [note, setNote] = useState<string | null>(null);
 
   // Add form (manual / prefilled)
   const [form, setForm] = useState<{
@@ -125,16 +127,31 @@ export function McpView() {
 
   const loadBrowse = useCallback((src: string, q: string) => {
     setBrowseLoading(true);
+    setNote(null);
     api
       .mcpRegistrySearch(src, q || undefined)
       .then((e) => {
         setEntries(e);
         setErr(null);
       })
-      .catch((e) => {
+      .catch(async (e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        // The official registry's /v0/servers route is intermittently slow/
+        // hangs server-side — auto-fall back to PulseMCP so the user still gets
+        // results instead of an empty error screen.
+        if (src === "official") {
+          try {
+            const pulse = await api.mcpRegistrySearch("pulse", q || undefined);
+            setEntries(pulse);
+            setErr(null);
+            setNote("Official registry didn't respond — showing PulseMCP results.");
+            return;
+          } catch {
+            /* fall through to the original error */
+          }
+        }
         // Don't leave the previous source's cards showing under an error.
         setEntries([]);
-        const msg = e instanceof Error ? e.message : String(e);
         setErr(
           msg.includes("410")
             ? "PulseMCP is rate-limiting right now — try again in a minute, or use the Official registry."
@@ -331,6 +348,12 @@ export function McpView() {
         <div className="mcp-err" role="alert">
           {err}
           <button className="mcp-err-x" onClick={() => setErr(null)} aria-label="dismiss"><X size={16} /></button>
+        </div>
+      )}
+      {note && !err && (
+        <div className="mcp-note" role="status">
+          {note}
+          <button className="mcp-err-x" onClick={() => setNote(null)} aria-label="dismiss"><X size={16} /></button>
         </div>
       )}
 

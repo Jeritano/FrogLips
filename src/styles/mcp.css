@@ -49,6 +49,16 @@
   font-size: 13px;
   flex-shrink: 0;
 }
+.mcp-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  color: var(--text-2);
+  background: var(--accent-bg);
+  font-size: 13px;
+  flex-shrink: 0;
+}
 .mcp-err-x {
   margin-left: auto;
   background: none;
