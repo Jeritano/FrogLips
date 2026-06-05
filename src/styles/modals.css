@@ -1074,3 +1074,47 @@
   font-size: 11px; color: var(--danger-fg); padding: 8px 10px;
   background: rgba(239, 68, 68, 0.06); border-radius: 4px;
 }
+
+/* ── Unified modal motion + material (2026-06-05 premium consolidation) ─────
+   The hand-rolled modals share ONE enter animation, frosted backdrop, and
+   depth here instead of a per-modal Radix rewrite — same visible premium win
+   (consistent chrome + scale/fade entrance) at near-zero regression risk
+   (no JSX / a11y / test-structure changes). All panels are flex-centered by
+   their overlay (no transform-based centering), so a scale-only pop is safe.
+   The reduced-motion guard in tokens.css neutralizes the animations. */
+.dashboard-overlay,
+.mb-overlay,
+.memories-overlay,
+.setup-wizard-overlay,
+.fork-tree-overlay,
+.tool-history-overlay,
+.cs-panel-overlay,
+.cs-body-overlay,
+.skills-panel-overlay,
+.prompt-library-overlay {
+  animation: ui-fade-in var(--dur-fast) var(--ease-out);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.dashboard-modal,
+.mb-panel,
+.memories-modal,
+.setup-wizard-modal,
+.fork-tree-panel,
+.cs-panel-box,
+.skills-panel-box,
+.prompt-library {
+  animation: modal-pop var(--dur-base) var(--ease-out);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-4);
+}
+@keyframes modal-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
