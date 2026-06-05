@@ -1,5 +1,6 @@
 import { memo, useRef, type CSSProperties } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Clock, X } from "lucide-react";
 
 export type CardRunState = "idle" | "running" | "done" | "failed";
 
@@ -70,7 +71,7 @@ function AgentCardNodeImpl({ data }: NodeProps) {
           <span className="wf-node-preset">{d.preset}</span>
           {d.schedule && (
             <span className="wf-node-schedule" title={`Scheduled: ${d.schedule}`}>
-              ⏱ {d.schedule}
+              <Clock size={14}/> {d.schedule}
             </span>
           )}
         </div>
@@ -104,7 +105,7 @@ function AgentCardNodeImpl({ data }: NodeProps) {
           title="Delete card"
           aria-label="Delete card"
         >
-          ×
+          <X size={14}/>
         </button>
       </div>
       <Handle type="source" position={Position.Right} className="wf-handle" />

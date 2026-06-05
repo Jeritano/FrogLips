@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../lib/tauri-api";
 import type { CustomBackend } from "../../types";
 import { Button, Input, Spinner, Badge } from "../ui";
+import { Download, Heart, Check } from "lucide-react";
 
 const MS_INFERENCE_BASE = "https://api-inference.modelscope.cn/v1";
 
@@ -170,14 +171,14 @@ export function ModelScopeBrowserTab({
                 <div className="hfl-card-foot">
                   <span className="hfl-updated">{updated ? `Updated ${updated}` : "—"}</span>
                   <span className="hfl-stats">
-                    <span title="Downloads">↓ {abbrev(m.downloads)}</span>
-                    <span title="Stars" style={{ marginLeft: 8 }}>♥ {abbrev(m.stars)}</span>
+                    <span title="Downloads"><Download size={12} /> {abbrev(m.downloads)}</span>
+                    <span title="Stars" style={{ marginLeft: 8 }}><Heart size={12} /> {abbrev(m.stars)}</span>
                   </span>
                 </div>
                 <div className="hfl-card-actions">
                   {isConnected ? (
                     <Button size="sm" variant="secondary" disabled>
-                      In chat ✓
+                      In chat <Check size={14} />
                     </Button>
                   ) : m.support_api_inference ? (
                     <Button size="sm" variant="primary" onClick={() => void connect(m)} disabled={busy !== null} aria-busy={busy === repo}>

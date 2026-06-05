@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+import { Circle, CircleDashed, CheckCircle2, XCircle } from "lucide-react";
 import type { CardRunState } from "./AgentCardNode";
 
 export interface CardRunInfo {
@@ -12,11 +14,11 @@ interface Props {
   cards: CardRunInfo[];
 }
 
-const STATE_ICON: Record<CardRunState, string> = {
-  idle: "○",
-  running: "◐",
-  done: "●",
-  failed: "✕",
+const STATE_ICON: Record<CardRunState, ReactNode> = {
+  idle: <Circle size={14} />,
+  running: <CircleDashed size={14} />,
+  done: <CheckCircle2 size={14} />,
+  failed: <XCircle size={14} />,
 };
 
 /**

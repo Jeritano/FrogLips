@@ -6,6 +6,7 @@ import {
   type DiagEntry,
   type DiagLevel,
 } from "../lib/diagnostics";
+import { X } from "lucide-react";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import { api } from "../lib/tauri-api";
@@ -344,7 +345,7 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
               onClick={onClose}
               aria-label="Close diagnostics"
             >
-              ✕
+              <X size={16} />
             </button>
           </div>
         </header>

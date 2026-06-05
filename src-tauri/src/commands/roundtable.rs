@@ -45,6 +45,12 @@ pub async fn roundtable_run_delete(id: i64) -> Result<(), String> {
 /// (absolute-only, denylist, symlink-leaf refusal) before the write.
 #[tauri::command]
 pub async fn roundtable_save_file(dest_path: String, content: String) -> Result<(), String> {
+    if content.len() > roundtable::MAX_TRANSCRIPT_BYTES {
+        return Err(format!(
+            "export exceeds {} bytes",
+            roundtable::MAX_TRANSCRIPT_BYTES
+        ));
+    }
     let dest = validate_write_dest(&dest_path)?;
     blocking(move || {
         std::fs::write(&dest, content.as_bytes())

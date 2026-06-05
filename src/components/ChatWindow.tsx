@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Zap, Clock, ShieldCheck } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import type { ConfirmDecision } from "../lib/agent-loop";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
@@ -443,8 +444,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   return (
     <div className="chat-window" onClick={citation.onCitationClick}>
       {agentMode && agent.dryRun && (
-        <div className="dry-run-banner" data-testid="agent-dry-run-banner">
-          🛡️ Dry-run: tool side-effects suppressed
+        <div className="dry-run-banner" data-testid="agent-dry-run-banner" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <ShieldCheck size={14} /> Dry-run: tool side-effects suppressed
         </div>
       )}
       {showLanding ? (
@@ -465,7 +466,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       <div className="chat-input-wrap">
         {recalled.length > 0 && (
           <div className="recall-pill">
-            <span className="recall-icon">⚡</span>
+            <span className="recall-icon"><Zap size={16} /></span>
             Recalled {recalled.length} memor{recalled.length === 1 ? "y" : "ies"} for this turn
           </div>
         )}
@@ -721,7 +722,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             if (typeof t === "number" && t > 60) {
               return (
                 <div className="agent-confirm-chip" data-testid="agent-confirm-long-running">
-                  ⏱ Long-running ({t}s budget)
+                  <Clock size={16} /> Long-running ({t}s budget)
                 </div>
               );
             }

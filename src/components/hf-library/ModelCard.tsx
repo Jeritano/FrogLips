@@ -10,6 +10,7 @@
  * list inside `children` underneath the card body when expanded.
  */
 import type { ReactNode } from "react";
+import { Zap, Download, Heart, Check } from "lucide-react";
 import { PIPELINE_COLOR } from "./constants";
 import type { HfModel } from "./loader";
 import { extractParams } from "./loader";
@@ -80,7 +81,7 @@ export function ModelCard(props: Props) {
   const pColor = pipeline ? PIPELINE_COLOR[pipeline] ?? "#6b7280" : null;
   const initial = m.id.charAt(0).toUpperCase();
 
-  let action: { label: string; cls?: string; on: () => void; disabled?: boolean };
+  let action: { label: ReactNode; cls?: string; on: () => void; disabled?: boolean };
   if (props.ggufMode) {
     // GGUF tab: action button is the file-list expander toggle.
     const baseLabel = props.ggufSummary
@@ -98,7 +99,7 @@ export function ModelCard(props: Props) {
     };
   } else if (isMlx) {
     action = {
-      label: props.pulling ? "…" : props.done ? "✓ Done" : "Pull",
+      label: props.pulling ? "…" : props.done ? <><Check size={14} /> Done</> : "Pull",
       on: () => props.onPull(m.id),
       disabled: props.pulling || props.done,
     };
@@ -117,7 +118,7 @@ export function ModelCard(props: Props) {
         <div className="hfl-avatar" aria-hidden>{initial}</div>
         <div className="hfl-card-id" title={m.id}>{m.id}</div>
         {hasInference && (
-          <span className="hfl-bolt" title="Inference Available">⚡</span>
+          <span className="hfl-bolt" title="Inference Available"><Zap size={16} /></span>
         )}
       </div>
       <div className="hfl-card-chips">
@@ -137,8 +138,8 @@ export function ModelCard(props: Props) {
       <div className="hfl-card-foot">
         <span className="hfl-updated">{updated ? `Updated ${updated}` : "—"}</span>
         <span className="hfl-stats">
-          <span title="Downloads">↓ {abbrev(m.downloads)}</span>
-          <span title="Likes" style={{ marginLeft: 8 }}>♥ {abbrev(m.likes)}</span>
+          <span title="Downloads"><Download size={12} /> {abbrev(m.downloads)}</span>
+          <span title="Likes" style={{ marginLeft: 8 }}><Heart size={12} /> {abbrev(m.likes)}</span>
         </span>
       </div>
       {props.err && <div className="hfl-card-err">{props.err}</div>}

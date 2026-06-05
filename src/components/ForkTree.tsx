@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { X, GitBranch } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { ErrorBar } from "./ErrorBar";
@@ -103,8 +104,8 @@ function ForkTreeOverlay({
     >
       <div className="fork-tree-panel" onClick={(e) => e.stopPropagation()}>
         <div className="fork-tree-header">
-          <strong>🌳 Branches</strong>
-          <button type="button" onClick={onClose} aria-label="Close" className="fork-tree-close">×</button>
+          <strong style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><GitBranch size={16} /> Branches</strong>
+          <button type="button" onClick={onClose} aria-label="Close" className="fork-tree-close"><X size={16} /></button>
         </div>
         {loading && <div>Loading…</div>}
         <ErrorBar

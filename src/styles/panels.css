@@ -511,13 +511,18 @@ button.cancel {
   gap: 16px;
   background: var(--surface-2);
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 12px 14px;
-  transition: border-color 0.15s;
+  box-shadow: var(--elev-1);
+  transition: border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
 }
 
 .mb-card:hover {
   border-color: var(--border);
+  box-shadow: var(--elev-2);
+  transform: translateY(-1px);
 }
 
 .mb-card-info {

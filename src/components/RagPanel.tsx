@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import type { RagCorpusInfo, RagHit, RagIngestReport } from "../types";
@@ -254,7 +255,9 @@ export function RagPanel({ onCorporaChanged }: Props) {
                           : `Delete ${c.name}`
                       }
                     >
-                      {deleteConfirm.labelFor(c.name, "×")}
+                      {deleteConfirm.armed === c.name
+                        ? "Click again to confirm"
+                        : <X size={14} />}
                     </button>
                   </td>
                 </tr>

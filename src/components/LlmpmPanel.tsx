@@ -3,6 +3,7 @@ import { api } from "../lib/tauri-api";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { CustomBackend, LlmpmServeStatus } from "../types";
 import { Button, Input, Spinner } from "./ui";
+import { Download, Heart } from "lucide-react";
 import { PIPELINE_COLOR } from "./hf-library/constants";
 import { extractParams, type HfModel } from "./hf-library/loader";
 
@@ -80,8 +81,8 @@ function LlmpmCard({
       <div className="hfl-card-foot">
         <span className="hfl-updated">{updated ? `Updated ${updated}` : "—"}</span>
         <span className="hfl-stats">
-          <span title="Downloads">↓ {abbrev(m.downloads)}</span>
-          <span title="Likes" style={{ marginLeft: 8 }}>♥ {abbrev(m.likes)}</span>
+          <span title="Downloads"><Download size={12} /> {abbrev(m.downloads)}</span>
+          <span title="Likes" style={{ marginLeft: 8 }}><Heart size={12} /> {abbrev(m.likes)}</span>
         </span>
       </div>
       <div className="hfl-card-actions">

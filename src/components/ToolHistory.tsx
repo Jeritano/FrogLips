@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { X } from "lucide-react";
 import type { Message } from "../types";
 
 interface Props {
@@ -78,7 +79,7 @@ export function ToolHistory({ messages, onClose }: Props) {
     >
       <div className="tool-history-header">
         <span className="tool-history-title">Tool history ({pairs.length})</span>
-        <button className="tool-history-close" onClick={onClose} aria-label="Close tool history">×</button>
+        <button className="tool-history-close" onClick={onClose} aria-label="Close tool history"><X size={16} /></button>
       </div>
       <div className="tool-history-list">
         {pairs.length === 0 && (

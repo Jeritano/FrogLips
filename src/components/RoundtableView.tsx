@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Check, FileText, Play, RotateCcw, RotateCw, Save, Users, X } from "lucide-react";
 import { EmptyState } from "./EmptyState";
 import { api } from "../lib/tauri-api";
 import { Button, Input, Spinner, Badge } from "./ui";
@@ -406,8 +407,11 @@ export function RoundtableView() {
         if (loadedId) refreshOutcomes(loadedId);
       })
       .catch((e) => {
-        // Don't strand the dedupe guard if the save failed — allow a retry.
-        lastSavedOutcomeAt = 0;
+        // Do NOT reset the dedupe guard here: the IPC may have committed the
+        // row before reporting failure (e.g. a post-write timeout), so a retry
+        // on the next dep change / remount could duplicate the outcome. Stay
+        // at-most-once; the run is still in-memory + can be saved to file or
+        // re-run if this auto-save genuinely failed.
         logDiag({ level: "error", source: "roundtable", message: "save outcome failed", detail: e });
       });
   }, [run.completedAt, run.running, run.turns, run.config, run.totals, run.endReason, loadedId, topic, seats, memoryMode, maxRounds, maxUsd, refreshOutcomes]);
@@ -691,7 +695,10 @@ export function RoundtableView() {
   const showLive = run.running || run.turns.length > 0;
 
   // ── Live view ──
-  if (showLive) {
+  // While a run is ACTIVE the live view always wins. Once it has only
+  // completed (not running), an opened Outcome viewer / Outcomes list takes
+  // precedence so those views aren't shadowed by a stale finished transcript.
+  if (showLive && (run.running || (!viewing && !showOutcomes))) {
     const liveHead = (
       <>
         <div className="rt-live-title">
@@ -710,7 +717,7 @@ export function RoundtableView() {
           ) : (
             <>
               <Button size="sm" variant="ghost" onClick={run.clear}>New table</Button>
-              <Button size="sm" variant="ghost" onClick={resetAll} title="Clear the run and restore default seats, topic, and settings">↺ Reset</Button>
+              <Button size="sm" variant="ghost" onClick={resetAll} title="Clear the run and restore default seats, topic, and settings"><RotateCcw size={16}/> Reset</Button>
             </>
           )}
         </div>
@@ -744,14 +751,14 @@ export function RoundtableView() {
 
         {run.endReason && !run.running && (
           <div className="rt-end" role="status">
-            Ended — {run.endReason.replace("_", " ")} · {run.totals.turns} turns · {formatUsd(run.totals.usd)} · saved ✓
+            Ended — {run.endReason.replace("_", " ")} · {run.totals.turns} turns · {formatUsd(run.totals.usd)} · saved <Check size={14}/>
             <Button size="sm" variant="ghost" onClick={exportTranscript}>Copy</Button>
             <Button
               size="sm"
               variant="secondary"
               onClick={() => void saveToFile(run.config?.topic ?? topic, run.turns, run.totals)}
             >
-              💾 Save to file…
+              <Save size={16}/> Save to file…
             </Button>
           </div>
         )}
@@ -786,8 +793,8 @@ export function RoundtableView() {
         <button type="button" className="wf-btn" onClick={() => { setViewing(null); setShowOutcomes(true); }}>← Outcomes</button>
         <h1 className="topbar-view-title" style={{ fontSize: 16, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{meta.name}</h1>
         <div className="rt-live-actions" style={{ marginLeft: "auto" }}>
-          <Button size="sm" variant="ghost" onClick={() => runAgain(payload)}>↻ Run again</Button>
-          <Button size="sm" variant="secondary" onClick={() => void saveToFile(payload.run.config?.topic ?? meta.topic, payload.run.turns, payload.run.totals)}>💾 Save to file…</Button>
+          <Button size="sm" variant="ghost" onClick={() => runAgain(payload)}><RotateCw size={16}/> Run again</Button>
+          <Button size="sm" variant="secondary" onClick={() => void saveToFile(payload.run.config?.topic ?? meta.topic, payload.run.turns, payload.run.totals)}><Save size={16}/> Save to file…</Button>
         </div>
       </>
     );
@@ -827,7 +834,7 @@ export function RoundtableView() {
       <div className="wf-page wf-picker" data-testid="roundtable-outcomes">
         {topbarSlot ? createPortal(oHead, topbarSlot) : <div className="rt-setup-head">{oHead}</div>}
         {outcomes.length === 0 ? (
-          <EmptyState icon="📄" heading="No saved outcomes yet" sub="Run this roundtable and its result is saved here automatically." />
+          <EmptyState icon={<FileText size={24}/>} heading="No saved outcomes yet" sub="Run this roundtable and its result is saved here automatically." />
         ) : (
           <ul className="wf-list">
             {outcomes.map((o) => (
@@ -836,7 +843,7 @@ export function RoundtableView() {
                   <span className="wf-list-name">{o.name}</span>
                   <span className="wf-list-meta">{o.turns} turns</span>
                 </button>
-                <button type="button" className="wf-list-del" onClick={() => deleteOutcome(o.id)} aria-label={`Delete outcome ${o.name}`}>×</button>
+                <button type="button" className="wf-list-del" onClick={() => deleteOutcome(o.id)} aria-label={`Delete outcome ${o.name}`}><X size={16}/></button>
               </li>
             ))}
           </ul>
@@ -866,7 +873,7 @@ export function RoundtableView() {
         {topbarSlot ? createPortal(listHead, topbarSlot) : <div className="rt-setup-head">{listHead}</div>}
         {savedTables.length === 0 ? (
           <EmptyState
-            icon="🎙"
+            icon={<Users size={24}/>}
             heading="No roundtables yet"
             sub="Create a roundtable to have several models debate or brainstorm a topic."
           />
@@ -884,7 +891,7 @@ export function RoundtableView() {
                   onClick={() => deleteTable(t.id)}
                   aria-label={`Delete ${t.name}`}
                 >
-                  ×
+                  <X size={16}/>
                 </button>
               </li>
             ))}
@@ -911,12 +918,12 @@ export function RoundtableView() {
           onClick={() => setShowOutcomes(true)}
           title="Saved transcripts of this roundtable's past runs"
         >
-          📄 Outcomes{outcomes.length > 0 ? ` (${outcomes.length})` : ""}
+          <FileText size={16}/> Outcomes{outcomes.length > 0 ? ` (${outcomes.length})` : ""}
         </button>
         {PRESETS.map((p) => (
           <button key={p.id} className="rt-preset-btn" onClick={() => applyPreset(p)}>{p.label}</button>
         ))}
-        <button className="rt-preset-btn" onClick={resetAll} title="Restore default seats, topic, and settings">↺ Reset</button>
+        <button className="rt-preset-btn" onClick={resetAll} title="Restore default seats, topic, and settings"><RotateCcw size={16}/> Reset</button>
       </div>
     </>
   );
@@ -952,7 +959,7 @@ export function RoundtableView() {
                 ))}
               </select>
               {seats.length > 2 && (
-                <button className="rt-seat-x" onClick={() => removeSeat(s.id)} aria-label="Remove seat">✕</button>
+                <button className="rt-seat-x" onClick={() => removeSeat(s.id)} aria-label="Remove seat"><X size={16}/></button>
               )}
             </div>
             <textarea
@@ -1001,7 +1008,7 @@ export function RoundtableView() {
 
       <div className="rt-start-row">
         <Button variant="primary" onClick={startRun} disabled={loadingModels}>
-          {loadingModels ? <Spinner label="Loading" /> : "▶ Start roundtable"}
+          {loadingModels ? <Spinner label="Loading" /> : <><Play size={16}/> Start roundtable</>}
         </Button>
         <Badge tone="neutral">{seats.length} seats · {Math.min(30, Math.max(1, maxRounds))} rounds · cloud-first</Badge>
       </div>

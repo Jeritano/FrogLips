@@ -174,6 +174,13 @@ fn is_denied(resolved: &std::path::Path) -> bool {
             ".kube",
             ".local-llm-app",
             "Library/Application Support/Froglips",
+            // Browser profile dirs — match agent/fs.rs::is_protected_for_read so
+            // a write-dest can't clobber/tamper browser state (Secure
+            // Preferences, extensions, cookies) that the agent fs layer blocks.
+            "Library/Application Support/Google/Chrome",
+            "Library/Application Support/Firefox",
+            "Library/Application Support/com.apple.Safari",
+            "Library/Safari",
         ] {
             deny.push(home.join(sub));
         }

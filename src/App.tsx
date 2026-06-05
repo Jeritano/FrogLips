@@ -1,4 +1,27 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  MessageSquare,
+  Users,
+  Zap,
+  Wrench,
+  BarChart3,
+  Star,
+  User,
+  Image as ImageIcon,
+  GitBranch,
+  Tag,
+  Trash2,
+  Search,
+  X,
+  Menu,
+  BookOpen,
+  Stethoscope,
+  Compass,
+  Pin,
+  ExternalLink,
+  Sun,
+  Moon,
+} from "lucide-react";
 import { api } from "./lib/tauri-api";
 import { applyAllAppearance, applyCodeTheme } from "./lib/appearance";
 import { applyBubbleColor } from "./lib/bubble-color";
@@ -36,11 +59,11 @@ type ViewId = "chat" | "workflows" | "knowledge" | "mcp" | "roundtable";
  * Audit H7 (2026-05-27).
  */
 /** Top-level views, in sidebar nav order. */
-const NAV_ITEMS: { id: ViewId; label: string; icon: string }[] = [
-  { id: "chat", label: "Chat", icon: "💬" },
-  { id: "roundtable", label: "Table", icon: "🎙️" },
-  { id: "workflows", label: "Flows", icon: "⚡" },
-  { id: "mcp", label: "Tools", icon: "🧰" },
+const NAV_ITEMS: { id: ViewId; label: string; icon: React.ReactNode }[] = [
+  { id: "chat", label: "Chat", icon: <MessageSquare size={17} /> },
+  { id: "roundtable", label: "Table", icon: <Users size={17} /> },
+  { id: "workflows", label: "Flows", icon: <Zap size={17} /> },
+  { id: "mcp", label: "Tools", icon: <Wrench size={17} /> },
 ];
 
 /**
@@ -727,7 +750,7 @@ function App() {
               }}
               title="Menu"
             >
-              ☰
+              <Menu size={16} />
             </button>
             {menuOpen && (
               <div className="topbar-menu" role="menu">
@@ -738,7 +761,7 @@ function App() {
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => { setDashboardOpen(true); setMenuOpen(false); }}
                 >
-                  <span aria-hidden="true">📊</span> Dashboard
+                  <BarChart3 size={16} aria-hidden="true" /> Dashboard
                 </button>
                 <button
                   type="button"
@@ -747,7 +770,7 @@ function App() {
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => { setMemoriesOpen(true); setMenuOpen(false); }}
                 >
-                  <span aria-hidden="true">⭐</span> Memories
+                  <Star size={16} aria-hidden="true" /> Memories
                 </button>
                 <button
                   type="button"
@@ -756,7 +779,7 @@ function App() {
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => { setAboutYouOpen(true); setMenuOpen(false); }}
                 >
-                  <span aria-hidden="true">👤</span> About You
+                  <User size={16} aria-hidden="true" /> About You
                 </button>
                 <button
                   type="button"
@@ -765,7 +788,7 @@ function App() {
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => { setAppearanceOpen(true); setMenuOpen(false); }}
                 >
-                  <span aria-hidden="true">🎨</span> Appearance
+                  <ImageIcon size={16} aria-hidden="true" /> Appearance
                 </button>
                 {current && (
                   <button
@@ -775,7 +798,7 @@ function App() {
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => { setForkTreeOpen(true); setMenuOpen(false); }}
                   >
-                    <span aria-hidden="true">🌳</span> Branches
+                    <GitBranch size={16} aria-hidden="true" /> Branches
                   </button>
                 )}
                 <button
@@ -785,7 +808,7 @@ function App() {
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => { setView("knowledge"); setMenuOpen(false); }}
                 >
-                  <span aria-hidden="true">📚</span> Knowledge
+                  <BookOpen size={16} aria-hidden="true" /> Knowledge
                 </button>
                 <button
                   type="button"
@@ -794,7 +817,7 @@ function App() {
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => { setDiagnosticsOpen(true); setMenuOpen(false); }}
                 >
-                  <span aria-hidden="true">🩺</span> Diagnostics
+                  <Stethoscope size={16} aria-hidden="true" /> Diagnostics
                 </button>
                 <button
                   type="button"
@@ -814,7 +837,7 @@ function App() {
                     setWizardOpen(true);
                   }}
                 >
-                  <span aria-hidden="true">🧭</span> Re-run setup wizard
+                  <Compass size={16} aria-hidden="true" /> Re-run setup wizard
                 </button>
               </div>
             )}
@@ -862,13 +885,13 @@ function App() {
             <li className="conv-list-empty" data-testid="conv-list-empty">
               {conversations.length === 0 ? (
                 <EmptyState
-                  icon="💬"
+                  icon={<MessageSquare size={24} />}
                   heading="No conversations yet"
                   sub="Start a new chat to begin — your threads will appear here."
                 />
               ) : (
                 <EmptyState
-                  icon="🔎"
+                  icon={<Search size={24} />}
                   heading="No matches"
                   sub="No conversations match your search."
                 />
@@ -918,7 +941,7 @@ function App() {
                 <span className="conv-title">
                   <span className="conv-title-line">
                     {c.pinned && (
-                      <span className="conv-pin-dot" aria-hidden="true" title="Pinned">📌</span>
+                      <span className="conv-pin-dot" aria-hidden="true" title="Pinned"><Pin size={11} /></span>
                     )}
                     {depth > 0 && (
                       <span className="conv-branch-marker" aria-hidden="true">↳ </span>
@@ -996,7 +1019,7 @@ function App() {
                   setConvContextMenu(null);
                 }}
               >
-                {convContextMenu.conv.pinned ? "📌 Unpin" : "📌 Pin"}
+                <Pin size={16} /> {convContextMenu.conv.pinned ? "Unpin" : "Pin"}
               </button>
               <button
                 type="button"
@@ -1007,7 +1030,7 @@ function App() {
                   setConvContextMenu(null);
                 }}
               >
-                🏷 Edit tags…
+                <Tag size={16} /> Edit tags…
               </button>
               <button
                 type="button"
@@ -1024,7 +1047,7 @@ function App() {
                   setConvContextMenu(null);
                 }}
               >
-                ⧉ Open in new window
+                <ExternalLink size={16} /> Open in new window
               </button>
               <div className="conv-context-divider" role="separator" />
               <button
@@ -1041,7 +1064,7 @@ function App() {
                   setConvContextMenu(null);
                 }}
               >
-                🗑 Delete
+                <Trash2 size={16} /> Delete
               </button>
             </div>
           </>
@@ -1100,7 +1123,7 @@ function App() {
             title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             aria-label="Toggle theme"
           >
-            {theme === "dark" ? "☀" : "☾"}
+            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </button>
         </header>
         {/* Audit LOW (2026-05-27): per-view ErrorBoundary so a render
@@ -1177,7 +1200,7 @@ function App() {
           <div className="memories-modal" ref={memoriesModalRef}>
             <div className="memories-modal-header">
               <span>Memories</span>
-              <button onClick={() => setMemoriesOpen(false)} aria-label="Close" className="memories-close">×</button>
+              <button onClick={() => setMemoriesOpen(false)} aria-label="Close" className="memories-close"><X size={16} /></button>
             </div>
             <MemoryPanel
               refreshToken={memoryTick}

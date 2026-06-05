@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, RotateCw, GitBranch } from "lucide-react";
 import type { Message, MemoryScope } from "../types";
 import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
@@ -104,11 +105,11 @@ function MessageActions({
           if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1200); }
         }}
       >
-        {copied ? "✓ Copied" : "Copy"}
+        {copied ? <><Check size={16} /> Copied</> : "Copy"}
       </button>
       {msg.role === "assistant" && isLast && onRegenerate && (
         <button className="msg-action" title="Regenerate response" onClick={onRegenerate}>
-          ↻ Regenerate
+          <RotateCw size={16} /> Regenerate
         </button>
       )}
       {msg.role === "user" && isLastUser && onEditUser && (
@@ -225,7 +226,7 @@ function ForkButton({ msg, onFork }: { msg: Message; onFork: (m: Message) => voi
       }
       aria-label={armed ? "Click again to confirm fork" : "Fork from here"}
     >
-      {armed ? "Click again to confirm" : "🌿 Fork from here"}
+      {armed ? "Click again to confirm" : <><GitBranch size={16} /> Fork from here</>}
     </button>
   );
 }

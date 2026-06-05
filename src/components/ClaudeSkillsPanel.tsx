@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { announce } from "../lib/announce";
 import { logDiag } from "../lib/diagnostics";
@@ -312,7 +313,7 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
             aria-label="Close Claude Skills panel"
             data-testid="claude-skills-close"
           >
-            ×
+            <X size={16} />
           </button>
         </header>
 
@@ -618,7 +619,7 @@ function BodyViewer({
             onClick={onClose}
             aria-label="Close body viewer"
           >
-            ×
+            <X size={16} />
           </button>
         </header>
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RotateCw, X } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { ClaudeSkillsPanel } from "./ClaudeSkillsPanel";
@@ -218,10 +219,10 @@ export function Dashboard({ open, onClose }: Props) {
               disabled={busy}
               title="Refresh now"
             >
-              {busy ? "…" : "↻"}
+              {busy ? "…" : <RotateCw size={16} />}
             </button>
             <button className="dashboard-close" onClick={onClose} aria-label="Close dashboard">
-              ✕
+              <X size={16} />
             </button>
           </div>
         </header>

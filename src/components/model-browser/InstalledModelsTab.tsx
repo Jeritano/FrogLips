@@ -1,4 +1,5 @@
 import { EmptyState } from "../EmptyState";
+import { Package, Trash2 } from "lucide-react";
 import type { GgufFile, ModelEntry } from "../../types";
 
 /* ── Installed-models tab ─────────────────────────────────────────────────
@@ -67,7 +68,7 @@ export function InstalledModelsTab({
       )}
       {total === 0 && (
         <EmptyState
-          icon="📦"
+          icon={<Package size={16} />}
           heading="No models installed"
           sub="Switch to Ollama or HuggingFace tabs above to pull a model."
         />
@@ -130,7 +131,7 @@ export function InstalledModelsTab({
                   disabled={isDeleting || !!deleting}
                   title="Delete from disk"
                 >
-                  {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove")}
+                  {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : <><Trash2 size={14} /> Remove</>)}
                 </button>
               </div>
             </div>
@@ -171,7 +172,7 @@ export function InstalledModelsTab({
                   disabled={isDeleting || !!deleting}
                   title="Delete from disk"
                 >
-                  {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : "🗑 Remove")}
+                  {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : <><Trash2 size={14} /> Remove</>)}
                 </button>
               </div>
             </div>
@@ -228,7 +229,7 @@ export function InstalledModelsTab({
                   disabled={isDeleting || !!deleting}
                   title="Delete GGUF from disk"
                 >
-                  {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === id ? "Click again to confirm" : "🗑 Remove")}
+                  {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === id ? "Click again to confirm" : <><Trash2 size={14} /> Remove</>)}
                 </button>
               </div>
             </div>

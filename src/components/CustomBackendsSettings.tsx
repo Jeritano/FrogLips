@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import { ErrorBar } from "./ErrorBar";
+import { Cloud } from "lucide-react";
 import type { CustomBackend } from "../types";
 
 /* ── Custom OpenAI-compatible cloud backends ──────────────────────────── */
@@ -146,7 +147,7 @@ export function CustomBackendsSettings({ onChanged }: Props) {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <strong style={{ fontSize: 13 }}>☁ {b.name}</strong>
+              <strong style={{ fontSize: 13 }}><Cloud size={16} /> {b.name}</strong>
               <span className="agent-settings-hint" style={{ fontSize: 11 }}>
                 {hasKey ? "key set" : "no key"}
               </span>

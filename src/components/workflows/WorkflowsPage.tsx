@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { Puzzle, X } from "lucide-react";
 import { api } from "../../lib/tauri-api";
 import { validateGraph, parseWorkflowTrigger } from "../../lib/workflow";
 import type { RunWorkflowOptions } from "../../lib/workflow";
@@ -593,7 +594,7 @@ export function WorkflowsPage({ status }: Props) {
         {err && <div className="wf-error" onClick={() => setErr(null)}>{err}</div>}
         {list.length === 0 ? (
           <EmptyState
-            icon="🧩"
+            icon={<Puzzle size={24}/>}
             heading="No workflows yet"
             sub="Create a workflow to chain agents into an automated pipeline."
           />
@@ -611,7 +612,7 @@ export function WorkflowsPage({ status }: Props) {
                   onClick={() => deleteWorkflow(w.id)}
                   aria-label={`Delete ${w.name}`}
                 >
-                  ×
+                  <X size={16}/>
                 </button>
               </li>
             ))}

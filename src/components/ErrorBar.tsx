@@ -18,6 +18,7 @@
  * sites should NOT inline their own styles — pass `className` to extend.
  */
 import { memo } from "react";
+import { X } from "lucide-react";
 
 interface Props {
   /** The error message to render. Null / empty hides the component. */
@@ -79,7 +80,7 @@ function ErrorBarImpl({
           aria-label="Dismiss error"
           title="Dismiss"
         >
-          ×
+          <X size={16} />
         </button>
       )}
     </div>

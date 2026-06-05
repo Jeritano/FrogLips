@@ -20,7 +20,12 @@
   white-space: nowrap;
   transition: background-color var(--dur-fast) var(--ease-standard),
     border-color var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard);
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+.ui-btn:active:not(:disabled) {
+  transform: scale(0.97);
 }
 .ui-btn:disabled {
   opacity: 0.5;
@@ -48,9 +53,12 @@
 .ui-btn--primary {
   background: var(--accent);
   color: #fff;
+  /* Ambient lift + a 1px top highlight = the Linear/Things primary finish. */
+  box-shadow: var(--elev-1), inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 .ui-btn--primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 88%, #000);
+  box-shadow: var(--elev-2), inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 .ui-btn--secondary {
   background: var(--surface-2);
@@ -98,11 +106,15 @@
   color: var(--text-2);
   cursor: pointer;
   transition: background-color var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard);
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
 }
 .ui-icon-btn:hover:not(:disabled) {
   background: var(--surface-hover);
   color: var(--text);
+}
+.ui-icon-btn:active:not(:disabled) {
+  transform: scale(0.92);
 }
 .ui-icon-btn:disabled {
   opacity: 0.5;
@@ -131,13 +143,16 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
-  transition: border-color var(--dur-fast) var(--ease-standard);
+  transition: border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 .ui-input::placeholder {
   color: var(--text-3);
 }
 .ui-input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+  outline: none;
 }
 .ui-input--invalid {
   border-color: var(--danger-border);
@@ -388,6 +403,7 @@
   transform: translateX(3px);
   transition: transform var(--dur-fast) var(--ease-out);
   will-change: transform;
+  box-shadow: var(--elev-1);
 }
 .ui-switch[data-state="checked"] .ui-switch-thumb {
   transform: translateX(18px);

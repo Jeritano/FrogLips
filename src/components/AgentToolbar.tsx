@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { History, Settings, RotateCcw } from "lucide-react";
 import { ExportMenu } from "./ExportMenu";
 import { api } from "../lib/tauri-api";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
@@ -90,7 +91,7 @@ function AgentUndoButton() {
         title="Nothing to undo — no agent writes captured yet"
         disabled
       >
-        ↶ Undo (none)
+        <RotateCcw size={16} /> Undo (none)
       </button>
     );
   }
@@ -128,7 +129,7 @@ function AgentUndoButton() {
         ? "Reverting…"
         : armed
           ? "Click again to confirm"
-          : `↶ Undo ${base}`}
+          : <><RotateCcw size={16} /> Undo {base}</>}
     </button>
   );
 }
@@ -185,7 +186,7 @@ export function AgentToolbar(props: Props) {
         disabled={messages.length === 0}
         title="Expand tool-call history (calls are hidden from the chat)"
       >
-        ⌖ History
+        <History size={16} /> History
       </button>
       <button
         data-testid="params-toggle"
@@ -194,7 +195,7 @@ export function AgentToolbar(props: Props) {
         title="Per-conversation model parameters"
         aria-expanded={showParamsPanel}
       >
-        ⚙ Params{!paramsAreEmpty(convParams) ? " •" : ""}
+        <Settings size={16} /> Params{!paramsAreEmpty(convParams) ? " •" : ""}
       </button>
       <button
         data-testid="agent-toggle"
@@ -237,7 +238,7 @@ export function AgentToolbar(props: Props) {
           aria-label="Agent settings"
           aria-expanded={showAgentSettings}
         >
-          ⚙
+          <Settings size={16} />
         </button>
       )}
       {agentMode && (

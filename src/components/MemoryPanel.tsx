@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, X } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
@@ -347,8 +348,8 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
                   <div className="memory-item-actions">
                     {tab === "pending" ? (
                       <>
-                        <button className="memory-btn approve" disabled={busy === m.id} onClick={() => approve(m.id)} title="Approve">✓</button>
-                        <button className="memory-btn reject" disabled={busy === m.id} onClick={() => reject(m.id)} title="Reject">✕</button>
+                        <button className="memory-btn approve" disabled={busy === m.id} onClick={() => approve(m.id)} title="Approve"><Check size={14} /></button>
+                        <button className="memory-btn reject" disabled={busy === m.id} onClick={() => reject(m.id)} title="Reject"><X size={14} /></button>
                       </>
                     ) : (
                       <>
@@ -383,7 +384,9 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
                               : "Delete memory"
                           }
                         >
-                          {deleteConfirm.labelFor(String(m.id), "✕")}
+                          {deleteConfirm.armed === String(m.id)
+                            ? "Click again to confirm"
+                            : <X size={14} />}
                         </button>
                       </>
                     )}

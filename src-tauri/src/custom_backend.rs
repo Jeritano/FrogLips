@@ -236,17 +236,10 @@ fn reject_ssrf_base(base: &str) -> Result<()> {
     // `host_str` may keep brackets for an IPv6 literal; strip for parsing.
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = bare.parse::<IpAddr>() {
-        let blocked = match ip {
-            IpAddr::V4(v4) => v4.is_link_local() || v4.is_unspecified() || v4.is_multicast(),
-            IpAddr::V6(v6) => {
-                let segs = v6.segments();
-                let link_local = (segs[0] & 0xffc0) == 0xfe80;
-                let mapped_bad = v6.to_ipv4().is_some_and(|m| {
-                    m.is_link_local() || m.is_unspecified() || m.is_multicast()
-                });
-                link_local || v6.is_unspecified() || v6.is_multicast() || mapped_bad
-            }
-        };
+        // Single source of truth for the blocked-IP classes (shared with the
+        // resolve+pin path) so the literal pre-check and the resolved check can
+        // never drift.
+        let blocked = custom_ip_blocked(&ip);
         if blocked {
             return Err(anyhow!("custom backend host {host} is not an allowed address"));
         }
@@ -267,16 +260,28 @@ fn reject_ssrf_base(base: &str) -> Result<()> {
 }
 
 /// True if a (resolved) IP is in the SSRF-blocked space for a custom backend:
-/// link-local (incl. cloud metadata 169.254.169.254), unspecified, multicast,
-/// and the IPv4-in-IPv6 forms of those. Loopback + RFC1918/LAN are deliberately
-/// ALLOWED — local model servers are the common case.
+/// link-local (incl. AWS/GCP/Azure metadata 169.254.169.254), the Alibaba
+/// metadata IP 100.100.100.200 (CGNAT range, not link-local), unspecified,
+/// multicast, and the IPv4-in-IPv6 forms of those. Loopback + RFC1918/LAN are
+/// deliberately ALLOWED — local model servers are the common case. Kept in
+/// lockstep with `mcp::is_blocked_ip`.
 fn custom_ip_blocked(ip: &std::net::IpAddr) -> bool {
     use std::net::IpAddr;
+    fn v4_blocked(v4: &std::net::Ipv4Addr) -> bool {
+        v4.is_link_local()
+            || v4.is_unspecified()
+            || v4.is_multicast()
+            || v4.octets() == [100, 100, 100, 200]
+    }
     match ip {
-        IpAddr::V4(v4) => v4.is_link_local() || v4.is_unspecified() || v4.is_multicast(),
+        IpAddr::V4(v4) => v4_blocked(v4),
         IpAddr::V6(v6) => {
+            // Canonicalize IPv4-in-IPv6 forms FIRST (mapped, then compatible).
+            if let Some(m) = v6.to_ipv4_mapped() {
+                return v4_blocked(&m);
+            }
             if let Some(m) = v6.to_ipv4() {
-                return m.is_link_local() || m.is_unspecified() || m.is_multicast();
+                return v4_blocked(&m);
             }
             let segs = v6.segments();
             ((segs[0] & 0xffc0) == 0xfe80) || v6.is_unspecified() || v6.is_multicast()

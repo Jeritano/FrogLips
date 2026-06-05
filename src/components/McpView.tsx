@@ -4,6 +4,7 @@ import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import { Button, Input, Spinner, Badge } from "./ui";
+import { Globe, Star, Check, X } from "lucide-react";
 import type { McpServerConfig, McpServerInfo, McpRegistryEntry } from "../types";
 import "../styles/mcp.css";
 
@@ -328,7 +329,7 @@ export function McpView() {
       {err && (
         <div className="mcp-err" role="alert">
           {err}
-          <button className="mcp-err-x" onClick={() => setErr(null)} aria-label="dismiss">×</button>
+          <button className="mcp-err-x" onClick={() => setErr(null)} aria-label="dismiss"><X size={16} /></button>
         </div>
       )}
 
@@ -371,7 +372,7 @@ export function McpView() {
                 disabled={busy !== null}
                 title="Authorize in your browser — no API key needed (if the server supports OAuth)"
               >
-                {busy ? <Spinner label="Authorizing" /> : "🔓 Connect with browser"}
+                {busy ? <Spinner label="Authorizing" /> : <><Globe size={16} /> Connect with browser</>}
               </Button>
             )}
             <Button size="sm" variant="ghost" onClick={() => setForm(null)}>Cancel</Button>
@@ -456,11 +457,11 @@ export function McpView() {
                     <div className="mcp-card-desc">{e.description}</div>
                     <div className="mcp-card-foot">
                       <span className="mcp-card-meta">
-                        {e.stars != null && <span title="GitHub stars">★ {e.stars}</span>}
+                        {e.stars != null && <span title="GitHub stars"><Star size={12} /> {e.stars}</span>}
                         {e.package_registry && <span className="mcp-card-pkg">{e.package_registry}</span>}
                       </span>
                       {installed ? (
-                        <Button size="sm" variant="ghost" disabled>Added ✓</Button>
+                        <Button size="sm" variant="ghost" disabled>Added <Check size={14} /></Button>
                       ) : canAdd ? (
                         <Button size="sm" variant="primary" onClick={() => addFromEntry(e)}>Add</Button>
                       ) : (

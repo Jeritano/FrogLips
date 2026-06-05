@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { X } from "lucide-react";
 
 export interface ToastProps {
   message: string;
@@ -55,7 +56,7 @@ export function Toast({
         aria-label="Dismiss notification"
         onClick={onDismiss}
       >
-        ×
+        <X size={16} />
       </button>
     </div>
   );

@@ -9,6 +9,7 @@ import { InstalledModelsTab } from "./model-browser/InstalledModelsTab";
 import { OpenRouterBrowserTab } from "./model-browser/OpenRouterBrowserTab";
 import { LlmpmPanel } from "./LlmpmPanel";
 import { ModelScopeBrowserTab } from "./model-browser/ModelScopeBrowserTab";
+import { X } from "lucide-react";
 /** Type-only re-import for the GGUF tree shape — HuggingFaceLibraryView owns
  *  it now; this stays a type-level import so the lazy() chunk boundary holds. */
 import type { HfTreeEntry } from "./HuggingFaceLibraryView";
@@ -466,7 +467,7 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
             />
           )}
           {tab === "hf" && <div style={{ flex: 1 }} />}
-          <button className="mb-close" onClick={onClose} aria-label="Close model library">✕</button>
+          <button className="mb-close" onClick={onClose} aria-label="Close model library"><X size={16} /></button>
         </div>
 
         {/* Source selector */}

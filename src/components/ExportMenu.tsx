@@ -1,3 +1,4 @@
+import { Download } from "lucide-react";
 import { conversationToMarkdown, downloadText, safeFilename, type ExportMode } from "../lib/export";
 import type { Conversation, Message } from "../types";
 
@@ -26,7 +27,7 @@ export function ExportMenu({ conversation, messages, open, onToggle, onClose, di
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        ⤓ Export ▾
+        <Download size={16} /> Export ▾
       </button>
       {open && (
         <div

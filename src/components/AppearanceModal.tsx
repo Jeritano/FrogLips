@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { X, Sun, Moon } from "lucide-react";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import {
   SYNTAX_THEMES,
@@ -86,7 +87,7 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
       <div ref={ref} className="memories-modal appearance-modal">
         <div className="memories-modal-header">
           <span>Appearance</span>
-          <button onClick={onClose} aria-label="Close" className="memories-close">×</button>
+          <button onClick={onClose} aria-label="Close" className="memories-close"><X size={16} /></button>
         </div>
 
         <div className="appearance-body">
@@ -223,8 +224,8 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
               <span className="appr-row-title">App theme</span>
               <span className="appr-row-desc">Switch the whole interface between light and dark.</span>
             </div>
-            <button className="agent-settings-btn" onClick={onToggleTheme}>
-              {theme === "dark" ? "🌙 Dark" : "☀️ Light"} — switch to {theme === "dark" ? "light" : "dark"}
+            <button className="agent-settings-btn" onClick={onToggleTheme} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {theme === "dark" ? <><Moon size={14} /> Dark</> : <><Sun size={14} /> Light</>} — switch to {theme === "dark" ? "light" : "dark"}
             </button>
           </div>
 

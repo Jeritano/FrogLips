@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Download, Tag, Clock, Cloud, Trash2, Check } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import type { ModelEntry, OllamaLibraryEntry, OllamaPullProgress } from "../types";
 
@@ -328,13 +329,13 @@ export function OllamaLibraryView({
                   ))}
                 </div>
                 <div className="mb-ollama-meta">
-                  <span>↓ {fmtPulls(entry.pulls)} Pulls</span>
-                  <span>· 🏷 {entry.tag_count} Tag{entry.tag_count === 1 ? "" : "s"}</span>
-                  {entry.updated_relative && <span>· 🕒 Updated {entry.updated_relative}</span>}
+                  <span><Download size={12} /> {fmtPulls(entry.pulls)} Pulls</span>
+                  <span>· <Tag size={12} /> {entry.tag_count} Tag{entry.tag_count === 1 ? "" : "s"}</span>
+                  {entry.updated_relative && <span>· <Clock size={12} /> Updated {entry.updated_relative}</span>}
                 </div>
                 {isCloud && !isInstalled && (
                   <div className="mb-ollama-cloudhint">
-                    ☁ Cloud model — runs on Ollama's servers, no local download. First pull opens Ollama sign-in in your browser automatically.
+                    <Cloud size={16} /> Cloud model — runs on Ollama's servers, no local download. First pull opens Ollama sign-in in your browser automatically.
                   </div>
                 )}
                 {err && <div className="mb-card-err">{err}</div>}
@@ -365,7 +366,7 @@ export function OllamaLibraryView({
                       ? <span className="mb-spinner" />
                       : confirmDelete === removeId
                         ? "Click again to confirm"
-                        : "🗑 Remove"}
+                        : <><Trash2 size={14} /> Remove</>}
                   </button>
                 ) : (
                   <button
@@ -377,16 +378,16 @@ export function OllamaLibraryView({
                     {isPulling
                       ? <span className="mb-spinner" />
                       : isDone
-                        ? "✓ Done"
+                        ? <><Check size={14} /> Done</>
                         : isInstalled
-                          ? "✓ Installed"
+                          ? <><Check size={14} /> Installed</>
                           : isCloud
                             ? "Get cloud"
                             : "Pull"}
                   </button>
                 )}
                 {isInstalled && (
-                  <span className="mb-tag mb-installed-tag">✓ installed</span>
+                  <span className="mb-tag mb-installed-tag"><Check size={12} /> installed</span>
                 )}
               </div>
             </article>

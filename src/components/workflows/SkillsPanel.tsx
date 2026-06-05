@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Wrench, X } from "lucide-react";
 import { api } from "../../lib/tauri-api";
 import { logDiag } from "../../lib/diagnostics";
 import type { SkillSummary } from "../../types";
@@ -149,7 +150,7 @@ export function SkillsPanel({ workflowId, workflowName, open, onClose }: Props) 
             aria-label="Close skills panel"
             data-testid="skills-panel-close"
           >
-            ×
+            <X size={16}/>
           </button>
         </header>
 
@@ -158,14 +159,14 @@ export function SkillsPanel({ workflowId, workflowName, open, onClose }: Props) 
         <div className="skills-panel-body">
           {!supported ? (
             <EmptyState
-              icon="🛠"
+              icon={<Wrench size={24}/>}
               heading="Skills not yet available"
               sub="(skills feature not yet available)"
               data-testid="skills-panel-unsupported"
             />
           ) : list.length === 0 && !loading ? (
             <EmptyState
-              icon="🛠"
+              icon={<Wrench size={24}/>}
               heading="No skills saved"
               sub="Skills are saved by your agents when they call `workflow_save_skill`. They survive across runs of this workflow."
               data-testid="skills-panel-empty"
@@ -331,7 +332,7 @@ function StepsViewer({
             onClick={onClose}
             aria-label="Close steps viewer"
           >
-            ×
+            <X size={16}/>
           </button>
         </header>
         <pre className="skills-steps-pre" data-testid="skills-steps-body">

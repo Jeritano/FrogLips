@@ -257,7 +257,7 @@ body {
   /* Uniform 12px gap on all 4 sides. */
   padding: 12px;
   gap: 12px;
-  background: var(--bg);
+  background: var(--shell-bg);
   box-sizing: border-box;
 }
 /* Collapsed sidebar — the grid track shrinks to 0 and the panel border
@@ -289,7 +289,9 @@ body {
   font-weight: 600;
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 .view-nav-btn:hover {
   background: var(--surface-hover, var(--surface));
@@ -298,6 +300,8 @@ body {
 .view-nav-btn.active {
   background: var(--accent-bg);
   color: var(--accent);
+  /* Linear-style active rail. */
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .view-nav-icon {
   font-size: 15px;
@@ -314,7 +318,8 @@ body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #22c55e;
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-bg);
   flex-shrink: 0;
 }
 .app[data-sidebar-collapsed="true"] > .sidebar {
@@ -373,12 +378,14 @@ body {
 
 .app > .sidebar,
 .app > .main {
-  border-radius: 12px;
-  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
   background: var(--surface);
   overflow: hidden;
+  /* Floating-panel depth so the rounded surfaces lift off the shell frame. */
+  box-shadow: var(--elev-2);
 }
-.app > .sidebar { border-right: 1px solid var(--border-subtle); }
+.app > .sidebar { border-right: 1px solid var(--border); }
 .app > .main {
   background: var(--bg);
   display: flex;

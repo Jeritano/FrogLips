@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "react";
+import { X } from "lucide-react";
 import type { ConversationParams } from "../types";
 import { emptyParams, paramsAreEmpty } from "../lib/conversation-params";
 
@@ -61,7 +62,7 @@ export function ParamsPanel({ params, onSave, onClose, disabled }: Props) {
           onClick={onClose}
           aria-label="Close parameters"
         >
-          ×
+          <X size={16} />
         </button>
       </div>
       <div className="params-panel-grid">

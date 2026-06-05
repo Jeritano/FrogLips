@@ -27,6 +27,7 @@
  * wanders to a different tab).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Zap, Search, Check } from "lucide-react";
 import { Sidebar } from "./hf-library/Sidebar";
 import { ModelCard } from "./hf-library/ModelCard";
 import { EmptyState } from "./EmptyState";
@@ -332,7 +333,7 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
               onChange={(e) => setInference(e.target.checked)}
               data-testid="hfl-inference-toggle"
             />
-            <span className="hfl-bolt" aria-hidden>⚡</span>
+            <span className="hfl-bolt" aria-hidden><Zap size={16} /></span>
             <span>Inference Available</span>
           </label>
           <select
@@ -363,7 +364,7 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
           {!loading && visibleModels.length === 0 && !err && (
             <div className="hfl-empty">
               <EmptyState
-                icon="🔎"
+                icon={<Search size={16} />}
                 heading="No models match your filters"
                 sub="Try widening the parameter slider, clearing pipeline / library chips, or relaxing the inference-only toggle."
               />
@@ -456,7 +457,7 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
                             {sizeBytes > 0 ? fmtBytes(sizeBytes) : "—"}
                           </span>
                           {isInstalled && (
-                            <span className="mb-tag mb-installed-tag" title="Already downloaded">✓ installed</span>
+                            <span className="mb-tag mb-installed-tag" title="Already downloaded"><Check size={12} /> installed</span>
                           )}
                         </div>
                         {isDownloading && prog && (

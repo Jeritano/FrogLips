@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
+  BackgroundVariant,
   Controls,
+  MarkerType,
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
@@ -316,9 +318,13 @@ export function WorkflowCanvas({
         onEdgeClick={handleEdgeClick}
         fitView
         proOptions={{ hideAttribution: true }}
-        defaultEdgeOptions={{ className: "wf-edge" }}
+        defaultEdgeOptions={{
+          className: "wf-edge",
+          type: "smoothstep",
+          markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+        }}
       >
-        <Background gap={20} className="wf-bg" />
+        <Background variant={BackgroundVariant.Dots} gap={16} size={1} className="wf-bg" />
         <Controls className="wf-controls" showInteractive={false} />
       </ReactFlow>
       <CardDeck onCreate={handleCreateFromDeck} />

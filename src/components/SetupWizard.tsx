@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useRef } from "react";
+import { Check } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { logDiag } from "../lib/diagnostics";
@@ -457,7 +458,7 @@ export function SetupWizard({ onDone }: Props) {
                     )}
                     {isDone && (
                       <div className="setup-wizard-card-state done">
-                        Downloaded ✓
+                        Downloaded <Check size={14} />
                       </div>
                     )}
                   </button>

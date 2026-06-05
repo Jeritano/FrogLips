@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import type { ModelEntry, WorkflowCard } from "../../types";
 import { WORKFLOW_CARD_COLORS } from "../../types";
 import { loadAllPresets } from "../../lib/agent-presets";
@@ -301,7 +302,7 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
               onClick={handleCancel}
               aria-label="Close"
             >
-              ×
+              <X size={16}/>
             </button>
           </div>
           <div className="wf-form-body">

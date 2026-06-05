@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useModalA11y } from "../lib/use-modal-a11y";
@@ -104,7 +105,7 @@ export function AboutYouModal({ onClose }: Props) {
       <div className="memories-modal profile-modal" ref={modalRef}>
         <div className="memories-modal-header">
           <span>About You</span>
-          <button onClick={onClose} aria-label="Close" className="memories-close">×</button>
+          <button onClick={onClose} aria-label="Close" className="memories-close"><X size={16} /></button>
         </div>
 
         <p className="profile-intro">

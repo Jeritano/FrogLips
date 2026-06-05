@@ -47,16 +47,25 @@
   display: flex;
   align-items: stretch;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--surface);
+  box-shadow: var(--elev-1);
+  transition: box-shadow var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+.wf-list-item:hover {
+  box-shadow: var(--elev-2);
+  border-color: var(--accent);
+  transform: translateY(-1px);
 }
 .wf-list-open {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4);
   background: transparent;
   border: none;
   color: var(--text);
@@ -64,7 +73,17 @@
   font-size: var(--fs-base);
 }
 .wf-list-open:hover { background: var(--surface-hover); }
-.wf-list-meta { color: var(--text-2); font-size: var(--fs-sm); }
+.wf-list-name { font-weight: var(--fw-medium); }
+/* Metadata reads as a pill, not bare grey text. */
+.wf-list-meta {
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  padding: 2px var(--space-2);
+}
 .wf-list-del {
   width: 38px;
   background: transparent;
@@ -122,11 +141,19 @@
 .wf-canvas .react-flow__background { color: var(--border-subtle); }
 .wf-canvas .react-flow__edge .react-flow__edge-path {
   stroke: var(--text-2);
-  stroke-width: 2;
+  stroke-width: 1.5;
+}
+.wf-canvas .react-flow__edge .react-flow__arrowhead {
+  fill: var(--text-2);
 }
 .wf-canvas .react-flow__edge.selected .react-flow__edge-path,
 .wf-canvas .react-flow__edge:hover .react-flow__edge-path {
   stroke: var(--accent);
+  stroke-width: 2;
+}
+.wf-canvas .react-flow__edge.selected .react-flow__arrowhead,
+.wf-canvas .react-flow__edge:hover .react-flow__arrowhead {
+  fill: var(--accent);
 }
 .wf-canvas .react-flow__controls {
   background: var(--surface);
@@ -153,9 +180,17 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  box-shadow: var(--shadow-toast);
+  box-shadow: var(--elev-2);
+  transition: box-shadow var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
-.wf-node[data-state="running"] { border-color: var(--accent); }
+.wf-node:hover { box-shadow: var(--elev-3); }
+.wf-node.selected,
+.react-flow__node.selected .wf-node {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), var(--elev-3);
+}
+.wf-node[data-state="running"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--elev-3); }
 .wf-node[data-state="done"] { border-color: var(--green-border); }
 .wf-node[data-state="failed"] { border-color: var(--danger-border); }
 
@@ -267,10 +302,17 @@
 }
 
 .wf-handle {
-  width: 9px;
-  height: 9px;
+  width: 12px;
+  height: 12px;
   background: var(--accent);
   border: 2px solid var(--surface);
+  box-shadow: var(--elev-1);
+  transition: transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.wf-handle:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 4px var(--accent-bg);
 }
 
 /* ── Run panel ── */
@@ -331,9 +373,19 @@
   cursor: pointer;
 }
 .wf-btn:hover:not(:disabled) { background: var(--surface-hover); }
+.wf-btn:active:not(:disabled) { transform: scale(0.97); }
 .wf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.wf-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.wf-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+.wf-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: var(--elev-1), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.wf-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+  box-shadow: var(--elev-2), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  filter: none;
+}
 .wf-btn-danger { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-fg); }
 .wf-btn-danger:hover:not(:disabled) { background: var(--danger-bg-strong); }
 
