@@ -1691,8 +1691,19 @@ button.cancel {
 /* ── OpenRouter model browser (2026-05-29) ───────────────────────────── */
 .openrouter-modal { min-width: 520px; max-width: 640px; }
 .openrouter-keygate { display: flex; flex-direction: column; gap: var(--space-3); }
-.openrouter-key-row { display: flex; gap: var(--space-2); }
+.openrouter-key-row { display: flex; align-items: center; gap: var(--space-2); }
 .openrouter-key-row input { flex: 1; }
+.openrouter-keynote {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+  background: var(--accent-bg);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  border-radius: var(--radius-sm);
+}
 .openrouter-filter { margin: var(--space-2) 0; }
 .openrouter-list {
   display: flex;

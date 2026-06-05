@@ -19,13 +19,15 @@ interface Props {
 }
 
 /**
- * OpenRouter source for the Model Library. Enter the API key once
- * (Keychain), then scroll the live catalogue and click a model — same
- * flow as the Ollama/HF tabs. No per-model base_url/model forms.
+ * OpenRouter source for the Model Library. The `/models` catalogue is PUBLIC —
+ * browse it without a key. A key is only needed to actually RUN a model, so it
+ * is surfaced as an optional "add to run these models" affordance, not a gate.
+ * Stored in the local `secrets.json`. Same browse flow as Ollama/HF.
  */
 export function OpenRouterBrowserTab({ query, onSelect }: Props) {
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [keyDraft, setKeyDraft] = useState("");
+  const [showKeyInput, setShowKeyInput] = useState(false);
   const [models, setModels] = useState<ORModel[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -44,12 +46,10 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // Catalogue is public — load immediately, no key required to browse.
+    void loadModels();
     api.openrouterHasKey()
-      .then((has) => {
-        if (cancelled) return;
-        setHasKey(has);
-        if (has) void loadModels();
-      })
+      .then((has) => { if (!cancelled) setHasKey(has); })
       .catch(() => { if (!cancelled) setHasKey(false); });
     return () => { cancelled = true; };
   }, [loadModels]);
@@ -61,7 +61,7 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
       await api.openrouterSetKey(k);
       setKeyDraft("");
       setHasKey(true);
-      void loadModels();
+      setShowKeyInput(false);
     } catch (e) {
       setErr(`Couldn't save key: ${e}`);
       logDiag({ level: "warn", source: "openrouter", message: "set key failed", detail: e });
@@ -76,37 +76,39 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
     );
   }, [models, query]);
 
-  if (hasKey === null) return <div className="lazy-loading">Checking…</div>;
-
-  if (!hasKey) {
-    return (
-      <div className="openrouter-keygate">
-        <p className="profile-intro">
-          Enter your OpenRouter API key once. Stored in the macOS Keychain;
-          never leaves this machine except to OpenRouter. Get one at{" "}
-          <code>openrouter.ai/keys</code>.
-        </p>
-        <div className="openrouter-key-row">
-          <input
-            type="password"
-            value={keyDraft}
-            placeholder="sk-or-..."
-            aria-label="OpenRouter API key"
-            autoFocus
-            onChange={(e) => setKeyDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void saveKey(); }}
-          />
-          <button className="agent-settings-btn primary" disabled={!keyDraft.trim()} onClick={saveKey}>
-            Save key
-          </button>
-        </div>
-        {err && <div className="image-error-row" role="alert">{err}</div>}
-      </div>
-    );
-  }
-
   return (
     <>
+      {/* Optional key affordance — browsing is free; a key is only needed to
+          RUN a model. Never blocks the catalogue. */}
+      {hasKey === false && (
+        <div className="openrouter-keynote">
+          {showKeyInput ? (
+            <div className="openrouter-key-row">
+              <input
+                type="password"
+                value={keyDraft}
+                placeholder="sk-or-..."
+                aria-label="OpenRouter API key"
+                autoFocus
+                onChange={(e) => setKeyDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void saveKey(); }}
+              />
+              <button className="agent-settings-btn primary" disabled={!keyDraft.trim()} onClick={saveKey}>
+                Save key
+              </button>
+              <button className="mcp-link" onClick={() => { setShowKeyInput(false); setKeyDraft(""); }}>
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <span>
+              Browsing the public catalogue.{" "}
+              <button className="mcp-link" onClick={() => setShowKeyInput(true)}>Add an API key</button>{" "}
+              to run these models (get one at <code>openrouter.ai/keys</code>).
+            </span>
+          )}
+        </div>
+      )}
       {loading && <div className="lazy-loading">Loading catalogue…</div>}
       {err && (
         <div className="image-error-row" role="alert">
@@ -137,9 +139,30 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
         ))}
         {!loading && shown.length === 0 && !err && <div className="mb-empty">No models match.</div>}
       </div>
-      <button className="agent-settings-btn" style={{ marginTop: 8 }} onClick={() => setHasKey(false)}>
-        Change API key
-      </button>
+      {hasKey && !showKeyInput && (
+        <button className="agent-settings-btn" style={{ marginTop: 8 }} onClick={() => setShowKeyInput(true)}>
+          Change API key
+        </button>
+      )}
+      {hasKey && showKeyInput && (
+        <div className="openrouter-key-row" style={{ marginTop: 8 }}>
+          <input
+            type="password"
+            value={keyDraft}
+            placeholder="sk-or-..."
+            aria-label="OpenRouter API key"
+            autoFocus
+            onChange={(e) => setKeyDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void saveKey(); }}
+          />
+          <button className="agent-settings-btn primary" disabled={!keyDraft.trim()} onClick={saveKey}>
+            Save key
+          </button>
+          <button className="mcp-link" onClick={() => { setShowKeyInput(false); setKeyDraft(""); }}>
+            Cancel
+          </button>
+        </div>
+      )}
     </>
   );
 }
