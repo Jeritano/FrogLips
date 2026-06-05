@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
 import type { AgentAuditRow, AgentAuditStats } from "../types";
 
@@ -36,7 +36,12 @@ export function AuditLog() {
   const [err, setErr] = useState<string | null>(null);
   const [purgeDays, setPurgeDays] = useState<number>(30);
 
+  // Out-of-order guard: rapid filter edits can resolve an older list after a
+  // newer one and paint stale rows. Drop any result that isn't the latest
+  // request (same pattern as MemoryPanel).
+  const refreshSeqRef = useRef(0);
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeqRef.current;
     setBusy(true);
     setErr(null);
     try {
@@ -51,12 +56,13 @@ export function AuditLog() {
         api.agentAuditList(filter),
         api.agentAuditStats(),
       ]);
+      if (seq !== refreshSeqRef.current) return; // superseded by a newer refresh
       setRows(list);
       setStats(s);
     } catch (e) {
-      setErr(String(e));
+      if (seq === refreshSeqRef.current) setErr(String(e));
     } finally {
-      setBusy(false);
+      if (seq === refreshSeqRef.current) setBusy(false);
     }
   }, [tool, conv, timeIdx]);
 

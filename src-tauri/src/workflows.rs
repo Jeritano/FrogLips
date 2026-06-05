@@ -370,10 +370,24 @@ pub fn list_workflows() -> Result<Vec<Workflow>> {
         "SELECT id, name, graph_json, created_at, updated_at
          FROM workflows ORDER BY updated_at DESC",
     )?;
-    let rows = stmt
-        .query_map([], row_to_workflow)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+    // Resilience: a single malformed row (e.g. a hand-seeded BLOB `graph_json`
+    // or any column-type mismatch) must NOT empty the entire list. Collecting
+    // into `Result<Vec<_>>` would turn one bad row into a total workflow
+    // blackout AND wedge the scheduler scan that calls this every 30s. Skip the
+    // unreadable row, log it, return the rest.
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next()? {
+        match row_to_workflow(r) {
+            Ok(wf) => out.push(wf),
+            Err(e) => crate::diagnostics::warn_with(
+                "workflows",
+                "skipping unreadable workflow row",
+                serde_json::json!({ "error": e.to_string() }),
+            ),
+        }
+    }
+    Ok(out)
 }
 
 pub fn get_workflow(id: i64) -> Result<Workflow> {
@@ -448,6 +462,16 @@ const RUNS_RETAIN: i64 = 250;
 /// to the `RUNS_RETAIN` most recent in the same connection so the table stays
 /// bounded under high-frequency scheduled triggers.
 pub fn record_run(workflow_id: i64, status: &str, results_json: &str) -> Result<i64> {
+    // Enforce the size cap HERE, not just at the IPC command boundary — the
+    // scheduler calls `record_run` directly, so a cap only in commands/ would
+    // let a scheduled run persist unbounded `results_json` and bloat every
+    // `list_runs`. MAX_GRAPH_BYTES is the shared ceiling (commands reuse it).
+    if results_json.len() > MAX_GRAPH_BYTES {
+        anyhow::bail!(
+            "results_json exceeds {MAX_GRAPH_BYTES} bytes ({} given)",
+            results_json.len()
+        );
+    }
     let conn = get_db()?;
     // Insert + retention-prune in ONE transaction so the table can't be left
     // in a half-pruned state if the second statement fails (matches
@@ -1348,11 +1372,14 @@ mod tests {
     }
 
     #[test]
-    fn record_run_layer_has_no_size_cap_only_command_does() {
-        // FINDING: the `MAX_RESULTS_BYTES` cap lives in
-        // `commands/workflows.rs`, NOT in `workflows::record_run`. A direct
-        // call to the latter (e.g. an internal scheduler glue path) will
-        // happily insert a 2 MiB JSON. This is the documented boundary.
+    fn record_run_into_raw_helper_skips_cap_public_record_run_enforces_it() {
+        // `record_run_into` is the RAW test helper (takes an explicit conn for
+        // fresh-db isolation + perf seeding) and intentionally has NO size cap.
+        // The PUBLIC `workflows::record_run` enforces the MAX_GRAPH_BYTES cap
+        // itself (so the scheduler, which calls it directly, can't persist an
+        // unbounded results_json — not just the IPC command boundary). This
+        // test pins the raw helper's no-cap behavior used for the 10k-row perf
+        // seed below; the public cap is covered by the command-layer tests.
         let conn = fresh_db();
         let huge = "x".repeat(2 * 1024 * 1024); // 2 MiB
         record_run_into(&conn, 1, "ok", &huge, 100);

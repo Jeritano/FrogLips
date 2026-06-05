@@ -29,6 +29,38 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// OAuth endpoints carry credentials (the authorization code, the PKCE
+/// `code_verifier`, and the refresh token), so they MUST use TLS. Plaintext
+/// `http` is permitted ONLY for loopback (a local dev authorization server);
+/// any other host over `http` is rejected. Non-`http(s)` schemes (e.g.
+/// `file://`, `smb://`, custom URL-handlers) are rejected outright — important
+/// because `authorization_endpoint` is handed to the system opener. All three
+/// endpoints come from server-controlled discovery JSON, so this is the gate
+/// that stops a malicious AS from exfiltrating the PKCE secret in cleartext or
+/// abusing a native URL-handler.
+fn secure_endpoint(raw: &str) -> Result<()> {
+    let url = url::Url::parse(raw).context("parse oauth endpoint")?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            let host = url.host_str().unwrap_or("");
+            let loopback = host == "localhost"
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false);
+            if loopback {
+                Ok(())
+            } else {
+                bail!("oauth endpoint must use https (got plaintext http): {raw}")
+            }
+        }
+        s => bail!("oauth endpoint has unsupported scheme '{s}': {raw}"),
+    }
+}
+
 /// Credentials persisted after a successful flow. Stored as JSON under the
 /// secret-store account `mcp_oauth:<name>`; the bare `access_token` is also
 /// written to `mcp:<name>` so the existing remote-start path uses it.
@@ -199,6 +231,9 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
         .registration_endpoint
         .as_deref()
         .context("server does not support dynamic client registration; paste an API key instead")?;
+    secure_endpoint(reg_ep)?;
+    secure_endpoint(&meta.authorization_endpoint)?;
+    secure_endpoint(&meta.token_endpoint)?;
     let (client_id, client_secret) = register(reg_ep, &redirect_uri, scope.as_deref()).await?;
 
     let (verifier, challenge) = pkce()?;
@@ -281,6 +316,7 @@ pub async fn refresh(creds: &OauthCreds) -> Result<OauthCreds> {
     if let Some(secret) = &creds.client_secret {
         params.push(("client_secret", secret));
     }
+    secure_endpoint(&creds.token_endpoint)?;
     let r = super::build_pinned_client(&creds.token_endpoint)
         .await?
         .post(&creds.token_endpoint)

@@ -183,9 +183,9 @@ export function AgentToolbar(props: Props) {
         className="agent-toggle"
         onClick={onToggleToolHistory}
         disabled={messages.length === 0}
-        title="Tool call history"
+        title="Expand tool-call history (calls are hidden from the chat)"
       >
-        ⌖ Tools
+        ⌖ History
       </button>
       <button
         data-testid="params-toggle"

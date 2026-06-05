@@ -28,29 +28,46 @@ function formatArgs(args: Record<string, unknown> | string | undefined): string 
   return JSON.stringify(args, null, 2);
 }
 
+/**
+ * Pick a code fence (≥3 backticks) strictly longer than any backtick run in
+ * `body`. Tool args/results routinely contain ``` (code, shell transcripts,
+ * nested markdown); a fixed "```" fence would terminate early, spilling the
+ * rest of the body as live markdown — a format-corruption / injection bug when
+ * the export is rendered. A CommonMark fence longer than every inner run can't
+ * be closed by the content.
+ */
+function fenceFor(body: string): string {
+  let longest = 0;
+  for (const m of body.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
 function renderToolDetails(call: ToolCall, result: Message | undefined): string {
   const name = call.function?.name ?? "tool";
   const args = formatArgs(call.function?.arguments);
   const resultBody = result?.content ?? "";
   const truncated = truncate(resultBody);
-  const bytes = resultBody.length;
+  // Accurate byte count (UTF-8), not UTF-16 code-unit length.
+  const bytes = new TextEncoder().encode(resultBody).length;
   const resultLine = result
     ? `**Result** (${bytes} bytes):`
     : `**Result**: _(no response captured)_`;
+  const argFence = fenceFor(args);
+  const resFence = fenceFor(truncated);
 
   return [
     `<details>`,
     `<summary>🔧 ${name}</summary>`,
     ``,
     `**Args:**`,
-    "```json",
+    `${argFence}json`,
     args,
-    "```",
+    argFence,
     ``,
     resultLine,
-    "```",
+    resFence,
     truncated,
-    "```",
+    resFence,
     ``,
     `</details>`,
   ].join("\n");

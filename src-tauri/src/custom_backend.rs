@@ -266,6 +266,71 @@ fn reject_ssrf_base(base: &str) -> Result<()> {
     Ok(())
 }
 
+/// True if a (resolved) IP is in the SSRF-blocked space for a custom backend:
+/// link-local (incl. cloud metadata 169.254.169.254), unspecified, multicast,
+/// and the IPv4-in-IPv6 forms of those. Loopback + RFC1918/LAN are deliberately
+/// ALLOWED — local model servers are the common case.
+fn custom_ip_blocked(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => v4.is_link_local() || v4.is_unspecified() || v4.is_multicast(),
+        IpAddr::V6(v6) => {
+            if let Some(m) = v6.to_ipv4() {
+                return m.is_link_local() || m.is_unspecified() || m.is_multicast();
+            }
+            let segs = v6.segments();
+            ((segs[0] & 0xffc0) == 0xfe80) || v6.is_unspecified() || v6.is_multicast()
+        }
+    }
+}
+
+/// Build a per-request HTTP client pinned to the base URL's resolved
+/// address(es). Unlike the literal-only `reject_ssrf_base` pre-check, this
+/// RESOLVES the hostname and rejects any name that points into the blocked
+/// space (`attacker.example` → A-record `169.254.169.254`), then pins reqwest's
+/// resolver to exactly those validated addresses so a DNS rebind between the
+/// check and the connect can't swap in a blocked IP (TOCTOU). Loopback + LAN
+/// stay allowed. Mirrors the MCP transport's `build_pinned_client` posture.
+async fn pinned_client_for(base: &str) -> Result<reqwest::Client> {
+    use std::net::{IpAddr, SocketAddr};
+    let url = reqwest::Url::parse(base).map_err(|e| anyhow!("invalid base_url: {e}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("custom backend base_url has no host"))?
+        .to_string();
+    let port = url.port_or_known_default().unwrap_or(443);
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+
+    let addrs: Vec<SocketAddr> = if let Ok(ip) = bare.parse::<IpAddr>() {
+        if custom_ip_blocked(&ip) {
+            return Err(anyhow!("custom backend host {host} is not an allowed address"));
+        }
+        vec![SocketAddr::new(ip, port)]
+    } else {
+        let resolved: Vec<SocketAddr> = tokio::net::lookup_host((bare, port))
+            .await
+            .map_err(|e| anyhow!("resolve custom backend host {host}: {e}"))?
+            .collect();
+        if resolved.is_empty() {
+            return Err(anyhow!("custom backend host {host} did not resolve"));
+        }
+        if let Some(bad) = resolved.iter().find(|sa| custom_ip_blocked(&sa.ip())) {
+            return Err(anyhow!(
+                "custom backend host {host} resolves to a blocked address ({})",
+                bad.ip()
+            ));
+        }
+        resolved
+    };
+
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(bare, &addrs)
+        .build()
+        .map_err(|e| anyhow!("build pinned custom-backend client: {e}"))
+}
+
 /// Stream a chat completion from a custom OpenAI-compatible backend. Emits
 /// `custom-chunk:{op_id}` per delta + a terminal `custom-done:{op_id}`;
 /// errors surface via the returned `Result` AND a `custom-error:{op_id}`
@@ -326,7 +391,12 @@ async fn chat_stream_inner(
     let url = format!("{base}/v1/chat/completions");
     let body = build_request_body(&model, &messages, &params);
 
-    let mut req = CUSTOM_HTTP.post(&url).json(&body);
+    // Per-request client pinned to the validated, resolved address(es) of the
+    // user's base URL — resolves the hostname (catching names that point at
+    // metadata/link-local) and closes the DNS-rebind TOCTOU. (The literal
+    // pre-check in `reject_ssrf_base` ran earlier in `resolve_backend`.)
+    let client = pinned_client_for(&base).await?;
+    let mut req = client.post(&url).json(&body);
     if let Some(k) = key.as_deref().filter(|k| !k.is_empty()) {
         req = req.bearer_auth(k);
     }

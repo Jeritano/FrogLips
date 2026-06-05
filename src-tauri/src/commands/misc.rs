@@ -68,7 +68,15 @@ pub fn append_diag_log(line: String) -> Result<(), String> {
         }
     }
     let safe = if line.len() > MAX_LINE {
-        &line[..MAX_LINE]
+        // Floor to the nearest char boundary — slicing mid-UTF-8-codepoint
+        // panics ("byte index is not a char boundary"), and `line` is a
+        // caller-supplied IPC arg (a >256 KiB multibyte string would crash
+        // the command).
+        let mut end = MAX_LINE;
+        while end > 0 && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        &line[..end]
     } else {
         &line[..]
     };

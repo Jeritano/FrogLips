@@ -100,8 +100,13 @@ export function Dashboard({ open, onClose }: Props) {
   // auto-closes when the dashboard closes (per spec).
   const [claudeSkillsOpen, setClaudeSkillsOpen] = useState(false);
   const timerRef = useRef<number | null>(null);
+  // Out-of-order guard: rapid window switches (or the 30s interval racing a
+  // manual switch) can resolve an older heavy summary after a newer one and
+  // paint stale data. Drop any result that isn't the latest request.
+  const refreshSeqRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeqRef.current;
     setBusy(true);
     setErr(null);
     try {
@@ -116,11 +121,12 @@ export function Dashboard({ open, onClose }: Props) {
         until_ts: null,
         limit: 10_000,
       });
+      if (seq !== refreshSeqRef.current) return; // superseded by a newer refresh
       setSummary(s);
     } catch (e) {
-      setErr(String(e));
+      if (seq === refreshSeqRef.current) setErr(String(e));
     } finally {
-      setBusy(false);
+      if (seq === refreshSeqRef.current) setBusy(false);
     }
   }, [windowKey]);
 

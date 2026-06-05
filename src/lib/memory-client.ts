@@ -76,7 +76,6 @@ export function configureMemory(opts: { embeddingModel?: string | null; recallTh
 }
 
 function EMBED_MODEL(): string { return _embedModel; }
-export function getRecallThreshold(): number { return _recallThreshold; }
 
 /**
  * Wrap a fetch with a timeout, chained to an optional caller AbortSignal so
@@ -355,19 +354,6 @@ export async function promoteMemory(id: number): Promise<void> {
 /** Bump scope one step down: global → project → conversation. */
 export async function demoteMemory(id: number): Promise<void> {
   await api.memoryDemote(id);
-}
-
-/**
- * Attach scope context (project root, conversation id) to a memory before
- * a transition that requires it — e.g. demoting a global memory to project
- * scope requires the workspace root to be set first.
- */
-export async function setMemoryContext(
-  id: number,
-  projectRoot?: string | null,
-  convId?: number | null,
-): Promise<void> {
-  await api.memorySetContext(id, projectRoot ?? null, convId ?? null);
 }
 
 /* ── Fact extraction (Phase 3) ── */

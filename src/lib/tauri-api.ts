@@ -89,6 +89,8 @@ import type {
   ScreenshotResult,
   SearchResult,
   RawWorkflow,
+  RoundtableRunSummary,
+  RoundtableRun,
   ServerStatus,
   LlmpmServeStatus,
   ShellOpts,
@@ -832,6 +834,25 @@ export const api = {
   workflowDelete: (id: number) => invoke<void>("workflow_delete", { id }),
   workflowRunRecord: (workflowId: number, status: string, resultsJson: string) =>
     invoke<number>("workflow_run_record", { workflowId, status, resultsJson }),
+
+  // ── Roundtable outcomes (persisted transcripts) ──
+  // `tableId` = the SavedTable id the run came from (null = ad-hoc). The
+  // transcript blob is JSON: { config, turns, totals, endReason, completedAt }.
+  roundtableRunSave: (
+    tableId: string | null,
+    name: string,
+    topic: string,
+    turns: number,
+    transcriptJson: string,
+  ) =>
+    invoke<number>("roundtable_run_save", { tableId, name, topic, turns, transcriptJson }),
+  roundtableRunList: (tableId: string | null) =>
+    invoke<RoundtableRunSummary[]>("roundtable_run_list", { tableId }),
+  roundtableRunGet: (id: number) => invoke<RoundtableRun>("roundtable_run_get", { id }),
+  roundtableRunDelete: (id: number) => invoke<void>("roundtable_run_delete", { id }),
+  /** Write exported transcript content (markdown/json) to a chosen path. */
+  roundtableSaveFile: (destPath: string, content: string) =>
+    invoke<void>("roundtable_save_file", { destPath, content }),
   workflowRunsList: (workflowId: number) =>
     invoke<WorkflowRun[]>("workflow_runs_list", { workflowId }),
 

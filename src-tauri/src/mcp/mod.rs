@@ -917,6 +917,18 @@ fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
                 || v4.octets() == [100, 100, 100, 200]
         }
         IpAddr::V6(v6) => {
+            // Canonicalize IPv4-in-IPv6 forms FIRST: `::ffff:a.b.c.d`
+            // (mapped) and `::a.b.c.d` (compatible) route to the embedded v4
+            // address, so they must be subjected to the v4 block list — else
+            // `::ffff:169.254.169.254` reaches cloud metadata (SSRF bypass).
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_blocked_ip(IpAddr::V4(v4));
+            }
+            if let Some(v4) = v6.to_ipv4() {
+                // `to_ipv4()` also matches `::ffff:0:0/96`; the mapped case is
+                // already handled above, so this covers `::a.b.c.d` compatible.
+                return is_blocked_ip(IpAddr::V4(v4));
+            }
             let segs = v6.segments();
             let link_local = (segs[0] & 0xffc0) == 0xfe80;
             link_local || v6.is_unspecified() || v6.is_multicast()

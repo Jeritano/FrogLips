@@ -478,8 +478,15 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         // that already installed its own controller would lose its Stop
         // affordance — the first send's finally would wipe the second's
         // abortRef and the next Stop click would be a no-op.
-        if (abortRef.current === ctrl) abortRef.current = null;
-        if (isStreamConvActive()) setAgentStatus("idle");
+        if (abortRef.current === ctrl) {
+          abortRef.current = null;
+          // `agentStatus` is ChatWindow-global, not per-conversation. Gating
+          // this reset on isStreamConvActive() would strand it on
+          // "thinking"/"tool" forever if the user switched conversations mid
+          // run — freezing the composer (isWorking) on the now-displayed chat.
+          // Always clear when THIS send's controller is the one tearing down.
+          setAgentStatus("idle");
+        }
       }
       return;
     }

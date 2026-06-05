@@ -1,6 +1,7 @@
 import type { Message, WorkflowCard, WorkflowGraph } from "../../types";
 import type { AgentRunOptions } from "../agent-loop";
 import { runAgentLoop } from "../agent-loop";
+import { IRREVERSIBLE_TOOLS } from "../agent-loop/dispatch";
 import { loadAllPresets } from "../agent-presets";
 import { logDiag } from "../diagnostics";
 import { api } from "../tauri-api";
@@ -106,8 +107,10 @@ export interface RunWorkflowOptions {
   workflowId?: number | null;
   /**
    * True when the run was started by the scheduler (a `workflow-trigger`
-   * event) rather than the user clicking Run. Only scheduled runs honor a
-   * card's `unattended` opt-in to auto-approve its own declared tools.
+   * event) rather than the user clicking Run. Provenance only — a card's
+   * `unattended` opt-in auto-approves its tool calls on BOTH manual and
+   * scheduled runs (the CardForm UI states this explicitly). This flag does
+   * not gate approval; it exists for logging / scheduler glue.
    */
   scheduled?: boolean;
   /** Stops the chain when aborted; remaining cards are marked skipped. */
@@ -230,10 +233,24 @@ const denyAll: AgentRunOptions["requestConfirmation"] = async () => ({
   reason: "unattended_denied",
 });
 
-/** Approve everything, no questions. Used for cards with `unattended === true`. */
-const approveAll: AgentRunOptions["requestConfirmation"] = async () => ({
-  approve: true,
-});
+/**
+ * Approve everything EXCEPT irreversible tools. Used for cards with
+ * `unattended === true`. Irreversible tools (`delete_path` / `kill_process` /
+ * `agent_undo`) destroy state in ways no later agent call can recover, so a
+ * non-interactive blanket approval must NOT satisfy them — they always require
+ * a genuine human confirmation, which an unattended card cannot provide. The
+ * main agent-loop runner excludes them from its session-blanket-approve branch
+ * for the same reason; mirroring it here closes the gap where `approveAll`
+ * would otherwise approve one on the fall-through `requestConfirmation` path.
+ * (Normally unreachable — these tools are not selectable in the CardForm
+ * picker — but a hand-edited `graph_json` could list one. Defense in depth.)
+ */
+const approveAll: AgentRunOptions["requestConfirmation"] = async (toolName) => {
+  if (IRREVERSIBLE_TOOLS.has(toolName)) {
+    return { approve: false, reason: "unattended_denied" };
+  }
+  return { approve: true };
+};
 
 /**
  * Pre-substitute date placeholders in a card prompt with the actual current

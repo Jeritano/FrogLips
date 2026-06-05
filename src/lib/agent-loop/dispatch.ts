@@ -289,16 +289,6 @@ function redactValue(v: unknown, depth = 0): unknown {
   return v;
 }
 
-/**
- * Live-path redactor: return a deep copy of `args` with secret-looking string
- * values swapped for `[REDACTED]`. Used (a) before forwarding the args
- * payload to Rust IPC for execution, so an `info`-level command-trace can't
- * carry a raw token, and (b) inside `logDiag` warn/error calls in this file.
- */
-export function redactArgsForLive(args: Record<string, unknown>): Record<string, unknown> {
-  return redactValue({ ...args }) as Record<string, unknown>;
-}
-
 export function redactArgsForAudit(name: string, args: Record<string, unknown>): string {
   // Fast-path (audit M12, 2026-05-27): redactValue recursively walks every
   // nested string and tests it against looksLikeSecret. For 99% of audit
@@ -631,8 +621,8 @@ export async function executeTool(
   if (options.dryRun && DRY_RUN_TOOLS.has(name)) {
     return dryRunExecute(name, args);
   }
-  // NOTE: do NOT redact `args` here. Earlier we ran `redactArgsForLive(args)`
-  // before dispatch, but that mutated the values forwarded to Rust IPC —
+  // NOTE: do NOT redact `args` here. Earlier a live-path redactor ran on
+  // `args` before dispatch, but that mutated the values forwarded to Rust IPC —
   // a `grep "api_key=" ./src` shell command became `grep "[REDACTED]" …`,
   // and `write_file` content carrying a config template got its body
   // replaced with `[REDACTED]`. Live secret hygiene belongs on the LOG

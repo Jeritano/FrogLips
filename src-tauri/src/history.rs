@@ -442,6 +442,13 @@ const MIGRATIONS: &[Migration] = &[
         version: 16,
         apply: ensure_lora_merges_table,
     },
+    // v17 — Roundtable OUTCOMES: the `roundtable_runs` table persists completed
+    // roundtable transcripts (config + turns + totals) so an outcome survives
+    // navigation AND app restart and can be reopened / exported later.
+    Migration {
+        version: 17,
+        apply: crate::roundtable::ensure_roundtable_tables,
+    },
 ];
 
 /// Target schema version — the highest rung of the ladder.

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Message, MemoryScope, ToolCall } from "../types";
+import type { Message, MemoryScope } from "../types";
 import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
@@ -51,14 +51,6 @@ function keyFor(m: Message, idx: number): string {
   return `idx:${idx}`;
 }
 
-function parseArgs(raw: unknown): Record<string, unknown> {
-  if (typeof raw === "string") {
-    try { return JSON.parse(raw); } catch { return {}; }
-  }
-  if (raw != null && typeof raw === "object") return raw as Record<string, unknown>;
-  return {};
-}
-
 // Per-message markdown cache so streaming chunks don't re-parse + re-sanitize
 // every prior message on every render. Keyed by content string — JS strings
 // are immutable so content unchanged ⇒ cached HTML reused. FIFO eviction
@@ -77,49 +69,11 @@ function cachedMarkdown(text: string): string {
   return rendered;
 }
 
-// Tool-call + tool-result blocks render collapsed by default — agent runs can
-// stack many web_search / write_file steps and most readers only want the
-// final answer. Each is a native <details> disclosure (keyboard-accessible,
-// no JS state for the open/closed toggle); click the summary to expand.
-function ToolCallBlock({ calls }: { calls: ToolCall[] }) {
-  return (
-    <div className="tool-calls-block">
-      {calls.map((tc, i) => {
-        const args = parseArgs(tc.function?.arguments);
-        const name = tc.function?.name ?? "unknown";
-        return (
-          <details key={tc.id ?? i} className="tool-disclosure tool-call-item">
-            <summary className="tool-disclosure-summary">
-              <span className="tool-disclosure-kind">tool</span>
-              <span className="tool-call-name">{name}</span>
-            </summary>
-            <pre className="tool-call-args">{JSON.stringify(args, null, 2)}</pre>
-          </details>
-        );
-      })}
-    </div>
-  );
-}
-
-function ToolResultBlock({ name, content }: { name?: string; content: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const isLong = content.length > 400;
-  const displayed = !isLong || expanded ? content : content.slice(0, 400) + "…";
-  return (
-    <details className="tool-disclosure tool-result-block" data-testid="tool-result">
-      <summary className="tool-disclosure-summary">
-        <span className="tool-disclosure-kind">result</span>
-        <span className="tool-result-name">{name ?? "tool"}</span>
-      </summary>
-      <pre className="tool-result-content">{displayed}</pre>
-      {isLong && (
-        <button className="tool-result-toggle" onClick={() => setExpanded((v) => !v)}>
-          {expanded ? "Show less" : "Show more"}
-        </button>
-      )}
-    </details>
-  );
-}
+// Tool calls + results are NOT rendered inline. Agent runs stack many
+// web_search / web_fetch / write_file steps; showing each as a bubble buries
+// the answer. They're surfaced only via the Tool History panel (the toolbar
+// "History" button → <ToolHistory>), leaving the stream to the prose + the
+// live "Thinking…/Running tools…" status.
 
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -130,8 +84,6 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-const ToolCallBlockMemo = memo(ToolCallBlock);
-const ToolResultBlockMemo = memo(ToolResultBlock);
 
 function MessageActions({
   msg, isLast, isLastUser, onRegenerate, onEditUser,
@@ -190,21 +142,19 @@ interface RowProps {
 }
 
 function MessageRowImpl({ msg, divider, isLast, isLastUser, isPinned, isPinning, onPin, rowKey, canPinProject, canPinConversation, onRegenerate, onEditUser, canFork, onFork }: RowProps) {
-  if (msg.role === "tool") {
-    return <ToolResultBlockMemo name={msg.tool_name} content={msg.content} />;
-  }
+  // Tool results are hidden from the stream (see the Tool History panel); rows
+  // are pre-filtered, so this guard is belt-and-suspenders.
+  if (msg.role === "tool") return null;
 
   if (msg.role === "assistant" && msg.tool_calls?.length) {
+    // Tool-call chrome is hidden — render only the assistant's prose, if any.
+    // Pure tool-call turns are already filtered out of `rows` upstream.
     const html = msg.content?.trim() ? cachedMarkdown(msg.content) : "";
+    if (!html) return null;
     return (
-      <>
-        {html && (
-          <div className="message assistant">
-            <div className="content markdown" dangerouslySetInnerHTML={{ __html: html }} />
-          </div>
-        )}
-        <ToolCallBlockMemo calls={msg.tool_calls} />
-      </>
+      <div className="message assistant">
+        <div className="content markdown" dangerouslySetInnerHTML={{ __html: html }} />
+      </div>
     );
   }
 
@@ -417,15 +367,23 @@ const MessageHistory = memo(function MessageHistory({
 
   const rows = useMemo<Row[]>(() => {
     let prev: string | null = null;
-    return messages.map((m, i) => {
+    const out: Row[] = [];
+    messages.forEach((m, i) => {
+      // Tool noise is hidden from the stream — the calls are surfaced only via
+      // the Tool History panel (the single "History" button in the toolbar).
+      // Drop tool results and assistant turns that ONLY made tool calls (no
+      // prose to render). Mixed turns (text + tool_calls) keep their text.
+      if (m.role === "tool") return;
+      if (m.role === "assistant" && m.tool_calls?.length && !m.content?.trim()) return;
       let divider: Row["divider"] = null;
       if (m.role === "assistant" && m.model && !m.tool_calls?.length) {
         if (prev === null) divider = { label: m.model, tone: "start" };
         else if (prev !== m.model) divider = { label: m.model, tone: "change" };
         prev = m.model;
       }
-      return { msg: m, key: keyFor(m, i), divider };
+      out.push({ msg: m, key: keyFor(m, i), divider });
     });
+    return out;
   }, [messages]);
 
   // Conservative windowing: render at most the most-recent WINDOW_SIZE rows
@@ -652,10 +610,10 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
         </>
       )}
 
-      {agentStatus === "thinking" && (
+      {(agentStatus === "thinking" || agentStatus === "tool") && (
         <div className="agent-thinking-row">
           <span className="mb-spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
-          <span>Thinking…</span>
+          <span>{agentStatus === "tool" ? "Running tools…" : "Thinking…"}</span>
         </div>
       )}
 

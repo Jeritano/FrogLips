@@ -168,11 +168,11 @@ export const OTHER_CATEGORY_ID = "other";
 export const OTHER_CATEGORY_LABEL = "Other";
 
 /**
- * Derive `{ categorized: Set<string>, byTool: Map<string, categoryId> }`
- * once at module init so per-render lookups are O(1). Also runs the
- * duplicate + dangling-tool assertions.
+ * Derive `{ categorizedSet: Set<string> }` once at module init so per-render
+ * membership lookups are O(1). The internal tool→category map is used only for
+ * the duplicate + dangling-tool assertions and is not returned.
  */
-const { categorizedSet, toolToCategory } = (() => {
+const { categorizedSet } = (() => {
   const set = new Set<string>();
   const map = new Map<string, string>();
   for (const cat of TOOL_CATEGORIES) {
@@ -191,7 +191,7 @@ const { categorizedSet, toolToCategory } = (() => {
       map.set(t, cat.id);
     }
   }
-  return { categorizedSet: set, toolToCategory: map };
+  return { categorizedSet: set };
 })();
 
 /**
@@ -240,11 +240,6 @@ export function resolveToolGroups(
       tools: otherTools,
     },
   ];
-}
-
-/** Lookup the category a tool belongs to. Returns null for "Other". */
-export function categoryOf(tool: string): string | null {
-  return toolToCategory.get(tool) ?? null;
 }
 
 /* ── Collapse-state persistence ────────────────────────────────────────── */

@@ -47,10 +47,14 @@ export function ContextRolloverBanner({ messages, status, conversation, onContin
   // the conversation grows further (we re-arm when usage drops below the
   // threshold and then crosses it again, but the simplest signal is the
   // conversation id changing).
-  const dismissedFor = useRef<number | null>(null);
+  // Dismissal must be STATE, not a ref: it's read in the render-time `visible`
+  // expression, and a ref mutation doesn't re-render — "Not yet" would only
+  // take effect on the next unrelated render (the countdown tick), leaving the
+  // banner briefly stuck. State makes the dismiss immediate.
+  const [dismissedId, setDismissedId] = useState<number | null>(null);
   useEffect(() => {
     // Re-arm whenever the active conversation changes.
-    dismissedFor.current = null;
+    setDismissedId(null);
     setErr(null);
     setRolling(false);
   }, [conversation?.id]);
@@ -65,7 +69,7 @@ export function ContextRolloverBanner({ messages, status, conversation, onContin
     !rolling &&
     backendReady &&
     conversation != null &&
-    dismissedFor.current !== conversation.id;
+    dismissedId !== conversation.id;
 
   // Countdown — armed only while the banner is visible. Resets each time the
   // banner re-appears.
@@ -120,7 +124,7 @@ export function ContextRolloverBanner({ messages, status, conversation, onContin
   function cancel() {
     abortRef.current?.abort();
     setRolling(false);
-    if (conversation) dismissedFor.current = conversation.id;
+    if (conversation) setDismissedId(conversation.id);
     setErr(null);
   }
 

@@ -509,7 +509,13 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                   value={draft.params?.temperature ?? ""}
                   onChange={(e) => {
                     const v = e.target.value === "" ? null : Number(e.target.value);
-                    set("params", { ...(draft.params ?? {}), temperature: Number.isFinite(v) ? v : null });
+                    // Clamp on write — the HTML min/max are advisory for typed
+                    // input, so an out-of-range value would otherwise persist
+                    // and run live this session (it only self-heals on reload).
+                    set("params", {
+                      ...(draft.params ?? {}),
+                      temperature: Number.isFinite(v) ? Math.min(2, Math.max(0, v as number)) : null,
+                    });
                   }}
                 />
               </label>
@@ -524,7 +530,10 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                   value={draft.params?.top_p ?? ""}
                   onChange={(e) => {
                     const v = e.target.value === "" ? null : Number(e.target.value);
-                    set("params", { ...(draft.params ?? {}), top_p: Number.isFinite(v) ? v : null });
+                    set("params", {
+                      ...(draft.params ?? {}),
+                      top_p: Number.isFinite(v) ? Math.min(1, Math.max(0, v as number)) : null,
+                    });
                   }}
                 />
               </label>

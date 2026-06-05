@@ -162,6 +162,10 @@ function App() {
   const [aboutYouOpen, setAboutYouOpen] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Tracks the blur-close timeout so re-opening the menu within the delay
+  // cancels the pending close (otherwise a stale timer snaps the just-reopened
+  // menu shut).
+  const menuCloseTimer = useRef<number | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Main-pane view: chat / workflow canvas / image-gen surface / knowledge library.
   const [view, setView] = useState<ViewId>("chat");
@@ -707,8 +711,20 @@ function App() {
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               aria-label="Menu"
-              onClick={() => setMenuOpen((v) => !v)}
-              onBlur={() => setTimeout(() => setMenuOpen(false), 150)}
+              onClick={() => {
+                if (menuCloseTimer.current != null) {
+                  clearTimeout(menuCloseTimer.current);
+                  menuCloseTimer.current = null;
+                }
+                setMenuOpen((v) => !v);
+              }}
+              onBlur={() => {
+                if (menuCloseTimer.current != null) clearTimeout(menuCloseTimer.current);
+                menuCloseTimer.current = window.setTimeout(() => {
+                  setMenuOpen(false);
+                  menuCloseTimer.current = null;
+                }, 150);
+              }}
               title="Menu"
             >
               ☰

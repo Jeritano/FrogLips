@@ -423,8 +423,6 @@ export interface SearchResult {
   truncated_scan: boolean;
 }
 
-export type ShellRisk = "normal" | "destructive" | "pipe-from-network" | "privileged";
-
 export interface ShellOpts {
   cwd?: string;
   env?: [string, string][];
@@ -652,9 +650,12 @@ export interface WorkflowCard {
   schedule: string | null;
   backend: string | null;
   /**
-   * When true, a scheduler-triggered run auto-approves this card's tool calls
-   * — but only for tool names in its own `tools` allowlist. Manual runs and
-   * non-listed tools always use the normal confirmation gate. Default false.
+   * When true, this card auto-approves its own tool calls without prompting —
+   * on BOTH manual and scheduled runs (the CardForm UI states this) — but only
+   * for tool names in its `tools` allowlist. Non-listed tools are always
+   * refused, and irreversible tools (delete_path/kill_process/agent_undo) are
+   * never auto-approved even when unattended. When false, the card uses the
+   * normal deny-all/confirmation gate. Default false.
    */
   unattended?: boolean;
   /**
@@ -742,6 +743,26 @@ export interface RawWorkflow {
   graph_json: string;
   created_at: number;
   updated_at: number;
+}
+
+/**
+ * A persisted roundtable OUTCOME (a completed run's transcript), stored in
+ * db.sqlite so it survives restart. `RoundtableRunSummary` is the cheap list
+ * row; `RoundtableRun` adds the full `transcript_json` blob (a JSON-encoded
+ * {config, turns, totals, endReason, completedAt}).
+ */
+export interface RoundtableRunSummary {
+  id: number;
+  /** The frontend SavedTable id this outcome came from (null = ad-hoc run). */
+  table_id: string | null;
+  name: string;
+  topic: string;
+  turns: number;
+  created_at: number;
+}
+
+export interface RoundtableRun extends RoundtableRunSummary {
+  transcript_json: string;
 }
 
 /** One recorded execution of a workflow. `results_json` is a JSON summary. */

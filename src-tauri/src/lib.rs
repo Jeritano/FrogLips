@@ -20,6 +20,7 @@ mod ollama_library;
 mod policy;
 mod quick_prompt;
 mod rag;
+mod roundtable;
 mod settings;
 mod sse_decode;
 mod stream_cancel;
@@ -561,6 +562,11 @@ pub fn run() {
             commands::workflows::workflow_delete,
             commands::workflows::workflow_run_record,
             commands::workflows::workflow_runs_list,
+            commands::roundtable::roundtable_run_save,
+            commands::roundtable::roundtable_run_list,
+            commands::roundtable::roundtable_run_get,
+            commands::roundtable::roundtable_run_delete,
+            commands::roundtable::roundtable_save_file,
             commands::workflow_skills::workflow_skill_save,
             commands::workflow_skills::workflow_skill_list,
             commands::workflow_skills::workflow_skill_get,

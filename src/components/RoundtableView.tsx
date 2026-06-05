@@ -7,6 +7,8 @@ import { usePersistedState } from "../hooks/usePersistedState";
 import { useRoundtableRun } from "../lib/roundtable/run-context";
 import { parsePrice, formatUsd, type PriceTable, type SeatPrice } from "../lib/roundtable/cost";
 import { renderMarkdown } from "../lib/markdown";
+import { logDiag } from "../lib/diagnostics";
+import type { RoundtableRunSummary } from "../types";
 import type {
   RoundtableConfig,
   Seat,
@@ -14,6 +16,8 @@ import type {
   MemoryMode,
   TurnControl,
   Turn,
+  RoundtableTotals,
+  RoundtableEndReason,
 } from "../lib/roundtable/types";
 import "../styles/roundtable.css";
 
@@ -182,6 +186,49 @@ function isLocalReloading(backend: SeatBackend | undefined, model: string | unde
   return backend === "ollama" && !isCloudOllama(model);
 }
 
+/**
+ * The blob stored per saved outcome. `editor` is the snapshot needed to re-run
+ * (seats/topic/settings); `run` is the result (transcript + totals) for display
+ * and file export. Versioned so a future shape change can be detected.
+ */
+interface OutcomePayload {
+  v: 1;
+  editor: {
+    seats: DraftSeat[];
+    topic: string;
+    memoryMode: MemoryMode;
+    maxRounds: number;
+    maxUsd: number;
+  };
+  run: {
+    config: RoundtableConfig | null;
+    turns: Turn[];
+    totals: RoundtableTotals;
+    endReason: RoundtableEndReason | null;
+    completedAt: number;
+  };
+}
+
+/** Module-level dedupe: a run's `completedAt` we've already persisted. Survives
+ *  component remounts (navigating away + back) so an outcome is saved exactly
+ *  once; a full app reload clears the run-context too, so resetting to 0 here
+ *  on reload is correct. */
+let lastSavedOutcomeAt = 0;
+
+/** Render a completed roundtable as a Markdown document for file export. */
+function outcomeToMarkdown(topic: string, turns: Turn[], totals: RoundtableTotals): string {
+  const head =
+    `# Roundtable — ${topic}\n\n` +
+    `_${turns.filter((t) => t.status === "done").length} turns · ` +
+    `${(totals.tokensIn + totals.tokensOut).toLocaleString()} tokens · ` +
+    `${formatUsd(totals.usd)}${totals.usdPartial ? "+" : ""}_\n\n---\n\n`;
+  const body = turns
+    .filter((t) => t.status === "done")
+    .map((t) => `**${t.speaker}:**\n\n${t.text}`)
+    .join("\n\n---\n\n");
+  return head + body + "\n";
+}
+
 export function RoundtableView() {
   const run = useRoundtableRun();
   const [options, setOptions] = useState<ModelOption[]>(() => cachedOptions ?? []);
@@ -230,6 +277,13 @@ export function RoundtableView() {
   const [saveName, setSaveName] = useState("");
   // false = list landing (saved roundtables); true = config editor.
   const [editing, setEditing] = useState(false);
+  // Saved outcomes for the open table (Stage 2 run history).
+  const [outcomes, setOutcomes] = useState<RoundtableRunSummary[]>([]);
+  const [showOutcomes, setShowOutcomes] = useState(false);
+  // A reopened outcome (read-only transcript viewer); null = not viewing one.
+  const [viewing, setViewing] = useState<{ meta: RoundtableRunSummary; payload: OutcomePayload } | null>(null);
+  // Transient "Saved to <path>" / error note for the file-export action.
+  const [fileMsg, setFileMsg] = useState<string | null>(null);
 
   // One-time import: if no saved tables exist yet but a non-empty draft does
   // (older single-draft persistence), seed it as a saved table so the user's
@@ -313,6 +367,130 @@ export function RoundtableView() {
       setEditing(true);
     },
     [loadTable],
+  );
+
+  // ── Outcomes (Stage 1-2): persist a finished run + load a table's history ──
+
+  const refreshOutcomes = useCallback((tableId: string | null) => {
+    api
+      .roundtableRunList(tableId)
+      .then(setOutcomes)
+      .catch((e) => logDiag({ level: "warn", source: "roundtable", message: "list outcomes failed", detail: e }));
+  }, []);
+
+  // Auto-save the outcome when a run finishes. `run.completedAt` flips once per
+  // run (set in the provider's finally); the module-level guard makes it
+  // exactly-once even across navigate-away-and-back remounts.
+  useEffect(() => {
+    const at = run.completedAt;
+    if (!at || run.running || run.turns.length === 0) return;
+    if (lastSavedOutcomeAt === at) return;
+    lastSavedOutcomeAt = at;
+    const topicStr = run.config?.topic ?? topic;
+    const when = new Date(at).toLocaleString();
+    const name = `${(topicStr || "Roundtable").slice(0, 60)} · ${when}`;
+    const payload: OutcomePayload = {
+      v: 1,
+      editor: { seats, topic, memoryMode, maxRounds, maxUsd },
+      run: {
+        config: run.config,
+        turns: run.turns,
+        totals: run.totals,
+        endReason: run.endReason,
+        completedAt: at,
+      },
+    };
+    api
+      .roundtableRunSave(loadedId, name, topicStr, run.turns.length, JSON.stringify(payload))
+      .then(() => {
+        if (loadedId) refreshOutcomes(loadedId);
+      })
+      .catch((e) => {
+        // Don't strand the dedupe guard if the save failed — allow a retry.
+        lastSavedOutcomeAt = 0;
+        logDiag({ level: "error", source: "roundtable", message: "save outcome failed", detail: e });
+      });
+  }, [run.completedAt, run.running, run.turns, run.config, run.totals, run.endReason, loadedId, topic, seats, memoryMode, maxRounds, maxUsd, refreshOutcomes]);
+
+  // Load a table's saved outcomes when its editor opens.
+  useEffect(() => {
+    if (editing && loadedId) refreshOutcomes(loadedId);
+  }, [editing, loadedId, refreshOutcomes]);
+
+  // Open one saved outcome into the read-only viewer.
+  const openOutcome = useCallback((id: number) => {
+    api
+      .roundtableRunGet(id)
+      .then((row) => {
+        let payload: OutcomePayload;
+        try {
+          payload = JSON.parse(row.transcript_json) as OutcomePayload;
+        } catch {
+          setFileMsg("Could not read that outcome (corrupt data).");
+          return;
+        }
+        setViewing({ meta: row, payload });
+        setShowOutcomes(false);
+      })
+      .catch((e) => logDiag({ level: "warn", source: "roundtable", message: "open outcome failed", detail: e }));
+  }, []);
+
+  const deleteOutcome = useCallback(
+    (id: number) => {
+      api
+        .roundtableRunDelete(id)
+        .then(() => { if (loadedId) refreshOutcomes(loadedId); })
+        .catch((e) => logDiag({ level: "warn", source: "roundtable", message: "delete outcome failed", detail: e }));
+    },
+    [loadedId, refreshOutcomes],
+  );
+
+  // Restore a saved outcome's config into the editor so the user can re-run it.
+  const runAgain = useCallback((payload: OutcomePayload) => {
+    const ed = payload.editor;
+    setSeats(ed.seats.map((s) => ({ ...s })));
+    setTopic(ed.topic);
+    setMemoryMode(ed.memoryMode);
+    setMaxRounds(ed.maxRounds);
+    setMaxUsd(ed.maxUsd);
+    setViewing(null);
+    setShowOutcomes(false);
+    setEditing(true);
+  }, [setSeats, setTopic, setMemoryMode, setMaxRounds, setMaxUsd]);
+
+  // Save a transcript to a user-chosen file (Markdown or JSON). "Cloud" = just
+  // pick a synced folder (iCloud Drive / Dropbox / …) in the dialog.
+  const saveToFile = useCallback(
+    async (topicStr: string, turns: Turn[], totals: RoundtableTotals) => {
+      setFileMsg(null);
+      let dest: string | null = null;
+      try {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const base = (topicStr || "roundtable").replace(/[^a-z0-9._-]+/gi, "_").slice(0, 50) || "roundtable";
+        dest = await save({
+          defaultPath: `${base}.md`,
+          filters: [
+            { name: "Markdown", extensions: ["md"] },
+            { name: "JSON", extensions: ["json"] },
+          ],
+          title: "Save roundtable outcome",
+        });
+      } catch (e) {
+        setFileMsg(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+      if (!dest) return;
+      const content = dest.toLowerCase().endsWith(".json")
+        ? JSON.stringify({ topic: topicStr, totals, turns }, null, 2)
+        : outcomeToMarkdown(topicStr, turns, totals);
+      try {
+        await api.roundtableSaveFile(dest, content);
+        setFileMsg(`Saved to ${dest}`);
+      } catch (e) {
+        setFileMsg(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [],
   );
 
   // ── Load available models once (cloud-first: custom + OpenRouter + Ollama) ──
@@ -486,6 +664,12 @@ export function RoundtableView() {
   const resetAll = useCallback(() => {
     if (run.running) return;
     run.clear();
+    // Detach from any loaded saved table FIRST: the auto-save effect keys on
+    // `loadedId`, so resetting the config while still "loaded" would persist
+    // these defaults back over the saved entry (silent data loss). Clearing
+    // `loadedId` turns reset into a fresh, unsaved draft instead.
+    setLoadedId(null);
+    setSaveName("");
     setSeats([newSeat(PRESETS[0].personas[0]), newSeat(PRESETS[0].personas[1])]);
     setTopic(PRESETS[0].topic);
     setMaxRounds(4);
@@ -560,10 +744,18 @@ export function RoundtableView() {
 
         {run.endReason && !run.running && (
           <div className="rt-end" role="status">
-            Ended — {run.endReason.replace("_", " ")} · {run.totals.turns} turns · {formatUsd(run.totals.usd)}
-            <Button size="sm" variant="secondary" onClick={exportTranscript}>Copy transcript</Button>
+            Ended — {run.endReason.replace("_", " ")} · {run.totals.turns} turns · {formatUsd(run.totals.usd)} · saved ✓
+            <Button size="sm" variant="ghost" onClick={exportTranscript}>Copy</Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void saveToFile(run.config?.topic ?? topic, run.turns, run.totals)}
+            >
+              💾 Save to file…
+            </Button>
           </div>
         )}
+        {fileMsg && <div className="rt-warn-banner" role="status">{fileMsg}</div>}
 
         {run.running && (
           <div className="rt-inject">
@@ -581,6 +773,73 @@ export function RoundtableView() {
               }}
             />
           </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Outcome viewer (read-only transcript of a saved run) ──
+  if (viewing) {
+    const { meta, payload } = viewing;
+    const vHead = (
+      <>
+        <button type="button" className="wf-btn" onClick={() => { setViewing(null); setShowOutcomes(true); }}>← Outcomes</button>
+        <h1 className="topbar-view-title" style={{ fontSize: 16, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{meta.name}</h1>
+        <div className="rt-live-actions" style={{ marginLeft: "auto" }}>
+          <Button size="sm" variant="ghost" onClick={() => runAgain(payload)}>↻ Run again</Button>
+          <Button size="sm" variant="secondary" onClick={() => void saveToFile(payload.run.config?.topic ?? meta.topic, payload.run.turns, payload.run.totals)}>💾 Save to file…</Button>
+        </div>
+      </>
+    );
+    return (
+      <div className="rt-root" data-testid="roundtable-outcome">
+        {topbarSlot
+          ? createPortal(<div className="rt-live-head in-topbar">{vHead}</div>, topbarSlot)
+          : <div className="rt-live-head">{vHead}</div>}
+        <div className="rt-roster">
+          {(payload.run.config?.seats ?? []).map((s) => (
+            <span key={s.id} className="rt-chip" style={{ ["--seat" as string]: s.color }}>
+              <span className="rt-dot" /> {s.name}
+            </span>
+          ))}
+          <span className="rt-status">{payload.run.totals.turns} turns · {formatUsd(payload.run.totals.usd)}{payload.run.totals.usdPartial ? "+" : ""}</span>
+        </div>
+        <div className="rt-transcript">
+          {payload.run.turns.map((t) => (
+            <RtTurnBubble key={t.id} turn={t} />
+          ))}
+          {payload.run.turns.length === 0 && <div className="rt-empty">Empty transcript.</div>}
+        </div>
+        {fileMsg && <div className="rt-warn-banner" role="status">{fileMsg}</div>}
+      </div>
+    );
+  }
+
+  // ── Outcomes list (saved runs for the open table) — uniform with the picker ──
+  if (showOutcomes) {
+    const oHead = (
+      <>
+        <button type="button" className="wf-btn" onClick={() => setShowOutcomes(false)}>← {saveName || "Table"}</button>
+        <h1 className="topbar-view-title">Outcomes</h1>
+      </>
+    );
+    return (
+      <div className="wf-page wf-picker" data-testid="roundtable-outcomes">
+        {topbarSlot ? createPortal(oHead, topbarSlot) : <div className="rt-setup-head">{oHead}</div>}
+        {outcomes.length === 0 ? (
+          <EmptyState icon="📄" heading="No saved outcomes yet" sub="Run this roundtable and its result is saved here automatically." />
+        ) : (
+          <ul className="wf-list">
+            {outcomes.map((o) => (
+              <li key={o.id} className="wf-list-item">
+                <button type="button" className="wf-list-open" onClick={() => openOutcome(o.id)}>
+                  <span className="wf-list-name">{o.name}</span>
+                  <span className="wf-list-meta">{o.turns} turns</span>
+                </button>
+                <button type="button" className="wf-list-del" onClick={() => deleteOutcome(o.id)} aria-label={`Delete outcome ${o.name}`}>×</button>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     );
@@ -647,6 +906,13 @@ export function RoundtableView() {
         aria-label="Roundtable name"
       />
       <div className="rt-presets">
+        <button
+          className="rt-preset-btn"
+          onClick={() => setShowOutcomes(true)}
+          title="Saved transcripts of this roundtable's past runs"
+        >
+          📄 Outcomes{outcomes.length > 0 ? ` (${outcomes.length})` : ""}
+        </button>
         {PRESETS.map((p) => (
           <button key={p.id} className="rt-preset-btn" onClick={() => applyPreset(p)}>{p.label}</button>
         ))}
