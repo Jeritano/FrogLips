@@ -310,9 +310,23 @@ function App() {
     };
   }, []);
 
+  // Surface backend crash / restart / readiness-timeout messages the watcher
+  // broadcasts on `server-status.last_error` (otherwise the model silently goes
+  // to stopped and the user can't tell "restarting" from "dead"). Deduped via a
+  // ref so a repeated payload doesn't re-spam the error bar.
+  const lastBackendErrRef = useRef<string | null>(null);
   useTauriEvent<ServerStatus>(
     "server-status",
-    useCallback((e) => setStatus(e.payload), []),
+    useCallback((e) => {
+      setStatus(e.payload);
+      const le = e.payload.last_error ?? null;
+      if (le && le !== lastBackendErrRef.current) {
+        lastBackendErrRef.current = le;
+        setErr(le);
+      } else if (!le) {
+        lastBackendErrRef.current = null;
+      }
+    }, []),
   );
 
   // Backend broadcasts this whenever a conversation's persisted state changes

@@ -625,7 +625,13 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
             // Delay so option onMouseDown can fire before the menu unmounts.
             setTimeout(() => setSlashCtx(null), 120);
           }}
-          placeholder={listening ? "Listening…" : "Message… (drop files, / for prompts)"}
+          placeholder={
+            !status?.running
+              ? "Pick a model in the top bar and press Start to begin…"
+              : listening
+                ? "Listening…"
+                : "Message… (drop files, / for prompts)"
+          }
           disabled={disabled}
           rows={1}
         />

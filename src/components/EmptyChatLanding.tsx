@@ -11,7 +11,7 @@ const EXAMPLE_PROMPTS: { title: string; text: string }[] = [
  * `chat-input:prefill` CustomEvent — no auto-send, the user reviews first.
  * The host hides this the moment the conversation has messages or streams.
  */
-export function EmptyChatLanding() {
+export function EmptyChatLanding({ modelReady = true }: { modelReady?: boolean }) {
   const prefill = (text: string) => {
     window.dispatchEvent(
       new CustomEvent("chat-input:prefill", { detail: { text } }),
@@ -21,7 +21,11 @@ export function EmptyChatLanding() {
   return (
     <div className="empty-chat-landing" data-testid="empty-chat-landing">
       <div className="empty-chat-heading">Start a conversation</div>
-      <div className="empty-chat-sub">Pick a starter prompt or type your own below.</div>
+      <div className="empty-chat-sub">
+        {modelReady
+          ? "Pick a starter prompt or type your own below."
+          : "First, pick a model in the top bar and press Start — then chat below."}
+      </div>
       <div className="empty-chat-chips">
         {EXAMPLE_PROMPTS.map((p) => (
           <button

@@ -36,6 +36,19 @@
   font-weight: 600;
   color: var(--text);
 }
+.diag-version {
+  color: var(--text-3);
+  font-weight: var(--fw-normal);
+  font-size: var(--fs-sm);
+  letter-spacing: 0;
+}
+.diag-report-link {
+  font-size: var(--fs-sm);
+  color: var(--accent);
+  text-decoration: none;
+  align-self: center;
+}
+.diag-report-link:hover { text-decoration: underline; }
 .dashboard-controls {
   display: flex;
   align-items: center;

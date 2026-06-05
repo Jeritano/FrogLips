@@ -113,10 +113,32 @@ fn secrets_path() -> Option<PathBuf> {
 static SECRETS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn load_secrets() -> std::collections::BTreeMap<String, String> {
-    secrets_path()
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    let Some(p) = secrets_path() else {
+        return Default::default();
+    };
+    // Absent file → empty map (first run, fine). PRESENT-but-corrupt → quarantine
+    // the original to `secrets.json.corrupt` before returning empty, so the next
+    // write_secrets doesn't overwrite (destroy) a potentially-recoverable file
+    // and the user gets a breadcrumb. Mirrors the settings.json + DB handling;
+    // without this a truncated secrets.json silently wipes every API key.
+    let bytes = match std::fs::read(&p) {
+        Ok(b) => b,
+        Err(_) => return Default::default(),
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(map) => map,
+        Err(e) => {
+            let quarantine = p.with_extension("json.corrupt");
+            let _ = std::fs::rename(&p, &quarantine);
+            crate::diagnostics::warn_with(
+                "settings",
+                "secrets.json was corrupt — quarantined to secrets.json.corrupt; \
+                 stored API keys must be re-entered",
+                serde_json::json!({ "error": e.to_string() }),
+            );
+            Default::default()
+        }
+    }
 }
 
 /// Atomically persist the secret map as a mode-0600 file (tmp write + rename).

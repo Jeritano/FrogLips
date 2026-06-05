@@ -189,6 +189,9 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Bumped by the Retry button to re-trigger the fetch effect (e.g. after a
+  // transient network failure on a cold/offline first run).
+  const [reloadTick, setReloadTick] = useState(0);
   const [offset, setOffset] = useState(0);
   /** True when we know we've exhausted server-side pagination (a fetch
    *  returned 0 models). Prevents an endless "Load more" button. */
@@ -248,7 +251,7 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
       }
     })();
     return () => ctrl.abort();
-  }, [debouncedQuery, filters.tasks, filters.libraries, sort, inference]);
+  }, [debouncedQuery, filters.tasks, filters.libraries, sort, inference, reloadTick]);
 
   /** Fetch the next page and append. We don't reset the abort controller
    *  here so a paginated load doesn't kill the visible list. */
@@ -354,7 +357,19 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
             loaded page — the count above is a server-side total.
           </div>
         )}
-        {err && <div className="hfl-error">Failed to load: {err}</div>}
+        {err && (
+          <div className="hfl-error">
+            Failed to load: {err}
+            <button
+              type="button"
+              className="mcp-link"
+              style={{ marginLeft: 8 }}
+              onClick={() => { setErr(null); setReloadTick((t) => t + 1); }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         <div className="hfl-grid" data-testid="hfl-grid">
           {loading && models.length === 0 &&

@@ -21,6 +21,33 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "$HOME/.tauri/froglips.key" ]]; 
   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 fi
 
+# ── Developer ID signing + notarization (DISTRIBUTION builds) ───────────────
+# This script ad-hoc signs for LOCAL install (bottom of file). To ship a build
+# strangers can open WITHOUT the Gatekeeper "damaged/unverified" warning, the
+# Tauri bundler signs + notarizes + staples AUTOMATICALLY when these env vars
+# are exported before this script runs — no extra code needed here. Requires an
+# Apple Developer account ($99/yr) + a "Developer ID Application" cert.
+#
+#   export APPLE_SIGNING_IDENTITY="Developer ID Application: NAME (TEAMID)"
+#   # cert as base64 .p12 + its password (or rely on the login keychain):
+#   export APPLE_CERTIFICATE="$(base64 -i DeveloperID.p12)"
+#   export APPLE_CERTIFICATE_PASSWORD="<p12-password>"
+#   # notarization creds — EITHER an app-specific password…
+#   export APPLE_ID="you@apple.id"; export APPLE_PASSWORD="<app-specific-pw>"
+#   export APPLE_TEAM_ID="TEAMID"
+#   # …OR an App Store Connect API key:
+#   # export APPLE_API_ISSUER=…; export APPLE_API_KEY=…; export APPLE_API_KEY_PATH=AuthKey_*.p8
+#
+# With those set, `tauri build` (invoked below) produces a signed, notarized,
+# stapled .app + .dmg. Verify after: `spctl -a -vvv /Applications/Froglips.app`
+# should report "accepted / Notarized Developer ID". The ad-hoc codesign at the
+# bottom is then redundant but harmless for the local copy.
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  echo "▶ Developer ID signing identity set — tauri build will notarize."
+else
+  echo "▶ No APPLE_SIGNING_IDENTITY — local ad-hoc build (not notarized)."
+fi
+
 # Try the build up to 2 times if DMG bundling flakes out
 # Native inference enabled by default; set FROGLIPS_SKIP_NATIVE=1 to skip the
 # heavy mistralrs+candle+Metal compile (faster builds when you only need

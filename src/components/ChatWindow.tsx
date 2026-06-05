@@ -439,7 +439,12 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     }
   });
 
-  const showLanding = !!conversation && messages.length === 0 && !isWorking;
+  // Show the landing whenever there's nothing to display — INCLUDING the cold
+  // start where no conversation is selected (a stranger's first launch).
+  // `send()` auto-creates a conversation via `ensureConversation()`, so the
+  // null case sends fine; previously requiring a non-null conversation left
+  // the whole pane blank on first run.
+  const showLanding = messages.length === 0 && !isWorking;
 
   return (
     <div className="chat-window" onClick={citation.onCitationClick}>
@@ -449,7 +454,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         </div>
       )}
       {showLanding ? (
-        <EmptyChatLanding />
+        <EmptyChatLanding modelReady={!!status?.running} />
       ) : (
         <MessageList
           messages={messages}

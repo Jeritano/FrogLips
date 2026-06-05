@@ -66,11 +66,20 @@ export async function* streamNativeChat(
     top_p: opts.top_p,
     max_tokens: opts.maxTokens,
   });
+  // The native backend emits NO `native-done` on an error — the request just
+  // rejects. Track settlement so the consume loop exits on that path instead
+  // of spinning forever (stuck spinner + leaked listeners); the `finally`
+  // then re-throws the real error so the UI surfaces it.
+  let reqSettled = false;
+  reqPromise.then(
+    () => { reqSettled = true; wake(); },
+    () => { reqSettled = true; wake(); },
+  );
 
   try {
-    while (!done || queue.length > 0) {
+    while ((!done && !reqSettled) || queue.length > 0) {
       if (opts.signal?.aborted) break; // cancel already signalled to the backend
-      if (queue.length === 0 && !done) {
+      if (queue.length === 0 && !done && !reqSettled) {
         await Promise.race([wait(), reqPromise.catch(() => {})]);
         continue;
       }

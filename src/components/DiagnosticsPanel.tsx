@@ -75,6 +75,16 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     { kind: "ok" | "err"; text: string } | null
   >(null);
   const [dataBusy, setDataBusy] = useState(false);
+  // App version (shown in the header + useful when a user files a bug).
+  const [appVersion, setAppVersion] = useState<string>("");
+  useEffect(() => {
+    let alive = true;
+    void import("@tauri-apps/api/app")
+      .then((m) => m.getVersion())
+      .then((v) => { if (alive) setAppVersion(v); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   // Import adds data — give it a two-click confirm before the file picker.
   const importConfirm = useTwoClickConfirm();
 
@@ -283,7 +293,7 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     <DiagnosticsOverlay open={open} onClose={onClose}>
       <div className="dashboard-modal diag-modal">
         <header className="dashboard-header">
-          <h2>Diagnostics</h2>
+          <h2>Diagnostics{appVersion && <span className="diag-version"> · Froglips v{appVersion}</span>}</h2>
           <div className="dashboard-controls diag-controls">
             <label className="diag-field">
               Level:&nbsp;
@@ -444,6 +454,15 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
             >
               Export diagnostics bundle
             </button>
+            <a
+              className="diag-report-link"
+              href="https://github.com/Jeritano/FrogLips/issues/new"
+              target="_blank"
+              rel="noreferrer"
+              title="Open a new issue on GitHub (attach the diagnostics bundle)"
+            >
+              Report an issue ↗
+            </a>
           </div>
           {dataStatus && (
             <div
