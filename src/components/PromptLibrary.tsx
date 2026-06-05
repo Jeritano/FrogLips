@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BookMarked } from "lucide-react";
+import { EmptyState } from "./EmptyState";
 import { ErrorBar } from "./ErrorBar";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import {
@@ -178,9 +180,20 @@ export function PromptLibrary({ open, onClose, onChange }: Props) {
             </button>
           </div>
           {custom.length === 0 && !draft && (
-            <div className="agent-settings-hint">
-              No custom templates yet. Click + New template to add one.
-            </div>
+            <EmptyState
+              icon={<BookMarked size={24} />}
+              heading="No custom templates yet"
+              sub="Add your own reusable prompt templates with a slash trigger."
+              cta={
+                <button
+                  className="agent-settings-btn"
+                  onClick={startNew}
+                  data-testid="prompt-library-empty-new"
+                >
+                  + New template
+                </button>
+              }
+            />
           )}
           <ul className="prompt-library-list">
             {custom.map((t) => (

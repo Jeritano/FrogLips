@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, X } from "lucide-react";
+import { Check, Download, Star, X } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
@@ -314,7 +314,7 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
             {list.length === 0 && (
               tab === "active" ? (
                 <EmptyState
-                  icon="⭐"
+                  icon={<Star size={24} />}
                   heading={scopeFilter === "all" ? "No memories yet" : "No memories at this scope"}
                   sub={
                     scopeFilter === "all"
@@ -325,7 +325,7 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
                 />
               ) : (
                 <EmptyState
-                  icon="📥"
+                  icon={<Download size={24} />}
                   heading="Inbox empty"
                   sub="Memories awaiting your review will appear here."
                   data-testid="memory-empty-pending"

@@ -241,15 +241,8 @@ export function AgentToolbar(props: Props) {
           <Settings size={16} />
         </button>
       )}
-      {agentMode && (
-        <span
-          className="agent-status-pill agent-preset-chip"
-          data-testid="agent-preset-chip"
-          title={agent.activePreset?.description ?? "Active agent preset"}
-        >
-          Preset: {agent.activePreset?.name ?? "Default"}
-        </span>
-      )}
+      {/* (Removed the read-only "Preset: X" chip — the preset <select> above
+          already shows the active preset; the chip was a duplicate.) */}
       {agentMode && (
         <span
           className="agent-status-pill agent-workspace-chip"
@@ -278,17 +271,20 @@ export function AgentToolbar(props: Props) {
           Policy: project{projectPolicy.notes ? ` — ${projectPolicy.notes.slice(0, 40)}${projectPolicy.notes.length > 40 ? "…" : ""}` : ""}
         </span>
       )}
-      {agentMetrics && agentMode && (
-        <span
-          className="agent-metrics"
-          title="iterations · tool calls · llm ms · tool ms · retries · prompt tok · completion tok"
-        >
-          i{agentMetrics.iterations}·t{agentMetrics.toolCalls}·llm {Math.round(agentMetrics.totalLlmMs)}ms·tool {Math.round(agentMetrics.totalToolMs)}ms
-          {agentMetrics.retries > 0 && `·r${agentMetrics.retries}`}
-          {(agentMetrics.promptTokens + agentMetrics.completionTokens) > 0 &&
-            `·${agentMetrics.promptTokens}+${agentMetrics.completionTokens}tok`}
-        </span>
-      )}
+      {agentMetrics && agentMode && (() => {
+        const fmt = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`);
+        const tok = agentMetrics.promptTokens + agentMetrics.completionTokens;
+        return (
+          <span
+            className="agent-metrics"
+            title={`${agentMetrics.iterations} iterations · ${agentMetrics.toolCalls} tool calls · ${Math.round(agentMetrics.totalLlmMs)}ms LLM · ${Math.round(agentMetrics.totalToolMs)}ms tools · ${agentMetrics.retries} retries · ${agentMetrics.promptTokens} prompt + ${agentMetrics.completionTokens} completion tokens`}
+          >
+            {agentMetrics.iterations} iter · {agentMetrics.toolCalls} tools · {fmt(agentMetrics.totalLlmMs)} llm
+            {agentMetrics.retries > 0 && ` · ${agentMetrics.retries} retries`}
+            {tok > 0 && ` · ${tok.toLocaleString()} tok`}
+          </span>
+        );
+      })()}
       {/* UX re-review M1: agent_undo had no UI surface — only the model
           could revert its own writes. This button lets the user pop the
           most-recent agent file-write off the snapshot stack without

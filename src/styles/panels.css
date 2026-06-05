@@ -1034,6 +1034,10 @@ button.cancel {
   flex-wrap: wrap;
   row-gap: 4px;
 }
+/* Group split: actions (export/history/params/agent/preset/gear) sit left;
+   the status/info cluster (workspace → policy → status → metrics → undo)
+   floats right off the workspace chip — a clean two-group toolbar. */
+.agent-toolbar .agent-workspace-chip { margin-left: auto; }
 
 .agent-toggle {
   display: flex;

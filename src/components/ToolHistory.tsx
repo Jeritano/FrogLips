@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { X } from "lucide-react";
+import { Wrench, X } from "lucide-react";
+import { EmptyState } from "./EmptyState";
 import type { Message } from "../types";
 
 interface Props {
@@ -83,7 +84,11 @@ export function ToolHistory({ messages, onClose }: Props) {
       </div>
       <div className="tool-history-list">
         {pairs.length === 0 && (
-          <div className="tool-history-empty">No tool calls in this conversation.</div>
+          <EmptyState
+            icon={<Wrench size={24} />}
+            heading="No tool calls yet"
+            sub="Tool calls made during this conversation will show up here."
+          />
         )}
         {pairs.map((p, i) => {
           const argsKey = `${p.id}-args`;

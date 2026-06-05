@@ -4,7 +4,8 @@ import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import { Button, Input, Spinner, Badge } from "./ui";
-import { Globe, Star, Check, X } from "lucide-react";
+import { EmptyState } from "./EmptyState";
+import { Globe, Plug, Star, Check, X } from "lucide-react";
 import type { McpServerConfig, McpServerInfo, McpRegistryEntry } from "../types";
 import "../styles/mcp.css";
 
@@ -383,7 +384,11 @@ export function McpView() {
       {tab === "installed" ? (
         <div className="mcp-list">
           {configs.length === 0 && !form && (
-            <div className="mcp-empty">No MCP servers yet. <button className="mcp-link" onClick={() => setTab("browse")}>Browse the registry →</button></div>
+            <EmptyState
+              icon={<Plug size={24} />}
+              heading="No MCP servers yet"
+              cta={<button className="mcp-link" onClick={() => setTab("browse")}>Browse the registry →</button>}
+            />
           )}
           {configs.map((cfg) => {
             const info = statusByName[cfg.name];
@@ -441,7 +446,12 @@ export function McpView() {
             <Input placeholder="Search MCP servers…" value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
           {browseLoading && entries.length === 0 ? (
-            <div className="mcp-empty"><Spinner /> Loading registry…</div>
+            <div className="skeleton-list" aria-busy="true" aria-label="Loading registry">
+              <div className="skeleton-row" />
+              <div className="skeleton-row" />
+              <div className="skeleton-row" />
+              <div className="skeleton-row" />
+            </div>
           ) : (
             <div className="mcp-cards">
               {entries.slice(0, 60).map((e) => {

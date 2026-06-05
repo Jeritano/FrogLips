@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { FileText, X } from "lucide-react";
 import { api } from "../lib/tauri-api";
+import { EmptyState } from "./EmptyState";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import type { RagCorpusInfo, RagHit, RagIngestReport } from "../types";
 
@@ -222,7 +223,11 @@ export function RagPanel({ onCorporaChanged }: Props) {
       {/* Corpora list */}
       <div className="rag-corpora">
         {corpora.length === 0 ? (
-          <div className="rag-empty">No corpora indexed yet.</div>
+          <EmptyState
+            icon={<FileText size={24} />}
+            heading="No corpora indexed yet"
+            sub="Add a folder above to let the agent search it via search_project_knowledge."
+          />
         ) : (
           <table className="rag-table">
             <thead>

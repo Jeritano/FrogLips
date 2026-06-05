@@ -351,8 +351,12 @@ export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => vo
 
       {/* Card grid — reuses the HF library's .hfl-grid / .hfl-card styling. */}
       {searching && hits.length === 0 ? (
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", color: "var(--text-2)", padding: "var(--space-5)" }}>
-          <Spinner /> Loading catalog…
+        <div className="skeleton-list" aria-busy="true" aria-label="Loading catalog">
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
         </div>
       ) : (
         <div className="hfl-grid" data-testid="llmpm-grid">

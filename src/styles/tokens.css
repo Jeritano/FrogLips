@@ -233,6 +233,49 @@
   flex-shrink: 0;
   vertical-align: -0.14em;
 }
+
+/* Title type ramp — bolder weight + optical tightening on chrome/modal titles
+   (no size change, so the deliberately-compact header height is preserved).
+   The weight jump from semibold body (600) to bold (700) is the snap. */
+.topbar-view-title,
+.dashboard-header h2,
+.mb-title,
+.params-panel-title,
+.cs-panel-title,
+.skills-panel-title,
+.wf-picker-head h2,
+.setup-wizard-step h2,
+.memories-modal-header h2,
+.tool-history-title,
+.fork-tree-header strong {
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.01em;
+}
+
+/* Skeleton loading placeholders for list/grid surfaces (premium over a bare
+   spinner). Shimmer is neutralized by the reduced-motion guard above. */
+.skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+.skeleton-row {
+  height: 48px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    var(--surface-hover) 40%,
+    var(--surface-2) 80%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
 /* Block-level menu rows that now lead with an icon: keep full width + align. */
 .topbar-menu button,
 .conv-context-menu button {

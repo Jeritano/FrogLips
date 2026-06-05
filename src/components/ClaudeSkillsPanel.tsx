@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { Puzzle, X } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { announce } from "../lib/announce";
 import { logDiag } from "../lib/diagnostics";
@@ -322,14 +322,14 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
         <div className="cs-panel-body">
           {!supported ? (
             <EmptyState
-              icon="🧩"
+              icon={<Puzzle size={24} />}
               heading="Skills not yet available"
               sub="(claude skills feature not yet available)"
               data-testid="claude-skills-unsupported"
             />
           ) : list.length === 0 && !loading ? (
             <EmptyState
-              icon="🧩"
+              icon={<Puzzle size={24} />}
               heading="No Skills imported"
               sub="Import a folder containing a SKILL.md file. The agent in chat mode can then call list_claude_skills() and load_claude_skill(name) to use it."
               data-testid="claude-skills-empty"
