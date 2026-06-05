@@ -34,9 +34,23 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [keyDraft, setKeyDraft] = useState("");
   const [showKeyInput, setShowKeyInput] = useState(false);
+  // A model the user picked while keyless — activated once a key is saved.
+  const [pendingSelect, setPendingSelect] = useState<string | null>(null);
   const [models, setModels] = useState<ORModel[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Picking a model = "connect" it (parent sets it active + closes). Browsing
+  // is keyless, but RUNNING needs a key — so a keyless pick opens the key input
+  // first, then activates on save.
+  function pick(modelId: string) {
+    if (hasKey) {
+      onSelect(modelId);
+    } else {
+      setPendingSelect(modelId);
+      setShowKeyInput(true);
+    }
+  }
 
   const loadModels = useCallback(async () => {
     setLoading(true);
@@ -68,6 +82,12 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
       setKeyDraft("");
       setHasKey(true);
       setShowKeyInput(false);
+      // If the key was entered to use a specific model, activate it now.
+      if (pendingSelect) {
+        const id = pendingSelect;
+        setPendingSelect(null);
+        onSelect(id);
+      }
     } catch (e) {
       setErr(`Couldn't save key: ${e}`);
       logDiag({ level: "warn", source: "openrouter", message: "set key failed", detail: e });
@@ -94,7 +114,12 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
       {/* Optional key affordance — browsing is free; a key is only needed to
           RUN a model. Never blocks the catalogue. */}
       {hasKey === false && (
-        <div className="openrouter-keynote">
+        <div className="openrouter-keynote" style={{ flexWrap: "wrap" }}>
+          {showKeyInput && pendingSelect && (
+            <div style={{ width: "100%", marginBottom: 4 }}>
+              Add your OpenRouter key to use <code>{pendingSelect}</code> (and any model):
+            </div>
+          )}
           {showKeyInput ? (
             <div className="openrouter-key-row">
               <input
@@ -109,7 +134,7 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
               <button className="agent-settings-btn primary" disabled={!keyDraft.trim()} onClick={saveKey}>
                 Save key
               </button>
-              <button className="mcp-link" onClick={() => { setShowKeyInput(false); setKeyDraft(""); }}>
+              <button className="mcp-link" onClick={() => { setShowKeyInput(false); setKeyDraft(""); setPendingSelect(null); }}>
                 Cancel
               </button>
             </div>
@@ -134,8 +159,8 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
             key={m.id}
             type="button"
             className="openrouter-row"
-            onClick={() => onSelect(m.id)}
-            title={m.id}
+            onClick={() => pick(m.id)}
+            title={hasKey ? `Use ${m.id}` : `${m.id} — add an API key to use`}
           >
             <div className="openrouter-row-main">
               <span className="openrouter-row-name">{m.name}</span>
@@ -180,7 +205,7 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
           <button className="agent-settings-btn primary" disabled={!keyDraft.trim()} onClick={saveKey}>
             Save key
           </button>
-          <button className="mcp-link" onClick={() => { setShowKeyInput(false); setKeyDraft(""); }}>
+          <button className="mcp-link" onClick={() => { setShowKeyInput(false); setKeyDraft(""); setPendingSelect(null); }}>
             Cancel
           </button>
         </div>
