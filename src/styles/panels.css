@@ -1728,7 +1728,7 @@ button.cancel {
   transition: background 0.1s, border-color 0.1s;
 }
 .openrouter-row:hover { background: var(--surface-hover); border-color: var(--accent); }
-.openrouter-row-main { display: flex; align-items: center; gap: var(--space-2); }
+.openrouter-row-main { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .openrouter-row-name { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
 .openrouter-chip {
   font-size: var(--fs-2xs);
@@ -1738,6 +1738,22 @@ button.cancel {
   background: var(--accent-bg);
   padding: 1px 6px;
   border-radius: var(--radius-full);
+}
+/* Capability-tinted chips: tools (the one agents care about) + reasoning get
+   color; free + unmoderated are informational. */
+.or-chip-tools { color: var(--green-fg); background: var(--green-bg); }
+.or-chip-reason { color: var(--mb-tag-mlx-fg); background: var(--mb-tag-mlx-bg); }
+.or-chip-free { color: var(--green-fg); background: var(--green-bg); }
+.or-chip-unmod { color: var(--warn-fg); background: var(--warn-bg); }
+.openrouter-row-desc {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  line-height: var(--leading-snug);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 2px 0;
 }
 .openrouter-row-meta {
   display: flex;

@@ -516,6 +516,19 @@ pub struct OpenRouterModel {
     pub completion_price: String,
     /// True when the model accepts image input (architecture modality).
     pub vision: bool,
+    /// Accepts audio input.
+    pub audio: bool,
+    /// Supports tool / function calling — i.e. usable in agent mode + Flows.
+    pub tools: bool,
+    /// Exposes a reasoning / thinking channel.
+    pub reasoning: bool,
+    /// Short catalogue description (trimmed).
+    pub description: String,
+    /// Provider moderates/filters content (relevant when choosing an
+    /// unmoderated model).
+    pub moderated: bool,
+    /// Max output tokens the top provider allows (0 = unspecified).
+    pub max_output: u64,
 }
 
 /// Fetch the live OpenRouter model catalogue. Public endpoint — no key
@@ -562,12 +575,40 @@ pub async fn list_openrouter_models() -> Result<Vec<OpenRouterModel>, String> {
         let pricing = m.get("pricing");
         let prompt_price = fmt_price(pricing.and_then(|p| p.get("prompt")));
         let completion_price = fmt_price(pricing.and_then(|p| p.get("completion")));
-        let vision = m
+        let modalities = m
             .get("architecture")
             .and_then(|a| a.get("input_modalities"))
-            .and_then(|im| im.as_array())
-            .map(|arr| arr.iter().any(|v| v.as_str() == Some("image")))
+            .and_then(|im| im.as_array());
+        let has_modality = |name: &str| {
+            modalities
+                .map(|arr| arr.iter().any(|v| v.as_str() == Some(name)))
+                .unwrap_or(false)
+        };
+        let vision = has_modality("image");
+        let audio = has_modality("audio");
+        let sp = m.get("supported_parameters").and_then(|x| x.as_array());
+        let has_param = |name: &str| {
+            sp.map(|arr| arr.iter().any(|v| v.as_str() == Some(name)))
+                .unwrap_or(false)
+        };
+        let tools = has_param("tools") || has_param("tool_choice");
+        let reasoning = has_param("reasoning") || has_param("include_reasoning");
+        let description: String = m
+            .get("description")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(280)
+            .collect();
+        let top = m.get("top_provider");
+        let moderated = top
+            .and_then(|t| t.get("is_moderated"))
+            .and_then(|x| x.as_bool())
             .unwrap_or(false);
+        let max_output = top
+            .and_then(|t| t.get("max_completion_tokens"))
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
         out.push(OpenRouterModel {
             id: id.to_string(),
             name,
@@ -575,6 +616,12 @@ pub async fn list_openrouter_models() -> Result<Vec<OpenRouterModel>, String> {
             prompt_price,
             completion_price,
             vision,
+            audio,
+            tools,
+            reasoning,
+            description,
+            moderated,
+            max_output,
         });
     }
     if out.is_empty() {

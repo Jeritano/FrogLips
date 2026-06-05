@@ -807,6 +807,12 @@ export const api = {
       prompt_price: string;
       completion_price: string;
       vision: boolean;
+      audio: boolean;
+      tools: boolean;
+      reasoning: boolean;
+      description: string;
+      moderated: boolean;
+      max_output: number;
     }[]>("openrouter_list_models"),
   /** Store (or clear, on "") the OpenRouter API key in the Keychain. */
   openrouterSetKey: (key: string) => invoke<void>("openrouter_set_key", { key }),

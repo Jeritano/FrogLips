@@ -9,6 +9,12 @@ interface ORModel {
   prompt_price: string;
   completion_price: string;
   vision: boolean;
+  audio: boolean;
+  tools: boolean;
+  reasoning: boolean;
+  description: string;
+  moderated: boolean;
+  max_output: number;
 }
 
 interface Props {
@@ -72,7 +78,14 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
     const q = query.trim().toLowerCase();
     if (!q) return models;
     return models.filter(
-      (m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
+      (m) =>
+        m.id.toLowerCase().includes(q) ||
+        m.name.toLowerCase().includes(q) ||
+        m.description.toLowerCase().includes(q) ||
+        (q === "tools" && m.tools) ||
+        (q === "vision" && m.vision) ||
+        (q === "reasoning" && m.reasoning) ||
+        (q === "free" && m.prompt_price === "free"),
     );
   }, [models, query]);
 
@@ -126,11 +139,20 @@ export function OpenRouterBrowserTab({ query, onSelect }: Props) {
           >
             <div className="openrouter-row-main">
               <span className="openrouter-row-name">{m.name}</span>
+              {m.tools && <span className="openrouter-chip or-chip-tools">tools</span>}
+              {m.reasoning && <span className="openrouter-chip or-chip-reason">reasoning</span>}
               {m.vision && <span className="openrouter-chip">vision</span>}
+              {m.audio && <span className="openrouter-chip">audio</span>}
+              {m.prompt_price === "free" && <span className="openrouter-chip or-chip-free">free</span>}
+              {!m.moderated && <span className="openrouter-chip or-chip-unmod">unmoderated</span>}
             </div>
+            {m.description && (
+              <div className="openrouter-row-desc">{m.description}</div>
+            )}
             <div className="openrouter-row-meta">
               <code>{m.id}</code>
               <span>{(m.context_length / 1000).toFixed(0)}K ctx</span>
+              {m.max_output > 0 && <span>{(m.max_output / 1000).toFixed(0)}K out</span>}
               {m.prompt_price && (
                 <span>{m.prompt_price === "free" ? "free" : `${m.prompt_price}/${m.completion_price} per 1M`}</span>
               )}
