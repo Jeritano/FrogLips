@@ -66,4 +66,21 @@ describe("routeMessage", () => {
     const d = await routeMessage("thing", ROUTES, { classify: async () => "99" });
     expect(d?.method).toBe("default");
   });
+
+  it("ignores numbers inside reasoning <think> blocks (picks the final answer)", async () => {
+    // A reasoning model that streams its chain-of-thought inline: the '2' and
+    // '3' are inside <think>; the real answer is '1' after it.
+    const d = await routeMessage("debug my code", ROUTES, {
+      classify: async () => "<think>could be 2 (web) or 3 (reason)...</think>\n1",
+    });
+    expect(d?.routeId).toBe("code");
+    expect(d?.method).toBe("classifier");
+  });
+
+  it("handles an unclosed trailing <think> by falling back to default", async () => {
+    const d = await routeMessage("x", ROUTES, {
+      classify: async () => "<think>hmm 2 then 3 then",
+    });
+    expect(d?.method).toBe("default"); // no parseable answer outside the think block
+  });
 });

@@ -102,10 +102,19 @@ export function saveRoutes(routes: ChatRoute[]): void {
   }
 }
 
+/** Strip reasoning-model thinking blocks so a number INSIDE the chain-of-thought
+ *  ("option 2 seems...") isn't mistaken for the final route. Handles closed and
+ *  trailing-unclosed <think>/<thinking> spans. */
+function stripThinking(text: string): string {
+  return text
+    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, " ")
+    .replace(/<think(?:ing)?>[\s\S]*$/i, " ");
+}
+
 /** Parse a 1-based route number out of a classifier reply → 0-based index, or
- *  null when no in-range number is present. */
+ *  null when no in-range number is present. Thinking is stripped first. */
 function parseIndex(text: string, n: number): number | null {
-  const m = text.match(/\d+/);
+  const m = stripThinking(text).match(/\d+/);
   if (!m) return null;
   const i = parseInt(m[0], 10) - 1;
   return i >= 0 && i < n ? i : null;
@@ -168,7 +177,7 @@ export async function routeMessage(
     if (idx != null) {
       const r = routes[idx];
       const method: RouteDecision["method"] = sticky && r.id === sticky.id ? "sticky" : "classifier";
-      const reason = out.trim().replace(/^\d+[).\s-]*/, "").trim().slice(0, 200) || undefined;
+      const reason = stripThinking(out).trim().replace(/^\d+[).\s-]*/, "").trim().slice(0, 200) || undefined;
       return decisionFrom(r, method, reason);
     }
   } catch (e) {
@@ -181,31 +190,69 @@ export async function routeMessage(
 }
 
 /**
- * Build a one-shot classifier fn from the active backend. Reuses the chat's
- * own stream clients so the classifier runs on the already-loaded model (no
- * extra load). Caps output — the classifier only needs a number + short reason.
+ * Build a one-shot classifier fn from the active backend.
+ *
+ * CRITICAL — reasoning models: a small token budget makes thinking models
+ * (qwen3.*, gemma4, deepseek-r1, …) return EMPTY — they spend the whole budget
+ * on hidden <think> tokens and never reach the answer, and raising the budget
+ * is unreliable (a longer prompt → more thinking). The robust fix is to DISABLE
+ * thinking. Ollama's native `/api/chat` accepts `think:false` (the OpenAI-compat
+ * `/v1` endpoint does not), so the Ollama path uses it directly: verified 6/6
+ * correct + fast on local reasoning models, and harmless on non-thinking ones.
+ *
+ * Non-Ollama backends (cloud/custom, native mistralrs, mlx) keep the stream-
+ * client path with a generous cap; the thinking text, if streamed inline, is
+ * stripped by `stripThinking` before the number is parsed.
  */
+const OLLAMA_BASE = "http://127.0.0.1:11434";
+
 export function makeClassifier(
   status: ServerStatus,
   signal?: AbortSignal,
 ): (prompt: string) => Promise<string> {
   return async (prompt: string): Promise<string> => {
+    // Ollama (and the default/unknown backend) → native /api/chat, thinking off.
+    if (!status.backend || status.backend === "ollama") {
+      try {
+        const res = await fetch(`${OLLAMA_BASE}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: status.model,
+            messages: [{ role: "user", content: prompt }],
+            stream: false,
+            think: false,
+            options: { num_predict: 128, temperature: 0 },
+          }),
+          signal,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const c = data?.message?.content;
+          if (typeof c === "string" && c.trim()) return c;
+        }
+      } catch {
+        /* fall through to the stream-client path */
+      }
+    }
+    // Cloud / custom / native / mlx → stream-client accumulation, generous cap.
+    const CLASSIFY_MAX_TOKENS = 512;
     const msgs: Message[] = [{ conversation_id: 0, role: "user", content: prompt }];
     let stream: AsyncGenerator<{ delta: string; done: boolean }>;
     if (status.backend === "openrouter") {
-      stream = streamCustomChat("openrouter", msgs, { model: status.model ?? undefined, maxTokens: 64, signal });
+      stream = streamCustomChat("openrouter", msgs, { model: status.model ?? undefined, maxTokens: CLASSIFY_MAX_TOKENS, signal });
     } else if (status.backend === "custom") {
-      stream = streamCustomChat(status.model ?? "", msgs, { maxTokens: 64, signal });
+      stream = streamCustomChat(status.model ?? "", msgs, { maxTokens: CLASSIFY_MAX_TOKENS, signal });
     } else if (status.backend === "native") {
-      stream = streamNativeChat(msgs, { maxTokens: 64, signal });
+      stream = streamNativeChat(msgs, { maxTokens: CLASSIFY_MAX_TOKENS, signal });
     } else {
-      stream = streamChat(status, msgs, { maxTokens: 64, signal });
+      stream = streamChat(status, msgs, { maxTokens: CLASSIFY_MAX_TOKENS, signal });
     }
     let acc = "";
     for await (const chunk of stream) {
       if (chunk.done) break;
       acc += chunk.delta;
-      if (acc.length > 2000) break; // classifier replies are tiny
+      if (acc.length > 16000) break; // safety bound; reasoning can be verbose
     }
     return acc;
   };
