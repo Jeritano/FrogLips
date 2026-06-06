@@ -362,7 +362,11 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
     }
     const signal = hfFetchAbortRef.current.signal;
     try {
-      const url = `https://huggingface.co/api/models/${encodeURIComponent(repoId)}/tree/main`;
+      // Encode each path SEGMENT but keep the org/name slash literal — HF's
+      // tree route is /api/models/{org}/{name}/tree/main, so encoding the slash
+      // to %2F collapses it into one segment and the API 400s.
+      const safeRepo = repoId.split("/").map(encodeURIComponent).join("/");
+      const url = `https://huggingface.co/api/models/${safeRepo}/tree/main`;
       const res = await fetch(url, { signal });
       if (!res.ok) throw new Error(`HF tree API ${res.status}`);
       const data: HfTreeEntry[] = await res.json();

@@ -209,10 +209,12 @@ describe("ModelBrowser — HF GGUF tab", () => {
     await flush();
     await flush();
 
-    // Tree endpoint hit with the exact repo id.
+    // Tree endpoint hit with the repo id — per-SEGMENT encoded, org/name slash
+    // kept literal (encoding the slash to %2F makes HF's tree API 400).
     const treeCalls = calls.filter((u) => u.includes("/tree/main"));
     expect(treeCalls.length).toBe(1);
-    expect(treeCalls[0]).toContain(encodeURIComponent(SAMPLE_REPO.id));
+    expect(treeCalls[0]).toContain(SAMPLE_REPO.id.split("/").map(encodeURIComponent).join("/"));
+    expect(treeCalls[0]).not.toContain("%2F");
 
     // Both .gguf files surfaced; README + directory filtered out.
     expect(
