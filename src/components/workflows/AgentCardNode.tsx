@@ -1,6 +1,8 @@
 import { memo, useRef, type CSSProperties } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { Clock, X } from "lucide-react";
+import type { WorkflowNodeType } from "../../types";
+import { WORKFLOW_NODE_TYPES } from "../../types";
 
 export type CardRunState = "idle" | "running" | "done" | "failed";
 
@@ -8,6 +10,8 @@ export interface AgentCardNodeData {
   name: string;
   preset: string;
   schedule: string | null;
+  /** Orchestration node kind; "agent" (default) shows no extra badge. */
+  nodeType?: WorkflowNodeType;
   state: CardRunState;
   /** True when the card has an incoming edge — a single-card run is isolated. */
   midChain: boolean;
@@ -69,6 +73,14 @@ function AgentCardNodeImpl({ data }: NodeProps) {
         </div>
         <div className="wf-node-meta">
           <span className="wf-node-preset">{d.preset}</span>
+          {d.nodeType && d.nodeType !== "agent" && (
+            <span
+              className="wf-node-nodetype"
+              title={WORKFLOW_NODE_TYPES.find((nt) => nt.value === d.nodeType)?.blurb}
+            >
+              {WORKFLOW_NODE_TYPES.find((nt) => nt.value === d.nodeType)?.label ?? d.nodeType}
+            </span>
+          )}
           {d.schedule && (
             <span className="wf-node-schedule" title={`Scheduled: ${d.schedule}`}>
               <Clock size={14}/> {d.schedule}

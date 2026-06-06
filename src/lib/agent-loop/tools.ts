@@ -144,6 +144,80 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "run_code",
+      description:
+        "Run a snippet of code in a throwaway interpreter and capture its output. Supported languages: python, node (javascript), bash, sh, ruby. The code is written to a temp file and executed directly (no shell re-parsing). Default timeout 30s; pass timeout_secs (clamped 1-600). ALWAYS requires user approval — this is arbitrary code execution. Returns stdout, stderr, exit_code, duration_ms, timed_out. Prefer this over run_shell for multi-line logic, data processing, or math beyond `calculate`.",
+      parameters: {
+        type: "object",
+        properties: {
+          language: {
+            type: "string",
+            description: "One of: python, node, javascript, bash, sh, ruby.",
+            enum: ["python", "node", "javascript", "bash", "sh", "ruby"],
+          },
+          code: { type: "string", description: "The source code to execute." },
+          timeout_secs: {
+            type: "integer",
+            description: "Wall-clock budget in seconds. Defaults to 30. Clamped to [1, 600] server-side.",
+            minimum: 1,
+            maximum: 600,
+          },
+        },
+        required: ["language", "code"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "calculate",
+      description:
+        "Evaluate an arithmetic expression exactly (no LLM guessing). Supports + - * / % ^, parentheses, unary minus, and functions sqrt/abs/sin/cos/tan/asin/acos/atan/ln/log/log2/exp/floor/ceil/round/sign plus constants pi/e/tau. Safe — never executes code. Use this for any non-trivial number crunching. Returns { ok, result } or { ok:false, error }.",
+      parameters: {
+        type: "object",
+        properties: {
+          expression: { type: "string", description: "e.g. '2 + 3 * 4', 'sqrt(16) + log(1000)', '(1+2)^10'." },
+        },
+        required: ["expression"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remember",
+      description:
+        "Save a durable fact to long-term memory so it can be recalled in future runs/conversations. Auto-embeds + de-duplicates. Scope: 'global' (default, everywhere), 'project' (this workspace only), or 'conversation' (this chat only). Use for stable preferences, decisions, or facts — NOT transient task state (use the workflow scratchpad for that).",
+      parameters: {
+        type: "object",
+        properties: {
+          content: { type: "string", description: "The fact to remember, as a self-contained sentence." },
+          scope: { type: "string", enum: ["global", "project", "conversation"], description: "Visibility scope. Default global." },
+          tags: { type: "string", description: "Optional comma-separated tags (no newlines)." },
+        },
+        required: ["content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "recall_memory",
+      description:
+        "Search long-term memory for facts relevant to a query (vector search with keyword fallback). Returns up to k matching memories with their content, tags, scope, and similarity score. Call this before answering when prior context might help.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What to look up." },
+          k: { type: "integer", description: "Max results (1-20). Default 5.", minimum: 1, maximum: 20 },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "write_file",
       description:
         "Write text content to a file, creating parents. ALWAYS requires user approval. Prefer edit_file for changes to existing files.",

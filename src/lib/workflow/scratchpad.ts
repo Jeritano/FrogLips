@@ -86,6 +86,17 @@ export function isActive(): boolean {
   return active !== null;
 }
 
+/** Empty the active scratchpad WITHOUT ending the run. Used by the
+ *  `blackboard` orchestration node's "clear" op so downstream cards start
+ *  from a clean shared state. No-op when no run is active. Returns true if a
+ *  pad was cleared. */
+export function clearAll(): boolean {
+  if (!active) return false;
+  active.data = {};
+  active.bytesUsed = 2; // "{}" baseline
+  return true;
+}
+
 /** Bytes a single key:value pair contributes to the JSON object form,
  *  including the leading comma when not the first key. Stringify of the
  *  KEY and VALUE only — no whole-pad rescan. (Audit M10.) */

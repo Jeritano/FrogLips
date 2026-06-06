@@ -437,6 +437,7 @@ pub fn run() {
             commands::agent::agent_list_dir,
             commands::agent::mint_tool_approval,
             commands::agent::agent_run_shell,
+            commands::agent::agent_run_code,
             commands::agent::agent_write_file,
             commands::agent::agent_edit_file,
             commands::agent::agent_file_exists,

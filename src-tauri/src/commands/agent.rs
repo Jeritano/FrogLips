@@ -96,6 +96,12 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
             "command",
             p.command.as_deref().unwrap_or(""),
         )]))),
+        // Code sandbox binds to BOTH language + code so neither can be swapped
+        // after approval. Mirrors agent_run_shell's command binding.
+        "agent_run_code" => Some(sha256_hex(&kv(&[
+            ("language", p.text.as_deref().unwrap_or("")),
+            ("code", p.command.as_deref().unwrap_or("")),
+        ]))),
         // Path-family: write / edit / multi_edit / make_dir / delete /
         // open_in_editor / format_code all bind to a single path.
         "agent_write_file"
@@ -315,6 +321,29 @@ pub async fn agent_run_shell(
 #[tauri::command]
 pub fn agent_cancel_shell(op_id: String) {
     agent::cancel_shell(op_id);
+}
+
+#[tauri::command]
+pub async fn agent_run_code(
+    language: String,
+    code: String,
+    timeout_secs: Option<u64>,
+    op_id: Option<String>,
+    approval: String,
+) -> Result<agent::ShellResult, String> {
+    // Bound to the exact language + code so a token approved for one snippet
+    // can't be reused to run a different one within the TTL. Same containment
+    // posture as agent_run_shell (this is arbitrary code execution).
+    verify_bound(
+        "agent_run_code",
+        &approval,
+        ApprovalPayload {
+            command: Some(code.clone()),
+            text: Some(language.clone()),
+            ..Default::default()
+        },
+    )?;
+    agent::run_code(language, code, timeout_secs, op_id).await
 }
 
 #[tauri::command]

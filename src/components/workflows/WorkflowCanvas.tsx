@@ -193,6 +193,7 @@ export function WorkflowCanvas({
           name: c.name,
           preset: c.preset,
           schedule: c.schedule,
+          nodeType: c.nodeType ?? "agent",
           state: cardStates[c.id] ?? "idle",
           midChain: hasUpstream.has(c.id),
           color: c.color ?? null,

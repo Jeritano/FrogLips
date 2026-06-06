@@ -1244,6 +1244,8 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
                 // The runner already carries the active conversation id in
                 // opts; pass it down unmodified.
                 conversationId: opts.conversationId,
+                // Project scope for the memory tools (remember/recall).
+                workspaceRoot,
                 // Thread the parent workflow_runs.id (if any) so that nested
                 // tools that emit their own audit rows (today: the skill
                 // invocation start/end markers) can correlate back to the

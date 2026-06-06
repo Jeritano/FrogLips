@@ -692,7 +692,123 @@ export interface WorkflowCard {
    * busy canvas (e.g. all researchers blue, all writers green).
    */
   color?: string | null;
+  /**
+   * Orchestration node type. Absent/`"agent"` = the legacy single-agent card
+   * (one `runAgentLoop` pass). Other values turn the card into an orchestrator
+   * that fans out / loops / escalates sub-runs internally — see
+   * {@link WorkflowNodeType} and `src/lib/workflow/nodes`. Backward compatible:
+   * every pre-existing card normalizes to `"agent"`.
+   */
+  nodeType?: WorkflowNodeType;
+  /**
+   * Per-node-type tuning. Each field is validated + clamped in
+   * `normalizeWorkflowCard`; unknown/out-of-range values fall back to the
+   * handler default. Ignored entirely when `nodeType` is `"agent"`.
+   */
+  nodeConfig?: WorkflowNodeConfig | null;
 }
+
+/**
+ * Orchestration node kinds. The card's `prompt`/`preset`/`model`/`backend`
+ * remain the BASE configuration; the node type changes how that base is
+ * executed:
+ *   - `agent`       — one agent-loop pass (default, legacy).
+ *   - `moa`         — Mixture-of-Agents: N proposers in parallel → 1 synthesis.
+ *   - `consistency` — self-consistency: N samples of the same prompt → vote/synth.
+ *   - `critic`      — generate → critic scores → revise, until pass or maxIters.
+ *   - `cascade`     — run base (cheap/local); if critic score < threshold,
+ *                     escalate to a stronger model/backend.
+ *   - `router`      — a classifier picks the best route (model/backend/preset)
+ *                     for the task, then runs it (internal selection — keeps the
+ *                     linear-graph invariant).
+ *   - `blackboard`  — operate on the shared workflow scratchpad (summarize /
+ *                     snapshot / clear) so downstream cards share state.
+ *   - `budget`      — run the base agent under a token/time ceiling, returning
+ *                     the best partial result if the cap is hit.
+ */
+export type WorkflowNodeType =
+  | "agent"
+  | "moa"
+  | "consistency"
+  | "critic"
+  | "cascade"
+  | "router"
+  | "blackboard"
+  | "budget";
+
+/** One route option for a `router` node. */
+export interface WorkflowRoute {
+  /** Short label shown to the classifier + in the UI (e.g. "code", "math"). */
+  label: string;
+  /** Natural-language condition the classifier matches against (e.g. "task is about code"). */
+  when: string;
+  model?: string | null;
+  backend?: string | null;
+  preset?: string | null;
+}
+
+/**
+ * Per-node-type configuration. A single loose bag (rather than a discriminated
+ * union) so the persisted `graph_json` stays forward/backward compatible — a
+ * field that doesn't apply to the active `nodeType` is simply ignored. Every
+ * field is clamped on load.
+ */
+export interface WorkflowNodeConfig {
+  /** moa: proposer count · consistency: sample count. Clamped 2..8. */
+  members?: number;
+  /** moa/consistency: instruction for the aggregation/synthesis pass. */
+  synthPrompt?: string | null;
+  /** moa/consistency: model for the synthesis pass (null = card model). */
+  synthModel?: string | null;
+  /** moa/consistency: backend for the synthesis pass (null = card backend). */
+  synthBackend?: string | null;
+  /** consistency: "synth" merges samples; "vote" picks the modal answer. */
+  voteMode?: "synth" | "vote";
+  /** critic: max generate→revise iterations. Clamped 1..6. */
+  maxIters?: number;
+  /** critic/cascade: pass/keep score 0..100. */
+  passThreshold?: number;
+  /** critic: instruction for the critic pass. */
+  criticPrompt?: string | null;
+  /** critic/cascade: model for the critic/scorer pass (null = card model). */
+  criticModel?: string | null;
+  /** critic/cascade: backend for the critic/scorer pass (null = card backend). */
+  criticBackend?: string | null;
+  /** cascade: stronger model to escalate to when base scores low. */
+  escalateModel?: string | null;
+  /** cascade: backend for the escalation model (null = card backend). */
+  escalateBackend?: string | null;
+  /** router: candidate routes the classifier chooses among. */
+  routes?: WorkflowRoute[];
+  /** router: classifier model (null = card model). */
+  routerModel?: string | null;
+  /** router: classifier backend (null = card backend). */
+  routerBackend?: string | null;
+  /** blackboard: operation to run against the shared scratchpad. */
+  blackboardOp?: "summarize" | "snapshot" | "clear";
+  /** budget: output-token ceiling for the sub-run. Null = unlimited. */
+  maxTokens?: number | null;
+  /** budget: wall-clock ceiling (ms) for the sub-run. Null = unlimited. */
+  maxMs?: number | null;
+  /** budget: behavior when a cap is hit — "stop" (error) or "best" (return partial). */
+  onExceed?: "stop" | "best";
+}
+
+/** Node types selectable in the CardForm UI, with human labels + blurbs. */
+export const WORKFLOW_NODE_TYPES: ReadonlyArray<{
+  value: WorkflowNodeType;
+  label: string;
+  blurb: string;
+}> = [
+  { value: "agent", label: "Agent", blurb: "One agent pass (default)." },
+  { value: "moa", label: "Mixture-of-Agents", blurb: "N agents in parallel → synthesized answer." },
+  { value: "consistency", label: "Self-Consistency", blurb: "Sample N times → vote / merge." },
+  { value: "critic", label: "Critic Loop", blurb: "Generate → critique → revise until it passes." },
+  { value: "cascade", label: "Cascade", blurb: "Cheap model first; escalate to a stronger one if weak." },
+  { value: "router", label: "Router", blurb: "Classify the task → run the best-fit model/role." },
+  { value: "blackboard", label: "Blackboard", blurb: "Summarize / snapshot / clear shared run memory." },
+  { value: "budget", label: "Budget", blurb: "Run under a token/time ceiling; return best effort." },
+];
 
 /**
  * Curated accent palette for workflow card nodes. Hand-picked, readable on
@@ -885,7 +1001,82 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
       if (temperature == null && top_p == null && max_tokens == null) return null;
       return { temperature, top_p, max_tokens };
     })(),
+    // Orchestration node type. Unknown/absent → "agent" (legacy single pass).
+    nodeType: ((): WorkflowNodeType => {
+      const valid: WorkflowNodeType[] = [
+        "agent", "moa", "consistency", "critic", "cascade", "router", "blackboard", "budget",
+      ];
+      return typeof c.nodeType === "string" && (valid as string[]).includes(c.nodeType)
+        ? (c.nodeType as WorkflowNodeType)
+        : "agent";
+    })(),
+    // Per-node config, each field clamped. Returns null when nothing valid is
+    // present so an "agent" card stays lean.
+    nodeConfig: normalizeNodeConfig(c.nodeConfig),
   };
+}
+
+/**
+ * Validate + clamp a raw `nodeConfig` blob. Every numeric field is bounded so a
+ * corrupt/adversarial `graph_json` can't spawn 10 000 parallel sub-agents or an
+ * unbounded critic loop. Strings are length-capped. Returns null if nothing
+ * usable survives.
+ */
+function normalizeNodeConfig(raw: unknown): WorkflowNodeConfig | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const STR_CAP = 4096;
+  const str = (v: unknown): string | null =>
+    typeof v === "string" && v.trim().length > 0 ? v.slice(0, STR_CAP) : null;
+  const intIn = (v: unknown, lo: number, hi: number): number | null => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return null;
+    return Math.max(lo, Math.min(hi, Math.floor(v)));
+  };
+  const out: WorkflowNodeConfig = {};
+  const members = intIn(r.members, 2, 8);
+  if (members != null) out.members = members;
+  const synthPrompt = str(r.synthPrompt);
+  if (synthPrompt) out.synthPrompt = synthPrompt;
+  out.synthModel = str(r.synthModel);
+  out.synthBackend = str(r.synthBackend);
+  if (r.voteMode === "synth" || r.voteMode === "vote") out.voteMode = r.voteMode;
+  const maxIters = intIn(r.maxIters, 1, 6);
+  if (maxIters != null) out.maxIters = maxIters;
+  const passThreshold = intIn(r.passThreshold, 0, 100);
+  if (passThreshold != null) out.passThreshold = passThreshold;
+  const criticPrompt = str(r.criticPrompt);
+  if (criticPrompt) out.criticPrompt = criticPrompt;
+  out.criticModel = str(r.criticModel);
+  out.criticBackend = str(r.criticBackend);
+  out.escalateModel = str(r.escalateModel);
+  out.escalateBackend = str(r.escalateBackend);
+  if (Array.isArray(r.routes)) {
+    const routes: WorkflowRoute[] = [];
+    for (const rr of r.routes.slice(0, 8)) {
+      if (!rr || typeof rr !== "object") continue;
+      const o = rr as Record<string, unknown>;
+      const label = str(o.label);
+      const when = str(o.when);
+      if (!label || !when) continue;
+      routes.push({ label, when, model: str(o.model), backend: str(o.backend), preset: str(o.preset) });
+    }
+    if (routes.length > 0) out.routes = routes;
+  }
+  out.routerModel = str(r.routerModel);
+  out.routerBackend = str(r.routerBackend);
+  if (r.blackboardOp === "summarize" || r.blackboardOp === "snapshot" || r.blackboardOp === "clear") {
+    out.blackboardOp = r.blackboardOp;
+  }
+  const maxTokens = intIn(r.maxTokens, 1, 1_000_000);
+  if (maxTokens != null) out.maxTokens = maxTokens;
+  const maxMs = intIn(r.maxMs, 1000, 3_600_000);
+  if (maxMs != null) out.maxMs = maxMs;
+  if (r.onExceed === "stop" || r.onExceed === "best") out.onExceed = r.onExceed;
+  // Drop null-only string fields to keep the object lean, then bail if empty.
+  for (const k of Object.keys(out) as (keyof WorkflowNodeConfig)[]) {
+    if (out[k] == null) delete out[k];
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /** Parse a backend `RawWorkflow` row into a typed `Workflow`. */

@@ -90,6 +90,7 @@ export const TOOL_CATEGORIES: readonly ToolCategory[] = [
       "find_references",
       "format_code",
       "search_project_knowledge",
+      "calculate",
     ],
   },
   {
@@ -105,6 +106,7 @@ export const TOOL_CATEGORIES: readonly ToolCategory[] = [
       "Execute shell commands, AppleScript, launch apps, list processes, post notifications.",
     tools: [
       "run_shell",
+      "run_code",
       "applescript_run",
       "open_app",
       "show_notification",
@@ -148,6 +150,10 @@ export const TOOL_CATEGORIES: readonly ToolCategory[] = [
     description:
       "Save and replay sequences of tool calls (procedural memory) scoped to this workflow; mount imported Claude Skills on demand.",
     tools: [
+      // Long-term semantic memory — save/recall durable facts across runs.
+      // Read-first (recall) then write (remember) for the same reading order.
+      "recall_memory",
+      "remember",
       "workflow_save_skill",
       "workflow_list_skills",
       "workflow_get_skill",

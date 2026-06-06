@@ -66,9 +66,143 @@ pub struct ShellOpts {
 static SHELL_HANDLES: Lazy<Mutex<HashMap<String, AbortHandle>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Monotonic counter for unique sandbox temp-file names (avoids a uuid dep on
+/// this path; combined with pid + nanos it can't collide across concurrent runs).
+static CODE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Upper bound on a single `run_code` payload. Generous enough for a real
+/// script, small enough that a runaway agent can't write a 100 MB temp file.
+pub(crate) const CODE_MAX_BYTES: usize = 256 * 1024;
+
 pub fn cancel_shell(op_id: String) {
     if let Some(h) = SHELL_HANDLES.lock().remove(&op_id) {
         h.abort();
+    }
+}
+
+/// Map a language id to its (interpreter, file-extension). The interpreter is
+/// invoked with ONLY the temp file path as an argument — no shell `-c`, so the
+/// code body is never re-parsed by a shell. Unknown languages are rejected.
+fn code_runner(language: &str) -> Option<(&'static str, &'static str)> {
+    match language.to_ascii_lowercase().as_str() {
+        "python" | "python3" | "py" => Some(("python3", "py")),
+        "node" | "javascript" | "js" => Some(("node", "js")),
+        "bash" => Some(("bash", "sh")),
+        "sh" | "shell" => Some(("sh", "sh")),
+        "ruby" | "rb" => Some(("ruby", "rb")),
+        _ => None,
+    }
+}
+
+/// Run a snippet of code in a throwaway interpreter process.
+///
+/// Mirrors `run_shell`'s containment: a hard wall-clock timeout, capped
+/// stdout/stderr, `kill_on_drop` so an aborted task reaps the child, and the
+/// same op-id cancellation registry (so `cancel_shell` cancels a `run_code`
+/// op too). The snippet is written to a uniquely-named temp file under the OS
+/// temp dir, executed directly by the interpreter, and removed afterward.
+///
+/// This is full arbitrary code execution and is gated behind the same
+/// approval token flow as `run_shell` at the command layer.
+pub async fn run_code(
+    language: String,
+    code: String,
+    timeout_secs: Option<u64>,
+    op_id: Option<String>,
+) -> Result<ShellResult, String> {
+    if code.is_empty() || code.len() > CODE_MAX_BYTES {
+        return Err(err_string(ToolError::invalid("code length invalid")));
+    }
+    let (interp, ext) = code_runner(&language)
+        .ok_or_else(|| err_string(ToolError::invalid("unsupported language")))?;
+    let timeout_secs = timeout_secs
+        .map(|t| t.clamp(1, SHELL_TIMEOUT_MAX_SECS))
+        .unwrap_or(SHELL_TIMEOUT_DEFAULT_SECS);
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = CODE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "froglips_code_{}_{}_{}.{}",
+        std::process::id(),
+        nanos,
+        seq,
+        ext
+    ));
+    std::fs::write(&path, code.as_bytes())
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+
+    let run_path = path.clone();
+    let cwd = workspace_root_clone();
+    let task = tokio::spawn(async move {
+        let started = Instant::now();
+        let mut cmd = tokio::process::Command::new(interp);
+        cmd.arg(&run_path);
+        cmd.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        if let Some(c) = cwd {
+            cmd.current_dir(c);
+        }
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+        let fut = cmd.output();
+        let (output, timed_out) = match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(o)) => (o, false),
+            Ok(Err(e)) => {
+                return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string())))
+            }
+            Err(_) => {
+                return Ok(ShellResult {
+                    stdout: String::new(),
+                    stderr: format!("timed out after {timeout_secs}s"),
+                    exit_code: -1,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    timed_out: true,
+                });
+            }
+        };
+        let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        if stdout.len() > MAX_SHELL_OUTPUT {
+            stdout.truncate(safe_truncate_idx(&stdout, MAX_SHELL_OUTPUT));
+            stdout.push_str("\n[truncated]");
+        }
+        if stderr.len() > MAX_SHELL_OUTPUT {
+            stderr.truncate(safe_truncate_idx(&stderr, MAX_SHELL_OUTPUT));
+            stderr.push_str("\n[truncated]");
+        }
+        Ok(ShellResult {
+            stdout,
+            stderr,
+            exit_code: output.status.code().unwrap_or(-1),
+            duration_ms: started.elapsed().as_millis() as u64,
+            timed_out,
+        })
+    });
+
+    if let Some(id) = op_id.as_ref() {
+        SHELL_HANDLES.lock().insert(id.clone(), task.abort_handle());
+    }
+    let join_result = task.await;
+    if let Some(id) = op_id.as_ref() {
+        SHELL_HANDLES.lock().remove(id);
+    }
+    // Best-effort cleanup; a leaked temp file on a crash is harmless.
+    let _ = std::fs::remove_file(&path);
+
+    match join_result {
+        Ok(inner) => inner,
+        Err(e) if e.is_cancelled() => Ok(ShellResult {
+            stdout: String::new(),
+            stderr: "cancelled by user".into(),
+            exit_code: -1,
+            duration_ms: 0,
+            timed_out: false,
+        }),
+        Err(e) => Err(err_string(ToolError::io(e.to_string()))),
     }
 }
 

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
-import type { ModelEntry, WorkflowCard } from "../../types";
-import { WORKFLOW_CARD_COLORS } from "../../types";
+import type {
+  ModelEntry,
+  WorkflowCard,
+  WorkflowNodeConfig,
+  WorkflowNodeType,
+  WorkflowRoute,
+} from "../../types";
+import { WORKFLOW_CARD_COLORS, WORKFLOW_NODE_TYPES } from "../../types";
 import { loadAllPresets } from "../../lib/agent-presets";
 import { useModalA11y } from "../../lib/use-modal-a11y";
 import { generateAgentName } from "../../lib/agent-name";
@@ -59,11 +65,13 @@ const ALL_TOOLS = [
   // Diff / hash inspection
   "diff_files", "hash_file",
   // Shell + automation
-  "run_shell", "applescript_run", "open_app", "show_notification",
+  "run_shell", "run_code", "applescript_run", "open_app", "show_notification",
   // Git
   "git_status", "git_diff", "git_log", "git_show", "git_branches", "git_commit",
   // Knowledge / project search
-  "find_definition", "find_references", "format_code", "search_project_knowledge",
+  "find_definition", "find_references", "format_code", "search_project_knowledge", "calculate",
+  // Long-term semantic memory
+  "recall_memory", "remember",
   // PDF / web
   "read_pdf", "web_fetch", "web_search", "http_request",
   // UI / clipboard
@@ -333,6 +341,29 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                 ))}
               </select>
             </label>
+            <label className="wf-field">
+              <span>Node type</span>
+              <select
+                value={draft.nodeType ?? "agent"}
+                onChange={(e) => set("nodeType", e.target.value as WorkflowNodeType)}
+              >
+                {WORKFLOW_NODE_TYPES.map((nt) => (
+                  <option key={nt.value} value={nt.value}>{nt.label}</option>
+                ))}
+              </select>
+              <small className="wf-field-hint">
+                {WORKFLOW_NODE_TYPES.find((nt) => nt.value === (draft.nodeType ?? "agent"))?.blurb}
+              </small>
+            </label>
+            {draft.nodeType && draft.nodeType !== "agent" && (
+              <NodeConfigEditor
+                nodeType={draft.nodeType}
+                config={draft.nodeConfig ?? {}}
+                models={models}
+                presets={presets}
+                onChange={(cfg) => set("nodeConfig", cfg)}
+              />
+            )}
             <label className="wf-field">
               <span>Model</span>
               <select
@@ -614,6 +645,323 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── Orchestration node config editor ────────────────────────────────────
+ * Shown only for non-"agent" node types. Renders the subset of
+ * WorkflowNodeConfig fields relevant to the active node type. Each control
+ * writes through `patch`, which merges one key into the config object so the
+ * other fields survive. Numbers are clamped to the same bounds the loader
+ * (`normalizeNodeConfig`) enforces so the live value matches what persists.
+ */
+function NodeConfigEditor({
+  nodeType,
+  config,
+  models,
+  presets,
+  onChange,
+}: {
+  nodeType: WorkflowNodeType;
+  config: WorkflowNodeConfig;
+  models: ModelEntry[];
+  presets: Array<{ id: string; name: string }>;
+  onChange: (cfg: WorkflowNodeConfig) => void;
+}) {
+  const patch = (p: Partial<WorkflowNodeConfig>) => onChange({ ...config, ...p });
+  const num = (v: string, lo: number, hi: number): number | undefined => {
+    if (v === "") return undefined;
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : undefined;
+  };
+
+  return (
+    <div className="wf-field" style={{ border: "1px solid var(--border-hairline, #2a2a2a)", borderRadius: 8, padding: 10, display: "grid", gap: 10 }}>
+      <span style={{ fontWeight: 600 }}>Orchestration settings</span>
+
+      {(nodeType === "moa" || nodeType === "consistency") && (
+        <>
+          <label>
+            <span>{nodeType === "moa" ? "Proposers" : "Samples"} (2–8)</span>
+            <input
+              type="number" min={2} max={8} step={1}
+              placeholder={nodeType === "moa" ? "3" : "5"}
+              value={config.members ?? ""}
+              onChange={(e) => patch({ members: num(e.target.value, 2, 8) })}
+            />
+          </label>
+          {nodeType === "consistency" && (
+            <label>
+              <span>Aggregate by</span>
+              <select
+                value={config.voteMode ?? "synth"}
+                onChange={(e) => patch({ voteMode: e.target.value as "synth" | "vote" })}
+              >
+                <option value="synth">Merge (synthesize)</option>
+                <option value="vote">Majority vote</option>
+              </select>
+            </label>
+          )}
+          <label>
+            <span>Synthesis instruction (optional)</span>
+            <textarea
+              rows={2}
+              placeholder="How to merge the proposals into one answer."
+              value={config.synthPrompt ?? ""}
+              onChange={(e) => patch({ synthPrompt: e.target.value || null })}
+            />
+          </label>
+          <NodeModelSelect
+            label="Synthesis model (optional)"
+            models={models}
+            model={config.synthModel ?? null}
+            backend={config.synthBackend ?? null}
+            onChange={(m, b) => patch({ synthModel: m, synthBackend: b })}
+          />
+          <small className="wf-field-hint">
+            The {nodeType === "moa" ? "proposers" : "samples"} run in parallel against the card's model.
+            Same-model fan-out is cheap on RAM — Ollama loads the model once and serves the
+            requests concurrently (only KV-cache grows). Choosing a <em>different</em> synthesis model
+            loads a second model, so leave it blank on a memory-tight machine.
+          </small>
+        </>
+      )}
+
+      {nodeType === "critic" && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <label>
+              <span>Max iterations (1–6)</span>
+              <input
+                type="number" min={1} max={6} step={1} placeholder="3"
+                value={config.maxIters ?? ""}
+                onChange={(e) => patch({ maxIters: num(e.target.value, 1, 6) })}
+              />
+            </label>
+            <label>
+              <span>Pass score (0–100)</span>
+              <input
+                type="number" min={0} max={100} step={1} placeholder="80"
+                value={config.passThreshold ?? ""}
+                onChange={(e) => patch({ passThreshold: num(e.target.value, 0, 100) })}
+              />
+            </label>
+          </div>
+          <label>
+            <span>Critic instruction (optional)</span>
+            <textarea
+              rows={2}
+              placeholder="How the critic should judge + score the draft."
+              value={config.criticPrompt ?? ""}
+              onChange={(e) => patch({ criticPrompt: e.target.value || null })}
+            />
+          </label>
+          <NodeModelSelect
+            label="Critic model (optional)"
+            models={models}
+            model={config.criticModel ?? null}
+            backend={config.criticBackend ?? null}
+            onChange={(m, b) => patch({ criticModel: m, criticBackend: b })}
+          />
+        </>
+      )}
+
+      {nodeType === "cascade" && (
+        <>
+          <label>
+            <span>Escalate if score below (0–100)</span>
+            <input
+              type="number" min={0} max={100} step={1} placeholder="70"
+              value={config.passThreshold ?? ""}
+              onChange={(e) => patch({ passThreshold: num(e.target.value, 0, 100) })}
+            />
+          </label>
+          <NodeModelSelect
+            label="Escalation model (stronger / :cloud)"
+            models={models}
+            model={config.escalateModel ?? null}
+            backend={config.escalateBackend ?? null}
+            onChange={(m, b) => patch({ escalateModel: m, escalateBackend: b })}
+          />
+          <NodeModelSelect
+            label="Scorer model (optional)"
+            models={models}
+            model={config.criticModel ?? null}
+            backend={config.criticBackend ?? null}
+            onChange={(m, b) => patch({ criticModel: m, criticBackend: b })}
+          />
+        </>
+      )}
+
+      {nodeType === "router" && (
+        <>
+          <RouteEditor
+            routes={config.routes ?? []}
+            models={models}
+            presets={presets}
+            onChange={(routes) => patch({ routes })}
+          />
+          <NodeModelSelect
+            label="Classifier model (optional)"
+            models={models}
+            model={config.routerModel ?? null}
+            backend={config.routerBackend ?? null}
+            onChange={(m, b) => patch({ routerModel: m, routerBackend: b })}
+          />
+        </>
+      )}
+
+      {nodeType === "blackboard" && (
+        <label>
+          <span>Operation</span>
+          <select
+            value={config.blackboardOp ?? "snapshot"}
+            onChange={(e) => patch({ blackboardOp: e.target.value as "summarize" | "snapshot" | "clear" })}
+          >
+            <option value="snapshot">Snapshot (dump shared state)</option>
+            <option value="summarize">Summarize (brief the next agent)</option>
+            <option value="clear">Clear (reset shared state)</option>
+          </select>
+        </label>
+      )}
+
+      {nodeType === "budget" && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <label>
+              <span>Max tokens</span>
+              <input
+                type="number" min={1} step={64} placeholder="unlimited"
+                value={config.maxTokens ?? ""}
+                onChange={(e) => patch({ maxTokens: num(e.target.value, 1, 1_000_000) })}
+              />
+            </label>
+            <label>
+              <span>Max seconds</span>
+              <input
+                type="number" min={1} step={1} placeholder="unlimited"
+                value={config.maxMs != null ? Math.round(config.maxMs / 1000) : ""}
+                onChange={(e) => {
+                  const s = num(e.target.value, 1, 3600);
+                  patch({ maxMs: s == null ? null : s * 1000 });
+                }}
+              />
+            </label>
+          </div>
+          <label>
+            <span>When ceiling hit</span>
+            <select
+              value={config.onExceed ?? "best"}
+              onChange={(e) => patch({ onExceed: e.target.value as "stop" | "best" })}
+            >
+              <option value="best">Return best effort so far</option>
+              <option value="stop">Fail the card</option>
+            </select>
+          </label>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Model dropdown that pins backend alongside the id (backend::id encoding),
+ *  matching the main Model picker. Empty = inherit the card's model. */
+function NodeModelSelect({
+  label,
+  models,
+  model,
+  backend,
+  onChange,
+}: {
+  label: string;
+  models: ModelEntry[];
+  model: string | null;
+  backend: string | null;
+  onChange: (model: string | null, backend: string | null) => void;
+}) {
+  const value = model ? `${backend ?? findModelBackend(models, model) ?? ""}::${model}` : "";
+  return (
+    <label>
+      <span>{label}</span>
+      <select
+        value={value}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === "") { onChange(null, null); return; }
+          const sep = v.indexOf("::");
+          if (sep < 0) { onChange(v, null); return; }
+          onChange(v.slice(sep + 2), v.slice(0, sep) || null);
+        }}
+      >
+        <option value="">Inherit card model</option>
+        {models.map((m) => (
+          <option key={`${m.backend}::${m.id}`} value={`${m.backend}::${m.id}`}>
+            {m.id} ({m.backend})
+          </option>
+        ))}
+        {model && !models.some((m) => m.id === model) && (
+          <option value={`${backend ?? ""}::${model}`}>
+            {model}{backend ? ` (${backend})` : " (pinned)"}
+          </option>
+        )}
+      </select>
+    </label>
+  );
+}
+
+/** Add/remove/edit the candidate routes for a router node. */
+function RouteEditor({
+  routes,
+  models,
+  presets,
+  onChange,
+}: {
+  routes: WorkflowRoute[];
+  models: ModelEntry[];
+  presets: Array<{ id: string; name: string }>;
+  onChange: (routes: WorkflowRoute[]) => void;
+}) {
+  const update = (i: number, p: Partial<WorkflowRoute>) =>
+    onChange(routes.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
+  const remove = (i: number) => onChange(routes.filter((_, idx) => idx !== i));
+  const add = () =>
+    onChange([...routes, { label: "", when: "", model: null, backend: null, preset: null }]);
+
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      <span>Routes</span>
+      {routes.length === 0 && (
+        <small className="wf-field-hint">No routes yet — add at least one so the classifier has somewhere to send the task.</small>
+      )}
+      {routes.map((r, i) => (
+        <div key={i} style={{ display: "grid", gap: 4, border: "1px solid var(--border-hairline, #2a2a2a)", borderRadius: 6, padding: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr auto", gap: 6 }}>
+            <input placeholder="label (e.g. code)" value={r.label} onChange={(e) => update(i, { label: e.target.value })} />
+            <input placeholder="when… (e.g. task is about programming)" value={r.when} onChange={(e) => update(i, { when: e.target.value })} />
+            <button type="button" className="wf-btn" onClick={() => remove(i)} title="Remove route"><X size={14}/></button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <NodeModelSelect
+              label="Model"
+              models={models}
+              model={r.model ?? null}
+              backend={r.backend ?? null}
+              onChange={(m, b) => update(i, { model: m, backend: b })}
+            />
+            <label>
+              <span>Role</span>
+              <select value={r.preset ?? ""} onChange={(e) => update(i, { preset: e.target.value || null })}>
+                <option value="">Inherit card role</option>
+                {presets.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+      ))}
+      <button type="button" className="wf-btn" onClick={add}>+ Add route</button>
     </div>
   );
 }

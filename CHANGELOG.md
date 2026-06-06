@@ -4,6 +4,41 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+### Flows — orchestration nodes (make small models punch up)
+- **New node types** on the workflow canvas — a card can now be more than a
+  single agent pass. Pick a **Node type** in the card editor:
+  - **Mixture-of-Agents** — N proposers run in parallel, then one synthesis
+    pass merges them into the single best answer.
+  - **Self-Consistency** — sample the same prompt N times, then majority-vote
+    or merge the most consistent answer.
+  - **Critic Loop** — generate → critique (scored) → revise, until it clears a
+    pass mark or hits the iteration cap (self-refine).
+  - **Cascade** — run a cheap/local model first; if a critic scores it below a
+    threshold, escalate to a stronger model (e.g. an Ollama `:cloud` tag).
+  - **Router** — a classifier picks the best-fit route (model / backend / role)
+    for the task, then runs it.
+  - **Blackboard** — snapshot / summarize / clear the shared run scratchpad so
+    downstream cards share state.
+  - **Budget** — run a card under a token and/or wall-clock ceiling, returning
+    the best effort so far when the cap is hit.
+  All node types reuse the existing agent loop, so tools / MCP / approval gates /
+  streaming all work inside them. Orchestrator cards show a node-type badge on
+  the canvas. Confidence (no logprobs) is scored by a critic pass.
+- **Seeded "Demo — Orchestration Showcase" flow** — Planner → MoA researchers →
+  Critic loop → Reporter, all on the active local model.
+
+### Built-in agent tools
+- **`run_code`** — execute a snippet (python / node / bash / sh / ruby) in a
+  throwaway interpreter with a wall-clock timeout, capped output, and cleanup.
+  Arbitrary code execution — gated behind the same approval-token flow as
+  `run_shell` (bound to language + code).
+- **`calculate`** — exact arithmetic via a safe hand-written shunting-yard
+  evaluator (never `eval`): `+ - * / % ^`, parens, unary minus, and
+  sqrt/sin/cos/ln/log/… plus pi/e/tau.
+- **`remember` / `recall_memory`** — agents can now deliberately save + semantic-
+  search long-term memory (the existing scoped vector store), not just receive
+  auto-recall. Scopes: global / project / conversation.
+
 ### Roundtable ("Table")
 - **Reasoning-model support** — capture `reasoning` / `reasoning_content` from
   thinking models (OpenRouter *and* Ollama, e.g. `gemma4`); a reasoning-only

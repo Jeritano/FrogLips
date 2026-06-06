@@ -243,6 +243,18 @@
   padding: 2px 6px;
   border-radius: var(--radius-xs);
 }
+/* Orchestration node-type badge (MoA / Critic / Cascade / …). Tinted distinct
+   from the neutral preset chip so an orchestrator card reads at a glance. */
+.wf-node-nodetype {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--violet, #a855f7);
+  background: color-mix(in srgb, var(--violet, #a855f7) 16%, transparent);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+}
 
 .wf-badge {
   font-size: var(--fs-2xs);

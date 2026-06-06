@@ -350,6 +350,20 @@ export const api = {
     }),
   agentCancelShell: (opId: string) =>
     invoke<void>("agent_cancel_shell", { opId }),
+  agentRunCode: async (
+    language: string,
+    code: string,
+    timeoutSecs?: number,
+    opId?: string,
+  ) =>
+    invoke<ShellResult>("agent_run_code", {
+      language,
+      code,
+      timeoutSecs: timeoutSecs ?? null,
+      opId: opId ?? null,
+      // Approval bound to language+code (same fields the Rust side hashes).
+      approval: await mintApproval("agent_run_code", { command: code, text: language }),
+    }),
   agentWriteFile: async (path: string, content: string) =>
     invoke<void>("agent_write_file", {
       path,

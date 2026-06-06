@@ -6,6 +6,7 @@ import { loadAllPresets } from "../agent-presets";
 import { logDiag } from "../diagnostics";
 import { api } from "../tauri-api";
 import { resolveLinearOrder } from "./graph";
+import { isOrchestratorNode, runWorkflowNode } from "./nodes";
 import { beginRun as beginScratchpadRun, endRun as endScratchpadRun } from "./scratchpad";
 import { beginSkillRun, endSkillRun } from "./skill-invocations";
 
@@ -500,7 +501,22 @@ export async function runWorkflow(
       for (let attempt = 0; attempt <= retryMax; attempt++) {
         if (signal.aborted) break;
         try {
-          final = await runAgentLoop(cardOpts);
+          // Orchestration nodes (MoA, critic, cascade, router, …) fan out /
+          // loop their own sub-runs through runAgentLoop. A plain "agent" card
+          // takes the single-pass path unchanged.
+          if (isOrchestratorNode(card)) {
+            final = await runWorkflowNode({
+              card,
+              base: cardOpts,
+              previousOutput,
+              presets,
+              signal,
+              emit: (text) =>
+                safeHook("onCardOutput", () => hooks.onCardOutput?.(card.id, text)),
+            });
+          } else {
+            final = await runAgentLoop(cardOpts);
+          }
           lastErr = null;
           break;
         } catch (e) {
