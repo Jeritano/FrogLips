@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Zap, Clock, ShieldCheck } from "lucide-react";
+import { Zap, Clock, ShieldCheck, Shuffle } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import type { ConfirmDecision } from "../lib/agent-loop";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
@@ -28,6 +28,8 @@ import { useCitationOpener } from "../hooks/useCitationOpener";
 import { useAskUserModal } from "../hooks/useAskUserModal";
 import { useQuickPromptToast } from "../hooks/useQuickPromptToast";
 import { useChatSend } from "../hooks/useChatSend";
+import type { RouteDecision } from "../lib/chat-router";
+import { RoutesSettings } from "./RoutesSettings";
 import { useEvent } from "../hooks/useEvent";
 
 interface Props {
@@ -54,6 +56,12 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [err, setErr] = useState<string | null>(null);
   const [recalled, setRecalled] = useState<Memory[]>([]);
   const [agentMode, setAgentMode] = useState(false);
+  // Multi-model auto-routing (plain chat). Persisted across sessions.
+  const [autoRoute, setAutoRoute] = useState<boolean>(
+    () => localStorage.getItem("chat.autoRoute") === "1",
+  );
+  const [routedNotice, setRoutedNotice] = useState<RouteDecision | null>(null);
+  const [showRoutes, setShowRoutes] = useState(false);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("idle");
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
@@ -310,7 +318,19 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     setAgentStatus,
     setAgentMetrics,
     onMemoriesChanged,
+    routingEnabled: autoRoute,
+    onRouted: setRoutedNotice,
   });
+
+  // Persist the auto-route toggle; clear the live notice when turned off.
+  const toggleAutoRoute = useCallback(() => {
+    setAutoRoute((on) => {
+      const next = !on;
+      localStorage.setItem("chat.autoRoute", next ? "1" : "0");
+      if (!next) setRoutedNotice(null);
+      return next;
+    });
+  }, []);
 
   /**
    * Persist per-conversation params. Optimistically updates local state so
@@ -476,6 +496,35 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           </div>
         )}
         <ErrorBar message={err} onDismiss={() => setErr(null)} />
+
+        <div className="chat-routing-bar">
+          <button
+            type="button"
+            className={`route-toggle${autoRoute ? " on" : ""}`}
+            onClick={toggleAutoRoute}
+            disabled={agentMode}
+            title={
+              agentMode
+                ? "Auto-route applies to plain chat (turn off Agent mode)"
+                : "Auto-route each message to the best-fit configured model"
+            }
+          >
+            <Shuffle size={14} /> Auto-route {autoRoute ? "on" : "off"}
+          </button>
+          {autoRoute && (
+            <button type="button" className="route-manage" onClick={() => setShowRoutes(true)}>
+              Manage routes
+            </button>
+          )}
+          {autoRoute && routedNotice && (
+            <span className="route-chip" title={routedNotice.reason ?? routedNotice.method}>
+              → {routedNotice.label} · <code>{routedNotice.model}</code>
+              <span className="route-method"> · {routedNotice.method}</span>
+            </span>
+          )}
+        </div>
+
+        {showRoutes && <RoutesSettings onClose={() => setShowRoutes(false)} />}
 
         <AgentToolbar
           conversation={conversation}

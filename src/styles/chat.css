@@ -634,3 +634,77 @@
   z-index: 2;
 }
 
+
+/* ── Multi-model router (Auto-route) ─────────────────────────────────────── */
+.chat-routing-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.route-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-xs);
+  padding: 3px 9px;
+  border-radius: var(--radius-full, 999px);
+  border: 1px solid var(--border-hairline, #2a2a2a);
+  background: var(--surface-2);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.route-toggle.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-bg);
+}
+.route-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+.route-manage {
+  font-size: var(--fs-xs);
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.route-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-2xs);
+  color: var(--text-2);
+  background: var(--surface-2);
+  padding: 2px 8px;
+  border-radius: var(--radius-full, 999px);
+}
+.route-chip code { color: var(--accent); }
+.route-method { color: var(--text-3, #888); }
+
+.routes-panel {
+  border: 1px solid var(--border-hairline, #2a2a2a);
+  border-radius: var(--radius-lg, 10px);
+  background: var(--surface-1);
+  padding: 12px;
+  margin-bottom: 8px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+.routes-panel-head { display: flex; align-items: center; justify-content: space-between; }
+.routes-panel-title { font-weight: 600; }
+.routes-panel-hint { font-size: var(--fs-2xs); color: var(--text-2); margin: 4px 0 10px; }
+.routes-empty { font-size: var(--fs-xs); color: var(--text-3, #888); }
+.routes-list { display: grid; gap: 10px; }
+.route-card {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border-hairline, #2a2a2a);
+  border-radius: var(--radius-md, 8px);
+  padding: 8px;
+}
+.route-card-row { display: flex; align-items: center; gap: 6px; }
+.route-label-input { flex: 1; }
+.route-default { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-2xs); color: var(--text-2); white-space: nowrap; }
+.route-when-input, .route-kw-input { width: 100%; }
+.route-model-select, .route-preset-select { flex: 1; min-width: 0; }

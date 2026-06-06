@@ -15,6 +15,8 @@ import {
 } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
 import { formatUserProfile } from "../lib/user-profile";
+import { loadRoutes, makeClassifier, routeMessage, type RouteDecision } from "../lib/chat-router";
+import { loadAllPresets } from "../lib/agent-presets";
 import type { AgentSettings } from "./useAgentSettings";
 import { useEvent } from "./useEvent";
 import type { AppSettings } from "../types";
@@ -145,6 +147,10 @@ export interface ChatSendConfig {
   setAgentStatus: (v: AgentStatus) => void;
   setAgentMetrics: (v: AgentMetrics | null) => void;
   onMemoriesChanged?: () => void;
+  /** Auto-route each message to the best-fit configured model (plain chat only). */
+  routingEnabled?: boolean;
+  /** Fires with the routing decision for a message (null = no route taken). */
+  onRouted?: (decision: RouteDecision | null) => void;
 }
 
 export interface ChatSend {
@@ -164,6 +170,9 @@ export interface ChatSend {
  */
 export function useChatSend(config: ChatSendConfig): ChatSend {
   const abortRef = useRef<AbortController | null>(null);
+  // Per-conversation sticky route id (anti-thrash: bias the classifier toward
+  // the route already in use so it doesn't flip models turn-to-turn).
+  const stickyRouteRef = useRef<Map<number, string | null>>(new Map());
 
   /**
    * Core send: persist the user turn, recall memories, stream the response
@@ -184,6 +193,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       convParams, agent, messages, ensureConversation, convRef,
       requestConfirmation, setMessages, setStreaming, setErr, setRecalled,
       setAgentStatus, setAgentMetrics, onMemoriesChanged,
+      routingEnabled, onRouted,
     } = config;
 
     if (!status?.running || !status.model) {
@@ -263,15 +273,72 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       if (isStreamConvActive()) setRecalled([]);
     }
 
+    // ── Multi-model routing (plain chat only in MVP) ──
+    // Classify the message and (maybe) swap the model/backend + role for THIS
+    // turn. Falls back to the active model on any failure. Agent mode keeps the
+    // active model (routing the tool loop is a phased follow-up).
+    let effModel: string = status.model;
+    let effBackend: string = status.backend ?? "ollama";
+    let routePreset: string | null = null;
+    if (routingEnabled && !(agentMode && agentAvailable)) {
+      try {
+        const routes = loadRoutes();
+        if (routes.length > 0) {
+          const decision = await routeMessage(text, routes, {
+            stickyRouteId: stickyRouteRef.current.get(conv.id) ?? null,
+            classify: makeClassifier(status, ctrl.signal),
+          });
+          if (decision && !ctrl.signal.aborted) {
+            // MVP: ollama loads on demand and custom/openrouter are cloud, so
+            // those swap freely. mlx/native can't hot-swap a model without a
+            // preload step (phased), so only honor them when they match the
+            // already-active model.
+            const loadFree =
+              decision.backend === "ollama" ||
+              decision.backend === "custom" ||
+              decision.backend === "openrouter";
+            if (loadFree || decision.model === status.model) {
+              effModel = decision.model;
+              effBackend = decision.backend;
+              routePreset = decision.preset;
+              stickyRouteRef.current.set(conv.id, decision.routeId);
+              if (isStreamConvActive()) onRouted?.(decision);
+            } else {
+              logDiag({
+                level: "info",
+                source: "chat-router",
+                message: `route "${decision.label}" needs a ${decision.backend} model preload; keeping active model (MVP)`,
+              });
+              if (isStreamConvActive()) onRouted?.(null);
+            }
+          } else if (isStreamConvActive()) {
+            onRouted?.(null);
+          }
+        } else if (isStreamConvActive()) {
+          onRouted?.(null);
+        }
+      } catch (e) {
+        logDiag({
+          level: "warn",
+          source: "chat-router",
+          message: "routing failed; using active model",
+          detail: e,
+        });
+        if (isStreamConvActive()) onRouted?.(null);
+      }
+    } else if (isStreamConvActive()) {
+      onRouted?.(null);
+    }
+
     // Authoritative model-identity preamble. Some cloud-routed Ollama tags
     // (e.g. *:cloud) return inconsistent self-identity in reply text — this
     // pins the model to its actual tag so "what model are you?" answers
     // truthfully regardless of the upstream training data.
     const identityPrompt =
-      `You are model "${status.model}" running via the ${status.backend} backend on the user's machine. ` +
-      `When asked about your identity, name, version, or which model you are, respond with the exact identifier above ("${status.model}"). ` +
-      `Do not claim to be GPT, Claude, Gemini, DeepSeek, Kimi, Llama, Qwen, or any other model unless that name appears literally inside "${status.model}". ` +
-      `If you genuinely don't know, say "I'm running as ${status.model}; I don't have additional details about my training."`;
+      `You are model "${effModel}" running via the ${effBackend} backend on the user's machine. ` +
+      `When asked about your identity, name, version, or which model you are, respond with the exact identifier above ("${effModel}"). ` +
+      `Do not claim to be GPT, Claude, Gemini, DeepSeek, Kimi, Llama, Qwen, or any other model unless that name appears literally inside "${effModel}". ` +
+      `If you genuinely don't know, say "I'm running as ${effModel}; I don't have additional details about my training."`;
 
     const systemPreamble: Message[] = [
       { _tmpKey: tmpKey(), conversation_id: conv.id, role: "system", content: identityPrompt },
@@ -313,6 +380,20 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         role: "system",
         content: convParams.system_prompt,
       });
+    }
+    // Routed Role: inject the chosen route's preset system prompt (persona /
+    // output format) so a "Coder" or "Researcher" route actually behaves like
+    // one. Composes with the identity + profile blocks above.
+    if (routePreset) {
+      const preset = loadAllPresets().find((p) => p.id === routePreset);
+      if (preset?.systemPromptOverride) {
+        systemPreamble.push({
+          _tmpKey: tmpKey(),
+          conversation_id: conv.id,
+          role: "system",
+          content: preset.systemPromptOverride,
+        });
+      }
     }
     if (recallBlock) {
       systemPreamble.push({ _tmpKey: tmpKey(), conversation_id: conv.id, role: "system", content: recallBlock });
@@ -509,31 +590,35 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       // CustomBackend id (the picker encodes it there for custom
       // selections). `native` is in-process mistralrs; everything else
       // is the MLX/Ollama OpenAI-compat loopback path.
-      const stream = status.backend === "openrouter"
-        ? // OpenRouter built-in: one backend id, status.model is the
+      // Effective target for this turn — equals the active model unless the
+      // router swapped it above. For ollama/mlx we pass a cloned status with
+      // the effective model (ollama loads it on demand).
+      const effStatus: ServerStatus = { ...status, model: effModel, backend: effBackend };
+      const stream = effBackend === "openrouter"
+        ? // OpenRouter built-in: one backend id, effModel is the
           // picked catalogue model (passed as the per-call override).
           streamCustomChat("openrouter", historyForApi, {
-            model: status.model ?? undefined,
+            model: effModel,
             signal: ctrl.signal,
             temperature: chatParams.temperature ?? undefined,
             top_p: chatParams.top_p ?? undefined,
             maxTokens: chatParams.max_tokens ?? undefined,
           })
-        : status.backend === "custom"
-        ? streamCustomChat(status.model ?? "", historyForApi, {
+        : effBackend === "custom"
+        ? streamCustomChat(effModel, historyForApi, {
             signal: ctrl.signal,
             temperature: chatParams.temperature ?? undefined,
             top_p: chatParams.top_p ?? undefined,
             maxTokens: chatParams.max_tokens ?? undefined,
           })
-        : status.backend === "native"
+        : effBackend === "native"
         ? streamNativeChat(historyForApi, {
             signal: ctrl.signal,
             temperature: chatParams.temperature ?? undefined,
             top_p: chatParams.top_p ?? undefined,
             maxTokens: chatParams.max_tokens ?? undefined,
           })
-        : streamChat(status, historyForApi, {
+        : streamChat(effStatus, historyForApi, {
             signal: ctrl.signal,
             temperature: chatParams.temperature ?? undefined,
             topP: chatParams.top_p ?? undefined,
@@ -598,14 +683,14 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         conversation_id: conv.id,
         role: "assistant",
         content: displayContent,
-        model: status.model,
+        model: effModel,
       };
       // Strict same-conv gate: if the user switched conversations mid-stream
       // the assistant turn STILL gets persisted under its original
       // conversation_id, but it must not be appended to the now-active
       // conversation's UI buffer. We persist fire-and-forget in that case.
       if (!sameConv()) {
-        api.addMessage(conv.id, "assistant", acc, status.model).catch((err) =>
+        api.addMessage(conv.id, "assistant", acc, effModel).catch((err) =>
           logDiag({
             level: "warn",
             source: "chat-stream",
@@ -615,7 +700,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         );
       } else {
         try {
-          const id = await api.addMessage(conv.id, "assistant", acc, status.model);
+          const id = await api.addMessage(conv.id, "assistant", acc, effModel);
           asst.id = id;
         } catch (e) {
           if (sameConv()) setErr(`Failed to save response: ${e}`);
@@ -634,10 +719,10 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         conversation_id: conv.id,
         role: "assistant",
         content: "[stopped before response]",
-        model: status.model,
+        model: effModel,
       };
       if (!sameConv()) {
-        api.addMessage(conv.id, "assistant", tombstone.content, status.model).catch((err) =>
+        api.addMessage(conv.id, "assistant", tombstone.content, effModel).catch((err) =>
           logDiag({
             level: "warn",
             source: "chat-window",
@@ -647,7 +732,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         );
       } else {
         try {
-          const id = await api.addMessage(conv.id, "assistant", tombstone.content, status.model);
+          const id = await api.addMessage(conv.id, "assistant", tombstone.content, effModel);
           tombstone.id = id;
         } catch (err) {
           logDiag({
