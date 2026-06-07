@@ -367,7 +367,11 @@ pub async fn diff_files(left: String, right: String) -> Result<DiffResult, Strin
         let stderr = String::from_utf8_lossy(&err).into_owned();
         return Err(ok_err("io", format!("git diff exit {exit}: {stderr}")));
     }
-    let diff = String::from_utf8_lossy(&out).into_owned();
+    // Sec audit round 6: the diff body is the verbatim content of two arbitrary
+    // files the model picked — a clean, ungated untrusted-ingress channel (an
+    // attacker plants a file with an injection payload, the agent diffs it).
+    // Fence it like read_file / git diff before it re-enters the loop.
+    let diff = crate::agent::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&out)).0;
     Ok(DiffResult {
         identical: exit == 0,
         diff,

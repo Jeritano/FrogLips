@@ -745,7 +745,7 @@ mod settings_validation_tests {
 
     #[test]
     fn rejects_nul_in_mcp_command_args_env() {
-        // JSON ` ` escape parses to a string containing an embedded NUL.
+        // JSON `\x00` escape parses to a string containing an embedded NUL.
         let cmd_nul = "{\"mcp_servers\":[{\"name\":\"ok\",\"command\":\"node\\u0000evil\"}]}";
         assert!(validate_settings_patch(&obj(cmd_nul)).is_err());
         let arg_nul =

@@ -570,10 +570,18 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
     } else {
         body
     };
+    // Sec audit round 6: response header VALUES are attacker-controlled too, so
+    // fence each like the body — a header such as `X-Note: ignore previous
+    // instructions…` would otherwise reach the model unfenced. No-op unless a
+    // pattern is detected (scan_and_wrap returns the value unchanged otherwise).
+    let headers: std::collections::HashMap<String, String> = hdrs
+        .into_iter()
+        .map(|(k, v)| (k, injection_scan::scan_and_wrap(&v).0))
+        .collect();
 
     Ok(HttpResp {
         status,
-        headers: hdrs,
+        headers,
         body,
         bytes: total,
         truncated,

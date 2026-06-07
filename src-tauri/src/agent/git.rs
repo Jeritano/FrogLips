@@ -74,7 +74,12 @@ fn resolve_git_cwd(path: Option<String>, for_write: bool) -> Result<PathBuf, Str
 
 pub async fn git_status(path: Option<String>) -> Result<GitResult, String> {
     let cwd = resolve_git_cwd(path, false)?;
-    git_invoke(cwd, &["status", "--short", "--branch"]).await
+    // Sec audit round 6: wrap like git_diff/log/show — `status --short` includes
+    // attacker-controllable FILENAMES (a hostile repo can contain a file named
+    // to carry an injection payload) and the branch name.
+    git_invoke(cwd, &["status", "--short", "--branch"])
+        .await
+        .map(wrap_stdout)
 }
 
 /// Repo content (commit messages, diffs) can be attacker-poisoned — scan the
@@ -127,7 +132,11 @@ pub async fn git_show(reference: String, path: Option<String>) -> Result<GitResu
 
 pub async fn git_branches(path: Option<String>) -> Result<GitResult, String> {
     let cwd = resolve_git_cwd(path, false)?;
-    git_invoke(cwd, &["branch", "-a", "--no-color"]).await
+    // Sec audit round 6: branch names are attacker-controllable in a hostile
+    // cloned repo — wrap like the other git readers.
+    git_invoke(cwd, &["branch", "-a", "--no-color"])
+        .await
+        .map(wrap_stdout)
 }
 
 pub async fn git_commit(message: String, path: Option<String>) -> Result<GitResult, String> {
