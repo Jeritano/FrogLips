@@ -64,11 +64,10 @@ test("dry-run mode simulates a dangerous tool without real execution", async ({ 
   await page.getByTestId("agent-confirm-allow").click();
   await expect(modal).toHaveCount(0);
 
-  // The dispatcher short-circuits the tool — its result block carries the
-  // simulated payload (`would_run`), not real shell output.
-  const result = page.getByTestId("tool-result").first();
-  await expect(result).toBeVisible({ timeout: 8000 });
-  await expect(result).toContainText("would_run");
+  // Tool I/O is no longer rendered inline (it lives in the Tool History
+  // panel). The loop's final turn proves it consumed the simulated result and
+  // continued; the invocation check below proves nothing real ran.
+  await expect(page.getByText("Simulated only.")).toBeVisible({ timeout: 8000 });
 
   // The real shell command must never have been invoked.
   const invs = await tauriInvocations(page);

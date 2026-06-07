@@ -1,4 +1,4 @@
-import { test, expect, setMockHandler } from "./fixtures/tauri-mock";
+import { test, expect, setMockHandler, tauriInvocations } from "./fixtures/tauri-mock";
 
 /**
  * A dangerous tool is DENIED by the user partway through a multi-step run.
@@ -66,11 +66,13 @@ test("user denies a dangerous tool mid-run; loop recovers and finishes", async (
   await page.getByTestId("agent-confirm-deny").click();
   await expect(modal).toHaveCount(0);
 
-  // The denial tool result lands in the transcript.
-  await expect(page.getByTestId("tool-result").first()).toBeVisible({ timeout: 8000 });
-
-  // The loop did NOT wedge — a follow-up assistant message is produced.
+  // The loop did NOT wedge — a follow-up assistant message is produced (tool
+  // I/O now lives in the Tool History panel, not inline in the transcript).
   await expect(page.getByText("Understood — I won't write that file.")).toBeVisible({
     timeout: 8000,
   });
+
+  // The dangerous write must never have actually run.
+  const invs = await tauriInvocations(page);
+  expect(invs.some((i) => i.cmd === "agent_write_file")).toBe(false);
 });

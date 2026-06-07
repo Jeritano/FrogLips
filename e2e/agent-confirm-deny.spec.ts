@@ -1,4 +1,4 @@
-import { test, expect, setMockHandler } from "./fixtures/tauri-mock";
+import { test, expect, setMockHandler, tauriInvocations } from "./fixtures/tauri-mock";
 
 test("destructive run_shell triggers confirm modal; Deny short-circuits the tool", async ({ page }) => {
   // First turn: assistant requests a destructive shell command.
@@ -51,6 +51,10 @@ test("destructive run_shell triggers confirm modal; Deny short-circuits the tool
   await page.getByTestId("agent-confirm-deny").click();
   await expect(modal).toHaveCount(0);
 
-  // Tool result block (the user_denied JSON) should appear in the transcript.
-  await expect(page.getByTestId("tool-result").first()).toBeVisible({ timeout: 8000 });
+  // Tool I/O moved to the Tool History panel (hidden from the chat stream).
+  // Assert the loop completed by its final turn, and that the real shell was
+  // never executed — the deny gate's actual guarantee.
+  await expect(page.getByText("Stopped.")).toBeVisible({ timeout: 8000 });
+  const invs = await tauriInvocations(page);
+  expect(invs.some((i) => i.cmd === "agent_run_shell")).toBe(false);
 });

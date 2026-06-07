@@ -1,4 +1,4 @@
-import { test, expect, setMockHandler } from "./fixtures/tauri-mock";
+import { test, expect, setMockHandler, tauriInvocations } from "./fixtures/tauri-mock";
 
 test("agent mode dispatches read_file tool without a confirmation modal", async ({ page }) => {
   // Two-turn Ollama exchange via NDJSON:
@@ -45,6 +45,9 @@ test("agent mode dispatches read_file tool without a confirmation modal", async 
   // read_file is non-dangerous → confirmation modal must NOT appear.
   await expect(page.getByTestId("agent-confirm-modal")).toHaveCount(0);
 
-  // Tool result block appears after dispatch.
-  await expect(page.getByTestId("tool-result").first()).toBeVisible({ timeout: 8000 });
+  // Tool I/O lives in the Tool History panel now (not inline). The loop's
+  // final turn proves read_file was dispatched and its result consumed.
+  await expect(page.getByText("DONE")).toBeVisible({ timeout: 8000 });
+  const invs = await tauriInvocations(page);
+  expect(invs.some((i) => i.cmd === "agent_read_file")).toBe(true);
 });
