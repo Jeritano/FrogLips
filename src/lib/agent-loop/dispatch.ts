@@ -4,7 +4,7 @@ import type { AuditApproval, AuditOutcome, ToolCall } from "../../types";
 import type { Risk } from "./types";
 import { dispatchMcpTool, isMcpToolName } from "./mcp-tools";
 import { looksLikeSecret, recall, saveMemory } from "../memory-client";
-import { DRY_RUN_TOOLS, dryRunExecute } from "./dry-run";
+import { DRY_RUN_READ_ONLY, DRY_RUN_TOOLS, dryRunExecute } from "./dry-run";
 
 // Re-exported for tests that import it from `./dispatch`.
 export { dryRunValidateUrl } from "./url-safety";
@@ -753,24 +753,25 @@ export async function executeTool(
   args: Record<string, unknown>,
   options: ExecuteToolOptions = {},
 ): Promise<string> {
-  // Dry-run shim: short-circuit side-effectful tools before they reach Tauri.
-  // Read-only tools fall through to the normal switch below.
-  if (options.dryRun && DRY_RUN_TOOLS.has(name)) {
-    return dryRunExecute(name, args);
-  }
-  // Sec audit round 3: DRY_RUN_TOOLS only provides RICH previews (diffs,
-  // would_run) for the common write tools. Every OTHER side-effectful tool —
-  // run_code, task_create, delete_path, kill_process, git_commit, http_request,
-  // open_app, spawn_subagent, the browser read tools, AND any MCP tool — must
-  // still be SUPPRESSED in dry-run, not silently executed. Previously they fell
-  // through to real dispatch, so "dry-run: side-effects suppressed" actually ran
-  // run_code/task_create (full RCE) for real. Default-DENY execution here; only
-  // read-only tools (not in DANGEROUS_TOOLS/WRITE_TOOLS, not MCP) fall through.
-  if (
-    options.dryRun &&
-    (DANGEROUS_TOOLS.has(name) || WRITE_TOOLS.has(name) || isMcpToolName(name))
-  ) {
-    return JSON.stringify({ ok: true, dry_run: true, would_call: name, suppressed: true });
+  // Dry-run mode (sec audit round 3/4): DEFAULT-DENY execution.
+  //   1. Tools with a rich preview (diffs, would_run) → structured preview.
+  //   2. Explicit read-only tools → fall through and actually execute.
+  //   3. EVERYTHING ELSE (writes, deletes, RCE, DB persistence, screenshots,
+  //      notifications, all MCP tools, and any unknown/future tool) → suppress.
+  // Keying on the read-only ALLOWLIST (not a dangerous-tool denylist) is what
+  // makes this safe: previously dry-run only suppressed an 8-tool denylist, so
+  // run_code/task_create (full RCE) plus format_code/screenshot/remember/
+  // workflow_set/task_cancel executed for real while the UI said
+  // "side-effects suppressed". A new side-effectful tool is now suppressed
+  // automatically until it is consciously declared read-only.
+  if (options.dryRun) {
+    if (DRY_RUN_TOOLS.has(name)) {
+      return dryRunExecute(name, args);
+    }
+    if (!DRY_RUN_READ_ONLY.has(name)) {
+      return JSON.stringify({ ok: true, dry_run: true, would_call: name, suppressed: true });
+    }
+    // read-only → continue to the normal dispatch below.
   }
   // NOTE: do NOT redact `args` here. Earlier a live-path redactor ran on
   // `args` before dispatch, but that mutated the values forwarded to Rust IPC —

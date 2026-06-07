@@ -209,9 +209,26 @@ describe("executeTool: dry-run default-deny (sec audit round 3)", () => {
     expect(api.mcpCallTool).not.toHaveBeenCalled();
   });
 
+  it("suppresses format_code (in-place file rewrite) — not in DANGEROUS_TOOLS", async () => {
+    const out = await executeTool("format_code", { path: "/tmp/x.ts" }, { dryRun: true });
+    expect(JSON.parse(out).suppressed).toBe(true);
+    expect(api.agentFormatCode).not.toHaveBeenCalled();
+  });
+
+  it("suppresses screenshot (writes a PNG) — not in DANGEROUS_TOOLS", async () => {
+    const out = await executeTool("screenshot", { out_path: "/tmp/s.png" }, { dryRun: true });
+    expect(JSON.parse(out).suppressed).toBe(true);
+    expect(api.agentScreenshot).not.toHaveBeenCalled();
+  });
+
   it("still EXECUTES read-only tools under dry-run (read_file falls through)", async () => {
     await executeTool("read_file", { path: "/tmp/x" }, { dryRun: true });
     expect(api.agentReadFile).toHaveBeenCalled();
+  });
+
+  it("still EXECUTES read-only git_status under dry-run", async () => {
+    await executeTool("git_status", {}, { dryRun: true });
+    expect(api.agentGitStatus).toHaveBeenCalled();
   });
 
   it("write_file gets a rich preview, never a real write", async () => {

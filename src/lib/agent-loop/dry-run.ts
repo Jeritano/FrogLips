@@ -22,6 +22,33 @@ export const DRY_RUN_TOOLS = new Set([
   "browser_navigate", "browser_click", "browser_fill",
 ]);
 
+/**
+ * Tools that are safe to ACTUALLY EXECUTE under dry-run: read-only / no
+ * persistent side effect (reads, lookups, pure compute, network GETs).
+ *
+ * Sec audit round 4: dry-run suppression is DEFAULT-DENY and keys on the
+ * COMPLEMENT of this set — anything NOT listed here (and not given a rich
+ * preview by DRY_RUN_TOOLS above) is suppressed, INCLUDING unknown/future
+ * tools and all MCP tools. This is deliberately an allowlist of safe tools,
+ * not a denylist of dangerous ones: when a new side-effectful tool is added
+ * (e.g. format_code, screenshot, remember, workflow_set, task_cancel — all of
+ * which mutate state yet are NOT in DANGEROUS_TOOLS), it is suppressed
+ * automatically until someone consciously decides it is read-only and adds it
+ * here. A denylist would silently execute it.
+ */
+export const DRY_RUN_READ_ONLY = new Set([
+  "read_file", "list_dir", "search_files", "file_exists", "hash_file", "diff_files",
+  "git_status", "git_diff", "git_log", "git_show", "git_branches",
+  "web_fetch", "web_search", "read_pdf", "clipboard_get",
+  "find_definition", "find_references", "calculate",
+  "recall_memory", "search_project_knowledge",
+  "list_processes", "list_undo", "task_status", "task_list",
+  "list_watches", "poll_watch", "ask_user",
+  "workflow_get", "workflow_keys", "workflow_get_prior_run",
+  "workflow_list_skills", "workflow_get_skill",
+  "list_claude_skills", "load_claude_skill",
+]);
+
 function truncForDryRun(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max)}\n…[truncated ${s.length - max} chars]`;
