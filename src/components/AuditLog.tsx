@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { fmtBytesBinary as fmtBytes } from "../lib/format";
 import { api } from "../lib/tauri-api";
 import type { AgentAuditRow, AgentAuditStats } from "../types";
 
@@ -19,11 +20,6 @@ function fmtTs(ms: number): string {
   }
 }
 
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
-}
 
 export function AuditLog() {
   const [open, setOpen] = useState(false);

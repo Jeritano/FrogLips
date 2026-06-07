@@ -27,6 +27,7 @@
  * wanders to a different tab).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { fmtBytesDecimal as fmtBytes, parseGgufQuant } from "../lib/format";
 import { Zap, Search, Check } from "lucide-react";
 import { Sidebar } from "./hf-library/Sidebar";
 import { ModelCard } from "./hf-library/ModelCard";
@@ -133,23 +134,6 @@ const PAGE_SIZE = 100;
 const SKELETON_COUNT = 6;
 const BUCKET_MAXES = PARAM_TICKS.map((t) => t.max);
 
-/** Format a byte count to "1.2 GB" / "850 MB" style. Local to this view so
- *  we don't depend on the parent's fmtBytes — same rules though. */
-function fmtBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes === 0) return "—";
-  return `${bytes} B`;
-}
-
-/** Parse llama.cpp quant tags ("Q4_K_M", "IQ3_XXS", "F16"…) from a `.gguf`
- *  filename. Returns null when no recognizable tag is present. */
-function parseGgufQuant(filename: string): string | null {
-  const m =
-    filename.match(/\b(IQ\d+_[A-Z]+|Q\d+_[A-Z0-9_]+|F16|F32|BF16)\b/i);
-  return m ? m[1].toUpperCase() : null;
-}
 
 /** Build the collapsed "8 quants · 1.2-7.5 GB" summary for a repo card.
  *  Returns null when the tree hasn't been fetched yet (so the card falls

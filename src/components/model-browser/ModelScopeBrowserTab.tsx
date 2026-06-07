@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { abbrev, relTimeEpoch as relTime } from "../../lib/format";
 import { api } from "../../lib/tauri-api";
 import type { CustomBackend } from "../../types";
 import { Button, Input, Spinner, Badge } from "../ui";
@@ -30,21 +31,6 @@ function MsAvatar({ src, initial }: { src: string | null; initial: string }) {
   );
 }
 
-function abbrev(n: number | undefined): string {
-  if (!n) return "0";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2).replace(/\.?0+$/, "")}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
-  return String(n);
-}
-function relTime(epochSec?: number): string | null {
-  if (!epochSec) return null;
-  const day = Math.floor((Date.now() / 1000 - epochSec) / 86_400);
-  if (day < 1) return "today";
-  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
-  const mo = Math.floor(day / 30);
-  if (mo < 12) return `${mo} month${mo === 1 ? "" : "s"} ago`;
-  return `${Math.floor(day / 365)} year${Math.floor(day / 365) === 1 ? "" : "s"} ago`;
-}
 
 /**
  * ModelScope source for the Model Browser. Browses ModelScope's text-gen

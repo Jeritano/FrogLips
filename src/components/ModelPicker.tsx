@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { formatSizeParen as formatSize } from "../lib/format";
 import { api } from "../lib/tauri-api";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { AllModels, CustomBackend, ModelEntry, ServerStatus } from "../types";
@@ -20,15 +21,6 @@ interface Props {
    * model is no longer installed we silently fall back (no-op).
    */
   desiredModel?: string | null;
-}
-
-function formatSize(bytes: number) {
-  if (!bytes) return "";
-  const units = ["KB", "MB", "GB"];
-  let v = bytes / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return ` (${v.toFixed(1)} ${units[i]})`;
 }
 
 export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {

@@ -1,4 +1,5 @@
 import { EmptyState } from "../EmptyState";
+import { fmtBytesDecimal as fmtBytes, parseGgufQuant } from "../../lib/format";
 import { Package, Trash2 } from "lucide-react";
 import type { GgufFile, ModelEntry } from "../../types";
 
@@ -10,19 +11,6 @@ import type { GgufFile, ModelEntry } from "../../types";
  * props, since the Ollama / HF tabs share that delete flow.
  */
 
-function fmtBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(0)} KB`;
-  if (bytes === 0) return "—";
-  return `${bytes} B`;
-}
-
-/** Parse `Q4_K_M`, `Q5_K_S`, `Q8_0`, `IQ3_XXS`, etc. from a GGUF filename. */
-function parseGgufQuant(filename: string): string | null {
-  const m = filename.match(/\b(IQ\d+_[A-Z]+|Q\d+_[A-Z0-9_]+|F16|F32|BF16)\b/i);
-  return m ? m[1].toUpperCase() : null;
-}
 
 interface Props {
   installedOllama: ModelEntry[];

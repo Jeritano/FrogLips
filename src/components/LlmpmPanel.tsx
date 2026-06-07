@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { abbrev, paramPill, relTime } from "../lib/format";
 import { api } from "../lib/tauri-api";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { CustomBackend, LlmpmServeStatus } from "../types";
@@ -9,32 +10,6 @@ import { extractParams, type HfModel } from "./hf-library/loader";
 
 const LLMPM_BACKEND_ID = "llmpm-local";
 
-function abbrev(n: number | undefined): string {
-  if (!n) return "0"; // HF can omit downloads/likes despite the typed `number`
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2).replace(/\.?0+$/, "")}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
-  return String(n);
-}
-function paramPill(n: number | null): string | null {
-  if (n === null) return null;
-  if (n >= 1_000_000_000) {
-    const v = n / 1_000_000_000;
-    return v >= 100 ? `${Math.round(v)}B` : `${v.toFixed(v >= 10 ? 0 : 1).replace(/\.0$/, "")}B`;
-  }
-  if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`;
-  return null;
-}
-function relTime(iso?: string): string | null {
-  if (!iso) return null;
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return null;
-  const day = Math.floor((Date.now() - then) / 86_400_000);
-  if (day < 1) return "today";
-  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
-  const mo = Math.floor(day / 30);
-  if (mo < 12) return `${mo} month${mo === 1 ? "" : "s"} ago`;
-  return `${Math.floor(day / 365)} year${Math.floor(day / 365) === 1 ? "" : "s"} ago`;
-}
 
 /** One catalog card — matches the HF library's `.hfl-card` layout (avatar,
  *  id, pipeline + param + library chips, updated/downloads/likes), with an

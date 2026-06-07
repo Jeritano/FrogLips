@@ -10,6 +10,7 @@
  * list inside `children` underneath the card body when expanded.
  */
 import type { ReactNode } from "react";
+import { abbrev, paramPill, relTime } from "../../lib/format";
 import { Zap, Download, Heart, Check } from "lucide-react";
 import { PIPELINE_COLOR } from "./constants";
 import type { HfModel } from "./loader";
@@ -37,36 +38,6 @@ interface Props {
   ggufSummary?: string | null;
   /** When `ggufMode && expanded`, the parent renders the file list here. */
   children?: ReactNode;
-}
-
-function abbrev(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2).replace(/\.?0+$/, "")}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
-  return String(n);
-}
-
-/** Abbreviate parameter count to a HF-style pill ("7B", "1.5B", "405B"). */
-function paramPill(n: number | null): string | null {
-  if (n === null) return null;
-  if (n >= 1_000_000_000) {
-    const v = n / 1_000_000_000;
-    return v >= 100 ? `${Math.round(v)}B` : `${v.toFixed(v >= 10 ? 0 : 1).replace(/\.0$/, "")}B`;
-  }
-  if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`;
-  return null;
-}
-
-function relTime(iso?: string): string | null {
-  if (!iso) return null;
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return null;
-  const day = Math.floor((Date.now() - then) / 86_400_000);
-  if (day < 1) return "today";
-  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
-  const mo = Math.floor(day / 30);
-  if (mo < 12) return `${mo} month${mo === 1 ? "" : "s"} ago`;
-  const yr = Math.floor(day / 365);
-  return `${yr} year${yr === 1 ? "" : "s"} ago`;
 }
 
 export function ModelCard(props: Props) {
