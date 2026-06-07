@@ -88,6 +88,33 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 - Path-safety write denylist extended to browser-profile dirs (Chrome/Firefox/
   Safari) to match the agent fs layer.
 
+#### Security audit (multi-round hardening pass)
+- **Case-insensitive path denylists** — macOS APFS is case-insensitive but
+  case-preserving, so the read/write/credential denylists (agent fs gate, the
+  backup/export/import write-dest gate, and project-policy `denied_write_paths`)
+  could be bypassed by changing the case of the target (`~/.SSH/id_ed25519`,
+  `.ENV`, `Secrets/`). All path comparisons now fold ASCII case via a shared
+  component-wise helper; the read gate was widened to all of `/etc`.
+- **Tool-confirmation gate completeness** — `format_code`, `screenshot`,
+  `show_notification`, `remember` (memory-store write), `watch_path`,
+  `stop_watch`, and `task_cancel` now require confirmation like every other
+  side-effectful tool (they previously ran without a prompt). Dry-run is now
+  default-deny (read-only allowlist), so `run_code` / `task_create` and any new
+  tool are suppressed under "side-effects suppressed" instead of executing.
+- **Untrusted-output fencing** — `run_shell` / `run_code` stdout+stderr,
+  `diff_files`, `git status`/`branches`, HTTP response headers, `web_search`
+  titles, `list_dir` entry names, and subagent answers are now injection-scanned
+  + DATA-fenced before re-entering the model (closing the gaps where command and
+  metadata output bypassed the existing wrapping).
+- **Secret store + DoS** — `secrets.json` is written via `O_EXCL` (no symlink-
+  follow, guaranteed `0600`); OAuth/MCP HTTP bodies (success + error paths) and
+  workflow `graph_json` are size-capped before parsing.
+- **Least privilege** — subagent tool grants are intersected with the parent's
+  (a preset can't broaden scope); the unused `opener` renderer capability was
+  dropped; `open_path_in_editor` is confined to the workspace.
+- **Browser tool** (off-by-default feature) — Chrome's DNS resolver is pinned to
+  the validated IP (`--host-resolver-rules`) to close a rebinding TOCTOU.
+
 ### MCP / Tools
 - **One-click OAuth** for remote MCP servers — browser authorization
   (discovery → dynamic client registration → PKCE/S256 → loopback callback →
