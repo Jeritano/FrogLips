@@ -535,6 +535,11 @@ pub async fn native_load_model(
             "native inference not compiled in (rebuild with --features native-inference)".into(),
         );
     }
+    // Sec audit round 7: validate the renderer-supplied repo id like every
+    // sibling model command (pull_hf_model / native_download_gguf). hf-hub
+    // neutralizes path separators downstream, but the inconsistency was a real
+    // gap — reject metachars/traversal up front rather than rely on the dep.
+    validate_hf_repo(&model_id)?;
     // Serialize loads (HIGH 2026-05-28). Held across the whole load so a
     // second concurrent caller waits here rather than kicking off a
     // duplicate multi-GiB load.

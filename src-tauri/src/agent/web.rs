@@ -370,20 +370,26 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
         });
     }
 
-    // Search snippets are untrusted attacker-controlled text — concat and
-    // scan. If any hits contain injection patterns we re-wrap the
-    // *individual* offending snippets so the agent sees the DATA-only
-    // markers right next to the bad string.
+    // Search titles + snippets are untrusted attacker-controlled text — concat
+    // and scan. If any hit contains injection patterns we re-wrap the
+    // *individual* offending fields so the agent sees the DATA-only markers
+    // right next to the bad string. Sec audit round 7: the page `<title>` is as
+    // attacker-controlled as the snippet, so fence it too (was previously
+    // unwrapped while the snippet was).
     let joined: String = hits
         .iter()
-        .map(|h| h.snippet.as_str())
+        .flat_map(|h| [h.title.as_str(), h.snippet.as_str()])
         .collect::<Vec<_>>()
         .join("\n");
     if !injection_scan::scan(&joined).is_empty() {
         for h in hits.iter_mut() {
-            let (wrapped, n) = injection_scan::scan_and_wrap(&h.snippet);
-            if n > 0 {
-                h.snippet = wrapped;
+            let (ws, ns) = injection_scan::scan_and_wrap(&h.snippet);
+            if ns > 0 {
+                h.snippet = ws;
+            }
+            let (wt, nt) = injection_scan::scan_and_wrap(&h.title);
+            if nt > 0 {
+                h.title = wt;
             }
         }
     }
