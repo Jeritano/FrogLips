@@ -179,18 +179,61 @@ fn protected_prefixes() -> Vec<PathBuf> {
     v
 }
 
+/// Component-wise, case-INSENSITIVE `Path::starts_with`.
+///
+/// Sec audit (2026-06, round 2): macOS (APFS) and Windows are case-insensitive
+/// but case-PRESERVING. `std::fs::canonicalize` (realpath) returns each
+/// component in the case the *caller* supplied unless that component crossed a
+/// symlink — so `~/.SSH/id_ed25519` canonicalizes to `/Users/u/.SSH/...` while
+/// the kernel still opens the real `.ssh` key. A case-sensitive `starts_with`
+/// against a `~/.ssh` denylist therefore MISSES it: a prompt-injected agent
+/// could read SSH/AWS/GPG keys and our own secret store just by changing case.
+/// The DENY gates must compare case-insensitively. ASCII-only folding is enough
+/// (every protected name is ASCII); non-ASCII bytes compare exactly, and the
+/// match stays component-wise so `/etc/sudoersfoo` never matches `/etc/sudoers`.
+///
+/// `pub(crate)` so `commands::path_safety` (which carries a parallel write-dest
+/// denylist for backup/export/import) reuses the exact same comparison — the
+/// security-critical logic must not drift between the two gates.
+pub(crate) fn path_starts_with_ci(p: &Path, prefix: &Path) -> bool {
+    let mut pc = p.components();
+    for pre in prefix.components() {
+        match pc.next() {
+            None => return false, // prefix is longer than the path
+            Some(c) => {
+                let (a, b) = (c.as_os_str(), pre.as_os_str());
+                if a == b {
+                    continue; // fast path: exact match (incl. non-UTF-8)
+                }
+                match (a.to_str(), b.to_str()) {
+                    (Some(a), Some(b)) if a.eq_ignore_ascii_case(b) => continue,
+                    _ => return false,
+                }
+            }
+        }
+    }
+    true
+}
+
 pub(super) fn is_protected_for_read(p: &Path) -> bool {
-    // Keychain + TCC database etc. blocked even for read. Use component-wise
-    // `Path::starts_with` — a plain string prefix check would let
-    // `/etc/sudoersfoo` slip past `/etc/sudoers`.
+    // Keychain + TCC database etc. blocked even for read. Component-wise +
+    // case-insensitive (see `path_starts_with_ci`) so `/ETC/sudoers` and
+    // `~/.SSH` can't slip past, while `/etc/sudoersfoo` still does NOT match.
     let read_block: &[&str] = &[
         "/Library/Keychains",
         "/private/var/db/sudo",
         "/var/db/sudo",
-        "/etc/sudoers",
-        "/private/etc/sudoers",
+        // Whole /etc (and its canonical /private/etc) — parity with the write
+        // gate. Reading system config offers the agent nothing legitimate and
+        // /etc holds sudoers, master.passwd, etc. `within_workspace` already
+        // blocks these unless the user set the workspace root to `/`.
+        "/etc",
+        "/private/etc",
     ];
-    if read_block.iter().any(|r| p.starts_with(r)) {
+    if read_block
+        .iter()
+        .any(|r| path_starts_with_ci(p, Path::new(r)))
+    {
         return true;
     }
     // Sec audit (2026-06): the READ gate must never be a strict subset of the
@@ -199,7 +242,10 @@ pub(super) fn is_protected_for_read(p: &Path) -> bool {
     // credential-dir set used by the write gate. This closes a real gap where
     // ~/.aws/config, ~/.aws/sso/cache/* (live SSO bearer tokens), ~/Library/Mail
     // and ~/Library/Messages were readable by a prompt-injected agent.
-    if home_prefixes().iter().any(|pre| p.starts_with(pre)) {
+    if home_prefixes()
+        .iter()
+        .any(|pre| path_starts_with_ci(p, pre))
+    {
         return true;
     }
     if let Some(home) = dirs::home_dir() {
@@ -228,14 +274,16 @@ pub(super) fn is_protected_for_read(p: &Path) -> bool {
             ".local-llm-app",
             "Library/Application Support/Froglips",
         ] {
-            if p.starts_with(home.join(sub)) {
+            if path_starts_with_ci(p, &home.join(sub)) {
                 return true;
             }
         }
     }
-    // Block .env-style files containing credentials
+    // Block .env-style files containing credentials. Case-fold the filename so
+    // `.ENV` / `Credentials` don't slip past on case-insensitive volumes.
     if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-        if name.starts_with(".env") || name == "credentials" || name == "credentials.json" {
+        let lower = name.to_ascii_lowercase();
+        if lower.starts_with(".env") || lower == "credentials" || lower == "credentials.json" {
             return true;
         }
     }
@@ -247,7 +295,7 @@ fn is_protected_for_write(p: &Path) -> bool {
         return true;
     }
     let prefixes = protected_prefixes();
-    prefixes.iter().any(|pre| p.starts_with(pre))
+    prefixes.iter().any(|pre| path_starts_with_ci(p, pre))
 }
 
 /// Default workspace root used when no project has been explicitly set.
@@ -1076,6 +1124,55 @@ mod tests {
         }
         // Sanity: a normal workspace file is still readable.
         assert!(!is_protected_for_read(&home.join("Documents/notes.txt")));
+    }
+
+    #[test]
+    fn read_gate_blocks_case_folded_credential_paths() {
+        // Sec audit round 2: macOS/APFS is case-insensitive but case-preserving,
+        // so canonicalize() keeps the caller's case. A case-sensitive denylist
+        // let `~/.SSH/id_ed25519` / `~/.AWS/credentials` / `.ENV` slip through.
+        let Some(home) = dirs::home_dir() else { return };
+        for sub in [
+            ".SSH/id_ed25519",
+            ".Ssh/config",
+            ".AWS/credentials",
+            ".AWS/sso/cache/tok.json",
+            ".GnuPG/secring.gpg",
+            ".GitConfig",
+            ".Local-LLM-App/secrets.json",
+            "Library/Application Support/FROGLIPS/db.sqlite",
+            ".ENV",
+            ".Env.local",
+            "project/Credentials",
+        ] {
+            let p = home.join(sub);
+            assert!(
+                is_protected_for_read(&p),
+                "read gate must block case-folded {}",
+                p.display()
+            );
+        }
+        // Absolute system paths via case-fold (the /etc parity widening).
+        assert!(is_protected_for_read(Path::new("/private/etc/SUDOERS")));
+        assert!(is_protected_for_read(Path::new("/ETC/master.passwd")));
+        // Component-wise: a sibling that merely shares a prefix is NOT blocked.
+        assert!(!is_protected_for_read(&home.join(".sshfoo/notes.txt")));
+        assert!(!is_protected_for_read(Path::new("/etcfoo/file")));
+    }
+
+    #[test]
+    fn path_starts_with_ci_is_component_wise() {
+        use super::path_starts_with_ci;
+        assert!(path_starts_with_ci(Path::new("/A/B/c"), Path::new("/a/b")));
+        assert!(path_starts_with_ci(Path::new("/a/b/c"), Path::new("/A/B")));
+        assert!(path_starts_with_ci(Path::new("/a/b"), Path::new("/a/b")));
+        // Not a substring match: "bfoo" must not match prefix component "b".
+        assert!(!path_starts_with_ci(
+            Path::new("/a/bfoo"),
+            Path::new("/a/b")
+        ));
+        // Prefix longer than path → false.
+        assert!(!path_starts_with_ci(Path::new("/a"), Path::new("/a/b")));
     }
 
     #[test]

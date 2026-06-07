@@ -92,6 +92,15 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
     match tool {
         // task_create backgrounds the same `sh -c` execution as
         // agent_run_shell, so it binds to the exact command string too.
+        //
+        // INVARIANT (sec audit round 2): `ShellOpts.env` is deliberately NOT in
+        // the agent tool schema (src/lib/agent-loop/tools.ts) and is invisible
+        // to the confirmation modal, so it is intentionally omitted from this
+        // binding. If `env` (or a non-validated `cwd`) is ever exposed to the
+        // model, it MUST be folded in here (sorted key=value for env) so a
+        // minted token can't be swapped to a different environment after the
+        // user approves. `cwd` today is re-validated against the read gate at
+        // exec time (shell.rs), so a swap can't escape confinement.
         "agent_run_shell" | "task_create" => Some(sha256_hex(&kv(&[(
             "command",
             p.command.as_deref().unwrap_or(""),

@@ -154,10 +154,21 @@ fn write_secrets(map: &std::collections::BTreeMap<String, String>) -> bool {
     let Ok(json) = serde_json::to_vec_pretty(map) else {
         return false;
     };
-    let tmp = p.with_extension("json.tmp");
+    // Unique per-process tmp + O_EXCL create. Sec audit round 2: a fixed-name
+    // "secrets.json.tmp" opened with create()+truncate() would (a) REUSE a
+    // stale/pre-created tmp and let the final renamed file inherit ITS perms
+    // instead of 0600, and (b) FOLLOW a symlink planted at that path, writing
+    // the plaintext keys through it. The whole no-Keychain design rests on the
+    // file being 0600, so this must hold. create_new (O_EXCL) refuses both: it
+    // always makes a fresh file (mode 0600 guaranteed to apply) and fails
+    // atomically rather than following a pre-existing symlink.
+    let tmp = p.with_extension(format!("json.tmp.{}", std::process::id()));
+    // Clear a leftover from a previously-crashed write (removes the symlink
+    // itself, not its target) so create_new can succeed on the next line.
+    let _ = std::fs::remove_file(&tmp);
     use std::io::Write as _;
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
@@ -171,7 +182,14 @@ fn write_secrets(map: &std::collections::BTreeMap<String, String>) -> bool {
         return false;
     }
     drop(f);
-    std::fs::rename(&tmp, &p).is_ok()
+    // rename replaces the destination (incl. a symlink AT the dest) atomically
+    // without following it. Clean up the tmp if the rename somehow fails.
+    if std::fs::rename(&tmp, &p).is_ok() {
+        true
+    } else {
+        let _ = std::fs::remove_file(&tmp);
+        false
+    }
 }
 
 /// Masked marker returned to the webview in place of a real API key — the

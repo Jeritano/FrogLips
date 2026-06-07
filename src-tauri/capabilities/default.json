@@ -17,7 +17,6 @@
     "core:window:allow-close",
     "core:window:allow-set-focus",
     "core:webview:allow-create-webview-window",
-    "opener:default",
     "updater:default",
     "process:default",
     "process:allow-restart",

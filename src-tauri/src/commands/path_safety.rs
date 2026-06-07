@@ -185,7 +185,13 @@ fn is_denied(resolved: &std::path::Path) -> bool {
             deny.push(home.join(sub));
         }
     }
-    deny.iter().any(|pre| resolved.starts_with(pre))
+    // Case-INSENSITIVE component-wise containment (sec audit round 2): macOS
+    // APFS is case-insensitive but case-preserving, so a plain `starts_with`
+    // let a renderer-supplied dest like `~/.SSH/authorized_keys` or `~/.ZSHRC`
+    // slip past this write denylist and plant persistence / clobber creds.
+    // Shares the exact helper the agent fs gate uses so the two can't drift.
+    deny.iter()
+        .any(|pre| crate::agent::fs::path_starts_with_ci(resolved, pre))
 }
 
 /// Reject credential-style basenames so a stray click can't overwrite or
@@ -193,7 +199,10 @@ fn is_denied(resolved: &std::path::Path) -> bool {
 /// home and outside the explicit denylist above).
 fn is_credential_basename(resolved: &std::path::Path) -> bool {
     if let Some(name) = resolved.file_name().and_then(|n| n.to_str()) {
-        if name.starts_with(".env") || name == "credentials" || name == "credentials.json" {
+        // Case-fold the basename (sec audit round 2) so `.ENV` / `Credentials`
+        // can't slip past on a case-insensitive volume.
+        let lower = name.to_ascii_lowercase();
+        if lower.starts_with(".env") || lower == "credentials" || lower == "credentials.json" {
             return true;
         }
     }
@@ -241,6 +250,26 @@ mod tests {
         // Non-denylisted user path still passes.
         if let Some(home) = dirs::home_dir() {
             assert!(!is_denied(&home.join("Downloads/foo.json")));
+        }
+    }
+
+    #[test]
+    fn denies_case_folded_dirs_and_basenames() {
+        // Sec audit round 2: case-insensitive volumes (APFS) must not let a
+        // case-folded dest bypass this renderer-reachable write denylist.
+        assert!(is_denied(std::path::Path::new("/ETC/passwd")));
+        assert!(is_denied(std::path::Path::new(
+            "/private/ETC/master.passwd"
+        )));
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_denied(&home.join(".SSH/authorized_keys")));
+            assert!(is_denied(&home.join(".AWS/credentials")));
+            assert!(is_denied(&home.join(".ZSHRC")));
+            assert!(is_denied(&home.join("Library/LAUNCHAGENTS/evil.plist")));
+            assert!(is_credential_basename(&home.join(".ENV")));
+            assert!(is_credential_basename(&home.join("project/Credentials")));
+            // Component-wise: a mere prefix sibling is still allowed.
+            assert!(!is_denied(&home.join(".sshfoo/x")));
         }
     }
 }
