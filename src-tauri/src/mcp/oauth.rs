@@ -216,12 +216,12 @@ async fn register(
         .await
         .context("dynamic client registration request")?;
     if !r.status().is_success() {
+        let status = r.status();
         bail!(
             "dynamic client registration failed: {} {}",
-            r.status(),
-            r.text()
+            status,
+            super::read_text_capped(r, 8 * 1024)
                 .await
-                .unwrap_or_default()
                 .chars()
                 .take(300)
                 .collect::<String>()
@@ -302,12 +302,12 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
         .await
         .context("token exchange request")?;
     if !r.status().is_success() {
+        let status = r.status();
         bail!(
             "token exchange failed: {} {}",
-            r.status(),
-            r.text()
+            status,
+            super::read_text_capped(r, 8 * 1024)
                 .await
-                .unwrap_or_default()
                 .chars()
                 .take(300)
                 .collect::<String>()

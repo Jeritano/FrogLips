@@ -56,6 +56,24 @@ pub(crate) async fn read_json_capped<T: serde::de::DeserializeOwned>(
     }
     serde_json::from_slice(&buf).context("response JSON parse")
 }
+
+/// Read a response body to a lossy UTF-8 string with a hard byte cap, for
+/// ERROR-path diagnostics (a snippet of a non-2xx body). `resp.text()` buffers
+/// the whole body first, so a hostile authorization server could force an
+/// unbounded allocation on the failure branch — the success branch already
+/// uses `read_json_capped`. Best-effort: returns whatever was read (caps by
+/// stopping early), never errors. Sec audit (2026-06, round 3).
+pub(crate) async fn read_text_capped(mut resp: reqwest::Response, max: usize) -> String {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        if buf.len() + chunk.len() > max {
+            break; // cap reached — keep the prefix we have for the message
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
 /// Version advertised in the `MCP-Protocol-Version` header on the remote
 /// (streamable-HTTP) transport. Independent of the `protocolVersion` sent in
 /// the `initialize` params (kept at 2024-11-05 for broad server compat).

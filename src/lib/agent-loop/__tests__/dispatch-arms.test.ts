@@ -16,7 +16,7 @@
 // switch is caught. Add a new sample when adding a new tool *category*;
 // adding another file-ops tool is fine without a new test.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Stub the api object — vi.mock is hoisted to the top, so the factory must
 // be self-contained (no top-level identifiers it depends on). Every method
@@ -176,6 +176,50 @@ describe("executeTool: arm routing (sample one per category)", () => {
   it("'write_file' routes to api.agentWriteFile with path + content", async () => {
     await executeTool("write_file", { path: "/tmp/x", content: "hi" });
     expect(api.agentWriteFile).toHaveBeenCalledWith("/tmp/x", "hi");
+  });
+});
+
+describe("executeTool: dry-run default-deny (sec audit round 3)", () => {
+  // Clear cumulative call-state from earlier describe blocks so `not.toHaveBeenCalled`
+  // reflects only this block.
+  beforeEach(() => vi.clearAllMocks());
+
+  it("suppresses run_code (RCE) instead of executing it", async () => {
+    const out = await executeTool("run_code", { language: "python", code: "x" }, { dryRun: true });
+    const parsed = JSON.parse(out);
+    expect(parsed.dry_run).toBe(true);
+    expect(parsed.suppressed).toBe(true);
+  });
+
+  it("suppresses delete_path without calling api.agentDeletePath", async () => {
+    const out = await executeTool("delete_path", { path: "/tmp/x", recursive: true }, { dryRun: true });
+    expect(JSON.parse(out).suppressed).toBe(true);
+    expect(api.agentDeletePath).not.toHaveBeenCalled();
+  });
+
+  it("suppresses task_create (backgrounded sh -c) without calling api.taskCreate", async () => {
+    const out = await executeTool("task_create", { command: "rm -rf ~" }, { dryRun: true });
+    expect(JSON.parse(out).suppressed).toBe(true);
+    expect(api.taskCreate).not.toHaveBeenCalled();
+  });
+
+  it("suppresses MCP tools without calling api.mcpCallTool", async () => {
+    const out = await executeTool("mcp__srv__do", { x: 1 }, { dryRun: true });
+    expect(JSON.parse(out).suppressed).toBe(true);
+    expect(api.mcpCallTool).not.toHaveBeenCalled();
+  });
+
+  it("still EXECUTES read-only tools under dry-run (read_file falls through)", async () => {
+    await executeTool("read_file", { path: "/tmp/x" }, { dryRun: true });
+    expect(api.agentReadFile).toHaveBeenCalled();
+  });
+
+  it("write_file gets a rich preview, never a real write", async () => {
+    const out = await executeTool("write_file", { path: "/tmp/x", content: "hi" }, { dryRun: true });
+    const parsed = JSON.parse(out);
+    expect(parsed.dry_run).toBe(true);
+    expect(parsed.would_write).toBeTruthy();
+    expect(api.agentWriteFile).not.toHaveBeenCalled();
   });
 });
 

@@ -758,6 +758,20 @@ export async function executeTool(
   if (options.dryRun && DRY_RUN_TOOLS.has(name)) {
     return dryRunExecute(name, args);
   }
+  // Sec audit round 3: DRY_RUN_TOOLS only provides RICH previews (diffs,
+  // would_run) for the common write tools. Every OTHER side-effectful tool —
+  // run_code, task_create, delete_path, kill_process, git_commit, http_request,
+  // open_app, spawn_subagent, the browser read tools, AND any MCP tool — must
+  // still be SUPPRESSED in dry-run, not silently executed. Previously they fell
+  // through to real dispatch, so "dry-run: side-effects suppressed" actually ran
+  // run_code/task_create (full RCE) for real. Default-DENY execution here; only
+  // read-only tools (not in DANGEROUS_TOOLS/WRITE_TOOLS, not MCP) fall through.
+  if (
+    options.dryRun &&
+    (DANGEROUS_TOOLS.has(name) || WRITE_TOOLS.has(name) || isMcpToolName(name))
+  ) {
+    return JSON.stringify({ ok: true, dry_run: true, would_call: name, suppressed: true });
+  }
   // NOTE: do NOT redact `args` here. Earlier a live-path redactor ran on
   // `args` before dispatch, but that mutated the values forwarded to Rust IPC —
   // a `grep "api_key=" ./src` shell command became `grep "[REDACTED]" …`,

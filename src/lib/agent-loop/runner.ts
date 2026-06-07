@@ -158,6 +158,12 @@ type PolicyVerdict = "auto" | "needs-confirm" | "denied";
 function matchesPolicyPattern(path: string, pattern: string): boolean {
   if (!pattern) return false;
   if (pattern === "*") return true;
+  // Sec audit round 3: case-fold both sides. macOS APFS is case-insensitive,
+  // so a user policy rule `secrets/` / `.env` / `*.key` must also match
+  // `Secrets/` / `.ENV` / `evil.KEY`. Mirrors the Rust twin policy.rs
+  // matches_pattern — keep both in sync.
+  path = path.toLowerCase();
+  pattern = pattern.toLowerCase();
   if (pattern.endsWith("/")) {
     const dir = pattern.slice(0, -1);
     if (!dir) return true;

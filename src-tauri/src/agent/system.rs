@@ -300,16 +300,22 @@ pub async fn open_path_in_editor(path: String, line: Option<u32>) -> Result<Stri
 /// Whitelist of roots an editor-open is allowed to target. Anything outside
 /// these prefixes (e.g. `/etc`, `/System`) is rejected.
 fn is_open_target_allowed(canon: &std::path::Path) -> bool {
-    // User's home wins — that's where source code lives.
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(home_c) = std::fs::canonicalize(&home) {
-            if canon.starts_with(&home_c) {
-                return true;
-            }
-        }
+    // Never open a protected / credential / system file. Sec audit round 3:
+    // a workspace-internal symlink can canonicalize into `~/.ssh` etc., which
+    // `within_workspace` alone would still accept under the default ($HOME)
+    // workspace — so consult the (case-insensitive) read gate first.
+    if super::fs::is_protected_read_path(canon) {
+        return false;
     }
-    // A handful of conventional scratch / mount points. /tmp and /private/tmp
-    // both appear because macOS resolves /tmp → /private/tmp via symlink.
+    // Confine to the agent workspace (defaults to $HOME). Sec audit round 3:
+    // previously this allowed ALL of $HOME regardless of the configured
+    // workspace, so a narrower project scope didn't apply to editor-open.
+    if super::fs::within_workspace(canon) {
+        return true;
+    }
+    // A handful of conventional scratch / mount points outside the workspace.
+    // /tmp and /private/tmp both appear because macOS resolves /tmp →
+    // /private/tmp via symlink.
     for root in ["/tmp", "/private/tmp", "/Volumes"] {
         if canon.starts_with(root) {
             return true;

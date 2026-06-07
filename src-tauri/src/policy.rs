@@ -273,6 +273,16 @@ fn matches_pattern(path: &str, pattern: &str) -> bool {
     if pattern == "*" {
         return true;
     }
+    // Sec audit round 3: case-fold both sides. macOS APFS is case-insensitive,
+    // so a user policy rule like `secrets/` / `.env` / `*.key` MUST also match
+    // `Secrets/` / `.ENV` / `evil.KEY` — otherwise a prompt-injected agent
+    // bypasses the user's own project deny rules just by changing case. Mirrors
+    // the central denylist's `path_starts_with_ci`. (TS twin: runner.ts
+    // matchesPolicyPattern — keep both in sync.)
+    let path_lc = path.to_ascii_lowercase();
+    let pattern_lc = pattern.to_ascii_lowercase();
+    let path = path_lc.as_str();
+    let pattern = pattern_lc.as_str();
     // Directory rule: `secrets/` matches the dir and anything under it.
     if let Some(dir) = pattern.strip_suffix('/') {
         if dir.is_empty() {
@@ -417,6 +427,22 @@ mod tests {
         // Exact filename.
         assert!(matches_pattern(".env", ".env"));
         assert!(matches_pattern("path/to/.env", ".env"));
+    }
+
+    #[test]
+    fn glob_matcher_is_case_insensitive() {
+        // Sec audit round 3: APFS is case-insensitive, so a deny rule must catch
+        // case-folded variants — else an injected agent bypasses the user's own
+        // project deny rules just by changing case.
+        assert!(matches_pattern("evil.KEY", "*.key"));
+        assert!(matches_pattern("Foo.Key", "*.key"));
+        assert!(matches_pattern("Secrets/db.json", "secrets/"));
+        assert!(matches_pattern("nested/SECRETS/k", "secrets/"));
+        assert!(matches_pattern(".ENV", ".env"));
+        assert!(matches_pattern("path/to/.Env", ".env"));
+        assert!(matches_pattern("SRC/main.rs", "src*"));
+        // Component-wise still holds: a sibling sharing a prefix is not matched.
+        assert!(!matches_pattern("publicsecrets/x", "secrets/"));
     }
 
     #[test]
