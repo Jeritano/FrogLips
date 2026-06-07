@@ -60,7 +60,6 @@ function ctx(card: Partial<WorkflowCard>, base = baseOpts()): NodeRunContext {
       tools: [], schedule: null, backend: null, x: 0, y: 0, ...card,
     } as WorkflowCard,
     base,
-    previousOutput: null,
     presets: [],
     signal: base.signal,
     emit: () => {},

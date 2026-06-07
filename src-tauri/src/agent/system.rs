@@ -26,7 +26,8 @@ pub async fn applescript_run(script: String) -> Result<ShellResult, String> {
     // capped_output bounds stdout/stderr buffering (concurrent drain + hard cap)
     // so an osascript spewing unbounded output can't OOM the app.
     let (out, err, exit_code) =
-        match tokio::time::timeout(timeout, super::shell::capped_output(cmd, MAX_SHELL_OUTPUT)).await
+        match tokio::time::timeout(timeout, super::shell::capped_output(cmd, MAX_SHELL_OUTPUT))
+            .await
         {
             Ok(Ok(triple)) => triple,
             Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),

@@ -151,6 +151,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       setMessages([]);
     }
     setRecalled([]);
+    setRoutedNotice(null); // clear the previous chat's route chip on switch
     setConvParams(parseConversationParams(conversation?.params));
     setShowParamsPanel(false);
     return () => { ignore = true; };

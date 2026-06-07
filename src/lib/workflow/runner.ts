@@ -521,7 +521,6 @@ export async function runWorkflow(
             final = await runWorkflowNode({
               card,
               base: cardOpts,
-              previousOutput,
               presets,
               signal,
               emit: (text) =>

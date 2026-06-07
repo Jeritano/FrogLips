@@ -147,8 +147,13 @@ export function setEntry(key: string, value: ScratchValue): {
   // 2-byte `{}` frame in `bytesUsed` initial value and per-pair commas
   // via `pairBytes(isFirst)`.
   const keysBefore = Object.keys(active.data).length;
+  // The OLD pair's contribution must use the same isFirst flag it was stored
+  // with: when it's the ONLY key (keysBefore === 1) it carried no leading
+  // comma, so subtracting a comma'd size under-counts by 1 byte on every
+  // overwrite — over many overwrites of a single accumulator key that drift
+  // defeats the SCRATCHPAD_MAX_BYTES cap. (audit re-review 2026-06)
   const oldContribution = replacingExisting
-    ? pairBytes(key, active.data[key], false)
+    ? pairBytes(key, active.data[key], keysBefore === 1)
     : 0;
   // The new pair is "not first" if there are already other keys present
   // (i.e. keys_before > 1 when replacing, or keys_before > 0 when adding).

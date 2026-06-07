@@ -1,5 +1,6 @@
 import { api } from "./tauri-api";
 import { logDiag } from "./diagnostics";
+import { withTimeout as withTimeoutBase } from "./signal-utils";
 import type { Memory, MemoryMode, MemoryScope } from "../types";
 
 /** Caller context used to filter recall hits by scope on the backend. */
@@ -86,32 +87,10 @@ function withTimeout(
   parent: AbortSignal | undefined,
   timeoutMs: number,
 ): { signal: AbortSignal; clear: () => void } {
-  const ctrl = new AbortController();
-  // Audit M-A3: parent-abort forwarder + parent.removeEventListener on
-  // dispose so the agent-loop's long-lived signal doesn't accumulate
-  // dead forwarders across repeated memory calls.
-  let onParentAbort: (() => void) | null = null;
-  if (parent) {
-    if (parent.aborted) {
-      ctrl.abort(parent.reason);
-    } else {
-      onParentAbort = () => ctrl.abort(parent.reason);
-      parent.addEventListener("abort", onParentAbort, { once: true });
-    }
-  }
-  const t = setTimeout(
-    () => ctrl.abort(new DOMException("memory request timed out", "TimeoutError")),
-    timeoutMs,
-  );
-  const dispose = () => {
-    clearTimeout(t);
-    if (parent && onParentAbort) {
-      parent.removeEventListener("abort", onParentAbort);
-      onParentAbort = null;
-    }
-  };
-  ctrl.signal.addEventListener("abort", dispose, { once: true });
-  return { signal: ctrl.signal, clear: dispose };
+  // Thin wrapper over the shared signal-utils helper — keeps the memory-
+  // specific timeout message without maintaining a second copy of the
+  // parent-forwarder/dispose logic.
+  return withTimeoutBase(parent, timeoutMs, "memory request timed out");
 }
 
 export function getMemoryMode(): MemoryMode {

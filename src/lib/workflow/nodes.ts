@@ -32,7 +32,6 @@ type Presets = ReturnType<typeof loadAllPresets>;
 export interface NodeRunContext {
   card: WorkflowCard;
   base: AgentRunOptions;
-  previousOutput: string | null;
   presets: Presets;
   signal: AbortSignal;
   /** Stream progress / status text to the card's live output (onCardOutput). */
@@ -354,7 +353,7 @@ async function runBudget(ctx: NodeRunContext): Promise<string> {
   ].filter(Boolean);
   ctx.emit(`Budget run${limits.length ? ` (${limits.join(", ")})` : ""}…\n`);
   try {
-    return await runSub(ctx, {
+    const out = await runSub(ctx, {
       stream: true,
       maxTokens: cfg.maxTokens ?? undefined,
       signal: child.signal,
@@ -363,6 +362,18 @@ async function runBudget(ctx: NodeRunContext): Promise<string> {
         ctx.emit(t);
       },
     });
+    // A between-iteration abort makes runAgentLoop RETURN null (→ "") rather
+    // than throw, so the time-budget branch must be handled here, not only in
+    // catch. (A genuine user Stop also aborts child via onParentAbort, but
+    // then ctx.signal.aborted is true → don't treat it as a budget hit.)
+    if (timedOut && !ctx.signal.aborted) {
+      if (onExceed === "best") {
+        ctx.emit(`\nTime budget hit — returning best effort.\n`);
+        return buf || "[budget exceeded before any output]";
+      }
+      throw new Error("Budget time ceiling exceeded.");
+    }
+    return out;
   } catch (e) {
     if (ctx.signal.aborted) throw e; // genuine user Stop — propagate
     if (timedOut) {

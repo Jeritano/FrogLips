@@ -234,16 +234,6 @@ export function loadRoutes(): ChatRoute[] {
   return activeConfig()?.routes ?? [];
 }
 
-/** Replace the active config's routes (back-compat surface for the editor). */
-export function saveRoutes(routes: ChatRoute[]): void {
-  const active = activeConfig();
-  if (active) {
-    updateConfig(active.id, { routes: routes.slice(0, MAX_ROUTES) });
-  } else {
-    createConfig("Default", routes);
-  }
-}
-
 /** Strip reasoning-model thinking blocks so a number INSIDE the chain-of-thought
  *  ("option 2 seems...") isn't mistaken for the final route. Handles closed and
  *  trailing-unclosed <think>/<thinking> spans. */
@@ -362,7 +352,7 @@ function saveProtoDisk(): void {
  * Routes without utterances or without an available embedder are simply absent
  * from the returned map → Stage 2 skips them and the classifier handles them.
  */
-export async function buildPrototypes(
+async function buildPrototypes(
   routes: ChatRoute[],
   embedFn: (text: string) => Promise<number[] | null>,
 ): Promise<Map<string, number[]>> {

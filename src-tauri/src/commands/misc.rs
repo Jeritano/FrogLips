@@ -45,50 +45,50 @@ pub fn read_crash_log() -> String {
 /// Mirrors the `crash_log` rotation pattern so `diag.log` doesn't grow
 /// unbounded under heavy frontend logging.
 #[tauri::command]
-pub fn append_diag_log(line: String) -> Result<(), String> {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    let Some(home) = dirs::home_dir() else {
-        return Err("no home dir".into());
-    };
-    let dir = home.join(".local-llm-app");
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("diag.log");
-    // Cap individual line length so a single 50MB body doesn't fill disk.
-    const MAX_LINE: usize = 256 * 1024;
-    // Cap on the file as a whole (same shape as `crash_log::MAX_LOG_BYTES`).
-    const MAX_FILE_BYTES: u64 = 256 * 1024;
-    if let Ok(meta) = std::fs::metadata(&path) {
-        if meta.len() > MAX_FILE_BYTES {
-            if let Ok(data) = std::fs::read(&path) {
-                let keep = (MAX_FILE_BYTES as usize / 2).min(data.len());
-                let tail = &data[data.len() - keep..];
-                let _ = std::fs::write(&path, tail);
+pub async fn append_diag_log(line: String) -> Result<(), String> {
+    // Off the UI thread: this is called on a hot frontend logging path and the
+    // rotation branch reads+rewrites up to 128 KiB synchronously. Run the whole
+    // body on the blocking pool.
+    crate::commands::blocking(move || -> anyhow::Result<()> {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let Some(home) = dirs::home_dir() else {
+            anyhow::bail!("no home dir");
+        };
+        let dir = home.join(".local-llm-app");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("diag.log");
+        // Cap individual line length so a single 50MB body doesn't fill disk.
+        const MAX_LINE: usize = 256 * 1024;
+        // Cap on the file as a whole (same shape as `crash_log::MAX_LOG_BYTES`).
+        const MAX_FILE_BYTES: u64 = 256 * 1024;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() > MAX_FILE_BYTES {
+                if let Ok(data) = std::fs::read(&path) {
+                    let keep = (MAX_FILE_BYTES as usize / 2).min(data.len());
+                    let tail = &data[data.len() - keep..];
+                    let _ = std::fs::write(&path, tail);
+                }
             }
         }
-    }
-    let safe = if line.len() > MAX_LINE {
-        // Floor to the nearest char boundary — slicing mid-UTF-8-codepoint
-        // panics ("byte index is not a char boundary"), and `line` is a
-        // caller-supplied IPC arg (a >256 KiB multibyte string would crash
-        // the command).
-        let mut end = MAX_LINE;
-        while end > 0 && !line.is_char_boundary(end) {
-            end -= 1;
-        }
-        &line[..end]
-    } else {
-        &line[..]
-    };
-    let ts = crate::crash_log::now_rfc3339();
-    let record = format!("[{ts}] {safe}\n");
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    f.write_all(record.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(())
+        let safe = if line.len() > MAX_LINE {
+            // Floor to the nearest char boundary — slicing mid-UTF-8-codepoint
+            // panics, and `line` is a caller-supplied IPC arg.
+            let mut end = MAX_LINE;
+            while end > 0 && !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            &line[..end]
+        } else {
+            &line[..]
+        };
+        let ts = crate::crash_log::now_rfc3339();
+        let record = format!("[{ts}] {safe}\n");
+        let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+        f.write_all(record.as_bytes())?;
+        Ok(())
+    })
+    .await
 }
 
 /// If the SQLite DB was found corrupt on startup and quarantined, returns the
@@ -246,52 +246,58 @@ fn validate_diagnostics_dest(dest: &str) -> Result<std::path::PathBuf, String> {
 /// host OS, and settings.json with secret-like values redacted. Turns "the app
 /// misbehaved" into a single actionable artifact the user can share.
 #[tauri::command]
-pub fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> {
+pub async fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> {
     let dest_resolved = validate_diagnostics_dest(&dest_path)?;
 
-    let app_log = crate::logging::read_tail(256 * 1024);
-    let crash_log = crate::crash_log::read_log();
+    // Heavy + blocking: multi-256 KiB log reads, a `sw_vers` subprocess
+    // (os_description), and a file write. Run off the UI thread.
+    crate::commands::blocking(move || -> anyhow::Result<()> {
+        let app_log = crate::logging::read_tail(256 * 1024);
+        let crash_log = crate::crash_log::read_log();
 
-    let settings_section = match crate::settings::settings_path_for_diagnostics() {
-        Some(p) => match std::fs::read_to_string(&p) {
-            Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-                Ok(mut v) => {
-                    redact_secrets(&mut v);
-                    serde_json::to_string_pretty(&v)
-                        .unwrap_or_else(|_| "<settings serialize failed>".into())
-                }
-                Err(_) => "<settings.json is not valid JSON>".into(),
+        let settings_section = match crate::settings::settings_path_for_diagnostics() {
+            Some(p) => match std::fs::read_to_string(&p) {
+                Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(mut v) => {
+                        redact_secrets(&mut v);
+                        serde_json::to_string_pretty(&v)
+                            .unwrap_or_else(|_| "<settings serialize failed>".into())
+                    }
+                    Err(_) => "<settings.json is not valid JSON>".into(),
+                },
+                Err(_) => "<settings.json not found>".into(),
             },
-            Err(_) => "<settings.json not found>".into(),
-        },
-        None => "<settings path unavailable>".into(),
-    };
+            None => "<settings path unavailable>".into(),
+        };
 
-    let bundle = format!(
-        "===== Froglips Diagnostics Bundle =====\n\
+        let bundle = format!(
+            "===== Froglips Diagnostics Bundle =====\n\
          app version: {version}\n\
          os: {os}\n\
          generated: {ts}\n\
          \n===== app.log (tail) =====\n{app_log}\n\
          \n===== crash.log =====\n{crash_log}\n\
          \n===== settings.json (secrets redacted) =====\n{settings}\n",
-        version = env!("CARGO_PKG_VERSION"),
-        os = os_description(),
-        ts = crate::crash_log::now_rfc3339(),
-        app_log = if app_log.is_empty() {
-            "<empty>"
-        } else {
-            &app_log
-        },
-        crash_log = if crash_log.is_empty() {
-            "<empty>"
-        } else {
-            &crash_log
-        },
-        settings = settings_section,
-    );
+            version = env!("CARGO_PKG_VERSION"),
+            os = os_description(),
+            ts = crate::crash_log::now_rfc3339(),
+            app_log = if app_log.is_empty() {
+                "<empty>"
+            } else {
+                &app_log
+            },
+            crash_log = if crash_log.is_empty() {
+                "<empty>"
+            } else {
+                &crash_log
+            },
+            settings = settings_section,
+        );
 
-    std::fs::write(&dest_resolved, bundle).map_err(|e| format!("failed to write bundle: {e}"))
+        std::fs::write(&dest_resolved, bundle)?;
+        Ok(())
+    })
+    .await
 }
 
 /* ── Settings ────────────────────────────────────────────────────────────── */

@@ -6,10 +6,8 @@ import { dispatchMcpTool, isMcpToolName } from "./mcp-tools";
 import { looksLikeSecret, recall, saveMemory } from "../memory-client";
 import { DRY_RUN_TOOLS, dryRunExecute } from "./dry-run";
 
-// Re-exported so existing import sites (`./dispatch`) keep working unchanged.
-export { DRY_RUN_TOOLS } from "./dry-run";
-export { dryRunValidateUrl, normalizeIntegerHost } from "./url-safety";
-export { makeUnifiedDiff } from "./diff";
+// Re-exported for tests that import it from `./dispatch`.
+export { dryRunValidateUrl } from "./url-safety";
 
 export const DANGEROUS_TOOLS = new Set([
   // task_create backgrounds a `sh -c` command — same RCE surface as run_shell,

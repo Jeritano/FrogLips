@@ -338,14 +338,6 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
-    // v13 — additional indexes from the maturity review (M1, M2, 2026-05-27):
-    //   * `idx_memories_created` covers `ORDER BY created_at DESC` in
-    //     list_memories (over-fetch of 4000 rows was full-table-sorting).
-    //   * `(ts DESC, id DESC)` index on agent_audit covers the
-    //     "ORDER BY ts DESC, id DESC LIMIT…" hot query without a separate
-    //     tiebreak sort pass. Existing `idx_agent_audit_ts` left in place
-    //     so other read paths that only care about ts still benefit; the
-    //     composite is now the preferred plan for the full ordering.
     // v12 — agent_audit gains a `workflow_run_id` column so workflow-driven
     // tool calls can be filtered out of the per-conversation audit view and
     // correlated back to the run that produced them. Older DBs need a
@@ -711,84 +703,6 @@ pub(crate) fn ensure_lora_merges_table(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_lora_merges_lru ON lora_merges(last_used_at);",
     )?;
     Ok(())
-}
-
-/// Raw row mirror of `lora_merges`. Retained only for the schema-ladder
-/// migration + its test after the image/LoRA feature was removed — the fields
-/// are no longer read anywhere.
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub struct LoraMergeRowInternal {
-    pub id: i64,
-    pub sha: String,
-    pub base_repo: String,
-    pub lora_path: String,
-    pub lora_sha: String,
-    pub weight: f64,
-    pub merged_path: String,
-    pub created_at: i64,
-    pub last_used_at: Option<i64>,
-    pub bytes: i64,
-}
-
-fn row_to_lora(r: &rusqlite::Row<'_>) -> rusqlite::Result<LoraMergeRowInternal> {
-    Ok(LoraMergeRowInternal {
-        id: r.get(0)?,
-        sha: r.get(1)?,
-        base_repo: r.get(2)?,
-        lora_path: r.get(3)?,
-        lora_sha: r.get(4)?,
-        weight: r.get(5)?,
-        merged_path: r.get(6)?,
-        created_at: r.get(7)?,
-        last_used_at: r.get(8)?,
-        bytes: r.get(9)?,
-    })
-}
-
-/// Atomic "read + touch" for the dispatch-path LRU. Returns the row and
-/// updates `last_used_at` in a single transaction so two concurrent
-/// dispatches against the same sha can't see a stale clock value
-/// relative to an eviction pass running in parallel.
-///
-/// `Ok(None)` means the row didn't exist (treated as `merge_evicted` by
-/// the caller). Audit R2-H1 (2026-05-28): the previous design called
-/// `lora_get_by_sha` then `lora_record_used` back-to-back, opening a
-/// window where the LRU order could flip non-deterministically — the
-/// eviction pass might decide an older merge was "fresher" than a
-/// merge dispatched 200µs earlier because the timestamps were written
-/// out of clock order.
-#[allow(dead_code)] // Consumed by the native-only engine LoRA dispatch path.
-pub fn lora_get_by_sha_and_touch(sha: &str) -> Result<Option<LoraMergeRowInternal>> {
-    let mut conn = get_db()?;
-    lora_get_by_sha_and_touch_in(&mut conn, sha)
-}
-
-/// Connection-scoped implementation of `lora_get_by_sha_and_touch`.
-/// Tests drive this directly on an in-memory DB without standing up
-/// the global pool. R3-M4 (2026-05-28).
-pub(crate) fn lora_get_by_sha_and_touch_in(
-    conn: &mut Connection,
-    sha: &str,
-) -> Result<Option<LoraMergeRowInternal>> {
-    let tx = conn.transaction()?;
-    let row: Option<LoraMergeRowInternal> = tx
-        .query_row(
-            "SELECT id, sha, base_repo, lora_path, lora_sha, weight, merged_path,
-                    created_at, last_used_at, bytes
-             FROM lora_merges WHERE sha = ?1",
-            params![sha],
-            row_to_lora,
-        )
-        .optional()?;
-    if row.is_some() {
-        tx.execute(
-            "UPDATE lora_merges SET last_used_at = ?1 WHERE sha = ?2",
-            params![now_unix(), sha],
-        )?;
-    }
-    tx.commit()?;
-    Ok(row)
 }
 
 fn build_pool() -> Result<Pool<SqliteManager>> {
@@ -2178,87 +2092,5 @@ mod tests {
             )
             .unwrap();
         assert!(has);
-    }
-
-    // R3-M4 (2026-05-28): coverage for the transactional read+touch
-    // path. The atomicity claim (read row + update timestamp in ONE
-    // SQLite transaction so a concurrent eviction can't see a stale
-    // clock) is the entire reason this function exists; without a test
-    // a future refactor that splits it back into two statements would
-    // re-open the LRU-skew race silently.
-
-    fn build_lora_merges_in_memory() -> Connection {
-        let conn = Connection::open_in_memory().expect("open in-memory db");
-        ensure_lora_merges_table(&conn).expect("create lora_merges");
-        conn
-    }
-
-    fn seed_merge_row(conn: &Connection, sha: &str, bytes: i64, last_used: Option<i64>) {
-        conn.execute(
-            "INSERT INTO lora_merges (sha, base_repo, lora_path, lora_sha, weight,
-                                       merged_path, created_at, last_used_at, bytes)
-             VALUES (?1, 'org/base-model', '/tmp/lora.safetensors',
-                     'deadbeef', 1.0, '/tmp/merged', ?2, ?3, ?4)",
-            params![sha, 1_700_000_000_i64, last_used, bytes],
-        )
-        .expect("seed merge row");
-    }
-
-    #[test]
-    fn get_by_sha_and_touch_returns_row_and_updates_timestamp() {
-        let mut conn = build_lora_merges_in_memory();
-        let sha = "a".repeat(64);
-        seed_merge_row(&conn, &sha, 1_000, None);
-
-        // Pre-condition: last_used_at is NULL (never used).
-        let before: Option<i64> = conn
-            .query_row(
-                "SELECT last_used_at FROM lora_merges WHERE sha = ?1",
-                params![sha],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(before.is_none(), "fresh seed must have NULL last_used_at");
-
-        let row = lora_get_by_sha_and_touch_in(&mut conn, &sha)
-            .expect("must succeed on existing row")
-            .expect("row must be Some");
-        assert_eq!(row.sha, sha);
-
-        // Post-condition: last_used_at is now set to a recent unix time.
-        let after: i64 = conn
-            .query_row(
-                "SELECT last_used_at FROM lora_merges WHERE sha = ?1",
-                params![sha],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let now = now_unix();
-        assert!(
-            (now - after).abs() <= 5,
-            "last_used_at ({after}) should be within 5s of now ({now})"
-        );
-    }
-
-    #[test]
-    fn get_by_sha_and_touch_returns_none_for_missing_row() {
-        let mut conn = build_lora_merges_in_memory();
-        let missing = "b".repeat(64);
-        let row =
-            lora_get_by_sha_and_touch_in(&mut conn, &missing).expect("Ok variant for missing row");
-        assert!(row.is_none(), "missing sha must produce Ok(None)");
-    }
-
-    #[test]
-    fn get_by_sha_and_touch_does_not_update_when_row_missing() {
-        // Touching a non-existent sha must NOT spuriously create a row
-        // or write a timestamp. Verifies the `if row.is_some()` gate is
-        // honoured inside the transaction.
-        let mut conn = build_lora_merges_in_memory();
-        let _ = lora_get_by_sha_and_touch_in(&mut conn, "ff".repeat(32).as_str());
-        let row_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM lora_merges", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(row_count, 0, "touch on missing row must not insert");
     }
 }
