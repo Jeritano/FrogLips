@@ -62,11 +62,12 @@ export function fmtBytesDecimal(bytes: number): string {
   return `${bytes} B`;
 }
 
-/** Base-1024 bytes for small log/corpus sizes ("512 B"/"1.5 KB"/"2.30 MB"). */
-export function fmtBytesBinary(n: number): string {
+/** Base-1024 bytes for small log/corpus sizes ("512 B"/"1.5 KB"/"2.30 MB").
+ *  `mbDigits` controls the MB-branch precision (AuditLog used 2, RagPanel 1). */
+export function fmtBytesBinary(n: number, mbDigits = 2): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  return `${(n / 1024 / 1024).toFixed(mbDigits)} MB`;
 }
 
 /** Parenthesized base-1024 size for the model picker (" (3.5 GB)"); "" if 0. */

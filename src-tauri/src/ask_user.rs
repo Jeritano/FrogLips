@@ -121,6 +121,10 @@ mod tests {
         let _g = TEST_LOCK.lock();
         let (req, rx) = prepare("ok?".into(), None).unwrap();
         reply(&req.id, "yes please".into()).unwrap();
+        // Drop the registry lock before awaiting — the reply is already queued
+        // and `rx` is keyed by a unique id, so no concurrent test can race it.
+        // (Also satisfies clippy::await_holding_lock under `cargo clippy --tests`.)
+        drop(_g);
         let answer = await_reply(rx, &req.id).await.unwrap();
         // injection_scan::scan_and_wrap rewrites benign answers verbatim;
         // make sure the round-trip carries the payload, not None/empty.

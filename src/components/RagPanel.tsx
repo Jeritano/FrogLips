@@ -87,7 +87,7 @@ export function RagPanel({ onCorporaChanged }: Props) {
       );
       setInfo(
         `Indexed '${name}': ${report.files_indexed}/${report.files_seen} files → ` +
-          `${report.chunks_created} chunks (${fmtBytes(report.total_bytes)}) ` +
+          `${report.chunks_created} chunks (${fmtBytes(report.total_bytes, 1)}) ` +
           `in ${report.duration_ms} ms.`,
       );
       setDraftName("");
