@@ -92,9 +92,13 @@ describe("async subagent spawn", () => {
     expect(byId[a.subagent_id].status).toBe("done");
     expect(byId[b.subagent_id].status).toBe("done");
     const aResult = JSON.parse(byId[a.subagent_id].result);
-    expect(aResult.answer).toBe("answer-1");
+    // Subagent answers are now wrapped in the shared <untrusted-data> fence
+    // before re-entering the parent loop (sec follow-up); the original text is
+    // preserved inside.
+    expect(aResult.answer).toContain("answer-1");
+    expect(aResult.answer).toContain('<untrusted-data source="subagent">');
     const bResult = JSON.parse(byId[b.subagent_id].result);
-    expect(bResult.answer).toBe("answer-2");
+    expect(bResult.answer).toContain("answer-2");
   });
 
   it("await_subagents returns partial on timeout: finished subagents include result, others marked 'timeout'", async () => {
@@ -120,7 +124,7 @@ describe("async subagent spawn", () => {
     ) as Record<string, { status: string; result: string }>;
 
     expect(byId[fast.subagent_id].status).toBe("done");
-    expect(JSON.parse(byId[fast.subagent_id].result).answer).toBe("fast");
+    expect(JSON.parse(byId[fast.subagent_id].result).answer).toContain("fast");
     expect(byId[slow.subagent_id].status).toBe("timeout");
     expect(JSON.parse(byId[slow.subagent_id].result).kind).toBe("timeout");
 

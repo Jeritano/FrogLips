@@ -1,7 +1,19 @@
 import type { AgentRunOptions } from "./types";
 import { runAgentLoop } from "./runner";
 import { cancelActiveShell } from "./dispatch";
+import { fenceUntrustedData } from "./untrusted-fence";
 import { logDiag } from "../diagnostics";
+
+/**
+ * A subagent's final answer is model-generated text that may have laundered an
+ * injection payload from hostile web/MCP content the child processed. Before it
+ * re-enters the PARENT loop as a tool result, strip role framing + wrap it in
+ * the shared `<untrusted-data>` fence — the same defense workflow card handoff
+ * uses. Empty answer → a plain marker (nothing to fence). Sec audit follow-up.
+ */
+function fenceSubagentAnswer(answer: string | null | undefined): string {
+  return answer ? fenceUntrustedData(answer, "subagent") : "(subagent returned nothing)";
+}
 
 export const MAX_SUBAGENT_DEPTH = 3;
 
@@ -191,7 +203,7 @@ export async function runSubagent(
       ok: true,
       depth,
       preset: presetId,
-      answer: final ?? "(subagent returned nothing)",
+      answer: fenceSubagentAnswer(final),
     });
   } finally {
     release();
@@ -246,7 +258,7 @@ export async function spawnSubagentAsync(
           ok: true,
           depth,
           preset: presetId,
-          answer: final ?? "(subagent returned nothing)",
+          answer: fenceSubagentAnswer(final),
         });
         const h = registry.get(id);
         if (h) {
