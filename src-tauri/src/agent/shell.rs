@@ -278,39 +278,31 @@ pub async fn run_shell(
         }
 
         let timeout = std::time::Duration::from_secs(timeout_secs);
-        let fut = cmd.output();
-        let (output, timed_out) = match tokio::time::timeout(timeout, fut).await {
-            Ok(Ok(o)) => (o, false),
-            Ok(Err(e)) => {
-                return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string())))
-            }
-            Err(_) => {
-                return Ok(ShellResult {
-                    stdout: String::new(),
-                    stderr: format!("timed out after {timeout_secs}s"),
-                    exit_code: -1,
-                    duration_ms: started.elapsed().as_millis() as u64,
-                    timed_out: true,
-                });
-            }
-        };
-
-        let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        if stdout.len() > MAX_SHELL_OUTPUT {
-            stdout.truncate(safe_truncate_idx(&stdout, MAX_SHELL_OUTPUT));
-            stdout.push_str("\n[truncated]");
-        }
-        if stderr.len() > MAX_SHELL_OUTPUT {
-            stderr.truncate(safe_truncate_idx(&stderr, MAX_SHELL_OUTPUT));
-            stderr.push_str("\n[truncated]");
-        }
+        // capped_output drains stdout+stderr CONCURRENTLY with a hard byte cap,
+        // so a child spewing gigabytes can't OOM the app before truncation
+        // (the old cmd.output() buffered the entire output first).
+        let (out, err, exit_code) =
+            match tokio::time::timeout(timeout, capped_output(cmd, MAX_SHELL_OUTPUT)).await {
+                Ok(Ok(triple)) => triple,
+                Ok(Err(e)) => {
+                    return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string())))
+                }
+                Err(_) => {
+                    return Ok(ShellResult {
+                        stdout: String::new(),
+                        stderr: format!("timed out after {timeout_secs}s"),
+                        exit_code: -1,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        timed_out: true,
+                    });
+                }
+            };
         Ok(ShellResult {
-            stdout,
-            stderr,
-            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out).into_owned(),
+            stderr: String::from_utf8_lossy(&err).into_owned(),
+            exit_code,
             duration_ms: started.elapsed().as_millis() as u64,
-            timed_out,
+            timed_out: false,
         })
     });
 
