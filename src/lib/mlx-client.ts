@@ -3,7 +3,7 @@ import { finalizeToolCalls, mergeToolCallChunk } from "./agent-loop/tool-call-me
 import type { PartialToolCall, StreamChatResult } from "./agent-loop/stream-types";
 import type { ChatParams } from "./agent-loop/types";
 import { resolveAgentChatConfig } from "./agent-loop/types";
-import { withTimeout } from "./signal-utils";
+import { withInactivityTimeout } from "./signal-utils";
 import { readLines } from "./stream-lines";
 
 export interface ChatChunk {
@@ -61,6 +61,11 @@ function toOpenAiMessages(messages: Message[]) {
 // arriving keeps the connection alive. Bumped from 30s → 5min because
 // huge models (60+ GB) take minutes to cold-load before MLX sends headers.
 const STREAM_CONNECT_TIMEOUT_MS = 300_000;
+// Mid-stream inactivity cap. Once headers arrive, abort if NO token arrives for
+// this long — a stalled MLX server (no server-side cancel exists) would
+// otherwise wedge the agent loop until the user hits Stop. Generous enough that
+// a slow heavy model between tokens never trips it.
+const STREAM_IDLE_TIMEOUT_MS = 120_000;
 
 export async function* streamChat(
   status: ServerStatus,
@@ -77,16 +82,20 @@ export async function* streamChat(
   };
   if (opts.topP != null) body.top_p = opts.topP;
 
-  const to = withTimeout(opts.signal, STREAM_CONNECT_TIMEOUT_MS, "stream connect timed out");
+  // Inactivity watchdog: a generous first-byte/cold-load window, then a
+  // shorter per-token idle cap (re-armed on every chunk). Aborts a stalled
+  // server instead of streaming forever.
+  const to = withInactivityTimeout(opts.signal, STREAM_IDLE_TIMEOUT_MS, "MLX stream stalled");
+  to.kick(STREAM_CONNECT_TIMEOUT_MS);
+  try {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: to.signal,
   });
-  // Clear the connect-timeout the moment headers arrive. Streaming itself
-  // is unbounded; tokens may take seconds between chunks on heavy models.
-  to.clear();
+  // Headers arrived — switch from the cold-load window to the idle cadence.
+  to.kick();
 
   if (!res.ok || !res.body) {
     const txt = await res.text().catch(() => "");
@@ -108,6 +117,7 @@ export async function* streamChat(
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
+    to.kick(); // reset the idle timer on each received chunk
     buf += decoder.decode(value, { stream: true });
     if (buf.length > MAX_BUF) {
       // Truncate only at a newline boundary so we don't slice "data:" prefix mid-line
@@ -145,6 +155,9 @@ export async function* streamChat(
   }
   if (!anyContent && reasoningAcc) yield { delta: reasoningAcc, done: false };
   yield { delta: "", done: true };
+  } finally {
+    to.clear();
+  }
 }
 
 /**
@@ -177,14 +190,18 @@ export async function streamMlxAgentChat(
   };
   if (tools.length > 0) body.tools = tools;
 
-  const to = withTimeout(signal, STREAM_CONNECT_TIMEOUT_MS, "stream connect timed out");
+  // Inactivity watchdog (see streamChat): generous cold-load window, then a
+  // per-token idle cap so a stalled MLX server can't wedge the agent loop.
+  const to = withInactivityTimeout(signal, STREAM_IDLE_TIMEOUT_MS, "MLX stream stalled");
+  to.kick(STREAM_CONNECT_TIMEOUT_MS);
+  try {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: to.signal,
   });
-  to.clear();
+  to.kick(); // headers arrived → idle cadence
 
   if (!res.ok || !res.body) {
     const txt = await res.text().catch(() => "");
@@ -238,6 +255,7 @@ export async function streamMlxAgentChat(
   };
 
   await readLines(res.body.getReader(), (rawLine) => {
+    to.kick(); // reset the idle timer on each received line
     if (sawDone) return;
     const line = rawLine.trim();
     if (!line || !line.startsWith("data:")) return;
@@ -255,4 +273,7 @@ export async function streamMlxAgentChat(
     prompt_eval_count: promptTok,
     eval_count: evalTok,
   };
+  } finally {
+    to.clear();
+  }
 }

@@ -1063,16 +1063,23 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
 
       // Stall guard: if the agent keeps re-reading the same file in chunks,
       // bail out with a hint instead of letting it eat the iteration budget.
-      const stall = isReadFileStalling(fnName, args, readCounts);
-      if (stall.stalling) {
-        pushToolResult(msgs, opts.conversationId, onUpdate, tc,
-          rejectionBody(
-            "stall_guard",
-            `read_file has been called ${stall.count} times for '${stall.path}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`,
-          ),
-          { approval: "auto", outcome: "stall_guard", errorKind: "stall_guard", args },
-          opts.workflowRunId ?? null);
-        continue;
+      // Skip a re-read the read-only cache will serve instantly (no IPC) — only
+      // genuine backend reads should count toward the stall limit, otherwise a
+      // legitimately-cached re-read is penalized as if it were chunk-thrashing.
+      const servedFromCache =
+        isReadOnlyTool(fnName) && readOnlyCache.has(cacheKey(fnName, args));
+      if (!servedFromCache) {
+        const stall = isReadFileStalling(fnName, args, readCounts);
+        if (stall.stalling) {
+          pushToolResult(msgs, opts.conversationId, onUpdate, tc,
+            rejectionBody(
+              "stall_guard",
+              `read_file has been called ${stall.count} times for '${stall.path}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`,
+            ),
+            { approval: "auto", outcome: "stall_guard", errorKind: "stall_guard", args },
+            opts.workflowRunId ?? null);
+          continue;
+        }
       }
 
       // Track which approval branch authorised this call — used in the
