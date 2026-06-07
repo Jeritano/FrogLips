@@ -86,7 +86,23 @@ vi.mock("../../tauri-api", () => ({
 }));
 
 import { api } from "../../tauri-api";
-import { executeTool } from "../dispatch";
+import { DANGEROUS_TOOLS, WRITE_TOOLS, executeTool } from "../dispatch";
+
+describe("DANGEROUS_TOOLS gate completeness (sec audit round 4)", () => {
+  // These three mutate host state (format_code rewrites a file in place,
+  // screenshot writes a PNG of the screen, show_notification posts a toast) and
+  // MUST be in DANGEROUS_TOOLS — that membership is the ONLY thing that shows
+  // the user a confirmation modal (the Rust token is minted inline by tauri-api).
+  it.each(["format_code", "screenshot", "show_notification"])(
+    "%s requires confirmation (is in DANGEROUS_TOOLS)",
+    (tool) => {
+      expect(DANGEROUS_TOOLS.has(tool)).toBe(true);
+    },
+  );
+  it("format_code is a filesystem write (policy path-rules apply)", () => {
+    expect(WRITE_TOOLS.has("format_code")).toBe(true);
+  });
+});
 
 describe("executeTool: unknown tool fallback", () => {
   it("returns ok=false kind=unknown_tool for a completely unknown name", async () => {

@@ -32,6 +32,15 @@ export const DANGEROUS_TOOLS = new Set([
   // or sends a signal to a foreign process — gate behind confirmation.
   "move_path", "copy_path", "delete_path", "make_dir",
   "kill_process", "agent_undo",
+  // Sec audit round 4: these were MISSING from the gate, so a prompt-injected
+  // agent ran them with NO confirmation (the Rust side binds a token, but
+  // tauri-api mints it inline, so DANGEROUS_TOOLS membership is the only thing
+  // that shows the user a modal). Each mutates host state:
+  //   • format_code  — rewrites the target file IN PLACE (no undo snapshot)
+  //   • screenshot   — captures the screen (bank/password mgr) to a PNG that
+  //                    read_file can then exfiltrate
+  //   • show_notification — silent phishing toast
+  "format_code", "screenshot", "show_notification",
 ]);
 export const SHELL_TOOL = "run_shell";
 export const WRITE_TOOLS = new Set([
@@ -42,6 +51,9 @@ export const WRITE_TOOLS = new Set([
   // from the session-blanket-approve branch in runner.ts. `agent_undo` is
   // ALSO excluded because undo-of-undo is an unrecoverable redo.
   "move_path", "copy_path", "make_dir",
+  // format_code rewrites a file's content in place (prettier/rustfmt/black/…),
+  // so it's a filesystem write: policy path-rules must apply to its `path`.
+  "format_code",
 ]);
 
 /**

@@ -446,7 +446,11 @@ impl ServerHandle {
             .to_lowercase();
 
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            // Sec audit round 4: cap the error body too — `resp.text()` buffers
+            // the whole thing, so a hostile remote returning HTTP 500 with a
+            // multi-GB body would OOM us. The success path below is already
+            // streaming-capped; this matches it.
+            let body = read_text_capped(resp, 8 * 1024).await;
             bail!(
                 "remote rpc '{}' HTTP {}: {}",
                 method,
@@ -1381,8 +1385,12 @@ pub async fn call_tool(server: &str, tool: &str, args_json: Value) -> Result<Str
 
     if is_error {
         // Surface as Err so the agent loop wraps it in its standard error
-        // envelope, matching how built-in tool failures look.
-        return Err(anyhow!(out.trim().to_string()));
+        // envelope, matching how built-in tool failures look. Sec audit round 4:
+        // the error text is STILL attacker-controlled server content, so scan +
+        // DATA-wrap it first — otherwise setting `isError:true` is a one-field
+        // bypass of the injection fence applied to the success path below.
+        let (wrapped, _n) = crate::agent::injection_scan::scan_and_wrap(out.trim());
+        return Err(anyhow!(wrapped));
     }
     // External MCP servers are not trusted by default — their text
     // content blocks can contain prompt-injection payloads. Scan and

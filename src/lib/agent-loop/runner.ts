@@ -158,12 +158,15 @@ type PolicyVerdict = "auto" | "needs-confirm" | "denied";
 function matchesPolicyPattern(path: string, pattern: string): boolean {
   if (!pattern) return false;
   if (pattern === "*") return true;
-  // Sec audit round 3: case-fold both sides. macOS APFS is case-insensitive,
+  // Sec audit round 3/4: case-fold both sides. macOS APFS is case-insensitive,
   // so a user policy rule `secrets/` / `.env` / `*.key` must also match
-  // `Secrets/` / `.ENV` / `evil.KEY`. Mirrors the Rust twin policy.rs
-  // matches_pattern — keep both in sync.
-  path = path.toLowerCase();
-  pattern = pattern.toLowerCase();
+  // `Secrets/` / `.ENV` / `evil.KEY`. ASCII-ONLY fold to stay byte-identical to
+  // the Rust twin policy.rs matches_pattern (`to_ascii_lowercase`) — full
+  // Unicode `toLowerCase()` would diverge on non-ASCII and (for allow-rules)
+  // match more than Rust. Keep both in sync.
+  const asciiLower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  path = asciiLower(path);
+  pattern = asciiLower(pattern);
   if (pattern.endsWith("/")) {
     const dir = pattern.slice(0, -1);
     if (!dir) return true;
@@ -345,6 +348,10 @@ const APPROVE_ALL_WRITE_FS = new Set([
   "make_dir",
   "move_path",
   "copy_path",
+  // format_code rewrites file content in place — same nature as edit_file, so a
+  // user who ticked "auto-approve file writes" reasonably expects it covered.
+  // (It still escalates to a prompt on a sensitive-path / non-normal risk.)
+  "format_code",
 ]);
 
 /** Reasons valid on a deny-path `ConfirmDecision`. Anything else is normalised
