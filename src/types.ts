@@ -178,6 +178,9 @@ export interface DirEntry {
 export interface DirListing {
   entries: DirEntry[];
   truncated: boolean;
+  /** Present only when an entry name contains prompt-injection patterns; a
+   *  DATA-only warning surfaced to the model (names are never mutated). */
+  injection_warning?: string;
 }
 
 export interface ReadResult {
