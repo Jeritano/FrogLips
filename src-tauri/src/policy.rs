@@ -475,16 +475,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn evaluate_write_denies_case_folded_paths() {
+        // Sec audit: macOS APFS is case-insensitive, so a lowercase deny rule
+        // MUST still block a case-varied write target that hits the same file —
+        // otherwise a prompt-injected agent bypasses the user's deny rule by
+        // changing case. Patterns are lowercase; targets vary case.
+        let p = ProjectPolicy {
+            allowed_write_paths: Some(vec!["src/".into()]),
+            denied_write_paths: Some(vec![".env".into(), "secrets/".into(), "*.key".into()]),
+            ..ProjectPolicy::default()
+        };
+        assert_eq!(
+            evaluate_write(Path::new("Secrets/db.json"), &p),
+            Decision::Denied
+        );
+        assert_eq!(evaluate_write(Path::new(".ENV"), &p), Decision::Denied);
+        assert_eq!(
+            evaluate_write(Path::new("config/prod.KEY"), &p),
+            Decision::Denied
+        );
+        // A true sibling that merely shares a prefix is NOT denied.
+        assert_eq!(
+            evaluate_write(Path::new("public/index.html"), &p),
+            Decision::NeedsConfirm
+        );
+    }
+
     /* helpers */
     fn tempdir() -> PathBuf {
+        // CI-flake fix: pid+nanos alone collides when two tests call this in the
+        // same nanosecond under the parallel runner — then one test's
+        // `remove_dir_all` nukes another's dir mid-run (the intermittent
+        // `round_trip_parse_full_schema` failure). A process-global atomic seq
+        // guarantees a unique path regardless of clock resolution. (No
+        // set_current_dir here — every test passes the dir explicitly to
+        // load_for_cwd, so there is no CWD race to serialize.)
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let mut p = std::env::temp_dir();
         p.push(format!(
-            "froglips-policy-test-{}-{}",
+            "froglips-policy-test-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
         ));
         std::fs::create_dir_all(&p).unwrap();
         p

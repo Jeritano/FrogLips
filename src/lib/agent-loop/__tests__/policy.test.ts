@@ -146,6 +146,23 @@ describe("policyDecisionFor", () => {
     ).toBe("needs-confirm");
   });
 
+  it("denies case-folded write targets (APFS is case-insensitive)", () => {
+    // A lowercase deny rule must still block a case-varied path that hits the
+    // same file — otherwise a prompt-injected agent bypasses the user's deny
+    // rule by changing case. Mirrors the Rust evaluate_write case test.
+    const policy: ProjectPolicy = {
+      allowed_write_paths: ["src/"],
+      denied_write_paths: [".env", "secrets/", "*.key"],
+    };
+    expect(policyDecisionFor(policy, "write_file", { path: "Secrets/db.json" })).toBe("denied");
+    expect(policyDecisionFor(policy, "write_file", { path: ".ENV" })).toBe("denied");
+    expect(policyDecisionFor(policy, "edit_file", { path: "config/prod.KEY" })).toBe("denied");
+    // A true sibling sharing a prefix is NOT denied.
+    expect(policyDecisionFor(policy, "write_file", { path: "public/index.html" })).toBe(
+      "needs-confirm",
+    );
+  });
+
   it("respects auto_approve_dangerous_tools list", () => {
     const policy: ProjectPolicy = {
       auto_approve_dangerous_tools: ["clipboard_set"],
