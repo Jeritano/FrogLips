@@ -72,6 +72,15 @@ recall + dedup check (~30 MB at 10k entries × 768 floats).
 type EmbeddingMap = HashMap<i64, Vec<f32>>;
 static EMB_CACHE: Lazy<RwLock<Option<EmbeddingMap>>> = Lazy::new(|| RwLock::new(None));
 
+/// Drop the warm-once embedding cache so the next recall rebuilds it from the
+/// DB. Called after a data import, which raw-inserts memory rows the cache
+/// never observed (today imports carry NULL embeddings, so vector recall isn't
+/// corrupted — but `find_duplicate`/future re-embed-on-import would otherwise
+/// read a stale cache until restart).
+pub fn invalidate_cache() {
+    *EMB_CACHE.write() = None;
+}
+
 /// Hard cap on cache entry count. At 768 dims × 4 bytes that's ~60 MB; at
 /// 1024 dims ~80 MB. Above this the oldest-id entries are evicted on insert.
 /// A workflow that mass-creates memories (or a long-lived install with many

@@ -123,7 +123,7 @@ export const TOOLS = [
     function: {
       name: "run_shell",
       description:
-        "Execute a shell command via sh -c. Optional cwd + env + per-call timeout. Default timeout 30s; pass timeout_secs (clamped 1-600) for slow builds, test suites, or downloads. ALWAYS requires user approval. Returns stdout, stderr, exit_code, duration_ms, timed_out.",
+        "Execute a shell command via sh -c. Optional cwd + per-call timeout. Default timeout 30s; pass timeout_secs (clamped 1-600) for slow builds, test suites, or downloads. ALWAYS requires user approval. Returns stdout, stderr, exit_code, duration_ms, timed_out.",
       parameters: {
         type: "object",
         properties: {

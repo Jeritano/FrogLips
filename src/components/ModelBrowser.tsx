@@ -219,13 +219,6 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
     refreshInstalled();
   }, []);
 
-  const installedOllamaIds = useMemo(
-    () => new Set(installedOllama.map((m) => m.id)),
-    [installedOllama],
-  );
-  // Touched here so TS doesn't warn while the legacy hf-all block sits
-  // dormant; the value is still wired into ModelPicker's installed badges.
-  void installedOllamaIds;
   const installedMlxIds = useMemo(
     () => new Set(installedMlx.map((m) => m.id)),
     [installedMlx],

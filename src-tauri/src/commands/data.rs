@@ -34,5 +34,11 @@ pub async fn export_data(dest_path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn import_data(src_path: String) -> Result<ImportSummary, String> {
     let src = validate_read_src(&src_path)?;
-    blocking(move || data_backup::import_data(&src)).await
+    let result = blocking(move || data_backup::import_data(&src)).await;
+    // Imports raw-insert memory rows the warm-once embedding cache never saw —
+    // drop it so the next recall rebuilds from the freshly-imported DB.
+    if result.is_ok() {
+        crate::memory::invalidate_cache();
+    }
+    result
 }

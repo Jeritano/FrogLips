@@ -31,7 +31,9 @@ function loadConfigs(): McpServerConfig[] {
 }
 function saveConfigs(list: McpServerConfig[]) {
   localStorage.setItem("mcp.servers", JSON.stringify(list));
-  api.settingsSet({ mcp_servers: list }).catch((e) => console.warn("[mcp] persist", e));
+  api.settingsSet({ mcp_servers: list }).catch((e) =>
+    logDiag({ level: "warn", source: "mcp", message: "persist mcp_servers failed", detail: e }),
+  );
 }
 
 /** Sanitize a registry id into a valid server name ([A-Za-z0-9_-]{1,64}). */

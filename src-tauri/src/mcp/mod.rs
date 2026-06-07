@@ -715,15 +715,64 @@ pub async fn start_server(
         });
     }
 
+    // Bounded line reader — caps a single line at MAX_RESULT_BYTES so a
+    // misbehaving stdio server can't OOM the app with one unterminated
+    // multi-GB line (tokio's `Lines` grows its buffer unbounded). Oversized
+    // lines are skipped (drained to the next newline) rather than buffered.
+    async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
+        reader: &mut R,
+        max: usize,
+    ) -> std::io::Result<Option<String>> {
+        use tokio::io::AsyncBufReadExt;
+        let mut line: Vec<u8> = Vec::new();
+        let mut over = false;
+        loop {
+            let chunk = reader.fill_buf().await?;
+            if chunk.is_empty() {
+                if line.is_empty() && !over {
+                    return Ok(None); // EOF
+                }
+                let out = if over {
+                    String::new()
+                } else {
+                    String::from_utf8_lossy(&line).into_owned()
+                };
+                return Ok(Some(out));
+            }
+            if let Some(pos) = chunk.iter().position(|&b| b == b'\n') {
+                if !over && line.len() + pos <= max {
+                    line.extend_from_slice(&chunk[..pos]);
+                } else {
+                    over = true;
+                }
+                reader.consume(pos + 1);
+                if over {
+                    // Oversized line fully consumed → skip it, start the next.
+                    line.clear();
+                    over = false;
+                    continue;
+                }
+                return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+            }
+            let take = chunk.len();
+            if !over && line.len() + take <= max {
+                line.extend_from_slice(chunk);
+            } else {
+                over = true; // past the cap — stop accumulating, keep draining
+            }
+            reader.consume(take);
+        }
+    }
+
     // Stdout pump — parse JSON-RPC and route responses / log notifications.
     {
         let waiters = waiters.clone();
         let server_name = name.clone();
         let status_handle = handle.clone();
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout).lines();
+            let mut reader = BufReader::new(stdout);
             loop {
-                match reader.next_line().await {
+                match read_capped_line(&mut reader, MAX_RESULT_BYTES).await {
                     Ok(Some(line)) => {
                         if line.trim().is_empty() {
                             continue;

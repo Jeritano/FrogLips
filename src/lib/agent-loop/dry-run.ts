@@ -127,13 +127,14 @@ export async function dryRunExecute(name: string, args: Record<string, unknown>)
     case "run_shell": {
       const command = String(args.command ?? "");
       const cwd = args.cwd ? String(args.cwd) : null;
-      const env = args.env && typeof args.env === "object" ? args.env : null;
+      // NOTE: `env` is intentionally absent — run_shell has no env parameter in
+      // its schema and the executor never forwarded one, so echoing it here
+      // would misrepresent what the approved command actually runs.
       return JSON.stringify({
         ok: true,
         dry_run: true,
         would_run: command,
         cwd,
-        env,
       });
     }
     case "applescript_run": {

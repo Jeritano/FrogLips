@@ -387,12 +387,10 @@ function recordSessionMetricsSafe(conversationId: number, metrics: AgentMetrics)
         completion_tokens: metrics.completionTokens,
       })
       .catch((e) => {
-        // eslint-disable-next-line no-console
-        console.warn("[session-metrics] record failed:", e);
+        logDiag({ level: "warn", source: "session-metrics", message: "record failed", detail: e });
       });
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn("[session-metrics] record sync error:", e);
+    logDiag({ level: "warn", source: "session-metrics", message: "record sync error", detail: e });
   }
 }
 

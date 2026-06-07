@@ -124,15 +124,25 @@ pub async fn run_code(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let seq = CODE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut path = std::env::temp_dir();
-    path.push(format!(
-        "froglips_code_{}_{}_{}.{}",
-        std::process::id(),
-        nanos,
-        seq,
-        ext
-    ));
-    std::fs::write(&path, code.as_bytes()).map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    // The snippet can embed secrets, so don't drop it world-readable in the
+    // shared temp dir, and don't let a pre-planted symlink redirect the write.
+    // Private per-process dir (0700) + O_NOFOLLOW|O_EXCL write (via
+    // write_nofollow_sync, must_be_new=true) + file mode 0600.
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("froglips-code-{}", std::process::id()));
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    // Re-assert 0700 in case the dir pre-existed from an earlier run.
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    let mut path = dir.clone();
+    path.push(format!("code_{nanos}_{seq}.{ext}"));
+    super::fs::write_nofollow_sync(&path, code.as_bytes(), true)
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
 
     let run_path = path.clone();
     let cwd = workspace_root_clone();
@@ -147,38 +157,31 @@ pub async fn run_code(
             cmd.current_dir(c);
         }
         let timeout = std::time::Duration::from_secs(timeout_secs);
-        let fut = cmd.output();
-        let (output, timed_out) = match tokio::time::timeout(timeout, fut).await {
-            Ok(Ok(o)) => (o, false),
-            Ok(Err(e)) => {
-                return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string())))
-            }
-            Err(_) => {
-                return Ok(ShellResult {
-                    stdout: String::new(),
-                    stderr: format!("timed out after {timeout_secs}s"),
-                    exit_code: -1,
-                    duration_ms: started.elapsed().as_millis() as u64,
-                    timed_out: true,
-                });
-            }
-        };
-        let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        if stdout.len() > MAX_SHELL_OUTPUT {
-            stdout.truncate(safe_truncate_idx(&stdout, MAX_SHELL_OUTPUT));
-            stdout.push_str("\n[truncated]");
-        }
-        if stderr.len() > MAX_SHELL_OUTPUT {
-            stderr.truncate(safe_truncate_idx(&stderr, MAX_SHELL_OUTPUT));
-            stderr.push_str("\n[truncated]");
-        }
+        // capped_output drains stdout+stderr CONCURRENTLY with a hard byte cap,
+        // so a child spewing gigabytes can't OOM the app before truncation
+        // (the old cmd.output() buffered the entire output first).
+        let (out, err, exit_code) =
+            match tokio::time::timeout(timeout, capped_output(cmd, MAX_SHELL_OUTPUT)).await {
+                Ok(Ok(triple)) => triple,
+                Ok(Err(e)) => {
+                    return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string())))
+                }
+                Err(_) => {
+                    return Ok(ShellResult {
+                        stdout: String::new(),
+                        stderr: format!("timed out after {timeout_secs}s"),
+                        exit_code: -1,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        timed_out: true,
+                    });
+                }
+            };
         Ok(ShellResult {
-            stdout,
-            stderr,
-            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out).into_owned(),
+            stderr: String::from_utf8_lossy(&err).into_owned(),
+            exit_code,
             duration_ms: started.elapsed().as_millis() as u64,
-            timed_out,
+            timed_out: false,
         })
     });
 

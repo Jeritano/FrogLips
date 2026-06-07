@@ -199,6 +199,17 @@ pub async fn watch_path(
     }
     let canonical =
         std::fs::canonicalize(&resolved).map_err(|e| format!("canonicalize failed: {e}"))?;
+    // Sandbox parity with the read tools: a watch leaks filenames + write
+    // activity for whatever it points at, so confine it to the workspace and
+    // refuse protected (credential/system) locations (~/.ssh, ~/.aws,
+    // Keychains). Without this an injected agent could watch_path("~/.ssh") and
+    // observe credential-file activity.
+    if super::fs::is_protected_read_path(&canonical) || !super::fs::within_workspace(&canonical) {
+        return Err(format!(
+            "path is outside the workspace or is a protected location: {}",
+            canonical.display()
+        ));
+    }
     let recursive = canonical.is_dir();
 
     let matcher: Option<GlobMatcher> = match glob.as_deref() {
@@ -548,7 +559,12 @@ mod tests {
 
     /// Make a unique directory under the system temp dir.
     fn tempdir_in_target(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
+        // watch_path now confines to the workspace (default root = $HOME), so
+        // create the test dir under $HOME rather than $TMPDIR — otherwise the
+        // sandbox guard (correctly) rejects a path outside the workspace. No
+        // global WORKSPACE_ROOT mutation → no cross-test races under parallelism.
+        let mut p = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+        p.push(".froglips-test-tmp");
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())

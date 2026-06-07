@@ -254,12 +254,22 @@ function stripThinking(text: string): string {
 }
 
 /** Parse a 1-based route number out of a classifier reply → 0-based index, or
- *  null when no in-range number is present. Thinking is stripped first. */
+ *  null when no in-range number is present. Thinking is stripped first; a
+ *  leading number ("2", "2 — web") is preferred over a stray integer later in
+ *  prose ("pick 2 unless it's about 2024…"). */
 function parseIndex(text: string, n: number): number | null {
-  const m = stripThinking(text).match(/\d+/);
+  const stripped = stripThinking(text);
+  const m = stripped.match(/^\s*(\d+)/) ?? stripped.match(/(\d+)/);
   if (!m) return null;
-  const i = parseInt(m[0], 10) - 1;
+  const i = parseInt(m[1], 10) - 1;
   return i >= 0 && i < n ? i : null;
+}
+
+/** True when any route's keyword fast-path matches — lets the caller skip the
+ *  (possibly network-bound) prototype build before Stage 1 even runs. */
+function hasKeywordMatch(text: string, routes: ChatRoute[]): boolean {
+  const lc = text.trim().toLowerCase();
+  return routes.some((r) => r.keywords?.some((k) => k.trim() && lc.includes(k.trim().toLowerCase())));
 }
 
 function decisionFrom(
@@ -563,10 +573,14 @@ export async function routeChatMessage(
   if (routes.length === 0) return null;
   const embedFn = (t: string) => embed(t, opts.signal);
   let prototypes = new Map<string, number[]>();
-  try {
-    prototypes = await buildPrototypes(routes, embedFn);
-  } catch {
-    /* no embedder → semantic stage skipped */
+  // Skip the prototype build (one embed RTT per route utterance) when a keyword
+  // fast-path will match anyway — keep the cheap stage cheap.
+  if (!hasKeywordMatch(text, routes)) {
+    try {
+      prototypes = await buildPrototypes(routes, embedFn);
+    } catch {
+      /* no embedder → semantic stage skipped */
+    }
   }
   return routeMessage(text, routes, {
     stickyRouteId: opts.stickyRouteId,

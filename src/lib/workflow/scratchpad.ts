@@ -80,12 +80,6 @@ export function endRun(): void {
   active = null;
 }
 
-/** True when a workflow run is in flight; the workflow_* tools are
- *  only meaningful in this window. */
-export function isActive(): boolean {
-  return active !== null;
-}
-
 /** Empty the active scratchpad WITHOUT ending the run. Used by the
  *  `blackboard` orchestration node's "clear" op so downstream cards start
  *  from a clean shared state. No-op when no run is active. Returns true if a

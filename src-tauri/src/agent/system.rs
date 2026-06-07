@@ -23,38 +23,29 @@ pub async fn applescript_run(script: String) -> Result<ShellResult, String> {
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let timeout = std::time::Duration::from_secs(APPLESCRIPT_TIMEOUT_SECS);
-    let (output, timed_out) = match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(o)) => (o, false),
-        Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
-        Err(_) => {
-            return Ok(ShellResult {
-                stdout: String::new(),
-                stderr: format!("timed out after {APPLESCRIPT_TIMEOUT_SECS}s"),
-                exit_code: -1,
-                duration_ms: started.elapsed().as_millis() as u64,
-                timed_out: true,
-            })
-        }
-    };
-    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    // Char-boundary-safe truncation — raw `String::truncate` panics if the cap
-    // lands mid-codepoint (incl. the 3-byte U+FFFD from the lossy decode above).
-    // MED (2026-05-30).
-    if stdout.len() > MAX_SHELL_OUTPUT {
-        stdout.truncate(super::shell::safe_truncate_idx(&stdout, MAX_SHELL_OUTPUT));
-        stdout.push_str("\n[truncated]");
-    }
-    if stderr.len() > MAX_SHELL_OUTPUT {
-        stderr.truncate(super::shell::safe_truncate_idx(&stderr, MAX_SHELL_OUTPUT));
-        stderr.push_str("\n[truncated]");
-    }
+    // capped_output bounds stdout/stderr buffering (concurrent drain + hard cap)
+    // so an osascript spewing unbounded output can't OOM the app.
+    let (out, err, exit_code) =
+        match tokio::time::timeout(timeout, super::shell::capped_output(cmd, MAX_SHELL_OUTPUT)).await
+        {
+            Ok(Ok(triple)) => triple,
+            Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
+            Err(_) => {
+                return Ok(ShellResult {
+                    stdout: String::new(),
+                    stderr: format!("timed out after {APPLESCRIPT_TIMEOUT_SECS}s"),
+                    exit_code: -1,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    timed_out: true,
+                })
+            }
+        };
     Ok(ShellResult {
-        stdout,
-        stderr,
-        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out).into_owned(),
+        stderr: String::from_utf8_lossy(&err).into_owned(),
+        exit_code,
         duration_ms: started.elapsed().as_millis() as u64,
-        timed_out,
+        timed_out: false,
     })
 }
 

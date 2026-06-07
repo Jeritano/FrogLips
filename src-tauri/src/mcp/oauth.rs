@@ -156,6 +156,12 @@ async fn discover(server_url: &str) -> Result<(AuthServerMeta, Option<String>)> 
         ".well-known/openid-configuration",
     ] {
         let meta_url = format!("{as_base}/{path}");
+        // Gate discovery URLs through the same https-or-loopback check as the
+        // endpoints below — a malicious authorization-server pointer must not
+        // make us fetch metadata over cleartext http to a public host.
+        if secure_endpoint(&meta_url).is_err() {
+            continue;
+        }
         if let Ok(c) = super::build_pinned_client(&meta_url).await {
             if let Ok(r) = c.get(&meta_url).send().await {
                 if r.status().is_success() {

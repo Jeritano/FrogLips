@@ -154,6 +154,13 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
             "script",
             p.script.as_deref().unwrap_or(""),
         )]))),
+        // git commit — bound to message + optional path so an approved commit
+        // can't be replayed for a different one within the token TTL. Brings it
+        // in line with every other mutating tool's approval model.
+        "agent_git_commit" => Some(sha256_hex(&kv(&[
+            ("message", p.text.as_deref().unwrap_or("")),
+            ("path", p.path.as_deref().unwrap_or("")),
+        ]))),
         // Screenshot: bind to a path target so a token issued for
         // "save to ~/Desktop/x.png" can't be reused for a different dest.
         "agent_screenshot" => Some(sha256_hex(&kv(&[(
@@ -463,7 +470,17 @@ pub async fn agent_git_branches(path: Option<String>) -> Result<agent::GitResult
 pub async fn agent_git_commit(
     message: String,
     path: Option<String>,
+    approval: String,
 ) -> Result<agent::GitResult, String> {
+    verify_bound(
+        "agent_git_commit",
+        &approval,
+        ApprovalPayload {
+            text: Some(message.clone()),
+            path: path.clone(),
+            ..Default::default()
+        },
+    )?;
     agent::git_commit(message, path).await
 }
 

@@ -80,7 +80,30 @@ function parseRouteIndex(text: string, n: number): number {
   const m = text.match(/\d+/);
   if (!m) return 0;
   const i = parseInt(m[0], 10) - 1;
-  return i >= 0 && i < n ? i : 0;
+  if (!Number.isFinite(i) || i < 0) return 0;
+  return Math.min(i, n - 1); // clamp an out-of-range high index to the last route
+}
+
+/** Normalize a free-text answer for vote comparison (whitespace/case/terminal punctuation). */
+function normalizeAnswer(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
+}
+
+/** Plurality vote over samples: returns the modal answer verbatim when at
+ *  least two samples agree, else null (→ caller falls back to synthesis). */
+function majorityVote(samples: string[]): { answer: string; agree: number } | null {
+  const counts = new Map<string, { count: number; rep: string }>();
+  for (const s of samples) {
+    if (!s || s.startsWith("[sample ")) continue; // skip failed proposers
+    const key = normalizeAnswer(s);
+    if (!key) continue;
+    const e = counts.get(key);
+    if (e) e.count++;
+    else counts.set(key, { count: 1, rep: s.trim() });
+  }
+  let best: { count: number; rep: string } | null = null;
+  for (const e of counts.values()) if (!best || e.count > best.count) best = e;
+  return best && best.count >= 2 ? { answer: best.rep, agree: best.count } : null;
 }
 
 interface SubOpts {
@@ -168,7 +191,19 @@ async function runConsistency(ctx: NodeRunContext): Promise<string> {
     ),
   );
   if (ctx.signal.aborted) return samples.find(Boolean) ?? "";
-  ctx.emit(`\n${mode === "vote" ? "Voting on" : "Merging"} ${n} samples…\n\n`);
+  // "vote" → a real tally: if ≥2 samples produce the same answer, return the
+  // modal one verbatim (cheap, no extra LLM call). Only fall back to a synthesis
+  // pass when there's no agreement.
+  if (mode === "vote") {
+    const winner = majorityVote(samples);
+    if (winner) {
+      ctx.emit(`Majority vote: ${winner.agree}/${n} agree.\n\n`);
+      return winner.answer;
+    }
+    ctx.emit(`No majority — synthesizing instead.\n\n`);
+  } else {
+    ctx.emit(`Merging ${n} samples…\n\n`);
+  }
   const block = samples.map((s, i) => `### Sample ${i + 1}\n${s}`).join("\n\n");
   const instr =
     mode === "vote"

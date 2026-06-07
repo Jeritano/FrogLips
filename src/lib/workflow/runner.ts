@@ -438,8 +438,21 @@ export async function runWorkflow(
   // card that calls workflow_set / workflow_get / workflow_keys hits
   // this scoped instance. Cleared at the very end so a chat-mode agent
   // calling the same tool gets {ok:false, not_in_workflow}.
+  //
+  // Honor the begin return: if a run is already active (a second entry point
+  // re-entering), we did NOT take ownership — record that so the finally below
+  // doesn't clear the OTHER run's scratchpad. The run-context serializes runs
+  // today, so this is defense-in-depth for non-provider callers.
+  let scratchpadOwned = false;
   if (opts.workflowId != null) {
-    beginScratchpadRun(opts.workflowId);
+    scratchpadOwned = beginScratchpadRun(opts.workflowId);
+    if (!scratchpadOwned) {
+      logDiag({
+        level: "warn",
+        source: "workflow",
+        message: "scratchpad busy (another run active) — proceeding without a workflow-scoped scratchpad",
+      });
+    }
   }
   // Phase: per-run skill invocation rate-limit. Lifecycle matches the
   // scratchpad — initialise alongside, clear alongside. Unlike the
@@ -676,9 +689,10 @@ export async function runWorkflow(
     // tools now return {ok:false, kind:"not_in_workflow"} for any subsequent
     // chat-mode call, which is the correct posture (they're workflow-scoped).
     // In `finally` so an exception anywhere above still releases them.
-    // Gate endScratchpadRun on the same condition as beginScratchpadRun
-    // (workflowId != null) so a null-id run can't clear another run's scratchpad.
-    if (opts.workflowId != null) endScratchpadRun();
+    // Only end the scratchpad if THIS run took ownership of it (begin returned
+    // true) — a re-entrant run that found the pad busy must not clear the
+    // active run's state.
+    if (scratchpadOwned) endScratchpadRun();
     endSkillRun();
   }
 }

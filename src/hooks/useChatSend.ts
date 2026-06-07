@@ -88,9 +88,10 @@ async function extractAndSaveFacts(
   mode: "queue" | "direct",
   source: string,
   onAdded: () => void,
+  signal?: AbortSignal,
 ) {
   try {
-    const facts = await extractFacts(userText, responseText, convId);
+    const facts = await extractFacts(userText, responseText, convId, signal);
     if (!facts.length) return;
     let added = 0;
     for (const f of facts) {
@@ -302,6 +303,12 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
               effModel = decision.model;
               effBackend = decision.backend;
               routePreset = decision.preset;
+              // Cap the sticky map (FIFO) so a long session with many
+              // conversations can't grow it unbounded.
+              if (stickyRouteRef.current.size >= 256 && !stickyRouteRef.current.has(conv.id)) {
+                const oldest = stickyRouteRef.current.keys().next().value;
+                if (oldest !== undefined) stickyRouteRef.current.delete(oldest);
+              }
               stickyRouteRef.current.set(conv.id, decision.routeId);
               if (isStreamConvActive()) onRouted?.(decision);
             } else {
@@ -540,7 +547,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
 
           if (mode === "queue" || mode === "direct") {
             void extractAndSaveFacts(text, finalText, conv.id, mode, "agent-mode", () =>
-              onMemoriesChanged?.(),
+              onMemoriesChanged?.(), ctrl.signal,
             );
           }
         }
@@ -711,7 +718,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
 
       if (mode === "queue" || mode === "direct") {
         void extractAndSaveFacts(text, acc, conv.id, mode, "chat", () =>
-          onMemoriesChanged?.(),
+          onMemoriesChanged?.(), ctrl.signal,
         );
       }
     } else if (aborted) {

@@ -96,13 +96,36 @@ describe("MoA node", () => {
 });
 
 describe("Self-consistency node", () => {
-  it("samples N times then aggregates", async () => {
-    responder = (o) => (lastUser(o).includes("## Samples") ? "VOTE" : "s");
+  it("synth mode samples N times then aggregates", async () => {
+    responder = (o) => (lastUser(o).includes("## Samples") ? "MERGED" : "s");
+    const out = await runWorkflowNode(
+      ctx({ nodeType: "consistency", nodeConfig: { members: 4, voteMode: "synth" } }),
+    );
+    expect(out).toBe("MERGED");
+    expect(calls).toHaveLength(5); // 4 samples + 1 aggregate
+  });
+
+  it("vote mode returns the modal answer without an aggregator call when samples agree", async () => {
+    responder = (o) => (lastUser(o).includes("## Samples") ? "AGG" : "same answer");
     const out = await runWorkflowNode(
       ctx({ nodeType: "consistency", nodeConfig: { members: 4, voteMode: "vote" } }),
     );
-    expect(out).toBe("VOTE");
-    expect(calls).toHaveLength(5); // 4 samples + 1 aggregate
+    expect(out).toBe("same answer"); // 4/4 agree → modal, returned verbatim
+    expect(calls).toHaveLength(4); // 4 samples, NO aggregate
+  });
+
+  it("vote mode falls back to synthesis when there is no majority", async () => {
+    let i = 0;
+    responder = (o) => {
+      if (lastUser(o).includes("## Samples")) return "SYNTH";
+      i += 1;
+      return `distinct-${i}`; // all different → no majority
+    };
+    const out = await runWorkflowNode(
+      ctx({ nodeType: "consistency", nodeConfig: { members: 3, voteMode: "vote" } }),
+    );
+    expect(out).toBe("SYNTH");
+    expect(calls).toHaveLength(4); // 3 samples + 1 synth
   });
 });
 

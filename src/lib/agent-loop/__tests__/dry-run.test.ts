@@ -84,7 +84,7 @@ describe("dry-run mode: write-side tools short-circuit", () => {
   it("run_shell: never invokes Tauri, returns would_run payload", async () => {
     const out = await executeTool(
       "run_shell",
-      { command: "rm -rf /tmp/foo", cwd: "/tmp", env: { FOO: "bar" } },
+      { command: "rm -rf /tmp/foo", cwd: "/tmp" },
       { dryRun: true },
     );
     expect(runShellMock).not.toHaveBeenCalled();
@@ -93,7 +93,9 @@ describe("dry-run mode: write-side tools short-circuit", () => {
     expect(parsed.dry_run).toBe(true);
     expect(parsed.would_run).toBe("rm -rf /tmp/foo");
     expect(parsed.cwd).toBe("/tmp");
-    expect(parsed.env).toEqual({ FOO: "bar" });
+    // `env` is intentionally absent — run_shell has no env parameter + the
+    // executor never forwarded one, so the dry-run no longer echoes it.
+    expect(parsed.env).toBeUndefined();
   });
 
   it("applescript_run: never invokes Tauri, truncates to 2 KB", async () => {

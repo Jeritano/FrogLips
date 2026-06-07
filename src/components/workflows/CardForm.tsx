@@ -579,7 +579,7 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                   value={draft.params?.max_tokens ?? ""}
                   onChange={(e) => {
                     const v = e.target.value === "" ? null : Number(e.target.value);
-                    set("params", { ...(draft.params ?? {}), max_tokens: Number.isFinite(v) && v! > 0 ? Math.floor(v!) : null });
+                    set("params", { ...(draft.params ?? {}), max_tokens: Number.isFinite(v) && v! > 0 ? Math.min(131072, Math.floor(v!)) : null });
                   }}
                 />
               </label>

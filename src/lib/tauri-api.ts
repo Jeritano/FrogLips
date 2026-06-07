@@ -460,8 +460,12 @@ export const api = {
     invoke<GitResult>("agent_git_show", { reference, path: path ?? null }),
   agentGitBranches: (path?: string) =>
     invoke<GitResult>("agent_git_branches", { path: path ?? null }),
-  agentGitCommit: (message: string, path?: string) =>
-    invoke<GitResult>("agent_git_commit", { message, path: path ?? null }),
+  agentGitCommit: async (message: string, path?: string) =>
+    invoke<GitResult>("agent_git_commit", {
+      message,
+      path: path ?? null,
+      approval: await mintApproval("agent_git_commit", { text: message, path }),
+    }),
   agentWebFetch: (url: string) =>
     invoke<WebFetchResult>("agent_web_fetch", { url }),
   agentWebSearch: (query: string, n?: number) =>
