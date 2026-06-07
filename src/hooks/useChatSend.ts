@@ -15,7 +15,7 @@ import {
 } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
 import { formatUserProfile } from "../lib/user-profile";
-import { loadRoutes, makeClassifier, routeMessage, type RouteDecision } from "../lib/chat-router";
+import { loadRoutes, routeChatMessage, type RouteDecision } from "../lib/chat-router";
 import { loadAllPresets } from "../lib/agent-presets";
 import type { AgentSettings } from "./useAgentSettings";
 import { useEvent } from "./useEvent";
@@ -284,9 +284,10 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       try {
         const routes = loadRoutes();
         if (routes.length > 0) {
-          const decision = await routeMessage(text, routes, {
+          const decision = await routeChatMessage(text, routes, {
+            status,
             stickyRouteId: stickyRouteRef.current.get(conv.id) ?? null,
-            classify: makeClassifier(status, ctrl.signal),
+            signal: ctrl.signal,
           });
           if (decision && !ctrl.signal.aborted) {
             // MVP: ollama loads on demand and custom/openrouter are cloud, so

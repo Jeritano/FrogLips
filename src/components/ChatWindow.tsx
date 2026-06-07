@@ -524,7 +524,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           )}
         </div>
 
-        {showRoutes && <RoutesSettings onClose={() => setShowRoutes(false)} />}
+        {showRoutes && <RoutesSettings status={status} onClose={() => setShowRoutes(false)} />}
 
         <AgentToolbar
           conversation={conversation}

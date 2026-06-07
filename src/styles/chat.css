@@ -708,3 +708,65 @@
 .route-default { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-2xs); color: var(--text-2); white-space: nowrap; }
 .route-when-input, .route-kw-input { width: 100%; }
 .route-model-select, .route-preset-select { flex: 1; min-width: 0; }
+
+/* ── Router configurations editor ────────────────────────────────────────── */
+.routes-config-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.routes-config-select {
+  flex: 1;
+  min-width: 140px;
+  font-weight: 600;
+}
+.routes-config-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  padding: 4px 9px;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--border-hairline, #2a2a2a);
+  background: var(--surface-2);
+  color: var(--text-1);
+  cursor: pointer;
+}
+.routes-config-action:hover { background: var(--surface-3, var(--surface-2)); }
+.routes-config-action:disabled { opacity: 0.45; cursor: not-allowed; }
+.routes-config-action.danger { color: var(--danger, #d9534f); }
+.routes-config-name {
+  width: 100%;
+  font-size: var(--fs-md, 1rem);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.routes-notes { margin-bottom: 8px; }
+.routes-notes > summary {
+  cursor: pointer;
+  font-size: var(--fs-2xs);
+  color: var(--text-2);
+  user-select: none;
+}
+.routes-notes textarea { width: 100%; margin-top: 4px; }
+.route-utt-input { width: 100%; font-family: var(--font-mono, ui-monospace, monospace); font-size: var(--fs-2xs); }
+
+/* Test-routing box */
+.routes-tester {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--border-hairline, #2a2a2a);
+  border-radius: var(--radius-lg, 10px);
+  background: var(--surface-2);
+  display: grid;
+  gap: 6px;
+}
+.routes-tester-title { font-size: var(--fs-2xs); font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.routes-tester-row { display: flex; gap: 6px; }
+.routes-tester-row input { flex: 1; }
+.routes-tester-result { font-size: var(--fs-xs); color: var(--text-1); }
+.routes-tester-result.none { color: var(--text-3, #888); }
+.routes-tester-result code { color: var(--accent); }
+.routes-tester-reason { color: var(--text-3, #888); }
