@@ -323,13 +323,12 @@ const MIGRATIONS: &[Migration] = &[
             // agent_audit may not exist yet on a brand-new DB if the
             // first audit row hasn't been written; guard with table
             // existence so the migration doesn't error.
-            let has_audit: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master \
+            let has_audit: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
                      WHERE type='table' AND name='agent_audit'",
-                    [],
-                    |r| r.get(0),
-                )?;
+                [],
+                |r| r.get(0),
+            )?;
             if has_audit == 1 {
                 conn.execute_batch(
                     "CREATE INDEX IF NOT EXISTS idx_agent_audit_conv_ts
@@ -355,21 +354,19 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 12,
         apply: |conn| {
-            let has_audit: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master \
+            let has_audit: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
                      WHERE type='table' AND name='agent_audit'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_audit == 1 {
+                let already_has_col: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('agent_audit') \
+                         WHERE name='workflow_run_id'",
                     [],
                     |r| r.get(0),
                 )?;
-            if has_audit == 1 {
-                let already_has_col: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM pragma_table_info('agent_audit') \
-                         WHERE name='workflow_run_id'",
-                        [],
-                        |r| r.get(0),
-                    )?;
                 if already_has_col == 0 {
                     conn.execute_batch(
                         "ALTER TABLE agent_audit ADD COLUMN workflow_run_id INTEGER;",
@@ -392,13 +389,12 @@ const MIGRATIONS: &[Migration] = &[
                 "CREATE INDEX IF NOT EXISTS idx_memories_created
                     ON memories(created_at DESC);",
             )?;
-            let has_audit: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master \
+            let has_audit: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
                      WHERE type='table' AND name='agent_audit'",
-                    [],
-                    |r| r.get(0),
-                )?;
+                [],
+                |r| r.get(0),
+            )?;
             if has_audit == 1 {
                 conn.execute_batch(
                     "CREATE INDEX IF NOT EXISTS idx_agent_audit_ts_id
@@ -750,7 +746,6 @@ fn row_to_lora(r: &rusqlite::Row<'_>) -> rusqlite::Result<LoraMergeRowInternal> 
     })
 }
 
-
 /// Atomic "read + touch" for the dispatch-path LRU. Returns the row and
 /// updates `last_used_at` in a single transaction so two concurrent
 /// dispatches against the same sha can't see a stale clock value
@@ -795,7 +790,6 @@ pub(crate) fn lora_get_by_sha_and_touch_in(
     tx.commit()?;
     Ok(row)
 }
-
 
 fn build_pool() -> Result<Pool<SqliteManager>> {
     let path = db_path()?;
@@ -2250,8 +2244,8 @@ mod tests {
     fn get_by_sha_and_touch_returns_none_for_missing_row() {
         let mut conn = build_lora_merges_in_memory();
         let missing = "b".repeat(64);
-        let row = lora_get_by_sha_and_touch_in(&mut conn, &missing)
-            .expect("Ok variant for missing row");
+        let row =
+            lora_get_by_sha_and_touch_in(&mut conn, &missing).expect("Ok variant for missing row");
         assert!(row.is_none(), "missing sha must produce Ok(None)");
     }
 

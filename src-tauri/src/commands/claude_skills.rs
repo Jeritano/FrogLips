@@ -42,17 +42,15 @@ fn validate_skill_folder(folder: &str) -> Result<PathBuf, String> {
     // store their own — but reject /private, /var, /System, /Library
     // (system internals + browser caches that could exfiltrate
     // unrelated SKILL.md files placed by other apps).
-    let home_raw = dirs::home_dir().ok_or_else(|| {
-        "kind:bad_path | message:no home directory resolved".to_string()
-    })?;
+    let home_raw = dirs::home_dir()
+        .ok_or_else(|| "kind:bad_path | message:no home directory resolved".to_string())?;
     // Canonicalize BOTH sides — a host where $HOME itself contains a
     // symlink component (uncommon on macOS but possible after custom
     // user-dir setup) would false-reject every import without this.
     // Audit re-review LOW (2026-05-28).
     let home = std::fs::canonicalize(&home_raw).unwrap_or(home_raw);
-    let canonical = std::fs::canonicalize(&raw).map_err(|e| {
-        format!("kind:bad_path | message:folder path inaccessible: {e}")
-    })?;
+    let canonical = std::fs::canonicalize(&raw)
+        .map_err(|e| format!("kind:bad_path | message:folder path inaccessible: {e}"))?;
     if !canonical.starts_with(&home) {
         return Err(format!(
             "kind:bad_path | message:folder must live under {} (got {})",

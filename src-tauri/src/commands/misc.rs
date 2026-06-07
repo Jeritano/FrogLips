@@ -133,8 +133,24 @@ fn os_description() -> String {
 fn value_looks_secret(s: &str) -> bool {
     let t = s.trim();
     const PREFIXES: &[&str] = &[
-        "sk-", "sk_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "xoxb-", "xoxp-",
-        "xapp-", "glpat-", "AKIA", "ASIA", "AIza", "ya29.", "Bearer ", "-----BEGIN",
+        "sk-",
+        "sk_",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+        "xapp-",
+        "glpat-",
+        "AKIA",
+        "ASIA",
+        "AIza",
+        "ya29.",
+        "Bearer ",
+        "-----BEGIN",
         // JWT (base64url of `{"` ) — the near-universal bearer-token shape.
         "eyJ",
     ];
@@ -144,7 +160,8 @@ fn value_looks_secret(s: &str) -> bool {
     // scheme://user:pass@host — credentials embedded in a URL.
     if let Some(rest) = t.split("://").nth(1) {
         if let Some(authority) = rest.split('/').next() {
-            if authority.contains('@') && authority.split('@').next().is_some_and(|c| c.contains(':'))
+            if authority.contains('@')
+                && authority.split('@').next().is_some_and(|c| c.contains(':'))
             {
                 return true;
             }
@@ -584,8 +601,8 @@ pub fn custom_cancel(op_id: String) -> bool {
 
 /// Fetch the live OpenRouter model catalogue for the picker.
 #[tauri::command]
-pub async fn openrouter_list_models(
-) -> Result<Vec<crate::custom_backend::OpenRouterModel>, String> {
+pub async fn openrouter_list_models() -> Result<Vec<crate::custom_backend::OpenRouterModel>, String>
+{
     crate::custom_backend::list_openrouter_models().await
 }
 
@@ -834,11 +851,17 @@ mod redaction_tests {
         assert!(!s.contains("sk-secret123"), "api_key leaked");
         assert!(!s.contains("ghp_realtoken"), "args token leaked");
         assert!(!s.contains("ghp_envtoken"), "env token leaked");
-        assert!(!s.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"), "JWT leaked");
+        assert!(
+            !s.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+            "JWT leaked"
+        );
 
         // Non-secrets preserved (env blanket redacts REGION/DEBUG too — that's
         // acceptable over-redaction; the load-bearing checks are paths + names).
-        assert!(s.contains("/Users/joe/proj2"), "workspace path over-redacted");
+        assert!(
+            s.contains("/Users/joe/proj2"),
+            "workspace path over-redacted"
+        );
         assert!(s.contains("dark"), "theme over-redacted");
         assert!(s.contains("\"name\":\"gh\""), "server name over-redacted");
         // Non-secret positional args survive.

@@ -234,9 +234,12 @@ fn registry_client() -> Result<reqwest::Client, String> {
 /// Browse UI refetches on every tab switch / search keystroke; without this
 /// the proxy hammers the upstreams and PulseMCP's edge starts answering `410`
 /// (its rate-limit response). A short TTL keeps the catalogue fresh enough.
-static REGISTRY_CACHE: once_cell::sync::Lazy<
-    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Vec<McpRegistryEntry>)>>,
-> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+/// Cache map: source key → (inserted-at, full listing). Aliased so the static
+/// below isn't a clippy `type_complexity` violation.
+type RegistryCacheMap =
+    std::collections::HashMap<String, (std::time::Instant, Vec<McpRegistryEntry>)>;
+static REGISTRY_CACHE: once_cell::sync::Lazy<std::sync::Mutex<RegistryCacheMap>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 const REGISTRY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Browse MCP server registries. `source` = "official" (the canonical
@@ -440,7 +443,10 @@ async fn fetch_pulse() -> Result<Vec<McpRegistryEntry>, String> {
             id: name.clone(),
             title: name.clone(),
             name,
-            description: s["short_description"].as_str().unwrap_or_default().to_string(),
+            description: s["short_description"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
             transport: transport.to_string(),
             remote_url,
             package_registry,

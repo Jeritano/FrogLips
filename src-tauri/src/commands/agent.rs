@@ -283,7 +283,11 @@ pub async fn agent_list_dir(path: String) -> Result<agent::DirListing, String> {
 /// the source of truth on the consume side; the matching mint side lives
 /// in `binding_for`. Both MUST produce the same canonical string for the
 /// same logical payload — drift = silent reject of every legitimate call.
-pub(crate) fn verify_bound(tool: &str, approval: &str, payload: ApprovalPayload) -> Result<(), String> {
+pub(crate) fn verify_bound(
+    tool: &str,
+    approval: &str,
+    payload: ApprovalPayload,
+) -> Result<(), String> {
     let Some(expected) = binding_for(tool, &payload) else {
         return Err(format!(
             "internal: tool {tool} has no binding declared but expected one"

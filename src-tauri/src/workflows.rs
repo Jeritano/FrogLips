@@ -1261,7 +1261,12 @@ mod tests {
         let off = 3600; // UTC+1
 
         // Just before 08:00 UTC → not due yet.
-        assert!(!schedule_is_due_at_offset(nine, day + 8 * 3600 - 60, None, off));
+        assert!(!schedule_is_due_at_offset(
+            nine,
+            day + 8 * 3600 - 60,
+            None,
+            off
+        ));
         // At 08:00 UTC (== 09:00 local) → first fire is due.
         assert!(schedule_is_due_at_offset(nine, day + 8 * 3600, None, off));
         // Already fired this local day → not due again.

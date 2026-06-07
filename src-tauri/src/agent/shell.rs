@@ -132,8 +132,7 @@ pub async fn run_code(
         seq,
         ext
     ));
-    std::fs::write(&path, code.as_bytes())
-        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+    std::fs::write(&path, code.as_bytes()).map_err(|e| err_string(ToolError::io(e.to_string())))?;
 
     let run_path = path.clone();
     let cwd = workspace_root_clone();

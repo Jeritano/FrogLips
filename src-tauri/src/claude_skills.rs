@@ -296,10 +296,7 @@ fn validate_body(body: &str) -> Result<()> {
     if body.len() > MAX_BODY_BYTES {
         return Err(err(
             "body_too_large",
-            format!(
-                "body_md is {} bytes (max {MAX_BODY_BYTES})",
-                body.len()
-            ),
+            format!("body_md is {} bytes (max {MAX_BODY_BYTES})", body.len()),
         ));
     }
     Ok(())
@@ -346,8 +343,7 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
 
     let allowed_tools_json = match &parsed.allowed_tools {
         Some(tools) => Some(
-            serde_json::to_string(tools)
-                .context("failed to serialize allowed-tools to JSON")?,
+            serde_json::to_string(tools).context("failed to serialize allowed-tools to JSON")?,
         ),
         None => None,
     };
@@ -361,7 +357,13 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
         .query_row(
             "SELECT id, enabled, pinned FROM claude_skills WHERE name = ?1",
             params![parsed.name],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, i64>(2)? != 0)),
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            },
         )
         .ok();
 
@@ -741,17 +743,11 @@ mod tests {
         let mut conn = fresh_db();
         let dir = tempfile::tempdir().unwrap();
         // Space in name → bad_name.
-        write_skill(
-            &dir,
-            "---\nname: bad name\ndescription: d\n---\n\nbody\n",
-        );
+        write_skill(&dir, "---\nname: bad name\ndescription: d\n---\n\nbody\n");
         let e = import_into(&mut conn, dir.path(), false, 100).unwrap_err();
         assert_eq!(err_kind(&e), Some("bad_name"));
         // Slash → bad_name.
-        write_skill(
-            &dir,
-            "---\nname: bad/name\ndescription: d\n---\n\nbody\n",
-        );
+        write_skill(&dir, "---\nname: bad/name\ndescription: d\n---\n\nbody\n");
         let e = import_into(&mut conn, dir.path(), false, 100).unwrap_err();
         assert_eq!(err_kind(&e), Some("bad_name"));
         // 65 chars → bad_name.
@@ -766,9 +762,7 @@ mod tests {
         let too_long_desc = "d".repeat(513);
         write_skill(
             &dir,
-            &format!(
-                "---\nname: ok\ndescription: {too_long_desc}\n---\n\nbody\n"
-            ),
+            &format!("---\nname: ok\ndescription: {too_long_desc}\n---\n\nbody\n"),
         );
         let e = import_into(&mut conn, dir.path(), false, 100).unwrap_err();
         assert_eq!(err_kind(&e), Some("bad_description"));
@@ -906,9 +900,7 @@ mod tests {
         assert_eq!(all, vec!["alpha", "beta", "gamma"]);
         // enabled_only=true → no beta.
         let mut stmt = conn
-            .prepare(
-                "SELECT name FROM claude_skills WHERE enabled = 1 ORDER BY name ASC",
-            )
+            .prepare("SELECT name FROM claude_skills WHERE enabled = 1 ORDER BY name ASC")
             .unwrap();
         let on: Vec<String> = stmt
             .query_map([], |r| r.get::<_, String>(0))
@@ -1038,21 +1030,15 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM claude_skills", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
-        conn.execute(
-            "DELETE FROM claude_skills WHERE name = 'my-skill'",
-            [],
-        )
-        .unwrap();
+        conn.execute("DELETE FROM claude_skills WHERE name = 'my-skill'", [])
+            .unwrap();
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM claude_skills", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
         // Deleting an already-missing row is a no-op.
         let changed = conn
-            .execute(
-                "DELETE FROM claude_skills WHERE name = 'missing'",
-                [],
-            )
+            .execute("DELETE FROM claude_skills WHERE name = 'missing'", [])
             .unwrap();
         assert_eq!(changed, 0);
     }
@@ -1083,15 +1069,10 @@ mod tests {
             )
             .unwrap();
         let rows: Vec<(String, String)> = stmt
-            .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
-        assert_eq!(
-            rows,
-            vec![("alpha".to_string(), "alpha body".to_string())]
-        );
+        assert_eq!(rows, vec![("alpha".to_string(), "alpha body".to_string())]);
     }
 }

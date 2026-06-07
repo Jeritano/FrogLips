@@ -121,8 +121,8 @@ pub fn backup_database(dest: &Path) -> Result<()> {
         // discipline carries over.
         dst.execute_batch("PRAGMA foreign_keys=ON;")
             .context("set foreign_keys on backup destination")?;
-        let backup = rusqlite::backup::Backup::new(&src, &mut dst)
-            .context("initialize online backup")?;
+        let backup =
+            rusqlite::backup::Backup::new(&src, &mut dst).context("initialize online backup")?;
         backup
             .run_to_completion(64, std::time::Duration::from_millis(50), None)
             .context("run online backup")?;

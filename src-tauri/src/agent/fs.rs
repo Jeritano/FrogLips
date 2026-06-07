@@ -262,8 +262,8 @@ pub(super) fn within_workspace(p: &Path) -> bool {
 /// readable directory (e.g. `~/.ssh`, `~/.aws`), whose contents could then be
 /// exfiltrated through `rag_search`.
 pub fn confine_ingest_root(root: &Path) -> Result<PathBuf, String> {
-    let canon = std::fs::canonicalize(root)
-        .map_err(|e| format!("ingest root not accessible: {e}"))?;
+    let canon =
+        std::fs::canonicalize(root).map_err(|e| format!("ingest root not accessible: {e}"))?;
     if !within_workspace(&canon) {
         return Err("ingest root is outside the workspace".into());
     }
@@ -862,7 +862,10 @@ fn walk_search(
                         // straddling byte 1024 is common in minified JS / unicode
                         // comments), which would crash the agent_search_files
                         // task. MED (2026-05-30).
-                        trimmed.truncate(super::shell::safe_truncate_idx(&trimmed, MAX_GREP_LINE_BYTES));
+                        trimmed.truncate(super::shell::safe_truncate_idx(
+                            &trimmed,
+                            MAX_GREP_LINE_BYTES,
+                        ));
                         trimmed.push('…');
                     }
                     hits.push(SearchHit {

@@ -136,7 +136,11 @@ fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     // network chunk carried many SSE frames (drain memmoves the whole tail per
     // line). PERF (2026-05-30).
     let Some(last_nl) = buf.rfind('\n') else {
-        return StreamProgress { deltas, reasoning, done };
+        return StreamProgress {
+            deltas,
+            reasoning,
+            done,
+        };
     };
     for line in buf[..=last_nl].split('\n') {
         let line = line.trim();
@@ -173,7 +177,11 @@ fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
         }
     }
     buf.drain(..=last_nl);
-    StreamProgress { deltas, reasoning, done }
+    StreamProgress {
+        deltas,
+        reasoning,
+        done,
+    }
 }
 
 /// Well-known id for the built-in OpenRouter backend. Unlike user-defined
@@ -241,7 +249,9 @@ fn reject_ssrf_base(base: &str) -> Result<()> {
         // never drift.
         let blocked = custom_ip_blocked(&ip);
         if blocked {
-            return Err(anyhow!("custom backend host {host} is not an allowed address"));
+            return Err(anyhow!(
+                "custom backend host {host} is not an allowed address"
+            ));
         }
     } else {
         // Hostname — block the well-known cloud-metadata names.
@@ -308,7 +318,9 @@ async fn pinned_client_for(base: &str) -> Result<reqwest::Client> {
 
     let addrs: Vec<SocketAddr> = if let Ok(ip) = bare.parse::<IpAddr>() {
         if custom_ip_blocked(&ip) {
-            return Err(anyhow!("custom backend host {host} is not an allowed address"));
+            return Err(anyhow!(
+                "custom backend host {host} is not an allowed address"
+            ));
         }
         vec![SocketAddr::new(ip, port)]
     } else {
@@ -462,16 +474,15 @@ async fn chat_stream_inner(
                 if take > 0 {
                     let _ = app.emit(
                         &format!("custom-chunk:{op_id}"),
-                        CustomChunk { delta: delta[..take].to_string() },
+                        CustomChunk {
+                            delta: delta[..take].to_string(),
+                        },
                     );
                 }
                 return Ok(());
             }
             acc_len += delta.len();
-            let _ = app.emit(
-                &format!("custom-chunk:{op_id}"),
-                CustomChunk { delta },
-            );
+            let _ = app.emit(&format!("custom-chunk:{op_id}"), CustomChunk { delta });
         }
         // Stash reasoning (capped) while no content has arrived — fallback only.
         if !any_content && reasoning_acc.len() < REPLY_MAX_BYTES {
@@ -497,7 +508,9 @@ async fn chat_stream_inner(
         if take > 0 {
             let _ = app.emit(
                 &format!("custom-chunk:{op_id}"),
-                CustomChunk { delta: reasoning_acc[..take].to_string() },
+                CustomChunk {
+                    delta: reasoning_acc[..take].to_string(),
+                },
             );
         }
     }
@@ -566,8 +579,14 @@ pub async fn list_openrouter_models() -> Result<Vec<OpenRouterModel>, String> {
 
     let mut out = Vec::with_capacity(data.len());
     for m in data {
-        let Some(id) = m.get("id").and_then(|x| x.as_str()) else { continue };
-        let name = m.get("name").and_then(|x| x.as_str()).unwrap_or(id).to_string();
+        let Some(id) = m.get("id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let name = m
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or(id)
+            .to_string();
         let context_length = m
             .get("context_length")
             .and_then(|x| x.as_u64())
@@ -778,11 +797,11 @@ mod tests {
     fn ssrf_guard_blocks_metadata_and_linklocal() {
         for base in [
             "http://169.254.169.254/latest/meta-data/", // AWS/GCP metadata
-            "http://169.254.0.1/",                       // link-local
-            "http://0.0.0.0:8000/",                      // unspecified
-            "http://metadata.google.internal/",          // GCP metadata host
-            "http://metadata/computeMetadata/v1/",       // short metadata host
-            "http://[fe80::1]/",                          // IPv6 link-local
+            "http://169.254.0.1/",                      // link-local
+            "http://0.0.0.0:8000/",                     // unspecified
+            "http://metadata.google.internal/",         // GCP metadata host
+            "http://metadata/computeMetadata/v1/",      // short metadata host
+            "http://[fe80::1]/",                        // IPv6 link-local
         ] {
             assert!(reject_ssrf_base(base).is_err(), "should block {base}");
         }
@@ -792,7 +811,10 @@ mod tests {
     fn build_body_omits_absent_params() {
         let body = build_request_body(
             "m",
-            &[ChatMessage { role: "user".into(), content: "hi".into() }],
+            &[ChatMessage {
+                role: "user".into(),
+                content: "hi".into(),
+            }],
             &CustomChatParams::default(),
         );
         let obj = body.as_object().unwrap();
@@ -808,7 +830,11 @@ mod tests {
         let body = build_request_body(
             "m",
             &[],
-            &CustomChatParams { temperature: Some(0.5), top_p: Some(0.9), max_tokens: Some(256) },
+            &CustomChatParams {
+                temperature: Some(0.5),
+                top_p: Some(0.9),
+                max_tokens: Some(256),
+            },
         );
         let obj = body.as_object().unwrap();
         // f32 → JSON f64 carries a tiny representation delta, so compare

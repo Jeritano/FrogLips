@@ -158,8 +158,7 @@ pub fn run() {
                         // Remote (streamable-HTTP) server: token comes from the
                         // Keychain (account mcp:<name>), never settings.json.
                         let start_res = if let Some(url) = cfg.url.clone() {
-                            let token =
-                                crate::settings::keychain_get(&format!("mcp:{}", cfg.name));
+                            let token = crate::settings::keychain_get(&format!("mcp:{}", cfg.name));
                             tokio::time::timeout(
                                 Duration::from_secs(15),
                                 mcp::start_remote_server(cfg.name, url, token),

@@ -179,8 +179,12 @@ fn validate_steps_json(steps_json: &str) -> Result<()> {
             format!("steps_json exceeds {MAX_STEPS_JSON_BYTES} bytes"),
         ));
     }
-    let value: serde_json::Value = serde_json::from_str(steps_json)
-        .map_err(|e| err("invalid_steps", format!("steps_json is not valid JSON: {e}")))?;
+    let value: serde_json::Value = serde_json::from_str(steps_json).map_err(|e| {
+        err(
+            "invalid_steps",
+            format!("steps_json is not valid JSON: {e}"),
+        )
+    })?;
     let arr = value
         .as_array()
         .ok_or_else(|| err("invalid_steps", "steps_json must be a JSON array"))?;
@@ -219,12 +223,7 @@ fn validate_steps_json(steps_json: &str) -> Result<()> {
                     format!("step {i} 'args' must be an object"),
                 ))
             }
-            None => {
-                return Err(err(
-                    "invalid_steps",
-                    format!("step {i} missing 'args'"),
-                ))
-            }
+            None => return Err(err("invalid_steps", format!("step {i} missing 'args'"))),
         }
     }
     Ok(())
@@ -285,7 +284,10 @@ pub fn save(
                 drop(tx);
                 return Err(err(
                     "name_collision",
-                    format!("skill '{}' already exists for workflow {}", name, workflow_id),
+                    format!(
+                        "skill '{}' already exists for workflow {}",
+                        name, workflow_id
+                    ),
                 ));
             }
             // Push the prior row to history before overwriting.
@@ -763,9 +765,7 @@ mod tests {
         save_into(&mut conn, 1, "beta", "b", GOOD_STEPS, false, 101).unwrap();
         save_into(&mut conn, 2, "gamma", "g", GOOD_STEPS, false, 102).unwrap();
         let mut stmt = conn
-            .prepare(
-                "SELECT name FROM workflow_skills WHERE workflow_id = ?1 ORDER BY name ASC",
-            )
+            .prepare("SELECT name FROM workflow_skills WHERE workflow_id = ?1 ORDER BY name ASC")
             .unwrap();
         let names_1: Vec<String> = stmt
             .query_map(params![1_i64], |r| r.get::<_, String>(0))
@@ -873,7 +873,8 @@ mod tests {
         save_into(&mut conn, 1, "beta", "b", GOOD_STEPS, false, 101).unwrap();
         save_into(&mut conn, 2, "gamma", "g", GOOD_STEPS, false, 102).unwrap();
         // FK cascade must drop workflow 1's skills.
-        conn.execute("DELETE FROM workflows WHERE id=1", []).unwrap();
+        conn.execute("DELETE FROM workflows WHERE id=1", [])
+            .unwrap();
         let n_wf1: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM workflow_skills WHERE workflow_id=1",

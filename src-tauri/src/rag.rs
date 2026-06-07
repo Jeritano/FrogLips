@@ -27,10 +27,10 @@ use crate::history::{get_db, now_unix};
 /// Per-corpus-name mutex registry. Two concurrent ingest calls for the
 /// same corpus name would otherwise race the wipe + insert: the
 /// transaction wrap in pass 5 narrowed but didn't eliminate the window
-/// (call A finishes wipe + first inserts, call B then runs its own wipe
-/// + clobbers A's just-inserted chunks). Per-name lock serializes the
-/// full ingest pipeline for the same corpus. Different corpora still
-/// proceed in parallel. Audit re-review MEDIUM (2026-05-28).
+/// (call A finishes its wipe and first inserts, then call B runs its own
+/// wipe and clobbers A's just-inserted chunks). The per-name lock
+/// serializes the full ingest pipeline for one corpus; different corpora
+/// still proceed in parallel. Audit re-review MEDIUM (2026-05-28).
 static INGEST_LOCKS: Lazy<PLMutex<HashMap<String, Arc<PLMutex<()>>>>> =
     Lazy::new(|| PLMutex::new(HashMap::new()));
 
@@ -473,11 +473,9 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         // an id strictly greater than this — the discriminator for the final
         // swap. Global MAX is intentional (not per-corpus): it's a lower bound
         // that holds even if a concurrent ingest of another corpus interleaves.
-        let wm: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(id), 0) FROM rag_chunks",
-            [],
-            |r| r.get(0),
-        )?;
+        let wm: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM rag_chunks", [], |r| {
+            r.get(0)
+        })?;
         tx.commit()?;
         (id, wm)
     };
@@ -900,7 +898,11 @@ mod tests {
         };
 
         // First ingest — a distinctive token only in this generation.
-        std::fs::write(&file, "alphaunique alphaunique alphaunique filler text here").unwrap();
+        std::fs::write(
+            &file,
+            "alphaunique alphaunique alphaunique filler text here",
+        )
+        .unwrap();
         let r1 = ingest_folder(opts()).expect("first ingest");
         assert!(r1.chunks_created >= 1);
         let c1 = list_corpora()

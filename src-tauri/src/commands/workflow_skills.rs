@@ -19,8 +19,10 @@ pub async fn workflow_skill_save(
     overwrite: Option<bool>,
 ) -> Result<i64, String> {
     let overwrite = overwrite.unwrap_or(false);
-    blocking(move || workflow_skills::save(workflow_id, &name, &description, &steps_json, overwrite))
-        .await
+    blocking(move || {
+        workflow_skills::save(workflow_id, &name, &description, &steps_json, overwrite)
+    })
+    .await
 }
 
 #[tauri::command]

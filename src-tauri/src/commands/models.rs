@@ -17,8 +17,7 @@ use crate::{gguf, models, native_inference, ollama_library};
 /// and briefly doubling resident weights. This gate makes loads
 /// strictly serial; a second caller waits, then sees the now-current
 /// model and short-circuits. Audit HIGH (2026-05-28).
-static NATIVE_LOAD_GATE: Lazy<tokio::sync::Mutex<()>> =
-    Lazy::new(|| tokio::sync::Mutex::new(()));
+static NATIVE_LOAD_GATE: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
 #[derive(serde::Serialize)]
 pub struct AllModels {
@@ -188,10 +187,7 @@ mod strip_tests {
             clean.contains("pulling 4c27e0f5b5ad: 100%"),
             "lost final line: {clean:?}"
         );
-        assert!(
-            !clean.contains("50%"),
-            "kept superseded frame: {clean:?}"
-        );
+        assert!(!clean.contains("50%"), "kept superseded frame: {clean:?}");
     }
 
     #[test]
@@ -211,9 +207,15 @@ mod strip_tests {
             .count();
         assert_eq!(digest_frames, 1, "expected one collapsed frame: {clean:?}");
         assert!(clean.contains("100%"), "lost final %: {clean:?}");
-        assert!(!clean.contains("62%") && !clean.contains("63%"), "kept superseded: {clean:?}");
+        assert!(
+            !clean.contains("62%") && !clean.contains("63%"),
+            "kept superseded: {clean:?}"
+        );
         // The manifest spinner de-dups to a single line too.
-        let manifest = clean.lines().filter(|l| l.trim() == "pulling manifest").count();
+        let manifest = clean
+            .lines()
+            .filter(|l| l.trim() == "pulling manifest")
+            .count();
         assert!(manifest <= 1, "manifest not de-duped: {clean:?}");
     }
 
@@ -458,9 +460,10 @@ async fn run_ollama_signin() -> Result<(), String> {
             })
         }
         Ok(Err(e)) => Err(format!("could not launch ollama signin: {e}")),
-        Err(_) => {
-            Err("sign-in not completed within 5 minutes — finish the login in your browser, then retry".to_string())
-        }
+        Err(_) => Err(
+            "sign-in not completed within 5 minutes — finish the login in your browser, then retry"
+                .to_string(),
+        ),
     }
 }
 
@@ -542,7 +545,10 @@ pub async fn native_load_model(
     // unloaded), skip the reload entirely and re-broadcast `loaded`.
     {
         let g = state.lock().await;
-        if g.as_ref().map(|rt| rt.model_id() == model_id).unwrap_or(false) {
+        if g.as_ref()
+            .map(|rt| rt.model_id() == model_id)
+            .unwrap_or(false)
+        {
             let _ = app.emit("native-loaded", &model_id);
             return Ok(());
         }
@@ -653,7 +659,10 @@ pub async fn native_chat_stream(
             .into_iter()
             .map(|m| (m.role, m.content))
             .collect();
-        match rt.chat_stream(msgs, opts, Box::new(on_chunk), cancel.clone()).await {
+        match rt
+            .chat_stream(msgs, opts, Box::new(on_chunk), cancel.clone())
+            .await
+        {
             Ok(final_text) => {
                 let _ = app.emit(&format!("native-done:{}", args.op_id), &final_text);
                 Ok(final_text)
@@ -693,7 +702,10 @@ pub async fn native_chat_stream(
         .await
         {
             Ok(turn) => {
-                let _ = app.emit(&format!("native-toolcalls:{}", args.op_id), &turn.tool_calls);
+                let _ = app.emit(
+                    &format!("native-toolcalls:{}", args.op_id),
+                    &turn.tool_calls,
+                );
                 let _ = app.emit(&format!("native-done:{}", args.op_id), &turn.content);
                 Ok(turn.content)
             }

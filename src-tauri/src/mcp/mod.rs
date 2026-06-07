@@ -374,7 +374,11 @@ impl ServerHandle {
                 let resp = timeout(RPC_TIMEOUT, req.send())
                     .await
                     .map_err(|_| {
-                        anyhow!("rpc '{}' timed out after {}s", method, RPC_TIMEOUT.as_secs())
+                        anyhow!(
+                            "rpc '{}' timed out after {}s",
+                            method,
+                            RPC_TIMEOUT.as_secs()
+                        )
                     })?
                     .with_context(|| format!("remote rpc '{method}' transport error"))?;
                 // Capture / refresh the session id (servers set it on `initialize`).
@@ -956,7 +960,9 @@ pub(crate) async fn build_pinned_client(url: &str) -> Result<reqwest::Client> {
     if !pin_addrs.is_empty() {
         builder = builder.resolve_to_addrs(&pin_host, &pin_addrs);
     }
-    builder.build().map_err(|e| anyhow!("build http client: {e}"))
+    builder
+        .build()
+        .map_err(|e| anyhow!("build http client: {e}"))
 }
 
 /// Cheap, network-free pre-validation of a remote MCP URL: scheme + literal-IP
@@ -1349,7 +1355,7 @@ mod tests {
         assert!(blocked("224.0.0.1")); // multicast
         assert!(blocked("fe80::1")); // v6 link-local
         assert!(blocked("::")); // v6 unspecified
-        // Allowed by design: loopback + RFC1918 LAN + public.
+                                // Allowed by design: loopback + RFC1918 LAN + public.
         assert!(!blocked("127.0.0.1"));
         assert!(!blocked("10.0.0.1"));
         assert!(!blocked("192.168.1.50"));
@@ -1360,7 +1366,8 @@ mod tests {
 
     #[test]
     fn sse_parse_finds_matching_id() {
-        let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"ok\":true}}\n\n";
+        let body =
+            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"ok\":true}}\n\n";
         let v = parse_sse_for_id(body, 3).unwrap();
         assert_eq!(v["result"]["ok"], true);
         // Wrong id → none.

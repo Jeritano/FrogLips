@@ -262,6 +262,10 @@ pub async fn modelscope_search(query: Option<String>) -> Result<Vec<MsModel>, St
         });
     }
     // Most-downloaded first; stable tiebreak on repo.
-    out.sort_by(|a, b| b.downloads.cmp(&a.downloads).then_with(|| a.repo.cmp(&b.repo)));
+    out.sort_by(|a, b| {
+        b.downloads
+            .cmp(&a.downloads)
+            .then_with(|| a.repo.cmp(&b.repo))
+    });
     Ok(out)
 }

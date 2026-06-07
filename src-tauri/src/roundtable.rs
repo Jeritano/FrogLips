@@ -124,19 +124,20 @@ pub fn save_run(
 pub fn list_runs(table_id: Option<&str>) -> Result<Vec<RoundtableRunSummary>> {
     let conn = get_db()?;
     let mut out = Vec::new();
-    let collect = |rows: &mut rusqlite::Rows<'_>, out: &mut Vec<RoundtableRunSummary>| -> Result<()> {
-        while let Some(r) = rows.next()? {
-            match row_to_summary(r) {
-                Ok(s) => out.push(s),
-                Err(e) => crate::diagnostics::warn_with(
-                    "roundtable",
-                    "skipping unreadable outcome row",
-                    serde_json::json!({ "error": e.to_string() }),
-                ),
+    let collect =
+        |rows: &mut rusqlite::Rows<'_>, out: &mut Vec<RoundtableRunSummary>| -> Result<()> {
+            while let Some(r) = rows.next()? {
+                match row_to_summary(r) {
+                    Ok(s) => out.push(s),
+                    Err(e) => crate::diagnostics::warn_with(
+                        "roundtable",
+                        "skipping unreadable outcome row",
+                        serde_json::json!({ "error": e.to_string() }),
+                    ),
+                }
             }
-        }
-        Ok(())
-    };
+            Ok(())
+        };
     match table_id {
         Some(tid) => {
             let mut stmt = conn.prepare(
@@ -230,12 +231,20 @@ mod tests {
         )
         .unwrap();
         let n: i64 = c
-            .query_row("SELECT count(*) FROM roundtable_runs WHERE table_id = 't1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM roundtable_runs WHERE table_id = 't1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(n, RUNS_RETAIN);
         // The oldest (created_at 0..4) should be gone; newest (created_at high) kept.
         let oldest_kept: i64 = c
-            .query_row("SELECT min(created_at) FROM roundtable_runs WHERE table_id = 't1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT min(created_at) FROM roundtable_runs WHERE table_id = 't1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(oldest_kept, 5);
     }

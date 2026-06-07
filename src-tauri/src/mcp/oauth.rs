@@ -209,7 +209,12 @@ async fn register(
         bail!(
             "dynamic client registration failed: {} {}",
             r.status(),
-            r.text().await.unwrap_or_default().chars().take(300).collect::<String>()
+            r.text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(300)
+                .collect::<String>()
         );
     }
     let resp = r.json::<Resp>().await.context("DCR response")?;
@@ -239,7 +244,8 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
     let (verifier, challenge) = pkce()?;
     let state = random_b64(16)?;
 
-    let mut auth_url = url::Url::parse(&meta.authorization_endpoint).context("parse auth endpoint")?;
+    let mut auth_url =
+        url::Url::parse(&meta.authorization_endpoint).context("parse auth endpoint")?;
     {
         let mut q = auth_url.query_pairs_mut();
         q.append_pair("response_type", "code")
@@ -287,7 +293,12 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
         bail!(
             "token exchange failed: {} {}",
             r.status(),
-            r.text().await.unwrap_or_default().chars().take(300).collect::<String>()
+            r.text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(300)
+                .collect::<String>()
         );
     }
     let tok: TokenResp = r.json().await.context("token response")?;
@@ -349,7 +360,7 @@ async fn accept_callback(listener: tokio::net::TcpListener) -> Result<(String, S
         let mut raw: Vec<u8> = Vec::with_capacity(8192);
         let mut chunk = [0u8; 8192];
         loop {
-            if raw.windows(2).any(|w| w == b"\r\n") || raw.iter().any(|&b| b == b'\n') {
+            if raw.windows(2).any(|w| w == b"\r\n") || raw.contains(&b'\n') {
                 break;
             }
             match sock.read(&mut chunk).await {
@@ -383,7 +394,9 @@ async fn accept_callback(listener: tokio::net::TcpListener) -> Result<(String, S
         if code.is_none() && err.is_none() {
             // Not the OAuth redirect (e.g. /favicon.ico) — 404 and keep waiting.
             let _ = sock
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
                 .await;
             let _ = sock.shutdown().await;
             continue;
@@ -399,7 +412,10 @@ async fn accept_callback(listener: tokio::net::TcpListener) -> Result<(String, S
         if let Some(e) = err {
             bail!("authorization denied: {e}");
         }
-        return Ok((code.context("callback missing code")?, state.unwrap_or_default()));
+        return Ok((
+            code.context("callback missing code")?,
+            state.unwrap_or_default(),
+        ));
     }
 }
 
@@ -428,8 +444,14 @@ mod tests {
 
     #[test]
     fn origin_strips_path_keeps_port() {
-        assert_eq!(origin_of("https://api.example.ai/mcp").unwrap(), "https://api.example.ai");
-        assert_eq!(origin_of("http://127.0.0.1:9000/mcp").unwrap(), "http://127.0.0.1:9000");
+        assert_eq!(
+            origin_of("https://api.example.ai/mcp").unwrap(),
+            "https://api.example.ai"
+        );
+        assert_eq!(
+            origin_of("http://127.0.0.1:9000/mcp").unwrap(),
+            "http://127.0.0.1:9000"
+        );
     }
 
     #[test]
@@ -439,6 +461,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.authorization_endpoint, "https://a/authorize");
-        assert_eq!(m.registration_endpoint.as_deref(), Some("https://a/register"));
+        assert_eq!(
+            m.registration_endpoint.as_deref(),
+            Some("https://a/register")
+        );
     }
 }

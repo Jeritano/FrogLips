@@ -45,7 +45,10 @@ impl Drop for Inner {
     fn drop(&mut self) {
         crate::diagnostics::info(
             "native-inference",
-            &format!("dropping resident native model '{}' (GPU weights freed)", self.model_id),
+            &format!(
+                "dropping resident native model '{}' (GPU weights freed)",
+                self.model_id
+            ),
         );
     }
 }
@@ -456,7 +459,8 @@ impl NativeBackend for NativeRuntime {
         cancel: CancellationToken,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ChatTurn>> + Send + '_>> {
         Box::pin(async move {
-            NativeRuntime::chat_stream_tools(self, messages, tools, sampling, on_chunk, cancel).await
+            NativeRuntime::chat_stream_tools(self, messages, tools, sampling, on_chunk, cancel)
+                .await
         })
     }
 }
