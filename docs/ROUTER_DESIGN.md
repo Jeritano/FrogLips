@@ -1,6 +1,6 @@
 # Multi-Model Router — Architecture & Design
 
-Status: **design + MVP** (2026-06). Owner: Froglips.
+Status: **shipped — MVP + Phase 2** (2026-06). Owner: Froglips.
 
 A chat layer that, per message, picks the best-fit configured model/role and runs
 it — so a "web research" model, a "coding" model, and a "reasoning" model can all
@@ -111,17 +111,21 @@ current route as context: "currently using X; switch only if clearly better."
 
 ## 7. Phased build
 
-1. **MVP** — keyword + LLM-classifier (Stages 0/1/3/4), reuse `runRouter`, route editor,
-   live status + per-message model chip, sticky route per conversation. Plain-chat path
-   first (agent mode keeps the active model in MVP).
-2. **+ Semantic Stage 2** — precompute prototypes, embed query, threshold + margin. Cuts
-   most decisions to ~50 ms.
-3. **+ Hysteresis + cold-load disclosure** — the polish that stops it being annoying.
+1. **MVP** ✅ shipped — keyword + LLM-classifier (Stages 0/1/3/4), route editor, live
+   status + per-message model chip, sticky route per conversation. Plain-chat path
+   (agent mode keeps the active model). Classifier disables thinking (`think:false`)
+   so reasoning models return a clean route number.
+2. **+ Semantic Stage 2** ✅ shipped — per-route `utterances` → cached prototype, embed
+   query, cosine with threshold + margin; falls through to the classifier on ambiguity
+   or when no embedder is present. Plus **Router configurations** (named/noted bundles
+   of routes, switchable; legacy flat list auto-migrates) and a **Test routing** box.
+3. **+ Hysteresis + cold-load disclosure** — sticky bias is in (the classifier + Stage 2
+   honor the current route); `/api/ps` cold-load disclosure still TODO.
 4. **+ Per-route cascade** — escalate local→cloud on low critic score (reuse Cascade
-   node).
+   node). TODO.
 5. **+ Learned router (optional)** — log every decision (query, scores, route, override);
    later bootstrap a RouteLLM-style matrix-factorization/BERT router from real usage.
-   This is the only path from cold-start heuristics to a trained router.
+   This is the only path from cold-start heuristics to a trained router. TODO.
 
 ## 8. Calibration & evaluation
 

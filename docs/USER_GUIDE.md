@@ -91,6 +91,43 @@ Open from the sidebar's ⭐ button. Two tabs:
 
 You can delete, promote pending → active, or add manually.
 
+## 5b. Multi-model auto-routing
+
+Instead of one active model, you can configure several specialists and let
+Froglips pick the best one for each message.
+
+**Turn it on:** in the chat, toggle **Auto-route** (above the composer). A chip
+on each answer shows which route handled it — `→ Coder · qwen3-coder ·
+semantic`.
+
+**Manage routes:** click **Manage routes**. A *route* binds a **model +
+backend + role** to:
+- a **"when to use"** description (read by the classifier),
+- optional **keywords** for an instant fast-path (e.g. ` ``` `, `error`),
+- optional **example messages (utterances)** — embedded locally so similar
+  messages match by meaning in a few milliseconds, no LLM call.
+
+Mark one route as the **default** fallback.
+
+**How a message is routed:** keyword fast-path → semantic match (utterances) →
+small-LLM classifier on the active model → default. The first stages are
+near-instant; the classifier only runs when the faster stages are unsure. If
+nothing routes, the active model answers (no failure).
+
+**Configurations:** save a whole set of routes as a named **configuration**
+(e.g. "Hybrid cloud+local", "All-local private"), add **notes**, and switch
+between them in one click. Duplicate one to fork a variant.
+
+**Test routing:** the **Test routing** box runs the real router on a message you
+type and shows the chosen route, method, and similarity score — tune your
+utterances/keywords without sending a chat.
+
+**Notes:** fast multi-model switching works best on Ollama (loads models on
+demand) and cloud backends; MLX/native routes only switch to the already-loaded
+model. Semantic matching needs an embedding model (`nomic-embed-text`); without
+one it cleanly falls back to keyword + classifier. Agent mode keeps the active
+model (routing applies to plain chat).
+
 ## 6. Agent mode
 
 Toggle the **Agent** button next to the chat input. Agent mode runs on

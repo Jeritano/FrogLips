@@ -4,6 +4,24 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+### Multi-model chat router
+- **Auto-route** — a chat toggle that picks the best-fit configured model per
+  message: keyword fast-path → semantic match → small-LLM classifier → default.
+  Each answer is attributed to the model that produced it (transcript dividers +
+  a live "→ route · model · method" chip); falls back to the active model on any
+  failure. Agent mode keeps the active model.
+- **Router configurations** — named, note-able bundles of routes ("Hybrid
+  cloud+local", "All-local private", …); switch the whole set in one click.
+  Stored locally; a legacy flat route list auto-migrates to a "Default" config.
+- **Semantic stage** — each route carries example *utterances*, embedded (via the
+  local `nomic-embed-text` path) into a cached prototype; a message is matched by
+  cosine in ~10-100 ms, skipping the LLM classifier for clear cases. The
+  classifier disables thinking (`think:false`) so reasoning models don't return
+  empty replies.
+- **Test routing box** — type a message and see which route + model it would take
+  (with the cosine score) without sending a real chat.
+- Architecture + phased plan: `docs/ROUTER_DESIGN.md`.
+
 ### Flows — orchestration nodes (make small models punch up)
 - **New node types** on the workflow canvas — a card can now be more than a
   single agent pass. Pick a **Node type** in the card editor:
