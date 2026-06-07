@@ -72,10 +72,20 @@ function buildSubOpts(
   depth: number,
   childSignal: AbortSignal,
 ): AgentRunOptions {
-  // Explicit preset → use its allowlist verbatim (empty = all tools).
-  // No preset → inherit the parent's allowlist.
+  // Explicit preset → its allowlist, but NEVER broader than the parent's grant.
+  // Sec audit round 5 (least privilege): previously a chosen preset REPLACED
+  // the parent's allowlist, so a parent restricted to e.g. ["read_file"] could
+  // spawn_subagent(preset:"general") and the child got EVERY tool. Intersect
+  // instead. Empty list = "no ceiling" on that side (matches the runner's
+  // empty=all semantics). No preset → inherit the parent's allowlist verbatim.
+  const intersectAllow = (parentList: string[], presetList: string[]): string[] => {
+    if (presetList.length === 0) return parentList; // preset = all → bounded by parent
+    if (parentList.length === 0) return presetList; // parent = all → preset is the ceiling
+    const parentSet = new Set(parentList);
+    return presetList.filter((t) => parentSet.has(t));
+  };
   const toolAllowlist = presetChosen
-    ? (presetAllowedTools ?? [])
+    ? intersectAllow(parent.toolAllowlist ?? [], presetAllowedTools ?? [])
     : parent.toolAllowlist;
   return {
     model: parent.model,

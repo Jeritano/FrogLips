@@ -41,6 +41,15 @@ export const DANGEROUS_TOOLS = new Set([
   //                    read_file can then exfiltrate
   //   • show_notification — silent phishing toast
   "format_code", "screenshot", "show_notification",
+  // Sec audit round 5: also un-gated and side-effectful from plain chat.
+  //   • remember — persistent write to the long-term memory store. MEMORY
+  //     POISONING: an injected agent plants durable global-scope "facts" that
+  //     resurface via recall and steer ALL future chats/runs. (recall_memory
+  //     stays ungated — it's read-only.)
+  //   • watch_path — spawns a persistent OS filesystem watcher on any path.
+  //   • stop_watch / task_cancel — destroy OTHER runtime state by id (kill the
+  //     user's in-flight background task, disable a watcher they set up).
+  "remember", "watch_path", "stop_watch", "task_cancel",
 ]);
 export const SHELL_TOOL = "run_shell";
 export const WRITE_TOOLS = new Set([

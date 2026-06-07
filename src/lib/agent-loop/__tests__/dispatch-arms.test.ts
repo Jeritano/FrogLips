@@ -93,12 +93,20 @@ describe("DANGEROUS_TOOLS gate completeness (sec audit round 4)", () => {
   // screenshot writes a PNG of the screen, show_notification posts a toast) and
   // MUST be in DANGEROUS_TOOLS — that membership is the ONLY thing that shows
   // the user a confirmation modal (the Rust token is minted inline by tauri-api).
-  it.each(["format_code", "screenshot", "show_notification"])(
+  it.each([
+    // round 4
+    "format_code", "screenshot", "show_notification",
+    // round 5: remember = memory poisoning; the others tamper with runtime state
+    "remember", "watch_path", "stop_watch", "task_cancel",
+  ])(
     "%s requires confirmation (is in DANGEROUS_TOOLS)",
     (tool) => {
       expect(DANGEROUS_TOOLS.has(tool)).toBe(true);
     },
   );
+  it("recall_memory stays UNGATED (read-only — no consent needed)", () => {
+    expect(DANGEROUS_TOOLS.has("recall_memory")).toBe(false);
+  });
   it("format_code is a filesystem write (policy path-rules apply)", () => {
     expect(WRITE_TOOLS.has("format_code")).toBe(true);
   });
