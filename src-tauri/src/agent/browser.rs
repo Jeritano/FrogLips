@@ -55,13 +55,20 @@ pub struct BrowserTextResult {
 /// Pre-flight check for a URL the agent wants to navigate to. Re-uses the
 /// same allowlist that `web_fetch` enforces. Returns `Ok(())` if the URL is
 /// safe to hand off to CDP, otherwise a user-facing error string.
+/// Returns the parsed URL plus the validated-safe resolved addresses (empty for
+/// `data:` URLs). The caller PINS Chrome's resolver to these addresses so the
+/// browser can't re-resolve the host at connect time to an internal address —
+/// closing the DNS-rebinding TOCTOU. Without that pin the validation here is
+/// best-effort only (validate-time DNS != Chrome's connect-time DNS).
 #[allow(dead_code)] // tests + enabled-backend reach this; disabled-backend doesn't.
-pub async fn validate_navigate_url(url_str: &str) -> Result<url::Url, String> {
+pub async fn validate_navigate_url(
+    url_str: &str,
+) -> Result<(url::Url, Vec<std::net::SocketAddr>), String> {
     let url = url::Url::parse(url_str)
         .map_err(|e| err_string(ToolError::invalid(format!("bad url: {e}"))))?;
     // CDP can drive `file://`, `chrome://`, `data:` URLs to bypass network —
     // restrict to http(s) and data: (data: is harmless, useful for tests).
-    match url.scheme() {
+    let addrs = match url.scheme() {
         "http" | "https" => {
             let host = url.host_str().unwrap_or("").to_string();
             if !super::web::is_safe_public_host(&host) {
@@ -73,18 +80,19 @@ pub async fn validate_navigate_url(url_str: &str) -> Result<url::Url, String> {
             }
             let port = url.port_or_known_default().unwrap_or(443);
             // Resolve and verify every A/AAAA record lands in a safe range.
-            super::web::resolve_to_safe_addrs(&host, port).await?;
+            super::web::resolve_to_safe_addrs(&host, port).await?
         }
         "data" => {
             // data: URLs carry their payload inline; no network reach.
+            Vec::new()
         }
         other => {
             return Err(err_string(ToolError::invalid(format!(
                 "scheme '{other}' not allowed (use http/https/data:)"
             ))));
         }
-    }
-    Ok(url)
+    };
+    Ok((url, addrs))
 }
 
 #[cfg(feature = "browser-automation")]
@@ -103,15 +111,51 @@ mod backend {
         /// Detached handler task we need to drop on close so the websocket
         /// pump shuts down cleanly.
         handler: tokio::task::JoinHandle<()>,
+        /// The host this session's Chrome was launched pinned to (via
+        /// `--host-resolver-rules`), or `None` if launched without a pin (only
+        /// reachable for a `data:`-first navigation). When the next navigate
+        /// targets a different host we MUST relaunch so Chrome resolves the new
+        /// host to OUR validated IP, not whatever it re-resolves at connect time.
+        pinned_host: Option<String>,
     }
 
     static SESSION: Lazy<Mutex<Option<Session>>> = Lazy::new(|| Mutex::new(None));
 
-    async fn ensure_session() -> Result<tokio::sync::MutexGuard<'static, Option<Session>>, String> {
+    async fn close_session(session: &mut Session) {
+        let _ = session.browser.close().await;
+        let _ = session.browser.wait().await;
+        session.handler.abort();
+    }
+
+    /// Lock the session, (re)launching Chrome so it is pinned to `pin` (a
+    /// validated `(host, ip)`). Reuses the existing browser only when it was
+    /// already launched pinned to the SAME host (or `pin` is `None`, e.g. a
+    /// `data:` URL). Relaunching on host change is what makes the resolver pin
+    /// effective — `--host-resolver-rules` is a launch-time flag.
+    async fn ensure_session_for(
+        pin: Option<(&str, std::net::IpAddr)>,
+    ) -> Result<tokio::sync::MutexGuard<'static, Option<Session>>, String> {
         let mut guard = SESSION.lock().await;
-        if guard.is_none() {
-            let config = BrowserConfig::builder()
-                .request_timeout(Duration::from_secs(30))
+        let want_host = pin.map(|(h, _)| h.to_string());
+        let reuse = match (guard.as_ref(), &want_host) {
+            // Existing session already pinned to the requested host → reuse.
+            (Some(s), Some(h)) => s.pinned_host.as_deref() == Some(h.as_str()),
+            // No host to pin (data: URL) → reuse whatever's there.
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if !reuse {
+            if let Some(mut old) = guard.take() {
+                close_session(&mut old).await;
+            }
+            let mut builder = BrowserConfig::builder().request_timeout(Duration::from_secs(30));
+            if let Some((host, ip)) = pin {
+                // Force Chrome to resolve `host` to the exact IP we validated.
+                // Closes the DNS-rebind TOCTOU: Chrome can't re-resolve to an
+                // internal/metadata address between our check and its connect.
+                builder = builder.arg(format!("--host-resolver-rules=MAP {host} {ip}"));
+            }
+            let config = builder
                 .build()
                 .map_err(|e| err_string(ToolError::io(format!("browser config: {e}"))))?;
             let (browser, mut handler) = Browser::launch(config).await.map_err(|e| {
@@ -135,14 +179,29 @@ mod backend {
                 browser,
                 page,
                 handler: task,
+                pinned_host: want_host,
             });
         }
         Ok(guard)
     }
 
+    /// Lock an EXISTING session for a follow-up action (click/fill/etc) without
+    /// launching one — those ops only make sense after a `browser_navigate`.
+    async fn lock_session() -> tokio::sync::MutexGuard<'static, Option<Session>> {
+        SESSION.lock().await
+    }
+
     pub async fn navigate(url_str: String) -> Result<BrowserNavigateResult, String> {
-        let url = validate_navigate_url(&url_str).await?;
-        let mut guard = ensure_session().await?;
+        let (url, addrs) = validate_navigate_url(&url_str).await?;
+        // Build the resolver pin from the FIRST validated address (all of them
+        // already passed is_safe_ip in resolve_to_safe_addrs). `data:` URLs have
+        // no host/addrs → no pin.
+        let host_pin: Option<(String, std::net::IpAddr)> = match (url.host_str(), addrs.first()) {
+            (Some(h), Some(a)) if url.scheme() != "data" => Some((h.to_string(), a.ip())),
+            _ => None,
+        };
+        let mut guard =
+            ensure_session_for(host_pin.as_ref().map(|(h, ip)| (h.as_str(), *ip))).await?;
         let session = guard.as_mut().expect("session present after ensure");
         let resp = session
             .page
@@ -160,6 +219,9 @@ mod backend {
             .ok()
             .flatten()
             .unwrap_or_default();
+        // Page title is attacker-controlled external content — scan + DATA-fence
+        // before it re-enters the loop (matches browser_get_text).
+        let (title, _n) = crate::agent::injection_scan::scan_and_wrap(&title);
         let landed = session
             .page
             .url()
@@ -187,7 +249,7 @@ mod backend {
     }
 
     pub async fn click(selector: String) -> Result<BrowserOkResult, String> {
-        let mut guard = ensure_session().await?;
+        let mut guard = lock_session().await;
         let session = guard.as_mut().ok_or_else(|| {
             err_string(ToolError::invalid(
                 "no browser session — call browser_navigate first",
@@ -209,7 +271,7 @@ mod backend {
     }
 
     pub async fn fill(selector: String, value: String) -> Result<BrowserOkResult, String> {
-        let mut guard = ensure_session().await?;
+        let mut guard = lock_session().await;
         let session = guard.as_mut().ok_or_else(|| {
             err_string(ToolError::invalid(
                 "no browser session — call browser_navigate first",
@@ -234,7 +296,7 @@ mod backend {
     }
 
     pub async fn screenshot() -> Result<BrowserScreenshotResult, String> {
-        let mut guard = ensure_session().await?;
+        let mut guard = lock_session().await;
         let session = guard.as_mut().ok_or_else(|| {
             err_string(ToolError::invalid(
                 "no browser session — call browser_navigate first",
@@ -252,7 +314,7 @@ mod backend {
     }
 
     pub async fn get_text(selector: Option<String>) -> Result<BrowserTextResult, String> {
-        let mut guard = ensure_session().await?;
+        let mut guard = lock_session().await;
         let session = guard.as_mut().ok_or_else(|| {
             err_string(ToolError::invalid(
                 "no browser session — call browser_navigate first",
@@ -294,9 +356,7 @@ mod backend {
     pub async fn close() -> Result<BrowserOkResult, String> {
         let mut guard = SESSION.lock().await;
         if let Some(mut session) = guard.take() {
-            let _ = session.browser.close().await;
-            let _ = session.browser.wait().await;
-            session.handler.abort();
+            close_session(&mut session).await;
         }
         Ok(BrowserOkResult { ok: true })
     }
@@ -304,9 +364,7 @@ mod backend {
     pub async fn shutdown() {
         let mut guard = SESSION.lock().await;
         if let Some(mut session) = guard.take() {
-            let _ = session.browser.close().await;
-            let _ = session.browser.wait().await;
-            session.handler.abort();
+            close_session(&mut session).await;
         }
     }
 }
@@ -401,10 +459,12 @@ mod tests {
 
     #[tokio::test]
     async fn accepts_data_url() {
-        let url = validate_navigate_url("data:text/html,<title>hi</title>")
+        let (url, addrs) = validate_navigate_url("data:text/html,<title>hi</title>")
             .await
             .unwrap();
         assert_eq!(url.scheme(), "data");
+        // data: URLs have no host → no addresses to pin.
+        assert!(addrs.is_empty());
     }
 
     /// Navigate to a `data:` URL and confirm the title parses. Avoids any
