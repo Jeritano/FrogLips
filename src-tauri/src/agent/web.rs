@@ -21,7 +21,13 @@ pub fn is_safe_public_host(host: &str) -> bool {
     if h.is_empty() || h == "localhost" || h.ends_with(".local") || h.ends_with(".internal") {
         return false;
     }
-    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+    // Sec audit (2026-06): `url::Url::host_str()` returns IPv6 literals WITH
+    // brackets ("[::1]", "[::ffff:169.254.169.254]"). Without stripping them the
+    // parse below fails and the fn falls through to `true` — classifying a
+    // loopback/metadata IPv6 literal as a safe public host. Strip the brackets
+    // before parsing so IP-literal hosts always hit `is_safe_ip`.
+    let bare = h.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
         // Reuse the connect-time IP check so IP-literal hosts (incl.
         // IPv4-mapped V6 and NAT64) get the exact same treatment.
         return is_safe_ip(&ip);
@@ -641,5 +647,11 @@ mod tests {
         // Public IPv6 must still be allowed (not over-blocked by the mask).
         assert!(is_safe_public_host("2001:4860:4860::8888")); // Google DNS
         assert!(is_safe_public_host("2606:2800:220:1:248:1893:25c8:1946"));
+        // Bracketed IPv6 literals (as url::Url::host_str returns them) must be
+        // parsed + blocked, not fall through to "safe". Sec audit (2026-06).
+        assert!(!is_safe_public_host("[::1]"));
+        assert!(!is_safe_public_host("[::ffff:169.254.169.254]"));
+        assert!(!is_safe_public_host("[fd00::1]"));
+        assert!(is_safe_public_host("[2001:4860:4860::8888]")); // public, bracketed
     }
 }

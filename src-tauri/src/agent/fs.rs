@@ -193,6 +193,15 @@ pub(super) fn is_protected_for_read(p: &Path) -> bool {
     if read_block.iter().any(|r| p.starts_with(r)) {
         return true;
     }
+    // Sec audit (2026-06): the READ gate must never be a strict subset of the
+    // WRITE gate for credential dirs — a path write-protected because it holds
+    // secrets would otherwise stay readable + exfiltratable. Consult the shared
+    // credential-dir set used by the write gate. This closes a real gap where
+    // ~/.aws/config, ~/.aws/sso/cache/* (live SSO bearer tokens), ~/Library/Mail
+    // and ~/Library/Messages were readable by a prompt-injected agent.
+    if home_prefixes().iter().any(|pre| p.starts_with(pre)) {
+        return true;
+    }
     if let Some(home) = dirs::home_dir() {
         for sub in [
             ".ssh",
@@ -203,6 +212,8 @@ pub(super) fn is_protected_for_read(p: &Path) -> bool {
             // Credential files blocked for write but previously readable.
             ".netrc",
             ".npmrc",
+            ".pypirc",
+            ".gitconfig",
             ".docker/config.json",
             ".kube",
             ".config/gh",
@@ -212,8 +223,10 @@ pub(super) fn is_protected_for_read(p: &Path) -> bool {
             "Library/Application Support/Firefox",
             "Library/Application Support/com.apple.Safari",
             "Library/Safari",
-            // Froglips' own settings file — may still hold migrated secrets.
-            "Library/Application Support/Froglips/settings.json",
+            // Froglips' OWN data: the 0600 secret store, DB, backups, settings.
+            // Block the whole dir, not just settings.json.
+            ".local-llm-app",
+            "Library/Application Support/Froglips",
         ] {
             if p.starts_with(home.join(sub)) {
                 return true;
@@ -1035,6 +1048,35 @@ pub async fn multi_edit(path: String, edits: Vec<EditOp>) -> Result<MultiEditRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_gate_blocks_credential_dirs_and_secret_store() {
+        // Regression for the sec-audit gap where the read gate was a subset of
+        // the write gate: ~/.aws/*, ~/.gitconfig, ~/.pypirc, and the Froglips
+        // secret store were readable by a prompt-injected agent.
+        let Some(home) = dirs::home_dir() else { return };
+        for sub in [
+            ".aws/config",
+            ".aws/sso/cache/abc.json",
+            ".aws/credentials",
+            ".gitconfig",
+            ".pypirc",
+            ".ssh/id_rsa",
+            ".local-llm-app/secrets.json",
+            ".local-llm-app/db.sqlite",
+            "Library/Mail/x",
+            "Library/Messages/chat.db",
+        ] {
+            let p = home.join(sub);
+            assert!(
+                is_protected_for_read(&p),
+                "read gate must block {}",
+                p.display()
+            );
+        }
+        // Sanity: a normal workspace file is still readable.
+        assert!(!is_protected_for_read(&home.join("Documents/notes.txt")));
+    }
 
     #[test]
     fn name_matches_glob_wildcards() {

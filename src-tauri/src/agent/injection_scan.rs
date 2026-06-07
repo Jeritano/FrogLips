@@ -75,6 +75,11 @@ static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
         ("ChatML <|im_start|> token", r"<\|im_start\|>"),
         ("ChatML <|im_end|> token", r"<\|im_end\|>"),
         ("ChatML <|system|> token", r"<\|system\|>"),
+        // Gemma role framing
+        ("Gemma <start_of_turn> token", r"<start_of_turn>"),
+        ("Gemma <end_of_turn> token", r"<end_of_turn>"),
+        // Phi-3 turn terminator
+        ("Phi <|end|> token", r"<\|end\|>"),
         // Llama instruction tokens
         ("Llama [INST] token", r"\[INST\]"),
         ("Llama [/INST] token", r"\[/INST\]"),
@@ -430,6 +435,23 @@ mod tests {
         let names: Vec<_> = f.iter().map(|x| x.pattern.as_str()).collect();
         assert!(names.iter().any(|n| n.contains("im_start")));
         assert!(names.iter().any(|n| n.contains("im_end")));
+    }
+
+    #[test]
+    fn gemma_and_phi_role_tokens_detected() {
+        // Sec audit (2026-06): Gemma/Phi role framing must be caught too, not
+        // just ChatML/Llama. Backends materialize these as real role tokens.
+        let f = scan("<start_of_turn>user\nhi<end_of_turn><|end|>");
+        let names: Vec<_> = f.iter().map(|x| x.pattern.as_str()).collect();
+        assert!(
+            names.iter().any(|n| n.contains("start_of_turn")),
+            "got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.contains("end_of_turn")),
+            "got {names:?}"
+        );
+        assert!(names.iter().any(|n| n.contains("<|end|>")), "got {names:?}");
     }
 
     #[test]

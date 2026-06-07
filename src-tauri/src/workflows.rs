@@ -208,6 +208,17 @@ pub fn prune_card_last_fired(keep: &std::collections::HashSet<String>) -> Result
 /// keys with the right primitive types; each edge needs string `from`/`to`.
 /// Returns a clear error on any deviation so the column never holds garbage.
 pub fn validate_graph_json(graph_json: &str) -> Result<()> {
+    // Bound the input before parsing. The graph is authored by the renderer,
+    // but a compromised renderer (our threat model) could POST a multi-MB blob
+    // to bloat the DB row + every run's context. Reuse the shared 1 MiB ceiling
+    // (same one `record_run` enforces on results_json) — far above any real
+    // graph (hundreds of cards). Sec audit (2026-06).
+    if graph_json.len() > MAX_GRAPH_BYTES {
+        return Err(anyhow::anyhow!(
+            "graph_json too large ({} bytes; max {MAX_GRAPH_BYTES})",
+            graph_json.len()
+        ));
+    }
     let value: serde_json::Value = serde_json::from_str(graph_json)
         .map_err(|e| anyhow::anyhow!("graph_json is not valid JSON: {e}"))?;
     let obj = value
@@ -1401,10 +1412,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_graph_accepts_just_under_1_mib_and_handles_just_over() {
-        // Build graph_json strings exactly straddling MAX_GRAPH_BYTES so the
-        // 1 MiB boundary in `commands/workflows.rs` is exercised in spirit
-        // (the validator itself has no cap — it just parses JSON).
+    fn validate_graph_accepts_just_under_1_mib_and_rejects_just_over() {
+        // Build graph_json strings straddling MAX_GRAPH_BYTES. The validator
+        // enforces the 1 MiB ceiling itself (sec audit 2026-06) — a compromised
+        // renderer can't smuggle a multi-MB blob past `save_workflow`.
         let make = |prompt_len: usize| {
             let prompt = "a".repeat(prompt_len);
             format!(
@@ -1415,10 +1426,9 @@ mod tests {
         let over = make(1_200_000);
         assert!(under.len() < MAX_GRAPH_BYTES);
         assert!(over.len() > MAX_GRAPH_BYTES);
-        // The validator parses both successfully — the byte cap is a SEPARATE
-        // gate at the command layer. Documenting the split.
         assert!(validate_graph_json(&under).is_ok());
-        assert!(validate_graph_json(&over).is_ok());
+        let err = validate_graph_json(&over).unwrap_err().to_string();
+        assert!(err.contains("too large"), "got: {err}");
     }
 
     #[test]

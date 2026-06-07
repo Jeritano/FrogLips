@@ -430,6 +430,14 @@ pub fn redacted(mut s: Settings) -> Settings {
             };
         }
     }
+    // NOTE: MCP stdio `env` values are NOT redacted here. They're stored
+    // plaintext in settings.json (they must be, to spawn the child) and the UI
+    // round-trips the server list through settings_set — masking the value with
+    // a marker would be persisted back over the real env on the next save
+    // (data loss) without dedicated save-side preserve logic. Severity is low:
+    // the values are already on disk, originate from the same renderer, and any
+    // actor that can call settings_get can read settings.json directly. The
+    // diagnostics bundle (a shareable artifact) DOES redact them.
     s
 }
 

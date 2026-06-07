@@ -132,7 +132,9 @@ async fn discover(server_url: &str) -> Result<(AuthServerMeta, Option<String>)> 
     let prm_url = format!("{origin}/.well-known/oauth-protected-resource");
     let prm: Option<ProtectedResourceMeta> = match super::build_pinned_client(&prm_url).await {
         Ok(c) => match c.get(&prm_url).send().await {
-            Ok(r) if r.status().is_success() => r.json().await.ok(),
+            Ok(r) if r.status().is_success() => super::read_json_capped(r, super::MAX_RESULT_BYTES)
+                .await
+                .ok(),
             _ => None,
         },
         Err(_) => None,
@@ -165,7 +167,9 @@ async fn discover(server_url: &str) -> Result<(AuthServerMeta, Option<String>)> 
         if let Ok(c) = super::build_pinned_client(&meta_url).await {
             if let Ok(r) = c.get(&meta_url).send().await {
                 if r.status().is_success() {
-                    if let Ok(m) = r.json::<AuthServerMeta>().await {
+                    if let Ok(m) =
+                        super::read_json_capped::<AuthServerMeta>(r, super::MAX_RESULT_BYTES).await
+                    {
                         return Ok((m, scope));
                     }
                 }
@@ -223,7 +227,9 @@ async fn register(
                 .collect::<String>()
         );
     }
-    let resp = r.json::<Resp>().await.context("DCR response")?;
+    let resp: Resp = super::read_json_capped(r, super::MAX_RESULT_BYTES)
+        .await
+        .context("DCR response")?;
     Ok((resp.client_id, resp.client_secret))
 }
 
@@ -307,7 +313,9 @@ pub async fn connect(app: &tauri::AppHandle, server_url: &str) -> Result<OauthCr
                 .collect::<String>()
         );
     }
-    let tok: TokenResp = r.json().await.context("token response")?;
+    let tok: TokenResp = super::read_json_capped(r, super::MAX_RESULT_BYTES)
+        .await
+        .context("token response")?;
     Ok(OauthCreds {
         access_token: tok.access_token,
         refresh_token: tok.refresh_token,
@@ -344,7 +352,9 @@ pub async fn refresh(creds: &OauthCreds) -> Result<OauthCreds> {
     if !r.status().is_success() {
         bail!("token refresh failed: {}", r.status());
     }
-    let tok: TokenResp = r.json().await.context("refresh response")?;
+    let tok: TokenResp = super::read_json_capped(r, super::MAX_RESULT_BYTES)
+        .await
+        .context("refresh response")?;
     Ok(OauthCreds {
         access_token: tok.access_token,
         // Servers may omit a new refresh token → keep the old one.

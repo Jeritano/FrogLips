@@ -37,6 +37,25 @@ const STDERR_CAP: usize = 16 * 1024;
 /// Max combined tool-result text we return. Higher than typical tool output
 /// but a sane upper bound so a misbehaving server can't OOM us.
 const MAX_RESULT_BYTES: usize = 512 * 1024;
+
+/// Deserialize a JSON response body with a hard byte cap (streaming chunks,
+/// aborts before buffering more than `max`). `resp.json()` / `.bytes()` buffer
+/// the entire body first, so a hostile server could force a huge allocation;
+/// this caps it. Used by the OAuth handshake (discovery/registration/token)
+/// where the peer is attacker-influenced. Sec audit (2026-06).
+pub(crate) async fn read_json_capped<T: serde::de::DeserializeOwned>(
+    mut resp: reqwest::Response,
+    max: usize,
+) -> anyhow::Result<T> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.context("response body read")? {
+        if buf.len() + chunk.len() > max {
+            anyhow::bail!("response exceeds {max} bytes");
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&buf).context("response JSON parse")
+}
 /// Version advertised in the `MCP-Protocol-Version` header on the remote
 /// (streamable-HTTP) transport. Independent of the `protocolVersion` sent in
 /// the `initialize` params (kept at 2024-11-05 for broad server compat).

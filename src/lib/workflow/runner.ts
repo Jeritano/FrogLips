@@ -206,6 +206,11 @@ function buildHandoffMessage(previousOutput: string): Message {
     "[/INST]",
     "<<SYS>>",
     "<</SYS>>",
+    // Gemma role framing (no pipe delimiters).
+    "<start_of_turn>",
+    "<end_of_turn>",
+    // Phi-3 turn terminator.
+    "<|end|>",
   ];
   for (const tok of SPECIAL_TOKENS) {
     // String#replaceAll tolerates the literal `|` chars without regex
