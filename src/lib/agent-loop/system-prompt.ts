@@ -1,5 +1,6 @@
 import { TOOLS } from "./tools";
 import type { OpenAIToolDef } from "./mcp-tools";
+import type { ToolFitness } from "../model-capabilities";
 
 /* ── Dynamic system prompt ── */
 
@@ -39,7 +40,15 @@ export function buildSystemPrompt(
   allowlist: string[],
   override?: string,
   mcpTools: OpenAIToolDef[] = [],
+  modelFitness?: ToolFitness,
 ): string {
+  // Weak tool-callers (small/abliterated models) tend to narrate or emit
+  // near-JSON. A short, explicit format reminder measurably lifts their
+  // tool-call success rate without bloating the prompt for capable models.
+  const weakBlock =
+    modelFitness === "weak"
+      ? "\n\nTOOL-CALL FORMAT (important for this model): when you act, CALL the tool — do not describe the call in prose. Emit `arguments` as ONE valid JSON object: double quotes on every key and string value, no trailing commas, no markdown ``` fences, no text before or after the JSON."
+      : "";
   // Built-in tools the model may call, filtered by the active allowlist.
   const builtIn = allowlist.length
     ? TOOLS.filter((t) => allowlist.includes(t.function.name)).map((t) => t.function.name)
@@ -81,9 +90,10 @@ export function buildSystemPrompt(
     "- When the user gives a filename in quotes, backticks, or as a literal token (e.g. \"DemReport\", `report.txt`, file named X), use that EXACT name as the basename. Do NOT paraphrase, expand, prefix with dates, or rewrite it. Only add the extension if one wasn't supplied AND the format is implied.";
   const env = `${ws}\n${dateBlock}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\n${paths}\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}`;
   if (override && override.trim()) {
-    return `${override.trim()}\n\n${env}`;
+    return `${override.trim()}\n\n${env}${weakBlock}`;
   }
-  return `You are an autonomous agent running on the user's local machine.
+  return (
+    `You are an autonomous agent running on the user's local machine.
 
 ${env}
 
@@ -101,5 +111,7 @@ Rules:
    • GitHub: \`https://api.github.com/...\`.
    • HackerNews: \`https://hacker-news.firebaseio.com/v0/...\`.
    • Most large sites publish an \`/api/...\` or \`/.well-known/...\` JSON endpoint — try it before scraping.
-   If web_fetch returns a body dominated by nav links, script tags, or \`<div id="__next">\` boilerplate, the page is JS-rendered: switch to a JSON source, hit a different domain, or use \`web_search\` snippets for the actual data.`;
+   If web_fetch returns a body dominated by nav links, script tags, or \`<div id="__next">\` boilerplate, the page is JS-rendered: switch to a JSON source, hit a different domain, or use \`web_search\` snippets for the actual data.` +
+    weakBlock
+  );
 }

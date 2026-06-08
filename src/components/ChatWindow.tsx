@@ -535,6 +535,7 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           agentAvailable={agentAvailable}
           agentStatus={agentStatus}
           agentMetrics={agentMetrics}
+          activeModel={status?.model ?? null}
           isWorking={isWorking}
           workspaceRoot={workspaceRoot}
           projectPolicy={projectPolicy}

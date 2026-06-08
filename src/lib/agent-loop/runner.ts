@@ -15,6 +15,7 @@ import {
   toolCallSig,
 } from "./dispatch";
 import { buildSystemPrompt } from "./system-prompt";
+import { classifyToolFitness } from "../model-capabilities";
 import { applyContextBudget, invalidateMessageTokens } from "./context-manager";
 import { streamAgentChat } from "./agent-chat";
 import { awaitSubagents, listSubagents, runSubagent, spawnSubagentAsync } from "./subagent";
@@ -741,7 +742,13 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   const sysMsg: Message = {
     conversation_id: opts.conversationId,
     role: "system",
-    content: buildSystemPrompt(workspaceRoot, toolAllowlist, systemPromptOverride, mcpTools),
+    content: buildSystemPrompt(
+      workspaceRoot,
+      toolAllowlist,
+      systemPromptOverride,
+      mcpTools,
+      opts.modelFitness ?? classifyToolFitness(opts.model),
+    ),
   };
   msgs.unshift(sysMsg);
 

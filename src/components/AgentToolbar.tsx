@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { History, Settings, RotateCcw } from "lucide-react";
 import { ExportMenu } from "./ExportMenu";
 import { api } from "../lib/tauri-api";
+import { classifyToolFitness } from "../lib/model-capabilities";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import type { AgentSettings } from "../hooks/useAgentSettings";
 import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
@@ -18,6 +19,8 @@ interface Props {
   agentAvailable: boolean;
   agentStatus: AgentStatus;
   agentMetrics: AgentMetrics | null;
+  /** Active model id — used to surface a tool-calling fitness hint. */
+  activeModel?: string | null;
   isWorking: boolean;
   workspaceRoot: string | null;
   projectPolicy: ProjectPolicy | null;
@@ -137,11 +140,16 @@ function AgentUndoButton() {
 export function AgentToolbar(props: Props) {
   const {
     conversation, messages, agent, agentMode, agentAvailable, agentStatus,
-    agentMetrics, isWorking, workspaceRoot, projectPolicy, convParams,
+    agentMetrics, activeModel, isWorking, workspaceRoot, projectPolicy, convParams,
     showParamsPanel, showAgentSettings, showExportMenu, onToggleAgent,
     onToggleParams, onToggleAgentSettings, onToggleToolHistory,
     onToggleExportMenu, onCloseExportMenu,
   } = props;
+
+  // Only surface a hint when the active model is KNOWN-WEAK at tool calling —
+  // good/untested stay silent (calm, no false alarms). Steers the user toward a
+  // model that will succeed before they hit a wall.
+  const toolFitnessWeak = agentMode && classifyToolFitness(activeModel) === "weak";
 
   const [coachSeen, setCoachSeen] = useState(() => {
     try {
@@ -250,6 +258,15 @@ export function AgentToolbar(props: Props) {
           title={workspaceRoot ?? "Agent can reach the full filesystem — set a workspace to confine it"}
         >
           Workspace: {workspaceLabel}
+        </span>
+      )}
+      {toolFitnessWeak && (
+        <span
+          className="agent-status-pill agent-fitness-pill is-weak"
+          data-testid="agent-fitness-pill"
+          title="This model often narrates or mangles tool calls. For reliable agent runs try a known-good tool-caller: qwen2.5-coder, qwen3, hermes3, mistral-nemo, or a cloud model."
+        >
+          ⚠ weak at tools
         </span>
       )}
       {agentMode && agentStatus !== "idle" && (

@@ -1763,3 +1763,12 @@ button.cancel {
   color: var(--text-2);
 }
 .openrouter-row-meta code { font-size: var(--fs-2xs); }
+
+/* Tool-calling fitness hint in the agent toolbar (Phase 1b) — warns only when
+   the active model is known-weak at tool calls. Tokens only. */
+.agent-fitness-pill.is-weak {
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  cursor: help;
+}

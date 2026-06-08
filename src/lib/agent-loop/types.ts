@@ -92,6 +92,10 @@ export interface AgentRunOptions {
   systemPromptOverride?: string;
   /** Tools the user has allowed for this conversation. Empty = all allowed. */
   toolAllowlist?: string[];
+  /** Optional tool-calling fitness hint. When omitted the runner derives it
+   *  from `model` via classifyToolFitness; "weak" appends a JSON-format nudge
+   *  to the system prompt to lift small/abliterated models' tool-call rate. */
+  modelFitness?: import("../model-capabilities").ToolFitness;
   /** Session-scoped flags: dangerous tools auto-approved if true. */
   approveAllShell?: boolean;
   approveAllWrite?: boolean;
