@@ -95,6 +95,7 @@ import type {
   LlmpmServeStatus,
   ShellOpts,
   ShellResult,
+  SystemInfo,
   SkillFull,
   SkillSummary,
   TaskInfo,
@@ -112,6 +113,9 @@ export const api = {
     invoke<ServerStatus>("start_server", { model, backend }),
   stopServer: () => invoke<void>("stop_server"),
   serverStatus: () => invoke<ServerStatus>("server_status"),
+
+  /** Live host-machine facts (RAM / cores / CPU) for hardware-aware model sizing. */
+  systemInfo: () => invoke<SystemInfo>("system_info"),
 
   // ── llmpm (LLM package manager: install + serve HF models locally) ─────
   /** Whether the `llmpm` CLI is on the machine + its resolved path. */

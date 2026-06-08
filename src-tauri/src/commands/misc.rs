@@ -29,6 +29,57 @@ pub fn open_external(url: String, app: tauri::AppHandle) -> Result<(), String> {
     app.opener().open_url(&url, None::<&str>).map_err(map_err)
 }
 
+/// Live host-machine facts (RAM / core counts / CPU brand) read from sysctl.
+/// Drives hardware-aware model sizing in the picker + onboarding so a model
+/// that won't fit is flagged BEFORE the user loads it. macOS-only: shells out
+/// to `/usr/sbin/sysctl` (always present) rather than pulling a `libc` dep.
+#[derive(serde::Serialize)]
+pub struct SystemInfo {
+    /// Physical RAM in GiB (decimal, e.g. 18.0).
+    pub total_ram_gb: f64,
+    pub physical_cores: u32,
+    /// Performance ("P") cores; falls back to `physical_cores` on Intel where
+    /// the perflevel key is absent.
+    pub performance_cores: u32,
+    pub cpu_brand: String,
+}
+
+#[tauri::command]
+pub async fn system_info() -> Result<SystemInfo, String> {
+    crate::commands::blocking(|| -> anyhow::Result<SystemInfo> {
+        fn sysctl(key: &str) -> Option<String> {
+            std::process::Command::new("/usr/sbin/sysctl")
+                .arg("-n")
+                .arg(key)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+        }
+        let memsize: u64 = sysctl("hw.memsize")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let total_ram_gb = (memsize as f64) / 1024.0 / 1024.0 / 1024.0;
+        let physical_cores: u32 = sysctl("hw.physicalcpu")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        // perflevel0 = P-cores (Apple Silicon); absent on Intel → use physical.
+        let performance_cores: u32 = sysctl("hw.perflevel0.physicalcpu")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(physical_cores);
+        let cpu_brand =
+            sysctl("machdep.cpu.brand_string").unwrap_or_else(|| "Apple Silicon".into());
+        Ok(SystemInfo {
+            total_ram_gb,
+            physical_cores,
+            performance_cores,
+            cpu_brand,
+        })
+    })
+    .await
+}
+
 /// Return the local crash log (last ~64 KB), or an empty string if none.
 /// The log lives at `~/.local-llm-app/crash.log` and never leaves the device.
 #[tauri::command]
@@ -326,6 +377,7 @@ const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     "mcp_servers",
     "setup_complete",
     "user_profile",
+    "hardware_profile",
 ];
 
 /// Per-field byte caps for the "About You" profile. Keeps a hostile or

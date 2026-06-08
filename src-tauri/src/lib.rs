@@ -549,6 +549,7 @@ pub fn run() {
             commands::misc::openrouter_list_models,
             commands::misc::openrouter_set_key,
             commands::misc::openrouter_has_key,
+            commands::misc::system_info,
             commands::misc::read_crash_log,
             commands::misc::append_diag_log,
             commands::misc::db_recovery_notice,

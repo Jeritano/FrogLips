@@ -34,6 +34,12 @@ pub struct Settings {
     /// formatted into a system-prompt block so every chat and workflow agent
     /// knows who the user is. Absent on legacy installs → `None` → not used.
     pub user_profile: Option<UserProfile>,
+    /// Cached machine profile (RAM / cores / CPU) detected once on first launch
+    /// and refreshed weekly, so the model picker and onboarding can size models
+    /// to the hardware without re-probing sysctl every render. Absent on legacy
+    /// installs → `None` → re-detected on next mount. No DB migration — rides
+    /// settings.json via serde(default).
+    pub hardware_profile: Option<HardwareProfile>,
     /// HIGH-2 (2026-05-29): forward-compatibility capture. Any top-level key
     /// this build doesn't recognise (because it was written by a NEWER build)
     /// is parked here and re-serialized verbatim on save, so opening an old
@@ -41,6 +47,19 @@ pub struct Settings {
     /// empty so it never appears in a fresh file.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Cached snapshot of the host machine — RAM, core counts, CPU brand — plus the
+/// unix-seconds timestamp it was detected at (so a stale profile re-detects).
+/// Mirrors the live `system_info()` command result + `detected_at`.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct HardwareProfile {
+    pub total_ram_gb: f64,
+    pub physical_cores: u32,
+    pub performance_cores: u32,
+    pub cpu_brand: String,
+    pub detected_at: i64,
 }
 
 /// Explicit, user-edited identity facts (the "Custom Instructions" pattern).

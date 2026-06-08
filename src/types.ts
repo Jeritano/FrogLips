@@ -4,6 +4,20 @@ export interface ModelEntry {
   backend: "mlx" | "ollama" | "native";
 }
 
+/** Live host-machine facts from the `system_info` command (sysctl). */
+export interface SystemInfo {
+  total_ram_gb: number;
+  physical_cores: number;
+  performance_cores: number;
+  cpu_brand: string;
+}
+
+/** Cached `SystemInfo` + the unix-seconds time it was detected (stored in
+ *  settings; re-detected when absent or older than a week). */
+export interface HardwareProfile extends SystemInfo {
+  detected_at: number;
+}
+
 export interface AllModels {
   mlx: ModelEntry[];
   ollama: ModelEntry[];
@@ -333,6 +347,8 @@ export interface AppSettings {
   setup_complete?: boolean | null;
   /** User-authored "About You" profile. Absent on legacy installs. */
   user_profile?: UserProfile | null;
+  /** Cached machine profile for hardware-aware model sizing; re-detected weekly. */
+  hardware_profile?: HardwareProfile | null;
 }
 
 /**

@@ -2,7 +2,18 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { formatSizeParen as formatSize } from "../lib/format";
 import { api } from "../lib/tauri-api";
 import { useTauriEvent } from "../hooks/useTauriEvent";
+import { useHardwareProfile } from "../hooks/useHardwareProfile";
+import type { HeadroomTier } from "../lib/hardware-profile";
+import { HardwareWarningBanner } from "./HardwareWarningBanner";
 import type { AllModels, CustomBackend, ModelEntry, ServerStatus } from "../types";
+
+/** Compact label for the inline headroom badge (full verdict on hover). */
+const HEADROOM_SHORT: Record<HeadroomTier, string> = {
+  comfortable: "Fits",
+  tight: "Tight",
+  thrash: "Heavy",
+  impossible: "Too big",
+};
 
 // ModelBrowser bundles several large tabs (HF, GGUF, OpenRouter) plus their
 // data fetchers. Lazy-load so the picker shell stays in the first-paint chunk and
@@ -37,6 +48,10 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   // process) and routes chat through `streamCustomChat`.
   const [customBackends, setCustomBackends] = useState<CustomBackend[]>([]);
   const [selectedCustom, setSelectedCustom] = useState<CustomBackend | null>(null);
+
+  // Hardware-aware sizing: classify the picked model against this Mac's RAM so
+  // the user sees an honest "fits / tight / too big" verdict BEFORE Start.
+  const { headroomFor } = useHardwareProfile();
 
   // Timestamp of the last successful model-list fetch. The dropdown's
   // onFocus + onMouseDown both fire `loadModels` (so the list is fresh
@@ -255,6 +270,9 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
     ? `${selected.backend}:${selected.id}`
     : "";
 
+  // Headroom verdict for the picked local model (cloud/custom have no size).
+  const headroom = selected ? headroomFor(selected) : null;
+
   return (
     <>
       <div className="model-picker">
@@ -325,6 +343,15 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
                 : `loading · ${status.backend}`
               : "stopped"}
         </span>
+        {headroom?.label && !status?.running && (
+          <span
+            className="headroom-badge"
+            data-tier={headroom.tier}
+            title={`${headroom.label} — ${headroom.detail} of RAM`}
+          >
+            {HEADROOM_SHORT[headroom.tier]}
+          </span>
+        )}
         {err && (
           <div className="error" role="alert">
             <span>{err}</span>
@@ -338,6 +365,8 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
           </div>
         )}
       </div>
+
+      {!status?.running && <HardwareWarningBanner headroom={headroom} />}
 
       {browserOpen && (
         <Suspense fallback={<div className="lazy-loading">Loading model browser…</div>}>
