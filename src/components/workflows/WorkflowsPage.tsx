@@ -22,6 +22,7 @@ import {
   type WorkflowGraph,
 } from "../../types";
 import { FLOW_TEMPLATES, cloneTemplateGraph, type FlowTemplate } from "../../lib/workflow/templates";
+import { flowToDoc, flowFromDoc } from "../../lib/workflow/export";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { CardForm, type FormOrigin } from "./CardForm";
 import { RunPanel, type CardRunInfo } from "./RunPanel";
@@ -59,6 +60,10 @@ export function WorkflowsPage({ status }: Props) {
   // header. The panel itself owns its fetch lifecycle and refetches when
   // `workflowId` changes, so we just toggle visibility here.
   const [skillsOpen, setSkillsOpen] = useState(false);
+  // Shareable-Flow import (paste a copied Flow doc).
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importErr, setImportErr] = useState<string | null>(null);
   // 2026-05-26 Option-A lift: workflow run state now lives in the
   // App-level WorkflowRunProvider so a navigate-away no longer aborts
   // the run. `cardStates`, `outputs`, and `running` are derived here
@@ -285,6 +290,37 @@ export function WorkflowsPage({ status }: Props) {
       openWorkflow({ id, name: t.name, graph, created_at: now, updated_at: now });
     } catch (e) {
       setErr(`Failed to use template "${t.name}": ${e}`);
+    }
+  }
+
+  // Export the open Flow as a portable doc → clipboard (paste anywhere to share).
+  async function exportFlow() {
+    if (!selected) return;
+    try {
+      await api.agentClipboardSet(flowToDoc(name, { cards, edges }));
+      announce("Flow copied to clipboard");
+    } catch (e) {
+      setErr(`Failed to copy Flow: ${e}`);
+    }
+  }
+
+  // Import a pasted Flow doc → validate → save → open.
+  async function doImport() {
+    const parsed = flowFromDoc(importText);
+    if (!parsed.ok) {
+      setImportErr(parsed.error);
+      return;
+    }
+    try {
+      const id = await api.workflowSave(null, parsed.name, serializeWorkflowGraph(parsed.graph));
+      const now = Date.now();
+      setImportOpen(false);
+      setImportText("");
+      setImportErr(null);
+      await refreshList();
+      openWorkflow({ id, name: parsed.name, graph: parsed.graph, created_at: now, updated_at: now });
+    } catch (e) {
+      setImportErr(`Failed to import: ${e}`);
     }
   }
 
@@ -590,14 +626,22 @@ export function WorkflowsPage({ status }: Props) {
   if (!selected) {
     const pickerHeader = (
       <>
-        <h1 className="topbar-view-title">Workflows</h1>
+        <h1 className="topbar-view-title">Flows</h1>
+        <button
+          type="button"
+          className="wf-btn topbar-action"
+          onClick={() => { setImportErr(null); setImportText(""); setImportOpen(true); }}
+          style={{ marginLeft: "auto" }}
+          data-testid="wf-import-btn"
+        >
+          Import
+        </button>
         <button
           type="button"
           className="wf-btn wf-btn-primary topbar-action"
           onClick={createWorkflow}
-          style={{ marginLeft: "auto" }}
         >
-          + New workflow
+          + New Flow
         </button>
       </>
     );
@@ -657,6 +701,47 @@ export function WorkflowsPage({ status }: Props) {
             ))}
           </ul>
         )}
+
+        {importOpen && (
+          <div
+            className="dashboard-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Import a Flow"
+            onClick={(e) => { if (e.target === e.currentTarget) setImportOpen(false); }}
+          >
+            <div className="dashboard-modal wf-import-modal">
+              <h2 className="wf-import-title">Import a Flow</h2>
+              <p className="wf-import-sub">
+                Paste a Flow you exported (or someone shared). It's validated before it's saved.
+              </p>
+              <textarea
+                className="wf-import-textarea"
+                value={importText}
+                onChange={(e) => { setImportText(e.target.value); setImportErr(null); }}
+                placeholder='{ "froglips_flow": 1, "name": "...", "graph": { ... } }'
+                rows={10}
+                data-testid="wf-import-textarea"
+                autoFocus
+              />
+              {importErr && <div className="wf-error" data-testid="wf-import-err">{importErr}</div>}
+              <div className="wf-import-actions">
+                <button type="button" className="wf-btn" onClick={() => setImportOpen(false)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="wf-btn wf-btn-primary"
+                  onClick={() => void doImport()}
+                  disabled={!importText.trim()}
+                  data-testid="wf-import-confirm"
+                >
+                  Import Flow
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -692,12 +777,22 @@ export function WorkflowsPage({ status }: Props) {
           ● Run in progress — safe to navigate away.
         </span>
       )}
+      {/* Export the open Flow as a portable doc → clipboard (share it). */}
+      <button
+        type="button"
+        className="wf-btn topbar-action"
+        style={{ marginLeft: "auto" }}
+        onClick={() => void exportFlow()}
+        data-testid="wf-export-btn"
+        title="Copy this Flow to the clipboard — paste to share or back it up"
+      >
+        Export
+      </button>
       {/* Skills panel opener — procedural memory inspector. Lives next
           to Run/Stop so the user can pop the panel mid-build. */}
       <button
         type="button"
         className="wf-btn topbar-action"
-        style={{ marginLeft: "auto" }}
         onClick={() => setSkillsOpen(true)}
         data-testid="wf-open-skills"
         title="View procedural-memory skills saved by agent runs"

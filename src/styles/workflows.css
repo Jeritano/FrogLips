@@ -1104,3 +1104,36 @@
   .wf-template-card,
   .wf-template-card:hover { transition: none; transform: none; }
 }
+
+/* ── Shareable Flows: import paste modal (Phase 3b) — tokens only ─────────── */
+.wf-import-modal { max-width: 560px; }
+.wf-import-title { margin: 0 0 var(--space-1); font-size: var(--fs-md, 14px); font-weight: 600; }
+.wf-import-sub {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--text-muted, var(--fg-dim, #888));
+  line-height: 1.4;
+}
+.wf-import-textarea {
+  width: 100%;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  background: var(--input-bg, var(--panel, transparent));
+  color: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.wf-import-textarea:focus-visible {
+  outline: var(--focus-ring-width, 2px) solid var(--accent);
+  outline-offset: 1px;
+}
+.wf-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
