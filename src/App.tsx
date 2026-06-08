@@ -32,6 +32,7 @@ import { logDiag } from "./lib/diagnostics";
 import pkg from "../package.json";
 import { useModalA11y } from "./lib/use-modal-a11y";
 import { useTauriEvent } from "./hooks/useTauriEvent";
+import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { useCommitOnUnmount } from "./hooks/useCommitOnUnmount";
 import { usePlatformChrome } from "./hooks/usePlatformChrome";
 import { useWindowGeometry } from "./hooks/useWindowGeometry";
@@ -187,6 +188,10 @@ function App() {
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
+  // Silent background update check → a tasteful, dismissable toast.
+  const availableUpdate = useUpdateCheck();
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
   const [forkTreeOpen, setForkTreeOpen] = useState(false);
   const [memoriesOpen, setMemoriesOpen] = useState(false);
   const [aboutYouOpen, setAboutYouOpen] = useState(false);
@@ -1330,6 +1335,22 @@ function App() {
             });
           }}
           durationMs={5000}
+        />
+      )}
+      {availableUpdate && !updateDismissed && (
+        <Toast
+          message={
+            updateInstalling
+              ? `Updating to v${availableUpdate.version}…`
+              : `Update available — v${availableUpdate.version}`
+          }
+          actionLabel={updateInstalling ? undefined : "Update & restart"}
+          onAction={() => {
+            setUpdateInstalling(true);
+            void availableUpdate.install().catch(() => setUpdateInstalling(false));
+          }}
+          onDismiss={() => setUpdateDismissed(true)}
+          durationMs={3_600_000}
         />
       )}
       <LiveRegion />

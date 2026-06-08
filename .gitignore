@@ -35,6 +35,7 @@ src-tauri/gen/schemas
 # Secrets — never commit
 .env
 .env.*
+!.env.example
 *.key
 *.pem
 *.p12
