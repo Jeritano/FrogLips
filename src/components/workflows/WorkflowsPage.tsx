@@ -21,6 +21,7 @@ import {
   type WorkflowEdge,
   type WorkflowGraph,
 } from "../../types";
+import { FLOW_TEMPLATES, cloneTemplateGraph, type FlowTemplate } from "../../lib/workflow/templates";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { CardForm, type FormOrigin } from "./CardForm";
 import { RunPanel, type CardRunInfo } from "./RunPanel";
@@ -272,6 +273,18 @@ export function WorkflowsPage({ status }: Props) {
       openWorkflow(wf);
     } catch (e) {
       setErr(`Failed to create workflow: ${e}`);
+    }
+  }
+
+  async function useTemplate(t: FlowTemplate) {
+    try {
+      const graph = cloneTemplateGraph(t);
+      const id = await api.workflowSave(null, t.name, serializeWorkflowGraph(graph));
+      const now = Date.now();
+      await refreshList();
+      openWorkflow({ id, name: t.name, graph, created_at: now, updated_at: now });
+    } catch (e) {
+      setErr(`Failed to use template "${t.name}": ${e}`);
     }
   }
 
@@ -592,11 +605,37 @@ export function WorkflowsPage({ status }: Props) {
       <div className="wf-page wf-picker" data-testid="workflows-page">
         {topbarSlot && createPortal(pickerHeader, topbarSlot)}
         {err && <div className="wf-error" onClick={() => setErr(null)}>{err}</div>}
+
+        <section className="wf-templates" data-testid="wf-templates">
+          <h2 className="wf-templates-title">Start from a template</h2>
+          <p className="wf-templates-sub">
+            Proven Flows that chain small local models into a result that beats any single
+            call. One click to drop one on the canvas and customize.
+          </p>
+          <div className="wf-template-grid">
+            {FLOW_TEMPLATES.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className="wf-template-card"
+                data-testid={`wf-template-${t.id}`}
+                onClick={() => void useTemplate(t)}
+              >
+                <span className="wf-template-cat">{t.category}</span>
+                <span className="wf-template-name">{t.name}</span>
+                <span className="wf-template-summary">{t.summary}</span>
+                <span className="wf-template-meta">{t.graph.cards.length} steps →</span>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {list.length > 0 && <h2 className="wf-templates-title wf-your-flows">Your Flows</h2>}
         {list.length === 0 ? (
           <EmptyState
             icon={<Puzzle size={24}/>}
-            heading="No workflows yet"
-            sub="Create a workflow to chain agents into an automated pipeline."
+            heading="No Flows yet"
+            sub="Use a template above, or create a blank Flow to chain agents into a pipeline."
           />
         ) : (
           <ul className="wf-list">

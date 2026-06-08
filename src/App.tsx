@@ -62,9 +62,10 @@ type ViewId = "chat" | "workflows" | "knowledge" | "mcp" | "roundtable";
  */
 /** Top-level views, in sidebar nav order. */
 const NAV_ITEMS: { id: ViewId; label: string; icon: React.ReactNode }[] = [
+  // Flows leads the nav — orchestrating small local models is the headline.
+  { id: "workflows", label: "Flows", icon: <Zap size={17} /> },
   { id: "chat", label: "Chat", icon: <MessageSquare size={17} /> },
   { id: "roundtable", label: "Table", icon: <Users size={17} /> },
-  { id: "workflows", label: "Flows", icon: <Zap size={17} /> },
   { id: "mcp", label: "Tools", icon: <Wrench size={17} /> },
 ];
 
