@@ -1,6 +1,8 @@
 import { api } from "../tauri-api";
 import { logDiag } from "../diagnostics";
 import type { AuditApproval, AuditOutcome, ToolCall } from "../../types";
+import { serializeWorkflowGraph } from "../../types";
+import { assertFlowSafe, buildLinearFlow } from "../workflow/create-flow";
 import type { Risk } from "./types";
 import { dispatchMcpTool, isMcpToolName } from "./mcp-tools";
 import { looksLikeSecret, recall, saveMemory } from "../memory-client";
@@ -41,6 +43,10 @@ export const DANGEROUS_TOOLS = new Set([
   //                    read_file can then exfiltrate
   //   • show_notification — silent phishing toast
   "format_code", "screenshot", "show_notification",
+  // create_flow persists a Flow to the user's library — confirm it (the user
+  // sees what's being created). The Flow itself is built inert (non-unattended,
+  // read-only curated tools) by the builder.
+  "create_flow",
   // Sec audit round 5: also un-gated and side-effectful from plain chat.
   //   • remember — persistent write to the long-term memory store. MEMORY
   //     POISONING: an injected agent plants durable global-scope "facts" that
@@ -1202,6 +1208,32 @@ export async function executeTool(
       return JSON.stringify({ ok: true, rows: r });
     }
     /* ── Workflow scratchpad + cross-run artifacts (Phase 1.1 + 1.2) ── */
+    case "create_flow": {
+      // Build a validated, inert linear Flow from the model's {name, steps}.
+      // The builder hardcodes every security field (unattended:false, curated
+      // read-only tools, no schedule/orchestrator); the model controls only
+      // titles/roles/instructions. create_flow SAVES — it never runs the Flow.
+      const build = buildLinearFlow(args.name, args.steps);
+      if (!build.ok) {
+        return JSON.stringify({ ok: false, kind: build.kind, message: build.message });
+      }
+      const violation = assertFlowSafe(build.graph);
+      if (violation) {
+        return JSON.stringify({ ok: false, kind: "invariant_violation", message: violation });
+      }
+      const json = serializeWorkflowGraph(build.graph);
+      if (new TextEncoder().encode(json).length >= 1_048_576) {
+        return JSON.stringify({ ok: false, kind: "too_large", message: "Flow exceeds the 1 MiB limit." });
+      }
+      const flow_id = await api.workflowSave(null, build.name, json);
+      return JSON.stringify({
+        ok: true,
+        flow_id,
+        name: build.name,
+        steps: build.graph.cards.length,
+        note: "Saved to the Flows view (not run). Open Flows to review, edit, and run it.",
+      });
+    }
     case "workflow_set": {
       const { setEntry } = await import("../workflow/scratchpad");
       const r = setEntry(String(args.key ?? ""), args.value as never);

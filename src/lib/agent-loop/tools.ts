@@ -901,6 +901,49 @@ export const TOOLS = [
       parameters: { type: "object", properties: {} },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "create_flow",
+      description:
+        "Create a saved Flow — a linear multi-agent workflow — from a description. " +
+        "The Flow is SAVED to the Flows view but NEVER run automatically; the user reviews and runs it. " +
+        "Steps execute strictly top-to-bottom, each step's output handed to the next. " +
+        "Every step is built in ATTENDED mode and restricted to read-only, non-network tools, so a saved " +
+        "Flow cannot read-and-exfiltrate or modify the system on its own. " +
+        "Pick a `role` per step; the app assigns a curated, exfil-safe tool set. " +
+        "Use this when the user asks you to build/set up/save a workflow or pipeline.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short Flow name shown in the Flows list (max 80 chars)." },
+          steps: {
+            type: "array",
+            description: "Ordered steps; each becomes one agent card chained linearly. 1–12 steps.",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string", description: "Short step label (max 60 chars)." },
+                role: {
+                  type: "string",
+                  enum: ["coder", "critic", "editor", "summarizer", "shell"],
+                  description:
+                    "Built-in role for this step. The app assigns a curated read-only, non-network tool set; dangerous/network tools are never included.",
+                },
+                instructions: {
+                  type: "string",
+                  description: "What this step should do — becomes the card's prompt (max 4000 chars).",
+                },
+              },
+              required: ["title", "role", "instructions"],
+            },
+          },
+        },
+        required: ["name", "steps"],
+      },
+    },
+  },
+
   /* ── Workflow-only tools (Phase 1.1 + 1.2). Only meaningful inside a
        running workflow card — outside that scope they return
        {ok:false, kind:"not_in_workflow"}. Add to the card's `tools`
