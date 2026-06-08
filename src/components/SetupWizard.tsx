@@ -3,6 +3,8 @@ import { useRef } from "react";
 import { Check } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { recommendStarter } from "../lib/hardware-recommend";
+import { fmtGb } from "../lib/hardware-profile";
 import { logDiag } from "../lib/diagnostics";
 
 /**
@@ -40,6 +42,8 @@ interface StarterModel {
   id: string;
   label: string;
   size: string;
+  /** Approximate resident size in GiB — drives the hardware-fit recommendation. */
+  approxGb: number;
   description: string;
   /** Which Tauri pull command to invoke. */
   pull: "ollama" | "hf";
@@ -55,6 +59,7 @@ const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
       id: "mlx-community/Llama-3.2-3B-Instruct-4bit",
       label: "Llama 3.2 3B (4-bit)",
       size: "~2 GB",
+      approxGb: 2,
       description: "Small, fast, general-purpose. Default starter pick.",
       pull: "hf",
       backend: "native",
@@ -65,6 +70,7 @@ const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
       id: "mlx-community/Llama-3.2-3B-Instruct-4bit",
       label: "Llama 3.2 3B (4-bit)",
       size: "~2 GB",
+      approxGb: 2,
       description: "Small, fast, general-purpose. Default starter pick.",
       pull: "hf",
       backend: "mlx",
@@ -75,6 +81,7 @@ const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
       id: "llama3.2:3b",
       label: "Llama 3.2 3B",
       size: "~2 GB",
+      approxGb: 2,
       description: "Small, fast, general-purpose. Default starter pick.",
       pull: "ollama",
       backend: "ollama",
@@ -83,6 +90,7 @@ const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
       id: "qwen2.5-coder:7b",
       label: "Qwen2.5 Coder 7B",
       size: "~4 GB",
+      approxGb: 4.7,
       description: "Larger, code-tuned. Pick this for programming help.",
       pull: "ollama",
       backend: "ollama",
@@ -154,6 +162,14 @@ export function SetupWizard({ onDone }: Props) {
   // the user already has at least one, Next is enabled regardless of
   // download state — they don't need to fetch a starter to proceed.
   const [existingModelsCount, setExistingModelsCount] = useState(0);
+  // Detected RAM (GiB) for the hardware-fit recommendation; null until probed.
+  const [ramGb, setRamGb] = useState<number | null>(null);
+  useEffect(() => {
+    void api
+      .systemInfo()
+      .then((s) => setRamGb(s.total_ram_gb))
+      .catch(() => setRamGb(null));
+  }, []);
   useEffect(() => {
     let cancelled = false;
     api
@@ -453,22 +469,43 @@ export function SetupWizard({ onDone }: Props) {
             )}
 
             <div className="setup-wizard-cards">
-              {availableStarters().map((m) => {
+              {(() => {
+                const starters = availableStarters();
+                const { recommended, fit } = recommendStarter(starters, ramGb ?? 16);
+                return starters.map((m) => {
                 const isDownloading = downloading?.id === m.id;
                 const isDone = downloaded?.id === m.id;
+                const isRecommended = recommended?.id === m.id;
+                const tier = fit.get(m.id);
                 return (
                   <button
                     key={`${m.backend}:${m.id}`}
-                    className={`setup-wizard-card ${isDone ? "done" : ""}`}
+                    className={`setup-wizard-card ${isDone ? "done" : ""}${isRecommended ? " is-recommended" : ""}`}
                     data-testid={`setup-wizard-card-${m.id}`}
                     onClick={() => {
                       if (!isDownloading && !isDone) void downloadModel(m);
                     }}
                     disabled={isDownloading || downloading !== null}
                   >
+                    {isRecommended && (
+                      <div className="setup-wizard-rec-ribbon">
+                        {ramGb ? `Recommended for your ${fmtGb(ramGb)} Mac` : "Recommended"}
+                      </div>
+                    )}
                     <div className="setup-wizard-card-label">{m.label}</div>
                     <div className="setup-wizard-card-meta">
                       {m.size} · {m.backend}
+                      {tier && (
+                        <span className="headroom-badge" data-tier={tier}>
+                          {tier === "comfortable"
+                            ? "Fits"
+                            : tier === "tight"
+                              ? "Tight"
+                              : tier === "thrash"
+                                ? "Heavy"
+                                : "Too big"}
+                        </span>
+                      )}
                     </div>
                     <div className="setup-wizard-card-desc">{m.description}</div>
                     {isDownloading && (
@@ -481,7 +518,8 @@ export function SetupWizard({ onDone }: Props) {
                     )}
                   </button>
                 );
-              })}
+                });
+              })()}
             </div>
 
             {downloadErr && (

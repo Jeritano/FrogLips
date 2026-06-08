@@ -28,6 +28,13 @@ const apiMocks = vi.hoisted(() => ({
   // step 2 stays gated on a fresh download. Tests don't care about the
   // value here; an empty list keeps the original behaviour.
   listAllModels: vi.fn(async () => ({ mlx: [], ollama: [] })),
+  // Hardware-aware recommendation probe (Phase 2b).
+  systemInfo: vi.fn(async () => ({
+    total_ram_gb: 18,
+    physical_cores: 10,
+    performance_cores: 8,
+    cpu_brand: "Apple M-test",
+  })),
 }));
 
 vi.mock("../../lib/tauri-api", () => ({ api: apiMocks }));
