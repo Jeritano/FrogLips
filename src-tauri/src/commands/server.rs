@@ -1,9 +1,21 @@
 //! Backend server lifecycle and availability probes.
 
+use once_cell::sync::Lazy;
 use tauri::{Emitter, State};
 
 use super::{map_err, ServerHandle};
 use crate::backend_process::ServerStatus;
+
+/// Process-static client for the Ollama availability probe. Rebuilding a
+/// `reqwest::Client` per call (TLS ctx + connection pool init) is wasteful when
+/// the model picker / setup wizard hammer this; one shared client with the 1s
+/// probe ceiling is reused for the app's lifetime. (Perf audit 2026-06.)
+static OLLAMA_PROBE_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(1))
+        .build()
+        .expect("build ollama-probe http client")
+});
 
 #[tauri::command]
 pub async fn start_server(
@@ -74,15 +86,11 @@ pub async fn mlx_probe() -> bool {
 /// (the URL isn't user-controlled). Any error → false.
 #[tauri::command]
 pub async fn ollama_probe() -> bool {
-    const OLLAMA_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
-    let client = match reqwest::Client::builder()
-        .timeout(OLLAMA_PROBE_TIMEOUT)
-        .build()
+    match OLLAMA_PROBE_CLIENT
+        .get("http://127.0.0.1:11434/api/tags")
+        .send()
+        .await
     {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    match client.get("http://127.0.0.1:11434/api/tags").send().await {
         Ok(resp) => resp.status().is_success(),
         Err(_) => false,
     }

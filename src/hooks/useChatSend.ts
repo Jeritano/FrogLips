@@ -244,53 +244,76 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
-    // Recall memories
-    let recallBlock: string | null = null;
-    let recallHits: Memory[] = [];
-    if (mode !== "off") {
-      try {
-        recallHits = await recall(text, 5, { cwd: workspaceRoot, convId: conv.id }, ctrl.signal);
-        recallBlock = formatRecallBlock(recallHits);
-        if (isStreamConvActive()) setRecalled(recallHits);
-        if (recallHits.length > 0) {
-          api.touchMemories(recallHits.map((m) => m.id)).catch((err) =>
+    // ── Concurrent pre-stream work ──
+    // Memory recall and route classification are independent network/compute
+    // awaits on the pre-first-token critical path; run them CONCURRENTLY and
+    // apply their (synchronous) UI side-effects only AFTER both settle. Each
+    // promise swallows its own failure (recall → [], routing → null) so one
+    // can't sink the other, and the existing abort checks are preserved below.
+    const recallP: Promise<Memory[]> =
+      mode !== "off"
+        ? recall(text, 5, { cwd: workspaceRoot, convId: conv.id }, ctrl.signal).catch((err) => {
             logDiag({
               level: "warn",
               source: "memory-recall",
-              message: "touchMemories failed — recency scores may be stale",
+              message: "recall() threw — proceeding without recalled memories",
               detail: err,
-            }),
-          );
-        }
-      } catch (err) {
-        logDiag({
-          level: "warn",
-          source: "memory-recall",
-          message: "recall() threw — proceeding without recalled memories",
-          detail: err,
-        });
+            });
+            return [] as Memory[];
+          })
+        : Promise.resolve([] as Memory[]);
+
+    const routes =
+      routingEnabled && !(agentMode && agentAvailable) ? loadRoutes() : [];
+    const routeP =
+      routes.length > 0
+        ? routeChatMessage(text, routes, {
+            status,
+            stickyRouteId: stickyRouteRef.current.get(conv.id) ?? null,
+            signal: ctrl.signal,
+          }).catch((e) => {
+            logDiag({
+              level: "warn",
+              source: "chat-router",
+              message: "routing failed; using active model",
+              detail: e,
+            });
+            return null;
+          })
+        : Promise.resolve(null);
+
+    const [recallHits, routeDecision] = await Promise.all([recallP, routeP]);
+
+    // Recall side-effects
+    let recallBlock: string | null = null;
+    if (mode !== "off") {
+      recallBlock = formatRecallBlock(recallHits);
+      if (isStreamConvActive()) setRecalled(recallHits);
+      if (recallHits.length > 0) {
+        api.touchMemories(recallHits.map((m) => m.id)).catch((err) =>
+          logDiag({
+            level: "warn",
+            source: "memory-recall",
+            message: "touchMemories failed — recency scores may be stale",
+            detail: err,
+          }),
+        );
       }
     } else {
       if (isStreamConvActive()) setRecalled([]);
     }
 
     // ── Multi-model routing (plain chat only in MVP) ──
-    // Classify the message and (maybe) swap the model/backend + role for THIS
+    // Apply the route decision: maybe swap the model/backend + role for THIS
     // turn. Falls back to the active model on any failure. Agent mode keeps the
     // active model (routing the tool loop is a phased follow-up).
     let effModel: string = status.model;
     let effBackend: string = status.backend ?? "ollama";
     let routePreset: string | null = null;
-    if (routingEnabled && !(agentMode && agentAvailable)) {
-      try {
-        const routes = loadRoutes();
-        if (routes.length > 0) {
-          const decision = await routeChatMessage(text, routes, {
-            status,
-            stickyRouteId: stickyRouteRef.current.get(conv.id) ?? null,
-            signal: ctrl.signal,
-          });
-          if (decision && !ctrl.signal.aborted) {
+    if (routes.length > 0) {
+      {
+        const decision = routeDecision;
+        if (decision && !ctrl.signal.aborted) {
             // MVP: ollama loads on demand and custom/openrouter are cloud, so
             // those swap freely. mlx/native can't hot-swap a model without a
             // preload step (phased), so only honor them when they match the
@@ -322,17 +345,6 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           } else if (isStreamConvActive()) {
             onRouted?.(null);
           }
-        } else if (isStreamConvActive()) {
-          onRouted?.(null);
-        }
-      } catch (e) {
-        logDiag({
-          level: "warn",
-          source: "chat-router",
-          message: "routing failed; using active model",
-          detail: e,
-        });
-        if (isStreamConvActive()) onRouted?.(null);
       }
     } else if (isStreamConvActive()) {
       onRouted?.(null);
@@ -582,7 +594,12 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
 
     /* ── Regular streaming mode ── */
     if (isStreamConvActive()) setStreaming("");
+    // Accumulate tokens in a buffer (O(1) push) and only materialize the full
+    // string once per animation frame on flush — avoids growing/flattening a
+    // string on every token at 100+ tok/s. `acc` holds the flushed-so-far text.
     let acc = "";
+    const pending: string[] = [];
+    let accLen = 0;
     let aborted = false;
     const ACC_MAX = 262_144;
     // Coalesce streaming updates to one per animation frame. At 100+ tok/s
@@ -590,6 +607,10 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     let scheduled = 0;
     const flushStreaming = () => {
       scheduled = 0;
+      if (pending.length) {
+        acc += pending.join("");
+        pending.length = 0;
+      }
       if (isStreamConvActive()) setStreaming(acc);
     };
     try {
@@ -634,8 +655,9 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           });
       for await (const chunk of stream) {
         if (chunk.done) break;
-        acc += chunk.delta;
-        if (acc.length > ACC_MAX) {
+        pending.push(chunk.delta);
+        accLen += chunk.delta.length;
+        if (accLen > ACC_MAX) {
           // Code review L2: previously truncated silently — surface it in
           // diagnostics so a user investigating a clipped reply has a
           // breadcrumb. The user-visible UI still gets the truncated
@@ -664,6 +686,13 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         setErr(`The model stopped responding: ${e}. Send again to retry.`);
       }
     } finally {
+      // Drain any tokens that arrived since the last frame flush so `acc` is
+      // the complete reply for persistence below (the loop can break on `done`
+      // with pending tokens unflushed).
+      if (pending.length) {
+        acc += pending.join("");
+        pending.length = 0;
+      }
       if (scheduled) cancelAnimationFrame(scheduled);
       // Only null out if this send's controller is still active. Audit
       // re-review HIGH (2026-05-28) — same race as the agent-path

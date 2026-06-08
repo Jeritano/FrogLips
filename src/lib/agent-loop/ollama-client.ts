@@ -129,7 +129,9 @@ export async function streamOllamaChat(
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...(body as object), stream: true }),
+    // keep_alive first so a caller-supplied value still overrides; keeps the
+    // model resident between agent turns (no cold reload mid-run).
+    body: JSON.stringify({ keep_alive: "5m", ...(body as object), stream: true }),
     signal: to.signal,
   });
   if (!res.ok) {
