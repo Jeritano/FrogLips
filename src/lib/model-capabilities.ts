@@ -45,6 +45,68 @@ export function modelSupportsVision(modelId: string | null | undefined): boolean
   return VISION_MODEL_PATTERNS.some((re) => re.test(modelId));
 }
 
+/* ── Tool-calling fitness ────────────────────────────────────────────────────
+ *
+ * Agent mode + Flows only work if the model reliably emits OpenAI-style tool
+ * calls. Small base models, abliterated/uncensored variants, and some chat-only
+ * families narrate ("I would run `ls`…") or mangle the call instead — burning
+ * the iteration budget. This heuristic lets the UI gently steer the user to a
+ * model that will succeed BEFORE they hit a wall. A backend capability probe
+ * (Ollama `/api/show`) can override it; this is the authoritative fallback.
+ * Pinned per-family in the test suite so a regression is deliberate.
+ */
+export type ToolFitness = "good" | "weak" | "untested";
+
+/** Families that reliably tool-call (local + cloud). */
+const TOOL_GOOD_PATTERNS: RegExp[] = [
+  /qwen-?2\.?5/i,
+  /qwen-?3/i,
+  /hermes-?3/i,
+  /mistral-?nemo/i,
+  /mistral-?small/i,
+  /mistral-?large/i,
+  /\bmixtral/i,
+  /llama-?3\.[13]/i, // 3.1 / 3.3 — strong tool callers
+  /command-?r/i,
+  /firefunction/i,
+  /functionary/i,
+  // Cloud / frontier (via :cloud tags or custom backends).
+  /gpt-?[45]/i,
+  /\bo[1-9]\b/i,
+  /claude/i,
+  /gemini/i,
+  /deepseek/i,
+  /glm-?[45]/i,
+  /\bkimi/i,
+];
+
+/** Families that mangle or skip tool calls — weak wins over good on conflict. */
+const TOOL_WEAK_PATTERNS: RegExp[] = [
+  /abliterated/i,
+  /uncensored/i,
+  /dolphin/i,
+  /gemma/i, // gemma 2/3/4 hedge/narrate instead of calling
+  /phi-?[234]/i, // small phi narrates
+  /tinyllama/i,
+  /\b0\.5b\b/i,
+  /\b1b\b/i, // 1B-class too small for reliable tool use
+  /llama-?2\b/i,
+  /codellama/i,
+];
+
+/**
+ * Classify a model's tool-calling fitness from its id. "weak" is checked first
+ * so an abliterated build of an otherwise-good family (e.g. an abliterated
+ * qwen) is correctly flagged weak. Unknown families → "untested" (no warning,
+ * no false confidence).
+ */
+export function classifyToolFitness(modelId: string | null | undefined): ToolFitness {
+  if (!modelId) return "untested";
+  if (TOOL_WEAK_PATTERNS.some((re) => re.test(modelId))) return "weak";
+  if (TOOL_GOOD_PATTERNS.some((re) => re.test(modelId))) return "good";
+  return "untested";
+}
+
 /** Per-message attachment caps. UX bound — not a backend limit. */
 export const MAX_IMAGES_PER_MESSAGE = 4;
 /** Per-image size cap before base64 expansion. 4 MiB matches the "useful for

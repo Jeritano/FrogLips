@@ -45,6 +45,79 @@ export function mergeToolCallChunk(
   }
 }
 
+export interface ArgRepair {
+  repaired: Record<string, unknown>;
+  /** Which syntax fix recovered it (for audit/telemetry). */
+  kind: string;
+}
+
+/**
+ * Best-effort recovery of malformed tool-call arguments that weak models emit —
+ * PURE SYNTAX only (never invents or renames fields, never touches the tool
+ * name). Tries, in order: strip a ```json fence, straighten smart quotes, drop
+ * trailing commas, single→double quotes (only when no double quotes are
+ * present, so strings containing apostrophes aren't corrupted), and wrap a
+ * brace-less `key: "val"` object. Returns the parsed object + which fix worked,
+ * or null if still unparseable (caller falls back to the raw string, today's
+ * behavior). Lets a qwen-abliterated / gemma tool call succeed instead of
+ * burning an iteration on a `bad_arguments` reject.
+ */
+export function attemptRepairArgs(raw: string): ArgRepair | null {
+  if (typeof raw !== "string") return null;
+  const s0 = raw.trim();
+  if (!s0) return null;
+
+  const tryParse = (candidate: string, kind: string): ArgRepair | null => {
+    try {
+      const p = JSON.parse(candidate);
+      if (p && typeof p === "object" && !Array.isArray(p)) {
+        return { repaired: p as Record<string, unknown>, kind };
+      }
+    } catch {
+      /* keep trying */
+    }
+    return null;
+  };
+
+  // 1. Strip a markdown code fence the model wrapped the JSON in.
+  let s = s0;
+  const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fence) {
+    s = fence[1].trim();
+    const r = tryParse(s, "fence");
+    if (r) return r;
+  }
+
+  // 2. Smart quotes → straight.
+  s = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+  // 3. Trailing commas before } or ].
+  s = s.replace(/,(\s*[}\]])/g, "$1");
+  {
+    const r = tryParse(s, "syntax");
+    if (r) return r;
+  }
+
+  // 4. Single-quoted → double-quoted, ONLY when no double quotes exist (so a
+  //    legit apostrophe inside a double-quoted string isn't mangled).
+  if (!s.includes('"') && s.includes("'")) {
+    const r = tryParse(s.replace(/'/g, '"'), "single-quotes");
+    if (r) return r;
+  }
+
+  // 5. Brace-less object: `path: "x", recursive: true` → wrap in braces.
+  if (!s.startsWith("{")) {
+    const wrapped = `{${s}}`;
+    const r = tryParse(wrapped, "naked-object");
+    if (r) return r;
+    if (!wrapped.includes('"') && wrapped.includes("'")) {
+      const r2 = tryParse(wrapped.replace(/'/g, '"'), "naked-object");
+      if (r2) return r2;
+    }
+  }
+
+  return null;
+}
+
 /** Collapse accumulated partial slots into final, routable `ToolCall`s. */
 export function finalizeToolCalls(acc: PartialToolCall[]): ToolCall[] {
   const out: ToolCall[] = [];
@@ -65,7 +138,11 @@ export function finalizeToolCalls(acc: PartialToolCall[]): ToolCall[] {
         const parsed = JSON.parse(s);
         args = parsed && typeof parsed === "object" ? parsed : s;
       } catch {
-        args = s;
+        // Weak models often emit near-JSON (fences, smart quotes, trailing
+        // commas, single quotes). Try a pure-syntax repair before falling back
+        // to the raw string (which dispatch would reject as bad_arguments).
+        const repaired = attemptRepairArgs(s);
+        args = repaired ? repaired.repaired : s;
       }
     } else if (slot.function.arguments && typeof slot.function.arguments === "object") {
       args = slot.function.arguments as Record<string, unknown>;

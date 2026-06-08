@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { modelSupportsVision } from "../model-capabilities";
+import { classifyToolFitness, modelSupportsVision } from "../model-capabilities";
 
 describe("modelSupportsVision", () => {
   it("recognises known vision-capable families", () => {
@@ -49,5 +49,54 @@ describe("modelSupportsVision", () => {
     expect(modelSupportsVision(null)).toBe(false);
     expect(modelSupportsVision(undefined)).toBe(false);
     expect(modelSupportsVision("")).toBe(false);
+  });
+});
+
+describe("classifyToolFitness", () => {
+  it("flags known-good tool-calling families", () => {
+    for (const m of [
+      "qwen2.5-coder:7b",
+      "qwen3:4b",
+      "hermes3:8b",
+      "mistral-nemo",
+      "mistral-small:24b",
+      "llama3.1:8b",
+      "llama-3.3-70b",
+      "command-r:35b",
+      "gpt-4o",
+      "claude-3.5-sonnet",
+      "deepseek-v4-pro:cloud",
+      "glm-4.6:cloud",
+      "kimi-k2-thinking:cloud",
+    ]) {
+      expect(classifyToolFitness(m)).toBe("good");
+    }
+  });
+
+  it("flags weak / unreliable families", () => {
+    for (const m of [
+      "qwen2.5-coder-7b-abliterated",
+      "dolphin-mistral",
+      "gemma3:12b",
+      "gemma-4-27b",
+      "phi3:mini",
+      "tinyllama",
+      "llama3.2:1b",
+      "qwen2.5:0.5b",
+      "llama2:13b",
+      "codellama:7b",
+    ]) {
+      expect(classifyToolFitness(m)).toBe("weak");
+    }
+  });
+
+  it("weak wins over good when both match (abliterated qwen)", () => {
+    expect(classifyToolFitness("qwen3-8b-uncensored")).toBe("weak");
+  });
+
+  it("unknown families are 'untested' (no false confidence)", () => {
+    expect(classifyToolFitness("some-random-model:7b")).toBe("untested");
+    expect(classifyToolFitness(null)).toBe("untested");
+    expect(classifyToolFitness("")).toBe("untested");
   });
 });
