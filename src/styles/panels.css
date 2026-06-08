@@ -1772,3 +1772,71 @@ button.cancel {
   border: 1px solid var(--warn-border);
   cursor: help;
 }
+
+/* ── Privacy & safety panel (Phase 2a) — tokens only ─────────────────────── */
+.privacy-modal { max-width: 640px; }
+.privacy-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+.privacy-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--fs-lg, 16px);
+}
+.privacy-trust {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md, 10px);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  margin-bottom: var(--space-4);
+  border: 1px solid transparent;
+}
+.privacy-trust.is-local {
+  color: var(--green-fg);
+  background: var(--green-bg);
+  border-color: var(--green-border);
+}
+.privacy-trust.is-cloud {
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+.privacy-trust svg { flex: 0 0 auto; margin-top: 1px; }
+.privacy-trust strong { font-weight: 600; }
+
+.privacy-section { margin-bottom: var(--space-4); }
+.privacy-section h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text, inherit);
+}
+.privacy-scope { margin: 0 0 var(--space-2); font-size: var(--fs-sm); line-height: 1.4; }
+.privacy-scope code,
+.privacy-list code {
+  font-size: var(--fs-xs);
+  padding: 0 4px;
+  border-radius: var(--radius-xs, 4px);
+  background: var(--overlay-soft, rgba(127, 127, 127, 0.12));
+}
+.privacy-list {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-4);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.privacy-list li { margin-bottom: 2px; }
+.privacy-muted {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted, var(--fg-dim, #888));
+  line-height: 1.4;
+}

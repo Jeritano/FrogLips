@@ -15,6 +15,7 @@ import {
   X,
   Menu,
   BookOpen,
+  ShieldCheck,
   Stethoscope,
   Compass,
   Pin,
@@ -125,6 +126,9 @@ const Dashboard = lazy(() =>
 const DiagnosticsPanel = lazy(() =>
   import("./components/DiagnosticsPanel").then((m) => ({ default: m.DiagnosticsPanel })),
 );
+const PrivacyPanel = lazy(() =>
+  import("./components/PrivacyPanel").then((m) => ({ default: m.PrivacyPanel })),
+);
 const ForkTreeModal = lazy(() =>
   import("./components/ForkTree").then((m) => ({ default: m.ForkTreeModal })),
 );
@@ -181,6 +185,7 @@ function App() {
   const [convSearch, setConvSearch] = useState("");
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const [forkTreeOpen, setForkTreeOpen] = useState(false);
   const [memoriesOpen, setMemoriesOpen] = useState(false);
   const [aboutYouOpen, setAboutYouOpen] = useState(false);
@@ -828,6 +833,15 @@ function App() {
                 <button
                   type="button"
                   role="menuitem"
+                  data-testid="menu-privacy"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setPrivacyOpen(true); setMenuOpen(false); }}
+                >
+                  <ShieldCheck size={16} aria-hidden="true" /> Privacy &amp; safety
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   data-testid="menu-diagnostics"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => { setDiagnosticsOpen(true); setMenuOpen(false); }}
@@ -1245,6 +1259,11 @@ function App() {
       {diagnosticsOpen && (
         <Suspense fallback={null}>
           <DiagnosticsPanel open={diagnosticsOpen} onClose={() => setDiagnosticsOpen(false)} />
+        </Suspense>
+      )}
+      {privacyOpen && (
+        <Suspense fallback={null}>
+          <PrivacyPanel open={privacyOpen} onClose={() => setPrivacyOpen(false)} />
         </Suspense>
       )}
       {forkTreeOpen && (
