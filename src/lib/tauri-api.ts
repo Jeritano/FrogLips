@@ -318,6 +318,9 @@ export const api = {
     }),
   findDuplicateMemory: (embedding: number[], threshold?: number) =>
     invoke<number | null>("find_duplicate_memory", { embedding, threshold: threshold ?? 0.85 }),
+  /** Drop the Rust embedding cache (call on embedding-model change). */
+  memoryInvalidateEmbeddingCache: () =>
+    invoke<void>("memory_invalidate_embedding_cache"),
   // Scope mutators
   memoryPromote: (id: number) => invoke<void>("memory_promote", { id }),
   memoryDemote: (id: number) => invoke<void>("memory_demote", { id }),

@@ -86,7 +86,9 @@ export async function* streamChat(
   // its OpenAI-compat endpoint honors; gated to ollama so MLX's stricter server
   // never sees an unknown field. Request-level value — doesn't override a
   // daemon the user tuned more aggressively.
-  if (status.backend === "ollama") body.keep_alive = "5m";
+  if (status.backend === "ollama" && !status.model?.endsWith(":cloud")) {
+    body.keep_alive = "5m";
+  }
 
   // Inactivity watchdog: a generous first-byte/cold-load window, then a
   // shorter per-token idle cap (re-armed on every chunk). Aborts a stalled

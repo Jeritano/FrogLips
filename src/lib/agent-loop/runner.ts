@@ -790,9 +790,16 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   // `.filter(... .includes(...))` was O(n×m) and ran every agent iteration
   // when re-deriving the tool list. The allowlist is run-scoped + immutable
   // so the Set hoists fine.
-  const allowlistSet = toolAllowlist.length ? new Set(toolAllowlist) : null;
-  const tools = allowlistSet
-    ? allTools.filter((t) => allowlistSet.has(t.function.name))
+  // `let`, not `const`: loading a Claude skill with a declared `allowed_tools`
+  // narrows this set for the rest of the run (enforced by the hard gate below),
+  // so a skill scoped to e.g. read_file can't then invoke run_shell.
+  let allowlistSet = toolAllowlist.length ? new Set(toolAllowlist) : null;
+  // The model-facing tool list is built once from the initial grant (a const
+  // snapshot so the closure narrows; later skill-narrowing only tightens the
+  // dispatch gate, not the advertised list).
+  const initialAllow = allowlistSet;
+  const tools = initialAllow
+    ? allTools.filter((t) => initialAllow.has(t.function.name))
     : allTools;
 
   // Track "research without writing" so we can nudge the model when it
@@ -1279,6 +1286,29 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
               }),
               signal,
             );
+            // Skill allowlist ENFORCEMENT (review finding 2026-06): when a
+            // skill with a declared allowed_tools loads, narrow the run's tool
+            // gate to that set, intersected with the existing grant (least
+            // privilege). The hard gate above (`allowlistSet && !has`) then
+            // blocks any call the skill didn't authorize. Skill meta-tools stay
+            // callable so the model can still load/refresh skills.
+            if (fnName === "load_claude_skill") {
+              try {
+                const r = JSON.parse(result) as { ok?: boolean; allowed_tools?: unknown };
+                if (r?.ok && Array.isArray(r.allowed_tools) && r.allowed_tools.length > 0) {
+                  const skillSet = new Set<string>(
+                    (r.allowed_tools as unknown[]).filter((t): t is string => typeof t === "string"),
+                  );
+                  skillSet.add("load_claude_skill");
+                  skillSet.add("list_claude_skills");
+                  allowlistSet = allowlistSet
+                    ? new Set([...allowlistSet].filter((t) => skillSet.has(t)))
+                    : skillSet;
+                }
+              } catch {
+                /* malformed result — leave the gate unchanged */
+              }
+            }
             if (ckey != null) {
               // Only cache responses that don't look like errors — caching
               // a transient `{ok:false}` would mask a retry.

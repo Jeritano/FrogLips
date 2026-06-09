@@ -429,6 +429,7 @@ pub fn run() {
             commands::memory::search_memories_keyword,
             commands::memory::search_memories_vector,
             commands::memory::find_duplicate_memory,
+            commands::memory::memory_invalidate_embedding_cache,
             commands::memory::memory_promote,
             commands::memory::memory_demote,
             commands::memory::memory_set_context,

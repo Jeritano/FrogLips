@@ -176,3 +176,12 @@ pub async fn find_duplicate_memory(
     let threshold = threshold.unwrap_or(0.85);
     blocking(move || memory::find_duplicate(embedding, threshold)).await
 }
+
+/// Drop the in-memory embedding cache. Called when the embedding model changes:
+/// vectors cached under the old model must not be compared against new-model
+/// query embeddings (different dimension/semantics → broken dedup + recall).
+/// Review finding 2026-06 — the TS-side LRU was cleared but this wasn't.
+#[tauri::command]
+pub fn memory_invalidate_embedding_cache() {
+    memory::invalidate_cache();
+}

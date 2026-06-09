@@ -35,13 +35,17 @@ pub fn prepare(
     if question.len() > 4096 {
         return Err("question too long".into());
     }
-    let id = format!(
-        "ask-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
+    // nanos alone collide when two asks prepare in the same nanosecond, which
+    // overwrites the first's PENDING entry and hangs it until the 600s timeout.
+    // Append a process-global atomic sequence for uniqueness (same pattern as
+    // task_queue.rs). Sec/review 2026-06.
+    static ASK_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = ASK_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = format!("ask-{nanos:x}-{seq:x}");
     let (tx, rx) = oneshot::channel();
     PENDING.lock().insert(id.clone(), tx);
     Ok((AskUserRequest { id, question, hint }, rx))

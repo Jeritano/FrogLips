@@ -427,28 +427,33 @@ export async function routeMessage(
   // Stage 2 — semantic (vector). Cheap + no model load; only fires when a query
   // embedding and at least one route prototype are available.
   if (opts.embedQuery && opts.prototypes && opts.prototypes.size > 0) {
+    const protos = opts.prototypes;
+    // Catch ONLY the embedding I/O — let synchronous defects (Type/RangeError)
+    // in the scoring below escape instead of being masked as a "trying
+    // classifier" fallback. (Review finding 2026-06.)
+    let q: number[] | null = null;
     try {
-      const q = await opts.embedQuery();
-      if (q && q.length) {
-        const scored = routes
-          .map((r) => ({ r, proto: opts.prototypes!.get(r.id) }))
-          .filter((x): x is { r: ChatRoute; proto: number[] } => Array.isArray(x.proto))
-          .map((x) => ({ r: x.r, score: cosineSim(q, x.proto) }))
-          .sort((a, b) => b.score - a.score);
-        if (scored.length > 0) {
-          const threshold = opts.threshold ?? 0.5;
-          const margin = opts.margin ?? 0.05;
-          const top = scored[0];
-          const second = scored[1]?.score ?? -1;
-          if (top.score >= threshold && top.score - second >= margin) {
-            const method: RouteDecision["method"] =
-              sticky && top.r.id === sticky.id ? "sticky" : "semantic";
-            return decisionFrom(top.r, method, `cosine ${top.score.toFixed(2)}`, top.score);
-          }
+      q = await opts.embedQuery();
+    } catch (e) {
+      logDiag({ level: "warn", source: "chat-router", message: "semantic embed failed; trying classifier", detail: e });
+    }
+    if (q && q.length) {
+      const scored = routes
+        .map((r) => ({ r, proto: protos.get(r.id) }))
+        .filter((x): x is { r: ChatRoute; proto: number[] } => Array.isArray(x.proto))
+        .map((x) => ({ r: x.r, score: cosineSim(q, x.proto) }))
+        .sort((a, b) => b.score - a.score);
+      if (scored.length > 0) {
+        const threshold = opts.threshold ?? 0.5;
+        const margin = opts.margin ?? 0.05;
+        const top = scored[0];
+        const second = scored[1]?.score ?? -1;
+        if (top.score >= threshold && top.score - second >= margin) {
+          const method: RouteDecision["method"] =
+            sticky && top.r.id === sticky.id ? "sticky" : "semantic";
+          return decisionFrom(top.r, method, `cosine ${top.score.toFixed(2)}`, top.score);
         }
       }
-    } catch (e) {
-      logDiag({ level: "warn", source: "chat-router", message: "semantic stage failed; trying classifier", detail: e });
     }
   }
 

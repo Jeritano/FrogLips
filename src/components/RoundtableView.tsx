@@ -227,10 +227,13 @@ interface DraftSeat {
 
 let seatCounter = 0;
 function newSeat(persona?: PersonaTemplate): DraftSeat {
+  // Read the index ONCE — the old code post-incremented in the id but then read
+  // the already-incremented counter for name + color, shifting both by one.
+  const i = seatCounter++;
   return {
-    id: `s${seatCounter++}-${Date.now()}`,
-    name: persona?.name ?? `Seat ${seatCounter}`,
-    color: SEAT_COLORS[seatCounter % SEAT_COLORS.length],
+    id: `s${i}-${Date.now()}`,
+    name: persona?.name ?? `Seat ${i + 1}`,
+    color: SEAT_COLORS[i % SEAT_COLORS.length],
     optionKey: "",
     system: persona?.system ?? "",
     temperature: 0.8,

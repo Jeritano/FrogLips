@@ -91,6 +91,13 @@ export async function streamAgentChat(
       if (Object.keys(ollamaOptions).length > 0) {
         body.options = ollamaOptions;
       }
+      // keep_alive keeps the local model resident between turns (no cold
+      // reload). LOCAL ONLY — the cloud passthrough rejects extra top-level
+      // fields the same way it rejects `options` (cryptic 400). Gated here, not
+      // in streamOllamaChat, so cloud routes never carry it.
+      if (!isCloud) {
+        body.keep_alive = "5m";
+      }
       if (Array.isArray(tools) && tools.length > 0) {
         body.tools = tools;
       }

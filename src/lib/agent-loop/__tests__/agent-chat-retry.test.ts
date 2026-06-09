@@ -212,3 +212,33 @@ describe("streamAgentChat — retry / backoff predicate", () => {
     ).rejects.toThrow(/MLX backend/i);
   });
 });
+
+// Regression for the keep_alive cloud-routing bug: a `:cloud` model must NOT
+// carry keep_alive (or options) — the cloud passthrough 400s on extra top-level
+// fields. This asserts the OUTGOING request body, which the retry tests above
+// never did (that's why the bug shipped). Theme: cloud tests must check the body.
+describe("streamAgentChat — keep_alive gating (local vs cloud)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function bodyFor(model: string): Promise<Record<string, unknown>> {
+    let captured: Record<string, unknown> = {};
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      captured = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return ndjsonResponse("ok");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await streamAgentChat({ ...baseOpts(), model }, MSGS, [], new AbortController().signal, () => {}, () => {});
+    return captured;
+  }
+
+  it("local Ollama model includes keep_alive", async () => {
+    const body = await bodyFor("qwen2.5-coder:7b");
+    expect(body.keep_alive).toBe("5m");
+  });
+
+  it("cloud-routed (:cloud) model OMITS keep_alive and options", async () => {
+    const body = await bodyFor("deepseek-v4-pro:cloud");
+    expect(body.keep_alive).toBeUndefined();
+    expect(body.options).toBeUndefined();
+  });
+});

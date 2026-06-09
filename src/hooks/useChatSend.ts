@@ -601,6 +601,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     const pending: string[] = [];
     let accLen = 0;
     let aborted = false;
+    let truncatedAtCap = false;
     const ACC_MAX = 262_144;
     // Coalesce streaming updates to one per animation frame. At 100+ tok/s
     // a setState per chunk thrashes the renderer; rAF caps it to ~60 Hz.
@@ -668,6 +669,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             message: `streaming response hit ACC_MAX (${ACC_MAX} bytes) — truncated`,
             detail: { backend: status.backend, model: status.model },
           });
+          truncatedAtCap = true;
           ctrl.abort();
           break;
         }
@@ -714,7 +716,12 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       // be the raw assistant text, not editorial markers. The suffix is
       // applied to the in-memory message we render (displayContent) so the
       // user still sees that the stream was interrupted.
-      const displayContent = aborted ? acc + "\n\n[stopped]" : acc;
+      const displayContent = aborted
+        ? acc +
+          (truncatedAtCap
+            ? "\n\n[Response truncated at the 256 KB limit — send a follow-up to continue.]"
+            : "\n\n[stopped]")
+        : acc;
       const asst: Message = {
         _tmpKey: tmpKey(),
         conversation_id: conv.id,

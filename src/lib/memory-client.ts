@@ -65,6 +65,11 @@ export function configureMemory(opts: { embeddingModel?: string | null; recallTh
     // identity changes so the next call refills with consistent vectors.
     if (opts.embeddingModel !== _embedModel) {
       embedLru.clear();
+      // Also drop the Rust-side embedding cache — clearing only the TS LRU left
+      // the backend comparing new-model query vectors against stale old-model
+      // cached vectors (broken dedup/recall). Fire-and-forget; no-op on an
+      // empty cache. (Review finding 2026-06.)
+      api.memoryInvalidateEmbeddingCache().catch(() => {});
     }
     _embedModel = opts.embeddingModel;
   }

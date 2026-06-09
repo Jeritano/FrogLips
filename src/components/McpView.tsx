@@ -123,8 +123,20 @@ export function McpView() {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 4000);
-    return () => clearInterval(t);
+    // Skip the 4s poll while the tab/window is hidden — no point hitting the
+    // MCP servers when nobody's looking. Refresh immediately on regaining
+    // visibility so the view is current. (Matches AgentToolbar's pattern.)
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, 4000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [refresh]);
 
   const loadBrowse = useCallback((src: string, q: string) => {
