@@ -48,7 +48,7 @@ const RtTurnBubble = memo(function RtTurnBubble({ turn: t }: { turn: Turn }) {
   );
 });
 
-const SEAT_COLORS = ["#22c55e", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444", "#14b8a6"];
+export const SEAT_COLORS = ["#22c55e", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444", "#14b8a6"];
 
 /** A pickable model option, flattened across backends. */
 interface ModelOption {
@@ -226,7 +226,7 @@ interface DraftSeat {
 }
 
 let seatCounter = 0;
-function newSeat(persona?: PersonaTemplate): DraftSeat {
+export function newSeat(persona?: PersonaTemplate): DraftSeat {
   // Read the index ONCE — the old code post-incremented in the id but then read
   // the already-incremented counter for name + color, shifting both by one.
   const i = seatCounter++;
@@ -240,7 +240,7 @@ function newSeat(persona?: PersonaTemplate): DraftSeat {
   };
 }
 
-function isDraftSeatArray(v: unknown): v is DraftSeat[] {
+export function isDraftSeatArray(v: unknown): v is DraftSeat[] {
   return Array.isArray(v) && v.every((s) => s && typeof s === "object" && "id" in s && "optionKey" in s);
 }
 
@@ -254,7 +254,7 @@ interface SavedTable {
   maxRounds: number;
   maxUsd: number;
 }
-function isSavedTableArray(v: unknown): v is SavedTable[] {
+export function isSavedTableArray(v: unknown): v is SavedTable[] {
   return (
     Array.isArray(v) &&
     v.every(
