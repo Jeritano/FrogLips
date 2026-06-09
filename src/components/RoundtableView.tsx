@@ -67,6 +67,10 @@ interface PersonaTemplate {
 interface Preset {
   id: string;
   label: string;
+  /** Gallery grouping chip (Debate / Create / Decide / Learn). */
+  category: string;
+  /** One-line gallery card summary. */
+  summary: string;
   topic: string;
   personas: PersonaTemplate[];
   turnControl: TurnControl;
@@ -77,6 +81,8 @@ const PRESETS: Preset[] = [
   {
     id: "debate",
     label: "Debate",
+    category: "Debate",
+    summary: "Two sides argue a hard question and stress-test each other.",
     topic: "Should AGI development be paused? Argue your side.",
     turnControl: "round-robin",
     maxRounds: 4,
@@ -88,6 +94,8 @@ const PRESETS: Preset[] = [
   {
     id: "brainstorm",
     label: "Brainstorm",
+    category: "Create",
+    summary: "Diverge wild then converge — ideas thrown out, then sharpened.",
     topic: "Generate and refine ideas for: ",
     turnControl: "round-robin",
     maxRounds: 3,
@@ -99,6 +107,8 @@ const PRESETS: Preset[] = [
   {
     id: "interview",
     label: "Interview",
+    category: "Learn",
+    summary: "A sharp interviewer draws an expert out, one probing question at a time.",
     topic: "Interview about: ",
     turnControl: "round-robin",
     maxRounds: 4,
@@ -110,12 +120,97 @@ const PRESETS: Preset[] = [
   {
     id: "devils",
     label: "Devil's advocate",
+    category: "Decide",
+    summary: "Propose a plan, then have it torn apart by a relentless adversary.",
     topic: "Propose a plan, then have it torn apart: ",
     turnControl: "round-robin",
     maxRounds: 4,
     personas: [
       { name: "The Proposer", system: "Make the strongest case for your plan and defend it under fire." },
       { name: "The Adversary", system: "Find the fatal flaw. Attack assumptions, incentives, and second-order effects relentlessly." },
+    ],
+  },
+  {
+    id: "worldbuilding",
+    label: "Sci-fi worldbuilding",
+    category: "Create",
+    summary: "An architect, a historian, and a dissident invent a believable world.",
+    topic: "Build a world where: ",
+    turnControl: "round-robin",
+    maxRounds: 4,
+    personas: [
+      { name: "The Architect", system: "Define the world's rules — physics, tech, society. Be concrete and internally consistent; one new system per turn." },
+      { name: "The Historian", system: "Invent this world's PAST — the war, the schism, the discovery that made it this way. Tie events to the Architect's rules." },
+      { name: "The Dissident", system: "Find the contradictions and the human cost. Who suffers under these rules? What breaks? Keep it honest, not utopian." },
+    ],
+  },
+  {
+    id: "writers-room",
+    label: "Writers' room",
+    category: "Create",
+    summary: "Showrunner, cynic, and heart break a story together.",
+    topic: "Break a story about: ",
+    turnControl: "round-robin",
+    maxRounds: 4,
+    personas: [
+      { name: "The Showrunner", system: "Pitch the arc — beginning, turn, ending. Keep momentum; end each turn on a hook." },
+      { name: "The Cynic", system: "Kill the clichés. Name the trope, then twist it into something fresher. Be ruthless about the obvious." },
+      { name: "The Heart", system: "Guard the emotional truth. Why does this matter to the character? Keep the stakes human." },
+    ],
+  },
+  {
+    id: "startup-panel",
+    label: "Startup pitch panel",
+    category: "Decide",
+    summary: "Founder pitches; a VC and a real user pressure-test it.",
+    topic: "Pitch and pressure-test: ",
+    turnControl: "round-robin",
+    maxRounds: 4,
+    personas: [
+      { name: "The Founder", system: "Pitch the vision and defend it. Concrete on what you build, for whom, and why now." },
+      { name: "The VC", system: "Grill the unit economics, moat, and go-to-market. Ask the one question that kills weak startups." },
+      { name: "The User", system: "You're the target customer. Would you actually use + pay for this? Be honest about your real alternatives." },
+    ],
+  },
+  {
+    id: "decision-council",
+    label: "Decision council",
+    category: "Decide",
+    summary: "Pragmatist, visionary, and realist weigh a real decision you face.",
+    topic: "Help me decide: ",
+    turnControl: "round-robin",
+    maxRounds: 3,
+    personas: [
+      { name: "The Pragmatist", system: "Optimize for what works now with least risk. Name the cheapest reversible next step." },
+      { name: "The Visionary", system: "Argue for the boldest long-game option. What does the best possible outcome look like, and what's the path?" },
+      { name: "The Realist", system: "Weigh both against constraints — time, money, energy. Force a recommendation with its tradeoff stated." },
+    ],
+  },
+  {
+    id: "socratic",
+    label: "Socratic tutor",
+    category: "Learn",
+    summary: "A tutor teaches only by questions; a student reasons aloud.",
+    topic: "Teach me: ",
+    turnControl: "round-robin",
+    maxRounds: 5,
+    personas: [
+      { name: "The Tutor", system: "Never lecture. Lead with ONE question that exposes the next gap in understanding. Build on the student's last answer." },
+      { name: "The Student", system: "Reason out loud. Attempt each question honestly, show your work, and admit what you're unsure of." },
+    ],
+  },
+  {
+    id: "comedy",
+    label: "Comedy writers",
+    category: "Create",
+    summary: "A setup, a punchline, and a heckler riff until it's actually funny.",
+    topic: "Riff on: ",
+    turnControl: "round-robin",
+    maxRounds: 3,
+    personas: [
+      { name: "The Setup", system: "Find the funny premise and the straight-faced framing. Hand the next seat a clean runway." },
+      { name: "The Punchline", system: "Land the joke — surprise + truth. Shortest version that hits. No explaining it." },
+      { name: "The Heckler", system: "If a bit isn't landing, say so and twist it harder. Push for the better, weirder angle." },
     ],
   },
 ];
@@ -361,6 +456,30 @@ export function RoundtableView() {
     setSetupErr(null);
     setEditing(true);
   }, [setSavedTables, setSeats, setTopic, setMemoryMode, setMaxRounds, setMaxUsd]);
+
+  // Create a new roundtable seeded from a template (personas + topic + rounds),
+  // register it, and open the editor so the user assigns models + hits Start.
+  const createFromPreset = useCallback(
+    (p: Preset) => {
+      const seats0 = p.personas.map((persona) => newSeat(persona));
+      const id = `rt${Date.now()}`;
+      setSavedTables((cur) => [
+        ...cur,
+        { id, name: p.label, seats: seats0, topic: p.topic, memoryMode: "recent", maxRounds: p.maxRounds, maxUsd: 0.5 },
+      ]);
+      setSeats(seats0);
+      setTopic(p.topic);
+      setMemoryMode("recent");
+      setMaxRounds(p.maxRounds);
+      setMaxUsd(0.5);
+      setLoadedId(id);
+      setSaveName(p.label);
+      setConfirmLocal(false);
+      setSetupErr(null);
+      setEditing(true);
+    },
+    [setSavedTables, setSeats, setTopic, setMemoryMode, setMaxRounds, setMaxUsd],
+  );
 
   const openTable = useCallback(
     (id: string) => {
@@ -871,11 +990,37 @@ export function RoundtableView() {
     return (
       <div className="wf-page wf-picker" data-testid="roundtable-list">
         {topbarSlot ? createPortal(listHead, topbarSlot) : <div className="rt-setup-head">{listHead}</div>}
+
+        <section className="rt-templates" data-testid="rt-templates">
+          <h2 className="rt-templates-title">Start from a template</h2>
+          <p className="rt-templates-sub">
+            Drop a cast of personas onto the table and go. Pick one, assign models to the
+            seats, and hit Start — tweak anything after.
+          </p>
+          <div className="rt-template-grid">
+            {PRESETS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="rt-template-card"
+                data-testid={`rt-template-${p.id}`}
+                onClick={() => createFromPreset(p)}
+              >
+                <span className="rt-template-cat">{p.category}</span>
+                <span className="rt-template-name">{p.label}</span>
+                <span className="rt-template-summary">{p.summary}</span>
+                <span className="rt-template-meta">{p.personas.length} seats · {p.maxRounds} rounds →</span>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {savedTables.length > 0 && <h2 className="rt-templates-title rt-your-tables">Your roundtables</h2>}
         {savedTables.length === 0 ? (
           <EmptyState
             icon={<Users size={24}/>}
-            heading="No roundtables yet"
-            sub="Create a roundtable to have several models debate or brainstorm a topic."
+            heading="No saved roundtables yet"
+            sub="Use a template above, or start a blank one, to have several models debate or brainstorm a topic."
           />
         ) : (
           <ul className="wf-list">
