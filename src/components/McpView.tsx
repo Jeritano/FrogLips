@@ -4,9 +4,14 @@ import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import { Button, Input, Spinner, Badge } from "./ui";
+import { ClaudeSkillsPanel } from "./ClaudeSkillsPanel";
 import { EmptyState } from "./EmptyState";
 import { Globe, Plug, Star, Check, X } from "lucide-react";
-import type { McpServerConfig, McpServerInfo, McpRegistryEntry } from "../types";
+import type {
+  McpServerConfig,
+  McpServerInfo,
+  McpRegistryEntry,
+} from "../types";
 import "../styles/mcp.css";
 
 /* ── MCP Tools hub ──────────────────────────────────────────────────────
@@ -23,38 +28,67 @@ function loadConfigs(): McpServerConfig[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((s) => s && typeof s === "object" && typeof s.name === "string");
+    return parsed.filter(
+      (s) => s && typeof s === "object" && typeof s.name === "string",
+    );
   } catch (err) {
-    logDiag({ level: "warn", source: "mcp", message: "loadConfigs malformed", detail: err });
+    logDiag({
+      level: "warn",
+      source: "mcp",
+      message: "loadConfigs malformed",
+      detail: err,
+    });
     return [];
   }
 }
 function saveConfigs(list: McpServerConfig[]) {
   localStorage.setItem("mcp.servers", JSON.stringify(list));
-  api.settingsSet({ mcp_servers: list }).catch((e) =>
-    logDiag({ level: "warn", source: "mcp", message: "persist mcp_servers failed", detail: e }),
-  );
+  api
+    .settingsSet({ mcp_servers: list })
+    .catch((e) =>
+      logDiag({
+        level: "warn",
+        source: "mcp",
+        message: "persist mcp_servers failed",
+        detail: e,
+      }),
+    );
 }
 
 /** Sanitize a registry id into a valid server name ([A-Za-z0-9_-]{1,64}). */
 function deriveName(id: string): string {
   const tail = id.split("/").pop() ?? id;
-  const cleaned = tail.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const cleaned = tail
+    .replace(/[^A-Za-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
   return (cleaned || "server").slice(0, 64);
 }
 
 /** Map a package entry to a stdio launch command, or null if unsupported. */
-function packageLaunch(e: McpRegistryEntry): { command: string; args: string[] } | null {
+function packageLaunch(
+  e: McpRegistryEntry,
+): { command: string; args: string[] } | null {
   if (!e.package_name) return null;
   const reg = (e.package_registry ?? "").toLowerCase();
-  if (reg.includes("npm")) return { command: "npx", args: ["-y", e.package_name] };
-  if (reg.includes("pypi") || reg.includes("pip")) return { command: "uvx", args: [e.package_name] };
+  if (reg.includes("npm"))
+    return { command: "npx", args: ["-y", e.package_name] };
+  if (reg.includes("pypi") || reg.includes("pip"))
+    return { command: "uvx", args: [e.package_name] };
   return null;
 }
 
 export function McpView() {
   const [tab, setTab] = useState<"installed" | "browse">("installed");
-  const [configs, setConfigs] = useState<McpServerConfig[]>(() => loadConfigs());
+  // Skills front door (product review 2026-06-10, IA #5): the Claude Skills
+  // library — a marquee agent capability — was reachable only from inside
+  // the metrics Dashboard, where nobody managing agent capabilities would
+  // look. Tools view is where MCP servers (the other "things the agent can
+  // do" surface) already live, so the modal opens from here too.
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [configs, setConfigs] = useState<McpServerConfig[]>(() =>
+    loadConfigs(),
+  );
   const [servers, setServers] = useState<McpServerInfo[]>([]);
   const [tools, setTools] = useState<Record<string, string[]>>({});
   const [err, setErr] = useState<string | null>(null);
@@ -90,7 +124,10 @@ export function McpView() {
   // Portal target in the App header — lets the tab bar + "Add manually" share
   // the theme-toggle's row instead of stacking a second bar below it.
   const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => setTopbarSlot(document.getElementById("mcp-topbar-slot")), []);
+  useEffect(
+    () => setTopbarSlot(document.getElementById("mcp-topbar-slot")),
+    [],
+  );
 
   const refreshing = useRef(false);
   const refresh = useCallback(async () => {
@@ -107,7 +144,10 @@ export function McpView() {
         list.map(async (s) => {
           try {
             const ts = await api.mcpListTools(s.name);
-            return [s.name, Array.isArray(ts) ? ts.map((t) => t.name) : []] as const;
+            return [
+              s.name,
+              Array.isArray(ts) ? ts.map((t) => t.name) : [],
+            ] as const;
           } catch {
             return [s.name, [] as string[]] as const; // mid-restart
           }
@@ -158,7 +198,9 @@ export function McpView() {
             const pulse = await api.mcpRegistrySearch("pulse", q || undefined);
             setEntries(pulse);
             setErr(null);
-            setNote("Official registry didn't respond — showing PulseMCP results.");
+            setNote(
+              "Official registry didn't respond — showing PulseMCP results.",
+            );
             return;
           } catch {
             /* fall through to the original error */
@@ -199,7 +241,9 @@ export function McpView() {
         }
         await refresh();
       } catch (e) {
-        setErr(`Start '${cfg.name}': ${e instanceof Error ? e.message : String(e)}`);
+        setErr(
+          `Start '${cfg.name}': ${e instanceof Error ? e.message : String(e)}`,
+        );
       } finally {
         setBusy(null);
       }
@@ -225,7 +269,8 @@ export function McpView() {
   const removeConfig = useCallback(
     async (cfg: McpServerConfig) => {
       await api.mcpStopServer(cfg.name).catch(() => undefined);
-      if (cfg.url) await api.mcpDeleteRemoteToken(cfg.name).catch(() => undefined);
+      if (cfg.url)
+        await api.mcpDeleteRemoteToken(cfg.name).catch(() => undefined);
       persist(configs.filter((c) => c.name !== cfg.name));
       await refresh();
     },
@@ -250,7 +295,11 @@ export function McpView() {
           setBusy(null);
           return;
         }
-        await api.mcpStartRemoteServer(name, form.url.trim(), form.token || undefined);
+        await api.mcpStartRemoteServer(
+          name,
+          form.url.trim(),
+          form.token || undefined,
+        );
         cfg = { name, command: "", url: form.url.trim(), enabled: true };
       } else {
         const args = form.args.trim() ? form.args.trim().split(/\s+/) : [];
@@ -293,7 +342,10 @@ export function McpView() {
     setErr(null);
     try {
       await api.mcpOauthConnect(name, form.url.trim());
-      persist([...configs.filter((c) => c.name !== name), { name, command: "", url: form.url.trim(), enabled: true }]);
+      persist([
+        ...configs.filter((c) => c.name !== name),
+        { name, command: "", url: form.url.trim(), enabled: true },
+      ]);
       setForm(null);
       await refresh();
     } catch (e) {
@@ -304,48 +356,104 @@ export function McpView() {
   }, [form, configs, refresh]);
 
   // One-click add from a registry card.
-  const addFromEntry = useCallback(
-    (e: McpRegistryEntry) => {
-      const name = deriveName(e.id);
-      if (e.transport === "remote" && e.remote_url) {
-        // Open the form so the user can paste a token if needed.
-        setForm({ open: true, kind: "remote", name, command: "", args: "", env: "", url: e.remote_url, token: "" });
-        setTab("installed");
-        return;
-      }
-      const launch = packageLaunch(e);
-      if (!launch) {
-        setForm({ open: true, kind: "stdio", name, command: "", args: "", env: "", url: "", token: "" });
-        setTab("installed");
-        setErr("This server has no npm/pypi package — fill the command manually.");
-        return;
-      }
+  const addFromEntry = useCallback((e: McpRegistryEntry) => {
+    const name = deriveName(e.id);
+    if (e.transport === "remote" && e.remote_url) {
+      // Open the form so the user can paste a token if needed.
+      setForm({
+        open: true,
+        kind: "remote",
+        name,
+        command: "",
+        args: "",
+        env: "",
+        url: e.remote_url,
+        token: "",
+      });
+      setTab("installed");
+      return;
+    }
+    const launch = packageLaunch(e);
+    if (!launch) {
       setForm({
         open: true,
         kind: "stdio",
         name,
-        command: launch.command,
-        args: launch.args.join(" "),
+        command: "",
+        args: "",
         env: "",
         url: "",
         token: "",
       });
       setTab("installed");
-    },
-    [],
-  );
+      setErr(
+        "This server has no npm/pypi package — fill the command manually.",
+      );
+      return;
+    }
+    setForm({
+      open: true,
+      kind: "stdio",
+      name,
+      command: launch.command,
+      args: launch.args.join(" "),
+      env: "",
+      url: "",
+      token: "",
+    });
+    setTab("installed");
+  }, []);
 
   const tabBarInner = (
     <>
-      <button role="tab" aria-selected={tab === "installed"} className={`mcp-tab${tab === "installed" ? " sel" : ""}`} onClick={() => { setErr(null); setTab("installed"); }}>
+      <button
+        role="tab"
+        aria-selected={tab === "installed"}
+        className={`mcp-tab${tab === "installed" ? " sel" : ""}`}
+        onClick={() => {
+          setErr(null);
+          setTab("installed");
+        }}
+      >
         Installed{configs.length ? ` (${configs.length})` : ""}
       </button>
-      <button role="tab" aria-selected={tab === "browse"} className={`mcp-tab${tab === "browse" ? " sel" : ""}`} onClick={() => { setForm(null); setErr(null); setTab("browse"); }}>
+      <button
+        role="tab"
+        aria-selected={tab === "browse"}
+        className={`mcp-tab${tab === "browse" ? " sel" : ""}`}
+        onClick={() => {
+          setForm(null);
+          setErr(null);
+          setTab("browse");
+        }}
+      >
         Browse
+      </button>
+      <button
+        className="mcp-tab"
+        data-testid="mcp-skills-button"
+        onClick={() => setSkillsOpen(true)}
+      >
+        Skills
       </button>
       <div className="mcp-tabspacer" />
       {tab === "installed" && (
-        <Button size="sm" variant="secondary" onClick={() => setForm({ open: true, kind: "stdio", name: "", command: "", args: "", env: "", url: "", token: "" })}>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() =>
+            setForm({
+              open: true,
+              kind: "stdio",
+              name: "",
+              command: "",
+              args: "",
+              env: "",
+              url: "",
+              token: "",
+            })
+          }
+        >
           + Add manually
         </Button>
       )}
@@ -354,20 +462,46 @@ export function McpView() {
 
   return (
     <div className="mcp-root" data-testid="mcp-view">
-      {topbarSlot
-        ? createPortal(<div className="mcp-tabs in-topbar" role="tablist">{tabBarInner}</div>, topbarSlot)
-        : <div className="mcp-tabs" role="tablist">{tabBarInner}</div>}
+      {topbarSlot ? (
+        createPortal(
+          <div className="mcp-tabs in-topbar" role="tablist">
+            {tabBarInner}
+          </div>,
+          topbarSlot,
+        )
+      ) : (
+        <div className="mcp-tabs" role="tablist">
+          {tabBarInner}
+        </div>
+      )}
+
+      <ClaudeSkillsPanel
+        open={skillsOpen}
+        onClose={() => setSkillsOpen(false)}
+      />
 
       {err && (
         <div className="mcp-err" role="alert">
           {err}
-          <button className="mcp-err-x" onClick={() => setErr(null)} aria-label="dismiss"><X size={16} /></button>
+          <button
+            className="mcp-err-x"
+            onClick={() => setErr(null)}
+            aria-label="dismiss"
+          >
+            <X size={16} />
+          </button>
         </div>
       )}
       {note && !err && (
         <div className="mcp-note" role="status">
           {note}
-          <button className="mcp-err-x" onClick={() => setNote(null)} aria-label="dismiss"><X size={16} /></button>
+          <button
+            className="mcp-err-x"
+            onClick={() => setNote(null)}
+            aria-label="dismiss"
+          >
+            <X size={16} />
+          </button>
         </div>
       )}
 
@@ -376,30 +510,73 @@ export function McpView() {
         <div className="mcp-form">
           <div className="mcp-form-row">
             <label className="mcp-kind">
-              <input type="radio" checked={form.kind === "stdio"} onChange={() => setForm({ ...form, kind: "stdio" })} /> Local (stdio)
+              <input
+                type="radio"
+                checked={form.kind === "stdio"}
+                onChange={() => setForm({ ...form, kind: "stdio" })}
+              />{" "}
+              Local (stdio)
             </label>
             <label className="mcp-kind">
-              <input type="radio" checked={form.kind === "remote"} onChange={() => setForm({ ...form, kind: "remote" })} /> Remote (URL)
+              <input
+                type="radio"
+                checked={form.kind === "remote"}
+                onChange={() => setForm({ ...form, kind: "remote" })}
+              />{" "}
+              Remote (URL)
             </label>
           </div>
-          <Input placeholder="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <Input
+            placeholder="name"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+          />
           {form.kind === "remote" ? (
             <>
-              <Input placeholder="https://…/mcp endpoint URL" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} />
-              <Input type="password" placeholder="bearer token (optional — or use Connect with browser)" value={form.token} onChange={(e) => setForm({ ...form, token: e.target.value })} />
+              <Input
+                placeholder="https://…/mcp endpoint URL"
+                value={form.url}
+                onChange={(e) => setForm({ ...form, url: e.target.value })}
+              />
+              <Input
+                type="password"
+                placeholder="bearer token (optional — or use Connect with browser)"
+                value={form.token}
+                onChange={(e) => setForm({ ...form, token: e.target.value })}
+              />
             </>
           ) : (
             <>
-              <Input placeholder="command (e.g. npx)" value={form.command} onChange={(e) => setForm({ ...form, command: e.target.value })} />
-              <Input placeholder="args (space-separated, e.g. -y @modelcontextprotocol/server-filesystem ~/dir)" value={form.args} onChange={(e) => setForm({ ...form, args: e.target.value })} />
-              <Input placeholder='env JSON (optional, e.g. {"API_KEY":"…"})' value={form.env} onChange={(e) => setForm({ ...form, env: e.target.value })} />
+              <Input
+                placeholder="command (e.g. npx)"
+                value={form.command}
+                onChange={(e) => setForm({ ...form, command: e.target.value })}
+              />
+              <Input
+                placeholder="args (space-separated, e.g. -y @modelcontextprotocol/server-filesystem ~/dir)"
+                value={form.args}
+                onChange={(e) => setForm({ ...form, args: e.target.value })}
+              />
+              <Input
+                placeholder='env JSON (optional, e.g. {"API_KEY":"…"})'
+                value={form.env}
+                onChange={(e) => setForm({ ...form, env: e.target.value })}
+              />
             </>
           )}
           {form.kind === "stdio" && (
-            <div className="mcp-warn">⚠ Local servers run as programs with your full user privileges. Only add commands you trust.</div>
+            <div className="mcp-warn">
+              ⚠ Local servers run as programs with your full user privileges.
+              Only add commands you trust.
+            </div>
           )}
           <div className="mcp-form-actions">
-            <Button size="sm" variant="primary" onClick={() => void submitForm()} disabled={busy !== null}>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => void submitForm()}
+              disabled={busy !== null}
+            >
               {busy ? <Spinner label="Connecting" /> : "Connect"}
             </Button>
             {form.kind === "remote" && (
@@ -410,10 +587,18 @@ export function McpView() {
                 disabled={busy !== null}
                 title="Authorize in your browser — no API key needed (if the server supports OAuth)"
               >
-                {busy ? <Spinner label="Authorizing" /> : <><Globe size={16} /> Connect with browser</>}
+                {busy ? (
+                  <Spinner label="Authorizing" />
+                ) : (
+                  <>
+                    <Globe size={16} /> Connect with browser
+                  </>
+                )}
               </Button>
             )}
-            <Button size="sm" variant="ghost" onClick={() => setForm(null)}>Cancel</Button>
+            <Button size="sm" variant="ghost" onClick={() => setForm(null)}>
+              Cancel
+            </Button>
           </div>
         </div>
       )}
@@ -424,7 +609,11 @@ export function McpView() {
             <EmptyState
               icon={<Plug size={24} />}
               heading="No MCP servers yet"
-              cta={<button className="mcp-link" onClick={() => setTab("browse")}>Browse the registry →</button>}
+              cta={
+                <button className="mcp-link" onClick={() => setTab("browse")}>
+                  Browse the registry →
+                </button>
+              }
             />
           )}
           {configs.map((cfg) => {
@@ -437,33 +626,78 @@ export function McpView() {
                 <div className="mcp-item-head">
                   <span className={`mcp-dot ${status}`} />
                   <span className="mcp-item-name">{cfg.name}</span>
-                  <Badge tone={cfg.url ? "accent" : "neutral"}>{cfg.url ? "remote" : "stdio"}</Badge>
-                  {running && <span className="mcp-toolcount">{toolNames.length} tools</span>}
+                  <Badge tone={cfg.url ? "accent" : "neutral"}>
+                    {cfg.url ? "remote" : "stdio"}
+                  </Badge>
+                  {running && (
+                    <span className="mcp-toolcount">
+                      {toolNames.length} tools
+                    </span>
+                  )}
                   <div className="mcp-tabspacer" />
                   {running ? (
-                    <Button size="sm" variant="ghost" onClick={() => void stopServer(cfg.name)} disabled={busy === cfg.name}>Stop</Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void stopServer(cfg.name)}
+                      disabled={busy === cfg.name}
+                    >
+                      Stop
+                    </Button>
                   ) : (
-                    <Button size="sm" variant="secondary" onClick={() => void startConfig(cfg)} disabled={busy === cfg.name} aria-busy={busy === cfg.name}>
-                      {busy === cfg.name ? <Spinner label="Starting" /> : "Start"}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void startConfig(cfg)}
+                      disabled={busy === cfg.name}
+                      aria-busy={busy === cfg.name}
+                    >
+                      {busy === cfg.name ? (
+                        <Spinner label="Starting" />
+                      ) : (
+                        "Start"
+                      )}
                     </Button>
                   )}
                   <Button
                     size="sm"
-                    variant={removeConfirm.armed === cfg.name ? "danger" : "ghost"}
+                    variant={
+                      removeConfirm.armed === cfg.name ? "danger" : "ghost"
+                    }
                     disabled={busy === cfg.name}
-                    onClick={() => removeConfirm.request(cfg.name, () => void removeConfig(cfg))}
+                    onClick={() =>
+                      removeConfirm.request(
+                        cfg.name,
+                        () => void removeConfig(cfg),
+                      )
+                    }
                   >
                     {removeConfirm.labelFor(cfg.name, "Remove")}
                   </Button>
                 </div>
-                <div className="mcp-item-sub" title={cfg.url ?? `${cfg.command} ${(cfg.args ?? []).join(" ")}`}>
+                <div
+                  className="mcp-item-sub"
+                  title={
+                    cfg.url ?? `${cfg.command} ${(cfg.args ?? []).join(" ")}`
+                  }
+                >
                   {cfg.url ?? `${cfg.command} ${(cfg.args ?? []).join(" ")}`}
                 </div>
-                {info?.last_error && <div className="mcp-item-err">{info.last_error}</div>}
+                {info?.last_error && (
+                  <div className="mcp-item-err">{info.last_error}</div>
+                )}
                 {running && toolNames.length > 0 && (
                   <div className="mcp-toolchips">
-                    {toolNames.slice(0, 12).map((t) => <span className="mcp-toolchip" key={t}>{t}</span>)}
-                    {toolNames.length > 12 && <span className="mcp-toolchip">+{toolNames.length - 12}</span>}
+                    {toolNames.slice(0, 12).map((t) => (
+                      <span className="mcp-toolchip" key={t}>
+                        {t}
+                      </span>
+                    ))}
+                    {toolNames.length > 12 && (
+                      <span className="mcp-toolchip">
+                        +{toolNames.length - 12}
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -475,15 +709,27 @@ export function McpView() {
           <div className="mcp-browse-bar">
             <div className="mcp-src">
               {["official", "pulse"].map((s) => (
-                <button key={s} className={`mcp-srcbtn${source === s ? " sel" : ""}`} onClick={() => setSource(s)}>
+                <button
+                  key={s}
+                  className={`mcp-srcbtn${source === s ? " sel" : ""}`}
+                  onClick={() => setSource(s)}
+                >
                   {s === "official" ? "Official registry" : "PulseMCP"}
                 </button>
               ))}
             </div>
-            <Input placeholder="Search MCP servers…" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <Input
+              placeholder="Search MCP servers…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
           </div>
           {browseLoading && entries.length === 0 ? (
-            <div className="skeleton-list" aria-busy="true" aria-label="Loading registry">
+            <div
+              className="skeleton-list"
+              aria-busy="true"
+              aria-label="Loading registry"
+            >
               <div className="skeleton-row" />
               <div className="skeleton-row" />
               <div className="skeleton-row" />
@@ -492,35 +738,79 @@ export function McpView() {
           ) : (
             <div className="mcp-cards">
               {entries.slice(0, 60).map((e) => {
-                const installed = configs.some((c) => c.name === deriveName(e.id));
-                const launch = e.transport === "package" ? packageLaunch(e) : null;
+                const installed = configs.some(
+                  (c) => c.name === deriveName(e.id),
+                );
+                const launch =
+                  e.transport === "package" ? packageLaunch(e) : null;
                 const canAdd = e.transport === "remote" || launch !== null;
                 return (
                   <div className="mcp-card" key={`${e.source}:${e.id}`}>
                     <div className="mcp-card-head">
-                      <span className="mcp-card-name" title={e.id}>{e.title || e.name}</span>
-                      <Badge tone={e.transport === "remote" ? "accent" : e.transport === "package" ? "neutral" : "warn"}>{e.transport}</Badge>
+                      <span className="mcp-card-name" title={e.id}>
+                        {e.title || e.name}
+                      </span>
+                      <Badge
+                        tone={
+                          e.transport === "remote"
+                            ? "accent"
+                            : e.transport === "package"
+                              ? "neutral"
+                              : "warn"
+                        }
+                      >
+                        {e.transport}
+                      </Badge>
                     </div>
                     <div className="mcp-card-desc">{e.description}</div>
                     <div className="mcp-card-foot">
                       <span className="mcp-card-meta">
-                        {e.stars != null && <span title="GitHub stars"><Star size={12} /> {e.stars}</span>}
-                        {e.package_registry && <span className="mcp-card-pkg">{e.package_registry}</span>}
+                        {e.stars != null && (
+                          <span title="GitHub stars">
+                            <Star size={12} /> {e.stars}
+                          </span>
+                        )}
+                        {e.package_registry && (
+                          <span className="mcp-card-pkg">
+                            {e.package_registry}
+                          </span>
+                        )}
                       </span>
                       {installed ? (
-                        <Button size="sm" variant="ghost" disabled>Added <Check size={14} /></Button>
+                        <Button size="sm" variant="ghost" disabled>
+                          Added <Check size={14} />
+                        </Button>
                       ) : canAdd ? (
-                        <Button size="sm" variant="primary" onClick={() => addFromEntry(e)}>Add</Button>
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          onClick={() => addFromEntry(e)}
+                        >
+                          Add
+                        </Button>
                       ) : (
-                        <Button size="sm" variant="ghost" onClick={() => e.homepage && void api.openExternal(e.homepage)} disabled={!e.homepage}>Open ↗</Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() =>
+                            e.homepage && void api.openExternal(e.homepage)
+                          }
+                          disabled={!e.homepage}
+                        >
+                          Open ↗
+                        </Button>
                       )}
                     </div>
                   </div>
                 );
               })}
-              {!browseLoading && entries.length === 0 && <div className="mcp-empty">No servers found.</div>}
+              {!browseLoading && entries.length === 0 && (
+                <div className="mcp-empty">No servers found.</div>
+              )}
               {entries.length > 60 && (
-                <div className="mcp-empty">Showing 60 of {entries.length} — refine your search to narrow.</div>
+                <div className="mcp-empty">
+                  Showing 60 of {entries.length} — refine your search to narrow.
+                </div>
               )}
             </div>
           )}
