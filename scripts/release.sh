@@ -264,7 +264,12 @@ fi
 
 # Install fresh copy
 rm -rf /Applications/Froglips.app
-cp -R src-tauri/target/release/bundle/macos/Froglips.app /Applications/
+# ditto preserves signatures/xattrs/structure faithfully (cp -R is close but
+# not identical for bundles), and the sync guarantees the post-install spctl
+# below verifies fully-flushed bytes — a mid-flush check once passed in-script
+# and then read as "unsealed contents" seconds later (2026-06-10).
+ditto src-tauri/target/release/bundle/macos/Froglips.app /Applications/Froglips.app
+sync
 
 # Per-machine trust for UNSIGNED builds only. When a Developer ID identity
 # was used, the bundle already carries a notarized signature — the old
