@@ -174,6 +174,11 @@ const AppearanceModal = lazy(() =>
     default: m.AppearanceModal,
   })),
 );
+const SettingsModal = lazy(() =>
+  import("./components/SettingsModal").then((m) => ({
+    default: m.SettingsModal,
+  })),
+);
 // First-run-only flow: never seen by returning users, so it has no business
 // living in the initial chunk. Mounts behind `wizardOpen === true`.
 const SetupWizard = lazy(() =>
@@ -231,6 +236,7 @@ function App() {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Silent background update check → a tasteful, dismissable toast.
   const availableUpdate = useUpdateCheck();
   const [updateDismissed, setUpdateDismissed] = useState(false);
@@ -508,6 +514,12 @@ function App() {
         // Enter.
         e.preventDefault();
         setPaletteOpen((v) => !v);
+        return;
+      }
+      if (e.key === ",") {
+        // Cmd+, — the platform-standard Settings shortcut (IA #2).
+        e.preventDefault();
+        setSettingsOpen(true);
         return;
       }
     };
@@ -921,6 +933,12 @@ function App() {
             ?.click(),
       },
       {
+        id: "open-settings",
+        label: "Open Settings",
+        hint: "⌘,",
+        run: () => setSettingsOpen(true),
+      },
+      {
         id: "rerun-wizard",
         label: "Re-run setup wizard",
         run: () => setWizardOpen(true),
@@ -1081,6 +1099,18 @@ function App() {
                     <GitBranch size={16} aria-hidden="true" /> Branches
                   </button>
                 )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="menu-settings"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setSettingsOpen(true);
+                    setMenuOpen(false);
+                  }}
+                >
+                  <Wrench size={16} aria-hidden="true" /> Settings…
+                </button>
                 <button
                   type="button"
                   role="menuitem"
@@ -1609,6 +1639,18 @@ function App() {
         conversations={conversations}
         onOpenConversation={onPaletteOpenConversation}
       />
+      {settingsOpen && (
+        <Suspense fallback={null}>
+          <SettingsModal
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            status={status}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            onRerunWizard={() => setWizardOpen(true)}
+          />
+        </Suspense>
+      )}
       {forkTreeOpen && (
         <Suspense fallback={null}>
           <ForkTreeModal

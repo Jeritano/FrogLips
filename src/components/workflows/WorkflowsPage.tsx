@@ -21,7 +21,11 @@ import {
   type WorkflowEdge,
   type WorkflowGraph,
 } from "../../types";
-import { FLOW_TEMPLATES, cloneTemplateGraph, type FlowTemplate } from "../../lib/workflow/templates";
+import {
+  FLOW_TEMPLATES,
+  cloneTemplateGraph,
+  type FlowTemplate,
+} from "../../lib/workflow/templates";
 import { flowToDoc, flowFromDoc } from "../../lib/workflow/export";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { CardForm, type FormOrigin } from "./CardForm";
@@ -103,13 +107,14 @@ export function WorkflowsPage({ status }: Props) {
     }
     return out;
   }, [run.cardStates]);
-  const outputs: Record<string, { output: string; error?: string }> = useMemo(() => {
-    const out: Record<string, { output: string; error?: string }> = {};
-    for (const [id, snap] of Object.entries(run.cardStates)) {
-      out[id] = { output: snap.output, error: snap.error };
-    }
-    return out;
-  }, [run.cardStates]);
+  const outputs: Record<string, { output: string; error?: string }> =
+    useMemo(() => {
+      const out: Record<string, { output: string; error?: string }> = {};
+      for (const [id, snap] of Object.entries(run.cardStates)) {
+        out[id] = { output: snap.output, error: snap.error };
+      }
+      return out;
+    }, [run.cardStates]);
   const running = run.runningWorkflowId !== null;
   // Pre-formatted "About You" block, shared by every card's agent run so
   // workflow agents know who the user is. Refreshed on mount.
@@ -120,24 +125,81 @@ export function WorkflowsPage({ status }: Props) {
     try {
       setList((await api.workflowList()).map(parseWorkflow));
     } catch (e) {
-      logDiag({ level: "warn", source: "workflows", message: "workflowList failed", detail: e });
+      logDiag({
+        level: "warn",
+        source: "workflows",
+        message: "workflowList failed",
+        detail: e,
+      });
     }
   }, []);
 
-  useEffect(() => { void refreshList(); }, [refreshList]);
+  useEffect(() => {
+    void refreshList();
+  }, [refreshList]);
+
+  // First-open demo seed (product review 2026-06-10, onboarding #3): a new
+  // user opening Flows saw an empty canvas plus abstract template cards —
+  // nothing demonstrating what a finished multi-agent run looks like. Seed
+  // ONE ready-to-run flow from the gallery exactly once (flag in
+  // localStorage, only when the list is genuinely empty so we never inject
+  // into a real workspace).
+  const demoSeeded = useRef(false);
+  useEffect(() => {
+    if (demoSeeded.current) return;
+    if (localStorage.getItem("froglips.demoFlowSeeded")) return;
+    void (async () => {
+      try {
+        const existing = await api.workflowList();
+        if (existing.length > 0) {
+          localStorage.setItem("froglips.demoFlowSeeded", "1");
+          return;
+        }
+        const t =
+          FLOW_TEMPLATES.find((x) => x.id === "brainstorm-moa") ??
+          FLOW_TEMPLATES[0];
+        if (!t) return;
+        demoSeeded.current = true;
+        const graph = cloneTemplateGraph(t);
+        await api.workflowSave(
+          null,
+          `Demo — ${t.name} (try me)`,
+          serializeWorkflowGraph(graph),
+        );
+        localStorage.setItem("froglips.demoFlowSeeded", "1");
+        await refreshList();
+      } catch (e) {
+        logDiag({
+          level: "info",
+          source: "workflows",
+          message: "demo flow seed skipped",
+          detail: e,
+        });
+      }
+    })();
+  }, [refreshList]);
 
   // Load the "About You" profile once; a failed read just omits it.
   useEffect(() => {
-    api.settingsGet()
+    api
+      .settingsGet()
       .then((s) => setUserProfile(formatUserProfile(s.user_profile)))
       .catch((e) =>
-        logDiag({ level: "warn", source: "workflows", message: "settingsGet failed", detail: e }),
+        logDiag({
+          level: "warn",
+          source: "workflows",
+          message: "settingsGet failed",
+          detail: e,
+        }),
       );
   }, []);
 
   // Non-throwing graph validation drives both the inline warning and the
   // run-button gate.
-  const validation = useMemo(() => validateGraph({ cards, edges }), [cards, edges]);
+  const validation = useMemo(
+    () => validateGraph({ cards, edges }),
+    [cards, edges],
+  );
   // Suppress the validation banner while the user is still building: a lone
   // card or several not-yet-connected cards is a normal mid-build state, not
   // an error. The Run button stays gated by `validation.ok` either way.
@@ -149,7 +211,11 @@ export function WorkflowsPage({ status }: Props) {
 
   // Latest unsaved graph/name, kept in a ref so unmount/navigate-away can
   // flush a pending debounced save without re-subscribing the effect.
-  const pendingSave = useRef<{ id: number; name: string; graph: WorkflowGraph } | null>(null);
+  const pendingSave = useRef<{
+    id: number;
+    name: string;
+    graph: WorkflowGraph;
+  } | null>(null);
 
   const flushSave = useCallback(() => {
     if (saveTimer.current) {
@@ -159,19 +225,31 @@ export function WorkflowsPage({ status }: Props) {
     const p = pendingSave.current;
     if (!p) return;
     pendingSave.current = null;
-    api.workflowSave(p.id, p.name, serializeWorkflowGraph(p.graph))
+    api
+      .workflowSave(p.id, p.name, serializeWorkflowGraph(p.graph))
       .then(() => {
         // Reconcile against the saved name AND graph. Use the functional form
         // so a name the user kept typing AFTER this save was queued isn't
         // clobbered — only update fields if the persisted name still matches
         // the user's current intent (selected.name was set at queue time).
         setSelected((s) =>
-          s && s.id === p.id ? { ...s, name: p.name, graph: p.graph, updated_at: Date.now() } : s,
+          s && s.id === p.id
+            ? { ...s, name: p.name, graph: p.graph, updated_at: Date.now() }
+            : s,
         );
-        setList((l) => l.map((w) => (w.id === p.id ? { ...w, name: p.name, graph: p.graph } : w)));
+        setList((l) =>
+          l.map((w) =>
+            w.id === p.id ? { ...w, name: p.name, graph: p.graph } : w,
+          ),
+        );
       })
       .catch((e) =>
-        logDiag({ level: "warn", source: "workflows", message: "workflowSave failed", detail: e }),
+        logDiag({
+          level: "warn",
+          source: "workflows",
+          message: "workflowSave failed",
+          detail: e,
+        }),
       );
   }, []);
 
@@ -271,9 +349,19 @@ export function WorkflowsPage({ status }: Props) {
     try {
       const name = "Untitled workflow";
       const graph: WorkflowGraph = { cards: [], edges: [] };
-      const id = await api.workflowSave(null, name, serializeWorkflowGraph(graph));
+      const id = await api.workflowSave(
+        null,
+        name,
+        serializeWorkflowGraph(graph),
+      );
       const now = Date.now();
-      const wf: Workflow = { id, name, graph, created_at: now, updated_at: now };
+      const wf: Workflow = {
+        id,
+        name,
+        graph,
+        created_at: now,
+        updated_at: now,
+      };
       await refreshList();
       openWorkflow(wf);
     } catch (e) {
@@ -284,10 +372,20 @@ export function WorkflowsPage({ status }: Props) {
   async function useTemplate(t: FlowTemplate) {
     try {
       const graph = cloneTemplateGraph(t);
-      const id = await api.workflowSave(null, t.name, serializeWorkflowGraph(graph));
+      const id = await api.workflowSave(
+        null,
+        t.name,
+        serializeWorkflowGraph(graph),
+      );
       const now = Date.now();
       await refreshList();
-      openWorkflow({ id, name: t.name, graph, created_at: now, updated_at: now });
+      openWorkflow({
+        id,
+        name: t.name,
+        graph,
+        created_at: now,
+        updated_at: now,
+      });
     } catch (e) {
       setErr(`Failed to use template "${t.name}": ${e}`);
     }
@@ -312,13 +410,23 @@ export function WorkflowsPage({ status }: Props) {
       return;
     }
     try {
-      const id = await api.workflowSave(null, parsed.name, serializeWorkflowGraph(parsed.graph));
+      const id = await api.workflowSave(
+        null,
+        parsed.name,
+        serializeWorkflowGraph(parsed.graph),
+      );
       const now = Date.now();
       setImportOpen(false);
       setImportText("");
       setImportErr(null);
       await refreshList();
-      openWorkflow({ id, name: parsed.name, graph: parsed.graph, created_at: now, updated_at: now });
+      openWorkflow({
+        id,
+        name: parsed.name,
+        graph: parsed.graph,
+        created_at: now,
+        updated_at: now,
+      });
     } catch (e) {
       setImportErr(`Failed to import: ${e}`);
     }
@@ -412,7 +520,7 @@ export function WorkflowsPage({ status }: Props) {
   const baseRunOpts = useCallback(
     (
       cardSubset?: WorkflowCard[],
-    ): Omit<RunWorkflowOptions, "model"> & { model: string } | null => {
+    ): (Omit<RunWorkflowOptions, "model"> & { model: string }) | null => {
       const subset = cardSubset ?? cards;
       // A card "needs" the fallback (loaded chat model) only when its own
       // `model` is unset. Cards with an explicit `*:cloud` model already
@@ -422,7 +530,10 @@ export function WorkflowsPage({ status }: Props) {
       const missing = subset.filter((c) => !c.model);
       const fallbackModel = status?.model ?? "";
       if (missing.length > 0 && !fallbackModel) {
-        const names = missing.map((c) => c.name || c.id).slice(0, 3).join(", ");
+        const names = missing
+          .map((c) => c.name || c.id)
+          .slice(0, 3)
+          .join(", ");
         const more = missing.length > 3 ? ` (+${missing.length - 3} more)` : "";
         setErr(
           `Load a model first — ${missing.length} card(s) without a model assignment: ${names}${more}. Either assign a model to each card via Edit, or load a default in the chat picker.`,
@@ -432,7 +543,9 @@ export function WorkflowsPage({ status }: Props) {
       return {
         // Cards with their own `model` ignore this; cards without one use it.
         model: fallbackModel,
-        defaultBackend: (status?.backend as RunWorkflowOptions["defaultBackend"]) ?? undefined,
+        defaultBackend:
+          (status?.backend as RunWorkflowOptions["defaultBackend"]) ??
+          undefined,
         serverStatus: status,
         userProfile: userProfile ?? undefined,
         // No `requestConfirmation` is passed: approval is owned by the
@@ -457,7 +570,9 @@ export function WorkflowsPage({ status }: Props) {
     if (card.model.endsWith(":cloud")) return; // daemon-routed, no start needed
     if (status?.model === card.model && status?.running) return;
     const backend =
-      card.backend === "native" || card.backend === "mlx" || card.backend === "ollama"
+      card.backend === "native" ||
+      card.backend === "mlx" ||
+      card.backend === "ollama"
         ? card.backend
         : (status?.backend ?? "ollama");
     try {
@@ -558,7 +673,12 @@ export function WorkflowsPage({ status }: Props) {
         const targetsOpen = !!selected && trigger.workflow_id === selected.id;
         const subset: WorkflowCard[] | undefined =
           targetsOpen && trigger.card_id
-            ? cards.slice(Math.max(0, cards.findIndex((c) => c.id === trigger.card_id)))
+            ? cards.slice(
+                Math.max(
+                  0,
+                  cards.findIndex((c) => c.id === trigger.card_id),
+                ),
+              )
             : undefined;
         const opts = baseRunOpts(subset);
         if (!opts) return;
@@ -607,7 +727,8 @@ export function WorkflowsPage({ status }: Props) {
   );
 
   const runningCardId = useMemo(
-    () => cards.find((c) => (cardStates[c.id] ?? "idle") === "running")?.id ?? null,
+    () =>
+      cards.find((c) => (cardStates[c.id] ?? "idle") === "running")?.id ?? null,
     [cards, cardStates],
   );
 
@@ -630,7 +751,11 @@ export function WorkflowsPage({ status }: Props) {
         <button
           type="button"
           className="wf-btn topbar-action"
-          onClick={() => { setImportErr(null); setImportText(""); setImportOpen(true); }}
+          onClick={() => {
+            setImportErr(null);
+            setImportText("");
+            setImportOpen(true);
+          }}
           style={{ marginLeft: "auto" }}
           data-testid="wf-import-btn"
         >
@@ -648,13 +773,17 @@ export function WorkflowsPage({ status }: Props) {
     return (
       <div className="wf-page wf-picker" data-testid="workflows-page">
         {topbarSlot && createPortal(pickerHeader, topbarSlot)}
-        {err && <div className="wf-error" onClick={() => setErr(null)}>{err}</div>}
+        {err && (
+          <div className="wf-error" onClick={() => setErr(null)}>
+            {err}
+          </div>
+        )}
 
         <section className="wf-templates" data-testid="wf-templates">
           <h2 className="wf-templates-title">Start from a template</h2>
           <p className="wf-templates-sub">
-            Proven Flows that chain small local models into a result that beats any single
-            call. One click to drop one on the canvas and customize.
+            Proven Flows that chain small local models into a result that beats
+            any single call. One click to drop one on the canvas and customize.
           </p>
           <div className="wf-template-grid">
             {FLOW_TEMPLATES.map((t) => (
@@ -668,16 +797,20 @@ export function WorkflowsPage({ status }: Props) {
                 <span className="wf-template-cat">{t.category}</span>
                 <span className="wf-template-name">{t.name}</span>
                 <span className="wf-template-summary">{t.summary}</span>
-                <span className="wf-template-meta">{t.graph.cards.length} steps →</span>
+                <span className="wf-template-meta">
+                  {t.graph.cards.length} steps →
+                </span>
               </button>
             ))}
           </div>
         </section>
 
-        {list.length > 0 && <h2 className="wf-templates-title wf-your-flows">Your Flows</h2>}
+        {list.length > 0 && (
+          <h2 className="wf-templates-title wf-your-flows">Your Flows</h2>
+        )}
         {list.length === 0 ? (
           <EmptyState
-            icon={<Puzzle size={24}/>}
+            icon={<Puzzle size={24} />}
             heading="No Flows yet"
             sub="Use a template above, or create a blank Flow to chain agents into a pipeline."
           />
@@ -685,9 +818,15 @@ export function WorkflowsPage({ status }: Props) {
           <ul className="wf-list">
             {list.map((w) => (
               <li key={w.id} className="wf-list-item">
-                <button type="button" className="wf-list-open" onClick={() => openWorkflow(w)}>
+                <button
+                  type="button"
+                  className="wf-list-open"
+                  onClick={() => openWorkflow(w)}
+                >
                   <span className="wf-list-name">{w.name}</span>
-                  <span className="wf-list-meta">{w.graph.cards.length} cards</span>
+                  <span className="wf-list-meta">
+                    {w.graph.cards.length} cards
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -695,7 +834,7 @@ export function WorkflowsPage({ status }: Props) {
                   onClick={() => deleteWorkflow(w.id)}
                   aria-label={`Delete ${w.name}`}
                 >
-                  <X size={16}/>
+                  <X size={16} />
                 </button>
               </li>
             ))}
@@ -708,25 +847,39 @@ export function WorkflowsPage({ status }: Props) {
             role="dialog"
             aria-modal="true"
             aria-label="Import a Flow"
-            onClick={(e) => { if (e.target === e.currentTarget) setImportOpen(false); }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setImportOpen(false);
+            }}
           >
             <div className="dashboard-modal wf-import-modal">
               <h2 className="wf-import-title">Import a Flow</h2>
               <p className="wf-import-sub">
-                Paste a Flow you exported (or someone shared). It's validated before it's saved.
+                Paste a Flow you exported (or someone shared). It's validated
+                before it's saved.
               </p>
               <textarea
                 className="wf-import-textarea"
                 value={importText}
-                onChange={(e) => { setImportText(e.target.value); setImportErr(null); }}
+                onChange={(e) => {
+                  setImportText(e.target.value);
+                  setImportErr(null);
+                }}
                 placeholder='{ "froglips_flow": 1, "name": "...", "graph": { ... } }'
                 rows={10}
                 data-testid="wf-import-textarea"
                 autoFocus
               />
-              {importErr && <div className="wf-error" data-testid="wf-import-err">{importErr}</div>}
+              {importErr && (
+                <div className="wf-error" data-testid="wf-import-err">
+                  {importErr}
+                </div>
+              )}
               <div className="wf-import-actions">
-                <button type="button" className="wf-btn" onClick={() => setImportOpen(false)}>
+                <button
+                  type="button"
+                  className="wf-btn"
+                  onClick={() => setImportOpen(false)}
+                >
                   Cancel
                 </button>
                 <button
@@ -752,7 +905,10 @@ export function WorkflowsPage({ status }: Props) {
       <button
         type="button"
         className="wf-btn"
-        onClick={() => { flushSave(); setSelected(null); }}
+        onClick={() => {
+          flushSave();
+          setSelected(null);
+        }}
       >
         ← Workflows
       </button>
@@ -818,7 +974,9 @@ export function WorkflowsPage({ status }: Props) {
           className="wf-btn wf-btn-primary topbar-action"
           onClick={runWorkflowNow}
           disabled={!canRun}
-          title={canRun ? "Run workflow" : "Add cards and a valid linear chain first"}
+          title={
+            canRun ? "Run workflow" : "Add cards and a valid linear chain first"
+          }
         >
           Run workflow
         </button>
@@ -829,7 +987,11 @@ export function WorkflowsPage({ status }: Props) {
   return (
     <div className="wf-page wf-editor" data-testid="workflows-page">
       {topbarSlot && createPortal(editorHeader, topbarSlot)}
-      {err && <div className="wf-error" onClick={() => setErr(null)}>{err}</div>}
+      {err && (
+        <div className="wf-error" onClick={() => setErr(null)}>
+          {err}
+        </div>
+      )}
       <div className="wf-editor-body">
         <ReactFlowProvider>
           <WorkflowCanvas
