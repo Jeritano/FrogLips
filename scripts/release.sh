@@ -178,8 +178,15 @@ if [[ -d "$BUILT_APP" ]]; then
   done
   shopt -u nullglob
 
-  # ad-hoc sign so Gatekeeper lets the unsigned build run for the probe.
-  codesign --sign - --deep --force --timestamp=none "$BUILT_APP" >/dev/null 2>&1 || true
+  # Ad-hoc sign so Gatekeeper lets an UNSIGNED build run for the probe.
+  # ONLY for unsigned local builds: this line was the post-gate signature
+  # clobberer (2026-06-10) — it ad-hoc re-signed the freshly notarized,
+  # stapled bundle right before the smoke launch, after the verification
+  # gate had already passed, so every "verified" build installed broken.
+  # A Developer-ID build needs no help to launch.
+  if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+    codesign --sign - --deep --force --timestamp=none "$BUILT_APP" >/dev/null 2>&1 || true
+  fi
 
   # The executable inside the bundle is the Cargo bin name (local-llm-app),
   # not "Froglips" — read CFBundleExecutable so a rename can't break this.
@@ -266,6 +273,16 @@ cp -R src-tauri/target/release/bundle/macos/Froglips.app /Applications/
 if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   xattr -dr com.apple.quarantine /Applications/Froglips.app || true
   codesign --sign - --deep --force --timestamp=none /Applications/Froglips.app
+else
+  # Final end-to-end check on the INSTALLED copy — the bundle-side gate
+  # passed once and the build still shipped broken (the smoke-prep ad-hoc
+  # sign above, before it was guarded). Never print success unless the app
+  # the user will actually launch is Gatekeeper-clean.
+  if ! spctl -a -vv /Applications/Froglips.app 2>&1 | grep -q "Notarized Developer ID"; then
+    echo "✗ Installed copy is NOT Notarized Developer ID — install corrupted." >&2
+    exit 1
+  fi
+  echo "✓ Installed copy verified (Notarized Developer ID)"
 fi
 
 echo "✓ Installed v${VERSION} at /Applications/Froglips.app"
