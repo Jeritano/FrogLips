@@ -42,6 +42,13 @@ fi
 # stapled .app + .dmg. Verify after: `spctl -a -vvv /Applications/Froglips.app`
 # should report "accepted / Notarized Developer ID". The ad-hoc codesign at the
 # bottom is then redundant but harmless for the local copy.
+# Auto-source local notarization creds when present (developer machine).
+# The file lives OUTSIDE the repo (~/.tauri, chmod 600) and is never
+# committed; CI provides the same vars via GitHub Actions secrets instead.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" && -f "$HOME/.tauri/froglips-notary.env" ]]; then
+  # shellcheck source=/dev/null
+  source "$HOME/.tauri/froglips-notary.env"
+fi
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   echo "▶ Developer ID signing identity set — tauri build will notarize."
 else
@@ -82,6 +89,58 @@ if ! build_attempt; then
 fi
 
 set -e
+
+# ── Notarization verify + self-heal ─────────────────────────────────────────
+# Observed 2026-06-09 (first notarized build): the Tauri bundler notarized and
+# stapled the .app, then a later bundling step RE-SIGNED it AD-HOC — stripping
+# the Developer ID signature, hardened runtime, and ticket binding. Gatekeeper
+# then rejected the "notarized" build. This block detects that clobber, repairs
+# it (proper re-sign → re-notarize → re-staple → rebuild DMG + updater tarball
+# from the repaired app), and HARD-GATES the release on a Gatekeeper accept.
+NOTARIZE_APP="src-tauri/target/release/bundle/macos/Froglips.app"
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" && -d "$NOTARIZE_APP" ]]; then
+  sig_ok=1
+  codesign -dvv "$NOTARIZE_APP" 2>&1 | grep -q "Authority=Developer ID Application" || sig_ok=0
+  xcrun stapler validate "$NOTARIZE_APP" >/dev/null 2>&1 || sig_ok=0
+  if [[ "$sig_ok" -ne 1 ]]; then
+    echo "▶ Bundler clobbered the Developer ID signature — repairing…"
+    codesign --force --options runtime --timestamp \
+      --entitlements src-tauri/Entitlements.plist \
+      --sign "$APPLE_SIGNING_IDENTITY" "$NOTARIZE_APP"
+    rm -f /tmp/froglips-notarize.zip
+    ditto -c -k --keepParent "$NOTARIZE_APP" /tmp/froglips-notarize.zip
+    xcrun notarytool submit /tmp/froglips-notarize.zip \
+      --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+      --team-id "$APPLE_TEAM_ID" --wait
+    xcrun stapler staple "$NOTARIZE_APP"
+
+    # Rebuild distribution artifacts from the repaired app so the DMG and the
+    # updater tarball carry the SAME (notarized) binary.
+    REPAIR_DMG="src-tauri/target/release/bundle/dmg/Froglips_${VERSION}_aarch64.dmg"
+    rm -f "$REPAIR_DMG"
+    hdiutil create -volname "Froglips" -srcfolder "$NOTARIZE_APP" -ov -format UDZO "$REPAIR_DMG" >/dev/null
+    codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$REPAIR_DMG"
+    xcrun notarytool submit "$REPAIR_DMG" \
+      --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+      --team-id "$APPLE_TEAM_ID" --wait
+    xcrun stapler staple "$REPAIR_DMG"
+
+    REPAIR_TAR="src-tauri/target/release/bundle/macos/Froglips.app.tar.gz"
+    rm -f "$REPAIR_TAR" "$REPAIR_TAR.sig"
+    tar -czf "$REPAIR_TAR" -C src-tauri/target/release/bundle/macos Froglips.app
+    if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+      npx @tauri-apps/cli signer sign \
+        --private-key-path "$TAURI_SIGNING_PRIVATE_KEY" \
+        --password "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$REPAIR_TAR"
+    fi
+  fi
+  # Hard gate: never ship a build Gatekeeper rejects.
+  if ! spctl -a -vv "$NOTARIZE_APP" 2>&1 | grep -q "Notarized Developer ID"; then
+    echo "✗ Gatekeeper does not accept the build as Notarized Developer ID — aborting." >&2
+    exit 1
+  fi
+  echo "✓ Notarization verified (Notarized Developer ID, stapled)"
+fi
 
 # ── Smoke test ───────────────────────────────────────────────────────────
 # Launch the freshly built .app, give it a moment to come up, then assert it
@@ -195,9 +254,14 @@ fi
 rm -rf /Applications/Froglips.app
 cp -R src-tauri/target/release/bundle/macos/Froglips.app /Applications/
 
-# Strip Gatekeeper quarantine + ad-hoc codesign (per-machine trust)
-xattr -dr com.apple.quarantine /Applications/Froglips.app || true
-codesign --sign - --deep --force --timestamp=none /Applications/Froglips.app
+# Per-machine trust for UNSIGNED builds only. When a Developer ID identity
+# was used, the bundle already carries a notarized signature — the old
+# unconditional `codesign --sign - --force` here REPLACED it with an ad-hoc
+# one, silently unsigning the installed copy.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  xattr -dr com.apple.quarantine /Applications/Froglips.app || true
+  codesign --sign - --deep --force --timestamp=none /Applications/Froglips.app
+fi
 
 echo "✓ Installed v${VERSION} at /Applications/Froglips.app"
 
