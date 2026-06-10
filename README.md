@@ -43,6 +43,14 @@ Froglips ships its own **native backend** — an in-process engine (`mistralrs` 
 
 ## Quick start
 
+**Homebrew:**
+
+```sh
+brew install --cask jeritano/tap/froglips
+```
+
+**Or manually:**
+
 1. Go to the [latest release](https://github.com/Jeritano/FrogLips/releases/latest)
 2. Download `Froglips_X.Y.Z_aarch64.dmg`
 3. Open the DMG, drag `Froglips.app` into `/Applications`, eject the DMG
