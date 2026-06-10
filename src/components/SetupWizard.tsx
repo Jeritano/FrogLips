@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRef } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { OllamaPullProgress } from "../types";
 import { Check } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
@@ -203,15 +205,17 @@ export function SetupWizard({ onDone }: Props) {
     };
   }, []);
 
-  // Probe on mount. Run all three concurrently — none of them block, and on
-  // a fresh launch the user is staring at the spinner so latency matters.
-  useEffect(() => {
-    let cancelled = false;
+  // Probe runner — reusable: mount, the "Check again" button, and a passive
+  // 3s re-poll while step 1 is visible (product review onboarding #6: the
+  // most common new-user path — install Ollama in another window, come back
+  // — used to dead-end on a stale "Not detected" with no refresh).
+  const runProbes = useCallback((cancelledRef: { current: boolean }) => {
+    const cancelled = () => cancelledRef.current;
     const tasks: Array<Promise<void>> = [
       api
         .nativeSupported()
         .then((v) => {
-          if (!cancelled) updateProbe("native", v);
+          if (!cancelled()) updateProbe("native", v);
         })
         .catch((err) => {
           logDiag({
@@ -220,12 +224,12 @@ export function SetupWizard({ onDone }: Props) {
             message: "native_supported probe failed — treating as unavailable",
             detail: err,
           });
-          if (!cancelled) updateProbe("native", false);
+          if (!cancelled()) updateProbe("native", false);
         }),
       api
         .mlxProbe()
         .then((v) => {
-          if (!cancelled) updateProbe("mlx", v);
+          if (!cancelled()) updateProbe("mlx", v);
         })
         .catch((err) => {
           logDiag({
@@ -234,12 +238,12 @@ export function SetupWizard({ onDone }: Props) {
             message: "mlx_probe failed — treating as unavailable",
             detail: err,
           });
-          if (!cancelled) updateProbe("mlx", false);
+          if (!cancelled()) updateProbe("mlx", false);
         }),
       api
         .ollamaStatus()
         .then((s) => {
-          if (cancelled) return;
+          if (cancelled()) return;
           if (s === "stopped") {
             // Installed but daemon not running — tell the user to START it, not
             // re-download it (the most common Ollama cold state).
@@ -269,12 +273,53 @@ export function SetupWizard({ onDone }: Props) {
             message: "ollama_status failed — treating as unavailable",
             detail: err,
           });
-          if (!cancelled) updateProbe("ollama", false);
+          if (!cancelled()) updateProbe("ollama", false);
         }),
     ];
-    void Promise.all(tasks);
+    return Promise.all(tasks);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const ref = { current: false };
+    void runProbes(ref);
     return () => {
-      cancelled = true;
+      ref.current = true;
+    };
+  }, [runProbes]);
+
+  // Passive re-poll while the user is looking at step 1 — the status flips
+  // to Available the moment a just-installed backend comes up.
+  useEffect(() => {
+    if (step !== 1) return;
+    const ref = { current: false };
+    const t = setInterval(() => void runProbes(ref), 3000);
+    return () => {
+      ref.current = true;
+      clearInterval(t);
+    };
+  }, [step, runProbes]);
+
+  // Live ollama-pull progress for the step-2 download card (the old UI was a
+  // frozen "Downloading…" label for a multi-GB pull).
+  const [pullProgress, setPullProgress] = useState<OllamaPullProgress | null>(
+    null,
+  );
+  useEffect(() => {
+    let off: UnlistenFn | undefined;
+    let stop = false;
+    (async () => {
+      try {
+        off = await listen<OllamaPullProgress>("ollama-pull-progress", (e) => {
+          if (!stop) setPullProgress(e.payload);
+        });
+      } catch {
+        // non-Tauri test env — label just stays static
+      }
+    })();
+    return () => {
+      stop = true;
+      off?.();
     };
   }, []);
 
@@ -491,6 +536,16 @@ export function SetupWizard({ onDone }: Props) {
                 Skip setup
               </button>
               <button
+                className="setup-wizard-skip"
+                onClick={() => {
+                  const ref = { current: false };
+                  void runProbes(ref);
+                }}
+                data-testid="setup-wizard-recheck"
+              >
+                Check again
+              </button>
+              <button
                 className="setup-wizard-primary"
                 onClick={() => setStep(2)}
                 data-testid="setup-wizard-next-1"
@@ -568,7 +623,31 @@ export function SetupWizard({ onDone }: Props) {
                       </div>
                       {isDownloading && (
                         <div className="setup-wizard-card-state">
-                          Downloading…
+                          {pullProgress && pullProgress.name === m.id ? (
+                            <>
+                              <span className="setup-wizard-dl-status">
+                                {pullProgress.status}
+                              </span>
+                              {pullProgress.percent != null && (
+                                <span
+                                  className="setup-wizard-dl-bar"
+                                  role="progressbar"
+                                  aria-valuenow={Math.round(
+                                    pullProgress.percent,
+                                  )}
+                                >
+                                  <span
+                                    className="setup-wizard-dl-fill"
+                                    style={{
+                                      width: `${pullProgress.percent}%`,
+                                    }}
+                                  />
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            "Downloading…"
+                          )}
                         </div>
                       )}
                       {isDone && (

@@ -1,12 +1,26 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, FileText, Play, RotateCcw, RotateCw, Save, Users, X } from "lucide-react";
+import {
+  Check,
+  FileText,
+  Play,
+  RotateCcw,
+  RotateCw,
+  Save,
+  Users,
+  X,
+} from "lucide-react";
 import { EmptyState } from "./EmptyState";
 import { api } from "../lib/tauri-api";
 import { Button, Input, Spinner, Badge } from "./ui";
 import { usePersistedState } from "../hooks/usePersistedState";
 import { useRoundtableRun } from "../lib/roundtable/run-context";
-import { parsePrice, formatUsd, type PriceTable, type SeatPrice } from "../lib/roundtable/cost";
+import {
+  parsePrice,
+  formatUsd,
+  type PriceTable,
+  type SeatPrice,
+} from "../lib/roundtable/cost";
 import { renderMarkdown } from "../lib/markdown";
 import { logDiag } from "../lib/diagnostics";
 import type { RoundtableRunSummary } from "../types";
@@ -36,19 +50,36 @@ const RtTurnBubble = memo(function RtTurnBubble({ turn: t }: { turn: Turn }) {
     >
       <div className="rt-bubble-head">
         <span className="rt-dot" /> {t.speaker}
-        {t.status === "streaming" && <span className="rt-typing"> · typing…</span>}
-        {t.status === "error" && <span className="rt-typing"> · {t.error ?? "failed"}</span>}
+        {t.status === "streaming" && (
+          <span className="rt-typing"> · typing…</span>
+        )}
+        {t.status === "error" && (
+          <span className="rt-typing"> · {t.error ?? "failed"}</span>
+        )}
       </div>
       {t.status === "streaming" ? (
-        <div className="rt-bubble-body rt-streaming">{t.text}<span className="rt-cursor">▍</span></div>
+        <div className="rt-bubble-body rt-streaming">
+          {t.text}
+          <span className="rt-cursor">▍</span>
+        </div>
       ) : (
-        <div className="rt-bubble-body markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(t.text) }} />
+        <div
+          className="rt-bubble-body markdown"
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(t.text) }}
+        />
       )}
     </div>
   );
 });
 
-export const SEAT_COLORS = ["#22c55e", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444", "#14b8a6"];
+export const SEAT_COLORS = [
+  "#22c55e",
+  "#3b82f6",
+  "#a855f7",
+  "#f59e0b",
+  "#ef4444",
+  "#14b8a6",
+];
 
 /** A pickable model option, flattened across backends. */
 interface ModelOption {
@@ -87,8 +118,16 @@ const PRESETS: Preset[] = [
     turnControl: "round-robin",
     maxRounds: 4,
     personas: [
-      { name: "The Optimist", system: "You argue the optimistic case. Push back hard on doom framing; cite upside and steerability." },
-      { name: "The Skeptic", system: "You argue the cautious case. Stress-test every optimistic claim; demand evidence and name failure modes." },
+      {
+        name: "The Optimist",
+        system:
+          "You argue the optimistic case. Push back hard on doom framing; cite upside and steerability.",
+      },
+      {
+        name: "The Skeptic",
+        system:
+          "You argue the cautious case. Stress-test every optimistic claim; demand evidence and name failure modes.",
+      },
     ],
   },
   {
@@ -100,48 +139,87 @@ const PRESETS: Preset[] = [
     turnControl: "round-robin",
     maxRounds: 3,
     personas: [
-      { name: "The Generator", system: "Throw out bold, divergent ideas. Quantity over polish. Build on others." },
-      { name: "The Refiner", system: "Take the rawest idea on the table and sharpen it into something concrete and testable." },
+      {
+        name: "The Generator",
+        system:
+          "Throw out bold, divergent ideas. Quantity over polish. Build on others.",
+      },
+      {
+        name: "The Refiner",
+        system:
+          "Take the rawest idea on the table and sharpen it into something concrete and testable.",
+      },
     ],
   },
   {
     id: "interview",
     label: "Interview",
     category: "Learn",
-    summary: "A sharp interviewer draws an expert out, one probing question at a time.",
+    summary:
+      "A sharp interviewer draws an expert out, one probing question at a time.",
     topic: "Interview about: ",
     turnControl: "round-robin",
     maxRounds: 4,
     personas: [
-      { name: "The Interviewer", system: "Ask one sharp, probing question per turn. Follow up on the last answer; never lecture." },
-      { name: "The Expert", system: "Answer concisely and concretely from deep expertise. One claim, well-supported, per turn." },
+      {
+        name: "The Interviewer",
+        system:
+          "Ask one sharp, probing question per turn. Follow up on the last answer; never lecture.",
+      },
+      {
+        name: "The Expert",
+        system:
+          "Answer concisely and concretely from deep expertise. One claim, well-supported, per turn.",
+      },
     ],
   },
   {
     id: "devils",
     label: "Devil's advocate",
     category: "Decide",
-    summary: "Propose a plan, then have it torn apart by a relentless adversary.",
+    summary:
+      "Propose a plan, then have it torn apart by a relentless adversary.",
     topic: "Propose a plan, then have it torn apart: ",
     turnControl: "round-robin",
     maxRounds: 4,
     personas: [
-      { name: "The Proposer", system: "Make the strongest case for your plan and defend it under fire." },
-      { name: "The Adversary", system: "Find the fatal flaw. Attack assumptions, incentives, and second-order effects relentlessly." },
+      {
+        name: "The Proposer",
+        system:
+          "Make the strongest case for your plan and defend it under fire.",
+      },
+      {
+        name: "The Adversary",
+        system:
+          "Find the fatal flaw. Attack assumptions, incentives, and second-order effects relentlessly.",
+      },
     ],
   },
   {
     id: "worldbuilding",
     label: "Sci-fi worldbuilding",
     category: "Create",
-    summary: "An architect, a historian, and a dissident invent a believable world.",
+    summary:
+      "An architect, a historian, and a dissident invent a believable world.",
     topic: "Build a world where: ",
     turnControl: "round-robin",
     maxRounds: 4,
     personas: [
-      { name: "The Architect", system: "Define the world's rules — physics, tech, society. Be concrete and internally consistent; one new system per turn." },
-      { name: "The Historian", system: "Invent this world's PAST — the war, the schism, the discovery that made it this way. Tie events to the Architect's rules." },
-      { name: "The Dissident", system: "Find the contradictions and the human cost. Who suffers under these rules? What breaks? Keep it honest, not utopian." },
+      {
+        name: "The Architect",
+        system:
+          "Define the world's rules — physics, tech, society. Be concrete and internally consistent; one new system per turn.",
+      },
+      {
+        name: "The Historian",
+        system:
+          "Invent this world's PAST — the war, the schism, the discovery that made it this way. Tie events to the Architect's rules.",
+      },
+      {
+        name: "The Dissident",
+        system:
+          "Find the contradictions and the human cost. Who suffers under these rules? What breaks? Keep it honest, not utopian.",
+      },
     ],
   },
   {
@@ -153,9 +231,21 @@ const PRESETS: Preset[] = [
     turnControl: "round-robin",
     maxRounds: 4,
     personas: [
-      { name: "The Showrunner", system: "Pitch the arc — beginning, turn, ending. Keep momentum; end each turn on a hook." },
-      { name: "The Cynic", system: "Kill the clichés. Name the trope, then twist it into something fresher. Be ruthless about the obvious." },
-      { name: "The Heart", system: "Guard the emotional truth. Why does this matter to the character? Keep the stakes human." },
+      {
+        name: "The Showrunner",
+        system:
+          "Pitch the arc — beginning, turn, ending. Keep momentum; end each turn on a hook.",
+      },
+      {
+        name: "The Cynic",
+        system:
+          "Kill the clichés. Name the trope, then twist it into something fresher. Be ruthless about the obvious.",
+      },
+      {
+        name: "The Heart",
+        system:
+          "Guard the emotional truth. Why does this matter to the character? Keep the stakes human.",
+      },
     ],
   },
   {
@@ -167,23 +257,48 @@ const PRESETS: Preset[] = [
     turnControl: "round-robin",
     maxRounds: 4,
     personas: [
-      { name: "The Founder", system: "Pitch the vision and defend it. Concrete on what you build, for whom, and why now." },
-      { name: "The VC", system: "Grill the unit economics, moat, and go-to-market. Ask the one question that kills weak startups." },
-      { name: "The User", system: "You're the target customer. Would you actually use + pay for this? Be honest about your real alternatives." },
+      {
+        name: "The Founder",
+        system:
+          "Pitch the vision and defend it. Concrete on what you build, for whom, and why now.",
+      },
+      {
+        name: "The VC",
+        system:
+          "Grill the unit economics, moat, and go-to-market. Ask the one question that kills weak startups.",
+      },
+      {
+        name: "The User",
+        system:
+          "You're the target customer. Would you actually use + pay for this? Be honest about your real alternatives.",
+      },
     ],
   },
   {
     id: "decision-council",
     label: "Decision council",
     category: "Decide",
-    summary: "Pragmatist, visionary, and realist weigh a real decision you face.",
+    summary:
+      "Pragmatist, visionary, and realist weigh a real decision you face.",
     topic: "Help me decide: ",
     turnControl: "round-robin",
     maxRounds: 3,
     personas: [
-      { name: "The Pragmatist", system: "Optimize for what works now with least risk. Name the cheapest reversible next step." },
-      { name: "The Visionary", system: "Argue for the boldest long-game option. What does the best possible outcome look like, and what's the path?" },
-      { name: "The Realist", system: "Weigh both against constraints — time, money, energy. Force a recommendation with its tradeoff stated." },
+      {
+        name: "The Pragmatist",
+        system:
+          "Optimize for what works now with least risk. Name the cheapest reversible next step.",
+      },
+      {
+        name: "The Visionary",
+        system:
+          "Argue for the boldest long-game option. What does the best possible outcome look like, and what's the path?",
+      },
+      {
+        name: "The Realist",
+        system:
+          "Weigh both against constraints — time, money, energy. Force a recommendation with its tradeoff stated.",
+      },
     ],
   },
   {
@@ -195,22 +310,43 @@ const PRESETS: Preset[] = [
     turnControl: "round-robin",
     maxRounds: 5,
     personas: [
-      { name: "The Tutor", system: "Never lecture. Lead with ONE question that exposes the next gap in understanding. Build on the student's last answer." },
-      { name: "The Student", system: "Reason out loud. Attempt each question honestly, show your work, and admit what you're unsure of." },
+      {
+        name: "The Tutor",
+        system:
+          "Never lecture. Lead with ONE question that exposes the next gap in understanding. Build on the student's last answer.",
+      },
+      {
+        name: "The Student",
+        system:
+          "Reason out loud. Attempt each question honestly, show your work, and admit what you're unsure of.",
+      },
     ],
   },
   {
     id: "comedy",
     label: "Comedy writers",
     category: "Create",
-    summary: "A setup, a punchline, and a heckler riff until it's actually funny.",
+    summary:
+      "A setup, a punchline, and a heckler riff until it's actually funny.",
     topic: "Riff on: ",
     turnControl: "round-robin",
     maxRounds: 3,
     personas: [
-      { name: "The Setup", system: "Find the funny premise and the straight-faced framing. Hand the next seat a clean runway." },
-      { name: "The Punchline", system: "Land the joke — surprise + truth. Shortest version that hits. No explaining it." },
-      { name: "The Heckler", system: "If a bit isn't landing, say so and twist it harder. Push for the better, weirder angle." },
+      {
+        name: "The Setup",
+        system:
+          "Find the funny premise and the straight-faced framing. Hand the next seat a clean runway.",
+      },
+      {
+        name: "The Punchline",
+        system:
+          "Land the joke — surprise + truth. Shortest version that hits. No explaining it.",
+      },
+      {
+        name: "The Heckler",
+        system:
+          "If a bit isn't landing, say so and twist it harder. Push for the better, weirder angle.",
+      },
     ],
   },
 ];
@@ -241,7 +377,10 @@ export function newSeat(persona?: PersonaTemplate): DraftSeat {
 }
 
 export function isDraftSeatArray(v: unknown): v is DraftSeat[] {
-  return Array.isArray(v) && v.every((s) => s && typeof s === "object" && "id" in s && "optionKey" in s);
+  return (
+    Array.isArray(v) &&
+    v.every((s) => s && typeof s === "object" && "id" in s && "optionKey" in s)
+  );
 }
 
 /** A user-saved roundtable config (a reusable template, persisted locally). */
@@ -259,7 +398,12 @@ export function isSavedTableArray(v: unknown): v is SavedTable[] {
     Array.isArray(v) &&
     v.every(
       (t) =>
-        t && typeof t === "object" && "id" in t && "name" in t && "seats" in t && Array.isArray((t as SavedTable).seats),
+        t &&
+        typeof t === "object" &&
+        "id" in t &&
+        "name" in t &&
+        "seats" in t &&
+        Array.isArray((t as SavedTable).seats),
     )
   );
 }
@@ -281,7 +425,10 @@ function isCloudOllama(model: string | undefined): boolean {
 /** A genuinely LOCAL Ollama seat that reloads between turns. Excludes Ollama
  *  Cloud, which is served remotely and never reloads — so it must NOT trigger
  *  the "2+ local models reload each turn" warning/gate. */
-function isLocalReloading(backend: SeatBackend | undefined, model: string | undefined): boolean {
+function isLocalReloading(
+  backend: SeatBackend | undefined,
+  model: string | undefined,
+): boolean {
   return backend === "ollama" && !isCloudOllama(model);
 }
 
@@ -315,7 +462,11 @@ interface OutcomePayload {
 let lastSavedOutcomeAt = 0;
 
 /** Render a completed roundtable as a Markdown document for file export. */
-function outcomeToMarkdown(topic: string, turns: Turn[], totals: RoundtableTotals): string {
+function outcomeToMarkdown(
+  topic: string,
+  turns: Turn[],
+  totals: RoundtableTotals,
+): string {
   const head =
     `# Roundtable — ${topic}\n\n` +
     `_${turns.filter((t) => t.status === "done").length} turns · ` +
@@ -330,7 +481,9 @@ function outcomeToMarkdown(topic: string, turns: Turn[], totals: RoundtableTotal
 
 export function RoundtableView() {
   const run = useRoundtableRun();
-  const [options, setOptions] = useState<ModelOption[]>(() => cachedOptions ?? []);
+  const [options, setOptions] = useState<ModelOption[]>(
+    () => cachedOptions ?? [],
+  );
   const [loadingModels, setLoadingModels] = useState(true);
   const [modelErr, setModelErr] = useState<string | null>(null);
 
@@ -339,9 +492,15 @@ export function RoundtableView() {
     [newSeat(PRESETS[0].personas[0]), newSeat(PRESETS[0].personas[1])],
     isDraftSeatArray,
   );
-  const [topic, setTopic] = usePersistedState<string>("roundtable.topic", PRESETS[0].topic);
+  const [topic, setTopic] = usePersistedState<string>(
+    "roundtable.topic",
+    PRESETS[0].topic,
+  );
   const [turnControl] = useState<TurnControl>("round-robin");
-  const [memoryMode, setMemoryMode] = usePersistedState<MemoryMode>("roundtable.memory", "recent");
+  const [memoryMode, setMemoryMode] = usePersistedState<MemoryMode>(
+    "roundtable.memory",
+    "recent",
+  );
   const [maxRounds, setMaxRounds] = usePersistedState<number>(
     "roundtable.rounds",
     4,
@@ -361,7 +520,127 @@ export function RoundtableView() {
   // Portal target in the App header — lets the Roundtable header (title +
   // presets/Reset, or the live meter/actions) share the theme-toggle's row.
   const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => setTopbarSlot(document.getElementById("roundtable-topbar-slot")), []);
+  useEffect(
+    () => setTopbarSlot(document.getElementById("roundtable-topbar-slot")),
+    [],
+  );
+
+  // First-open demo outcome (product review 2026-06-10, onboarding #3): the
+  // outcomes list started empty, so the payoff of a finished multi-model
+  // debate was invisible until the user designed one themselves. Seed one
+  // canned transcript exactly once (clearly labeled as a sample), only when
+  // there are no real outcomes to drown out.
+  useEffect(() => {
+    if (localStorage.getItem("froglips.demoTableSeeded")) return;
+    void (async () => {
+      try {
+        const existing = await api.roundtableRunList(null);
+        if (existing.length > 0) {
+          localStorage.setItem("froglips.demoTableSeeded", "1");
+          return;
+        }
+        const topic =
+          "Can small local models replace cloud APIs for daily work?";
+        const mk = (
+          i: number,
+          seatId: string,
+          speaker: string,
+          color: string,
+          round: number,
+          text: string,
+        ) => ({
+          id: `demo-${i}`,
+          seatId,
+          speaker,
+          color,
+          text,
+          status: "done" as const,
+          round,
+          kind: "seat" as const,
+        });
+        const turns = [
+          mk(
+            1,
+            "s-opt",
+            "The Optimist",
+            SEAT_COLORS[0],
+            0,
+            "For 80% of daily work — summarize, draft, rename, triage — a 3B on this Mac answers in under a second, offline, for free. The cloud is paying rent for capability you rarely need.",
+          ),
+          mk(
+            2,
+            "s-skep",
+            "The Skeptic",
+            SEAT_COLORS[1],
+            0,
+            "Until the 20% shows up: a gnarly refactor, a long legal doc, anything multi-step. Small models drop the thread. The question isn't *can* they answer — it's whether you can trust the answer without checking it.",
+          ),
+          mk(
+            3,
+            "s-opt",
+            "The Optimist",
+            SEAT_COLORS[0],
+            1,
+            "That's what orchestration is for. Run the 3B three times and majority-vote, or have a critic pass review the draft. Scaffolding buys back most of the gap — and it's exactly what Flows automates.",
+          ),
+          mk(
+            4,
+            "s-skep",
+            "The Skeptic",
+            SEAT_COLORS[1],
+            1,
+            "Fair — mixture-of-agents on small models genuinely surprises me. I'll concede daily-driver status if the router is smart enough to escalate the hard 20% to a bigger model without me noticing.",
+          ),
+          mk(
+            5,
+            "s-opt",
+            "The Optimist",
+            SEAT_COLORS[0],
+            2,
+            "Then we agree: local-first, escalate-rarely. The default should live on your machine; the cloud should be the exception you opt into — not the tollbooth you start at.",
+          ),
+        ];
+        const payload = {
+          v: 1,
+          editor: {
+            seats: [],
+            topic,
+            memoryMode: "full" as MemoryMode,
+            maxRounds: 3,
+            maxUsd: 0,
+          },
+          run: {
+            config: null,
+            turns,
+            totals: {
+              turns: turns.length,
+              tokensIn: 0,
+              tokensOut: 0,
+              usd: 0,
+              usdPartial: false,
+            },
+            endReason: null,
+            completedAt: 1, // sentinel — clearly not a real wall-clock run
+          },
+        };
+        await api.roundtableRunSave(
+          null,
+          "Sample — two models debate local vs cloud (delete me)",
+          topic,
+          turns.length,
+          JSON.stringify(payload),
+        );
+        localStorage.setItem("froglips.demoTableSeeded", "1");
+      } catch (e) {
+        logDiag({
+          level: "info",
+          source: "roundtable",
+          message: "demo outcome seed skipped",
+          detail: e,
+        });
+      }
+    })();
+  }, []);
   const [setupErr, setSetupErr] = useState<string | null>(null);
   const [injectText, setInjectText] = useState("");
 
@@ -380,7 +659,10 @@ export function RoundtableView() {
   const [outcomes, setOutcomes] = useState<RoundtableRunSummary[]>([]);
   const [showOutcomes, setShowOutcomes] = useState(false);
   // A reopened outcome (read-only transcript viewer); null = not viewing one.
-  const [viewing, setViewing] = useState<{ meta: RoundtableRunSummary; payload: OutcomePayload } | null>(null);
+  const [viewing, setViewing] = useState<{
+    meta: RoundtableRunSummary;
+    payload: OutcomePayload;
+  } | null>(null);
   // Transient "Saved to <path>" / error note for the file-export action.
   const [fileMsg, setFileMsg] = useState<string | null>(null);
 
@@ -393,7 +675,15 @@ export function RoundtableView() {
     seeded.current = true;
     if (savedTables.length === 0 && seats.length >= 2) {
       setSavedTables([
-        { id: `rt${Date.now()}`, name: "My roundtable", seats, topic, memoryMode, maxRounds, maxUsd },
+        {
+          id: `rt${Date.now()}`,
+          name: "My roundtable",
+          seats,
+          topic,
+          memoryMode,
+          maxRounds,
+          maxUsd,
+        },
       ]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -405,12 +695,29 @@ export function RoundtableView() {
     setSavedTables((cur) =>
       cur.map((t) =>
         t.id === loadedId
-          ? { ...t, name: saveName.trim() || t.name, seats, topic, memoryMode, maxRounds, maxUsd }
+          ? {
+              ...t,
+              name: saveName.trim() || t.name,
+              seats,
+              topic,
+              memoryMode,
+              maxRounds,
+              maxUsd,
+            }
           : t,
       ),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, loadedId, saveName, seats, topic, memoryMode, maxRounds, maxUsd]);
+  }, [
+    editing,
+    loadedId,
+    saveName,
+    seats,
+    topic,
+    memoryMode,
+    maxRounds,
+    maxUsd,
+  ]);
 
   const loadTable = useCallback(
     (id: string) => {
@@ -442,11 +749,22 @@ export function RoundtableView() {
 
   // Create a fresh roundtable (default config), register it, and open the editor.
   const newRoundtable = useCallback(() => {
-    const seats0 = [newSeat(PRESETS[0].personas[0]), newSeat(PRESETS[0].personas[1])];
+    const seats0 = [
+      newSeat(PRESETS[0].personas[0]),
+      newSeat(PRESETS[0].personas[1]),
+    ];
     const id = `rt${Date.now()}`;
     setSavedTables((cur) => [
       ...cur,
-      { id, name: "Untitled roundtable", seats: seats0, topic: PRESETS[0].topic, memoryMode: "recent", maxRounds: 4, maxUsd: 0.5 },
+      {
+        id,
+        name: "Untitled roundtable",
+        seats: seats0,
+        topic: PRESETS[0].topic,
+        memoryMode: "recent",
+        maxRounds: 4,
+        maxUsd: 0.5,
+      },
     ]);
     setSeats(seats0);
     setTopic(PRESETS[0].topic);
@@ -458,7 +776,14 @@ export function RoundtableView() {
     setConfirmLocal(false);
     setSetupErr(null);
     setEditing(true);
-  }, [setSavedTables, setSeats, setTopic, setMemoryMode, setMaxRounds, setMaxUsd]);
+  }, [
+    setSavedTables,
+    setSeats,
+    setTopic,
+    setMemoryMode,
+    setMaxRounds,
+    setMaxUsd,
+  ]);
 
   // Create a new roundtable seeded from a template (personas + topic + rounds),
   // register it, and open the editor so the user assigns models + hits Start.
@@ -468,7 +793,15 @@ export function RoundtableView() {
       const id = `rt${Date.now()}`;
       setSavedTables((cur) => [
         ...cur,
-        { id, name: p.label, seats: seats0, topic: p.topic, memoryMode: "recent", maxRounds: p.maxRounds, maxUsd: 0.5 },
+        {
+          id,
+          name: p.label,
+          seats: seats0,
+          topic: p.topic,
+          memoryMode: "recent",
+          maxRounds: p.maxRounds,
+          maxUsd: 0.5,
+        },
       ]);
       setSeats(seats0);
       setTopic(p.topic);
@@ -481,7 +814,14 @@ export function RoundtableView() {
       setSetupErr(null);
       setEditing(true);
     },
-    [setSavedTables, setSeats, setTopic, setMemoryMode, setMaxRounds, setMaxUsd],
+    [
+      setSavedTables,
+      setSeats,
+      setTopic,
+      setMemoryMode,
+      setMaxRounds,
+      setMaxUsd,
+    ],
   );
 
   const openTable = useCallback(
@@ -498,7 +838,14 @@ export function RoundtableView() {
     api
       .roundtableRunList(tableId)
       .then(setOutcomes)
-      .catch((e) => logDiag({ level: "warn", source: "roundtable", message: "list outcomes failed", detail: e }));
+      .catch((e) =>
+        logDiag({
+          level: "warn",
+          source: "roundtable",
+          message: "list outcomes failed",
+          detail: e,
+        }),
+      );
   }, []);
 
   // Auto-save the outcome when a run finishes. `run.completedAt` flips once per
@@ -524,7 +871,13 @@ export function RoundtableView() {
       },
     };
     api
-      .roundtableRunSave(loadedId, name, topicStr, run.turns.length, JSON.stringify(payload))
+      .roundtableRunSave(
+        loadedId,
+        name,
+        topicStr,
+        run.turns.length,
+        JSON.stringify(payload),
+      )
       .then(() => {
         if (loadedId) refreshOutcomes(loadedId);
       })
@@ -534,9 +887,28 @@ export function RoundtableView() {
         // on the next dep change / remount could duplicate the outcome. Stay
         // at-most-once; the run is still in-memory + can be saved to file or
         // re-run if this auto-save genuinely failed.
-        logDiag({ level: "error", source: "roundtable", message: "save outcome failed", detail: e });
+        logDiag({
+          level: "error",
+          source: "roundtable",
+          message: "save outcome failed",
+          detail: e,
+        });
       });
-  }, [run.completedAt, run.running, run.turns, run.config, run.totals, run.endReason, loadedId, topic, seats, memoryMode, maxRounds, maxUsd, refreshOutcomes]);
+  }, [
+    run.completedAt,
+    run.running,
+    run.turns,
+    run.config,
+    run.totals,
+    run.endReason,
+    loadedId,
+    topic,
+    seats,
+    memoryMode,
+    maxRounds,
+    maxUsd,
+    refreshOutcomes,
+  ]);
 
   // Load a table's saved outcomes when its editor opens.
   useEffect(() => {
@@ -558,31 +930,50 @@ export function RoundtableView() {
         setViewing({ meta: row, payload });
         setShowOutcomes(false);
       })
-      .catch((e) => logDiag({ level: "warn", source: "roundtable", message: "open outcome failed", detail: e }));
+      .catch((e) =>
+        logDiag({
+          level: "warn",
+          source: "roundtable",
+          message: "open outcome failed",
+          detail: e,
+        }),
+      );
   }, []);
 
   const deleteOutcome = useCallback(
     (id: number) => {
       api
         .roundtableRunDelete(id)
-        .then(() => { if (loadedId) refreshOutcomes(loadedId); })
-        .catch((e) => logDiag({ level: "warn", source: "roundtable", message: "delete outcome failed", detail: e }));
+        .then(() => {
+          if (loadedId) refreshOutcomes(loadedId);
+        })
+        .catch((e) =>
+          logDiag({
+            level: "warn",
+            source: "roundtable",
+            message: "delete outcome failed",
+            detail: e,
+          }),
+        );
     },
     [loadedId, refreshOutcomes],
   );
 
   // Restore a saved outcome's config into the editor so the user can re-run it.
-  const runAgain = useCallback((payload: OutcomePayload) => {
-    const ed = payload.editor;
-    setSeats(ed.seats.map((s) => ({ ...s })));
-    setTopic(ed.topic);
-    setMemoryMode(ed.memoryMode);
-    setMaxRounds(ed.maxRounds);
-    setMaxUsd(ed.maxUsd);
-    setViewing(null);
-    setShowOutcomes(false);
-    setEditing(true);
-  }, [setSeats, setTopic, setMemoryMode, setMaxRounds, setMaxUsd]);
+  const runAgain = useCallback(
+    (payload: OutcomePayload) => {
+      const ed = payload.editor;
+      setSeats(ed.seats.map((s) => ({ ...s })));
+      setTopic(ed.topic);
+      setMemoryMode(ed.memoryMode);
+      setMaxRounds(ed.maxRounds);
+      setMaxUsd(ed.maxUsd);
+      setViewing(null);
+      setShowOutcomes(false);
+      setEditing(true);
+    },
+    [setSeats, setTopic, setMemoryMode, setMaxRounds, setMaxUsd],
+  );
 
   // Save a transcript to a user-chosen file (Markdown or JSON). "Cloud" = just
   // pick a synced folder (iCloud Drive / Dropbox / …) in the dialog.
@@ -592,7 +983,10 @@ export function RoundtableView() {
       let dest: string | null = null;
       try {
         const { save } = await import("@tauri-apps/plugin-dialog");
-        const base = (topicStr || "roundtable").replace(/[^a-z0-9._-]+/gi, "_").slice(0, 50) || "roundtable";
+        const base =
+          (topicStr || "roundtable")
+            .replace(/[^a-z0-9._-]+/gi, "_")
+            .slice(0, 50) || "roundtable";
         dest = await save({
           defaultPath: `${base}.md`,
           filters: [
@@ -602,7 +996,9 @@ export function RoundtableView() {
           title: "Save roundtable outcome",
         });
       } catch (e) {
-        setFileMsg(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+        setFileMsg(
+          `Save failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
         return;
       }
       if (!dest) return;
@@ -613,7 +1009,9 @@ export function RoundtableView() {
         await api.roundtableSaveFile(dest, content);
         setFileMsg(`Saved to ${dest}`);
       } catch (e) {
-        setFileMsg(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+        setFileMsg(
+          `Save failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     },
     [],
@@ -634,7 +1032,13 @@ export function RoundtableView() {
       try {
         const settings = await api.settingsGet().catch(() => null);
         for (const b of settings?.custom_backends ?? []) {
-          opts.push({ key: `custom::${b.id}`, backend: "custom", model: b.id, label: `${b.name} (${b.model})`, group: "Custom backends" });
+          opts.push({
+            key: `custom::${b.id}`,
+            backend: "custom",
+            model: b.id,
+            label: `${b.name} (${b.model})`,
+            group: "Custom backends",
+          });
         }
         const hasOr = await api.openrouterHasKey().catch(() => false);
         if (hasOr) {
@@ -646,13 +1050,22 @@ export function RoundtableView() {
               model: m.id,
               label: m.name || m.id,
               group: "OpenRouter",
-              price: { inPerToken: parsePrice(m.prompt_price), outPerToken: parsePrice(m.completion_price) },
+              price: {
+                inPerToken: parsePrice(m.prompt_price),
+                outPerToken: parsePrice(m.completion_price),
+              },
             });
           }
         }
         const all = await api.listAllModels().catch(() => null);
         for (const e of all?.ollama ?? []) {
-          opts.push({ key: `ollama::${e.id}`, backend: "ollama", model: e.id, label: e.id, group: "Ollama" });
+          opts.push({
+            key: `ollama::${e.id}`,
+            backend: "ollama",
+            model: e.id,
+            label: e.id,
+            group: "Ollama",
+          });
         }
         if (!cancelled) {
           // Don't cache an empty/failed list — a transient backend hiccup would
@@ -663,7 +1076,10 @@ export function RoundtableView() {
             cachedOptionsAt = Date.now();
           }
           setOptions(opts);
-          if (opts.length === 0) setModelErr("No cloud or Ollama models found. Add a custom backend or an OpenRouter key in Settings.");
+          if (opts.length === 0)
+            setModelErr(
+              "No cloud or Ollama models found. Add a custom backend or an OpenRouter key in Settings.",
+            );
         }
       } catch (e) {
         if (!cancelled) setModelErr(e instanceof Error ? e.message : String(e));
@@ -689,11 +1105,19 @@ export function RoundtableView() {
   }, [options]);
 
   const updateSeat = useCallback(
-    (id: string, patch: Partial<DraftSeat>) => setSeats((s) => s.map((x) => (x.id === id ? { ...x, ...patch } : x))),
+    (id: string, patch: Partial<DraftSeat>) =>
+      setSeats((s) => s.map((x) => (x.id === id ? { ...x, ...patch } : x))),
     [setSeats],
   );
-  const removeSeat = useCallback((id: string) => setSeats((s) => (s.length <= 2 ? s : s.filter((x) => x.id !== id))), [setSeats]);
-  const addSeat = useCallback(() => setSeats((s) => (s.length >= 6 ? s : [...s, newSeat()])), [setSeats]);
+  const removeSeat = useCallback(
+    (id: string) =>
+      setSeats((s) => (s.length <= 2 ? s : s.filter((x) => x.id !== id))),
+    [setSeats],
+  );
+  const addSeat = useCallback(
+    () => setSeats((s) => (s.length >= 6 ? s : [...s, newSeat()])),
+    [setSeats],
+  );
 
   const applyPreset = useCallback(
     (p: Preset) => {
@@ -733,8 +1157,12 @@ export function RoundtableView() {
   const startRun = useCallback(() => {
     setSetupErr(null);
     if (!topic.trim()) return setSetupErr("Enter a topic.");
-    if (seats.length < 2) return setSetupErr("A roundtable needs at least 2 seats.");
-    const resolved = seats.map((d) => ({ d, opt: optionByKey.get(d.optionKey) }));
+    if (seats.length < 2)
+      return setSetupErr("A roundtable needs at least 2 seats.");
+    const resolved = seats.map((d) => ({
+      d,
+      opt: optionByKey.get(d.optionKey),
+    }));
     const unset = resolved.find((r) => !r.opt);
     if (unset) return setSetupErr(`Pick a model for "${unset.d.name}".`);
 
@@ -742,7 +1170,9 @@ export function RoundtableView() {
     // possibly-stale draft): Ollama keeps ~1 model resident, so each turn
     // reloads the other and usually times out → "all failed". Two-click confirm
     // so a user with the VRAM for it can still proceed.
-    const localSeats = resolved.filter((r) => isLocalReloading(r.opt?.backend, r.opt?.model)).length;
+    const localSeats = resolved.filter((r) =>
+      isLocalReloading(r.opt?.backend, r.opt?.model),
+    ).length;
     if (localSeats >= 2 && !confirmLocal) {
       setConfirmLocal(true);
       return setSetupErr(
@@ -783,7 +1213,17 @@ export function RoundtableView() {
     } else {
       setConfirmLocal(false); // run launched — disarm the local-models confirm
     }
-  }, [seats, topic, optionByKey, turnControl, memoryMode, maxRounds, maxUsd, confirmLocal, run]);
+  }, [
+    seats,
+    topic,
+    optionByKey,
+    turnControl,
+    memoryMode,
+    maxRounds,
+    maxUsd,
+    confirmLocal,
+    run,
+  ]);
 
   // Full "start over": clear any finished run AND restore the default config
   // (seats / topic / rounds / budget / memory). No-op mid-run — Stop first.
@@ -796,7 +1236,10 @@ export function RoundtableView() {
     // `loadedId` turns reset into a fresh, unsaved draft instead.
     setLoadedId(null);
     setSaveName("");
-    setSeats([newSeat(PRESETS[0].personas[0]), newSeat(PRESETS[0].personas[1])]);
+    setSeats([
+      newSeat(PRESETS[0].personas[0]),
+      newSeat(PRESETS[0].personas[1]),
+    ]);
     setTopic(PRESETS[0].topic);
     setMaxRounds(4);
     setMaxUsd(0.5);
@@ -811,7 +1254,9 @@ export function RoundtableView() {
       .filter((t) => t.status === "done")
       .map((t) => `**${t.speaker}:** ${t.text}`)
       .join("\n\n");
-    void navigator.clipboard.writeText(`# Roundtable — ${run.config?.topic ?? ""}\n\n${md}`);
+    void navigator.clipboard.writeText(
+      `# Roundtable — ${run.config?.topic ?? ""}\n\n${md}`,
+    );
   }, [run.turns, run.config]);
 
   const showLive = run.running || run.turns.length > 0;
@@ -824,22 +1269,45 @@ export function RoundtableView() {
     const liveHead = (
       <>
         <div className="rt-live-title">
-          Roundtable {run.statusLabel && <span className="rt-status">· {run.statusLabel}</span>}
+          Roundtable{" "}
+          {run.statusLabel && (
+            <span className="rt-status">· {run.statusLabel}</span>
+          )}
         </div>
         <div className="rt-meter">
           <span>{run.totals.turns} turns</span>
-          <span>{(run.totals.tokensIn + run.totals.tokensOut).toLocaleString()} tok</span>
-          <span title={run.totals.usdPartial ? "Some models have no published price — lower bound" : undefined}>
-            {formatUsd(run.totals.usd)}{run.totals.usdPartial ? "+" : ""}
+          <span>
+            {(run.totals.tokensIn + run.totals.tokensOut).toLocaleString()} tok
+          </span>
+          <span
+            title={
+              run.totals.usdPartial
+                ? "Some models have no published price — lower bound"
+                : undefined
+            }
+          >
+            {formatUsd(run.totals.usd)}
+            {run.totals.usdPartial ? "+" : ""}
           </span>
         </div>
         <div className="rt-live-actions">
           {run.running ? (
-            <Button size="sm" variant="danger" onClick={run.stop}>Stop</Button>
+            <Button size="sm" variant="danger" onClick={run.stop}>
+              Stop
+            </Button>
           ) : (
             <>
-              <Button size="sm" variant="ghost" onClick={run.clear}>New table</Button>
-              <Button size="sm" variant="ghost" onClick={resetAll} title="Clear the run and restore default seats, topic, and settings"><RotateCcw size={16}/> Reset</Button>
+              <Button size="sm" variant="ghost" onClick={run.clear}>
+                New table
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={resetAll}
+                title="Clear the run and restore default seats, topic, and settings"
+              >
+                <RotateCcw size={16} /> Reset
+              </Button>
             </>
           )}
         </div>
@@ -847,19 +1315,32 @@ export function RoundtableView() {
     );
     return (
       <div className="rt-root" data-testid="roundtable-live">
-        {topbarSlot
-          ? createPortal(<div className="rt-live-head in-topbar">{liveHead}</div>, topbarSlot)
-          : <div className="rt-live-head">{liveHead}</div>}
+        {topbarSlot ? (
+          createPortal(
+            <div className="rt-live-head in-topbar">{liveHead}</div>,
+            topbarSlot,
+          )
+        ) : (
+          <div className="rt-live-head">{liveHead}</div>
+        )}
 
         {run.config && (
           <div className="rt-roster">
             {run.config.seats.map((s) => (
-              <span key={s.id} className="rt-chip" style={{ ["--seat" as string]: s.color }}>
+              <span
+                key={s.id}
+                className="rt-chip"
+                style={{ ["--seat" as string]: s.color }}
+              >
                 <span className="rt-dot" /> {s.name}
               </span>
             ))}
-            {run.config.seats.filter((s) => isLocalReloading(s.backend, s.model)).length >= 2 && (
-              <span className="rt-warn">⚠ 2+ local models reload each turn</span>
+            {run.config.seats.filter((s) =>
+              isLocalReloading(s.backend, s.model),
+            ).length >= 2 && (
+              <span className="rt-warn">
+                ⚠ 2+ local models reload each turn
+              </span>
             )}
           </div>
         )}
@@ -873,18 +1354,31 @@ export function RoundtableView() {
 
         {run.endReason && !run.running && (
           <div className="rt-end" role="status">
-            Ended — {run.endReason.replace("_", " ")} · {run.totals.turns} turns · {formatUsd(run.totals.usd)} · saved <Check size={14}/>
-            <Button size="sm" variant="ghost" onClick={exportTranscript}>Copy</Button>
+            Ended — {run.endReason.replace("_", " ")} · {run.totals.turns} turns
+            · {formatUsd(run.totals.usd)} · saved <Check size={14} />
+            <Button size="sm" variant="ghost" onClick={exportTranscript}>
+              Copy
+            </Button>
             <Button
               size="sm"
               variant="secondary"
-              onClick={() => void saveToFile(run.config?.topic ?? topic, run.turns, run.totals)}
+              onClick={() =>
+                void saveToFile(
+                  run.config?.topic ?? topic,
+                  run.turns,
+                  run.totals,
+                )
+              }
             >
-              <Save size={16}/> Save to file…
+              <Save size={16} /> Save to file…
             </Button>
           </div>
         )}
-        {fileMsg && <div className="rt-warn-banner" role="status">{fileMsg}</div>}
+        {fileMsg && (
+          <div className="rt-warn-banner" role="status">
+            {fileMsg}
+          </div>
+        )}
 
         {run.running && (
           <div className="rt-inject">
@@ -895,7 +1389,12 @@ export function RoundtableView() {
               onKeyDown={(e) => {
                 // Ignore the Enter that commits an IME composition (CJK), and
                 // allow Shift+Enter for a newline.
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && injectText.trim()) {
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing &&
+                  injectText.trim()
+                ) {
                   run.inject(injectText);
                   setInjectText("");
                 }
@@ -912,34 +1411,87 @@ export function RoundtableView() {
     const { meta, payload } = viewing;
     const vHead = (
       <>
-        <button type="button" className="wf-btn" onClick={() => { setViewing(null); setShowOutcomes(true); }}>← Outcomes</button>
-        <h1 className="topbar-view-title" style={{ fontSize: 16, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{meta.name}</h1>
+        <button
+          type="button"
+          className="wf-btn"
+          onClick={() => {
+            setViewing(null);
+            setShowOutcomes(true);
+          }}
+        >
+          ← Outcomes
+        </button>
+        <h1
+          className="topbar-view-title"
+          style={{
+            fontSize: 16,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {meta.name}
+        </h1>
         <div className="rt-live-actions" style={{ marginLeft: "auto" }}>
-          <Button size="sm" variant="ghost" onClick={() => runAgain(payload)}><RotateCw size={16}/> Run again</Button>
-          <Button size="sm" variant="secondary" onClick={() => void saveToFile(payload.run.config?.topic ?? meta.topic, payload.run.turns, payload.run.totals)}><Save size={16}/> Save to file…</Button>
+          <Button size="sm" variant="ghost" onClick={() => runAgain(payload)}>
+            <RotateCw size={16} /> Run again
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() =>
+              void saveToFile(
+                payload.run.config?.topic ?? meta.topic,
+                payload.run.turns,
+                payload.run.totals,
+              )
+            }
+          >
+            <Save size={16} /> Save to file…
+          </Button>
         </div>
       </>
     );
     return (
       <div className="rt-root" data-testid="roundtable-outcome">
-        {topbarSlot
-          ? createPortal(<div className="rt-live-head in-topbar">{vHead}</div>, topbarSlot)
-          : <div className="rt-live-head">{vHead}</div>}
+        {topbarSlot ? (
+          createPortal(
+            <div className="rt-live-head in-topbar">{vHead}</div>,
+            topbarSlot,
+          )
+        ) : (
+          <div className="rt-live-head">{vHead}</div>
+        )}
         <div className="rt-roster">
           {(payload.run.config?.seats ?? []).map((s) => (
-            <span key={s.id} className="rt-chip" style={{ ["--seat" as string]: s.color }}>
+            <span
+              key={s.id}
+              className="rt-chip"
+              style={{ ["--seat" as string]: s.color }}
+            >
               <span className="rt-dot" /> {s.name}
             </span>
           ))}
-          <span className="rt-status">{payload.run.totals.turns} turns · {formatUsd(payload.run.totals.usd)}{payload.run.totals.usdPartial ? "+" : ""}</span>
+          <span className="rt-status">
+            {payload.run.totals.turns} turns ·{" "}
+            {formatUsd(payload.run.totals.usd)}
+            {payload.run.totals.usdPartial ? "+" : ""}
+          </span>
         </div>
         <div className="rt-transcript">
           {payload.run.turns.map((t) => (
             <RtTurnBubble key={t.id} turn={t} />
           ))}
-          {payload.run.turns.length === 0 && <div className="rt-empty">Empty transcript.</div>}
+          {payload.run.turns.length === 0 && (
+            <div className="rt-empty">Empty transcript.</div>
+          )}
         </div>
-        {fileMsg && <div className="rt-warn-banner" role="status">{fileMsg}</div>}
+        {fileMsg && (
+          <div className="rt-warn-banner" role="status">
+            {fileMsg}
+          </div>
+        )}
       </div>
     );
   }
@@ -948,24 +1500,49 @@ export function RoundtableView() {
   if (showOutcomes) {
     const oHead = (
       <>
-        <button type="button" className="wf-btn" onClick={() => setShowOutcomes(false)}>← {saveName || "Table"}</button>
+        <button
+          type="button"
+          className="wf-btn"
+          onClick={() => setShowOutcomes(false)}
+        >
+          ← {saveName || "Table"}
+        </button>
         <h1 className="topbar-view-title">Outcomes</h1>
       </>
     );
     return (
       <div className="wf-page wf-picker" data-testid="roundtable-outcomes">
-        {topbarSlot ? createPortal(oHead, topbarSlot) : <div className="rt-setup-head">{oHead}</div>}
+        {topbarSlot ? (
+          createPortal(oHead, topbarSlot)
+        ) : (
+          <div className="rt-setup-head">{oHead}</div>
+        )}
         {outcomes.length === 0 ? (
-          <EmptyState icon={<FileText size={24}/>} heading="No saved outcomes yet" sub="Run this roundtable and its result is saved here automatically." />
+          <EmptyState
+            icon={<FileText size={24} />}
+            heading="No saved outcomes yet"
+            sub="Run this roundtable and its result is saved here automatically."
+          />
         ) : (
           <ul className="wf-list">
             {outcomes.map((o) => (
               <li key={o.id} className="wf-list-item">
-                <button type="button" className="wf-list-open" onClick={() => openOutcome(o.id)}>
+                <button
+                  type="button"
+                  className="wf-list-open"
+                  onClick={() => openOutcome(o.id)}
+                >
                   <span className="wf-list-name">{o.name}</span>
                   <span className="wf-list-meta">{o.turns} turns</span>
                 </button>
-                <button type="button" className="wf-list-del" onClick={() => deleteOutcome(o.id)} aria-label={`Delete outcome ${o.name}`}><X size={16}/></button>
+                <button
+                  type="button"
+                  className="wf-list-del"
+                  onClick={() => deleteOutcome(o.id)}
+                  aria-label={`Delete outcome ${o.name}`}
+                >
+                  <X size={16} />
+                </button>
               </li>
             ))}
           </ul>
@@ -992,13 +1569,17 @@ export function RoundtableView() {
     );
     return (
       <div className="wf-page wf-picker" data-testid="roundtable-list">
-        {topbarSlot ? createPortal(listHead, topbarSlot) : <div className="rt-setup-head">{listHead}</div>}
+        {topbarSlot ? (
+          createPortal(listHead, topbarSlot)
+        ) : (
+          <div className="rt-setup-head">{listHead}</div>
+        )}
 
         <section className="rt-templates" data-testid="rt-templates">
           <h2 className="rt-templates-title">Start from a template</h2>
           <p className="rt-templates-sub">
-            Drop a cast of personas onto the table and go. Pick one, assign models to the
-            seats, and hit Start — tweak anything after.
+            Drop a cast of personas onto the table and go. Pick one, assign
+            models to the seats, and hit Start — tweak anything after.
           </p>
           <div className="rt-template-grid">
             {PRESETS.map((p) => (
@@ -1012,16 +1593,22 @@ export function RoundtableView() {
                 <span className="rt-template-cat">{p.category}</span>
                 <span className="rt-template-name">{p.label}</span>
                 <span className="rt-template-summary">{p.summary}</span>
-                <span className="rt-template-meta">{p.personas.length} seats · {p.maxRounds} rounds →</span>
+                <span className="rt-template-meta">
+                  {p.personas.length} seats · {p.maxRounds} rounds →
+                </span>
               </button>
             ))}
           </div>
         </section>
 
-        {savedTables.length > 0 && <h2 className="rt-templates-title rt-your-tables">Your roundtables</h2>}
+        {savedTables.length > 0 && (
+          <h2 className="rt-templates-title rt-your-tables">
+            Your roundtables
+          </h2>
+        )}
         {savedTables.length === 0 ? (
           <EmptyState
-            icon={<Users size={24}/>}
+            icon={<Users size={24} />}
             heading="No saved roundtables yet"
             sub="Use a template above, or start a blank one, to have several models debate or brainstorm a topic."
           />
@@ -1029,7 +1616,11 @@ export function RoundtableView() {
           <ul className="wf-list">
             {savedTables.map((t) => (
               <li key={t.id} className="wf-list-item">
-                <button type="button" className="wf-list-open" onClick={() => openTable(t.id)}>
+                <button
+                  type="button"
+                  className="wf-list-open"
+                  onClick={() => openTable(t.id)}
+                >
                   <span className="wf-list-name">{t.name}</span>
                   <span className="wf-list-meta">{t.seats.length} seats</span>
                 </button>
@@ -1039,7 +1630,7 @@ export function RoundtableView() {
                   onClick={() => deleteTable(t.id)}
                   aria-label={`Delete ${t.name}`}
                 >
-                  <X size={16}/>
+                  <X size={16} />
                 </button>
               </li>
             ))}
@@ -1052,7 +1643,13 @@ export function RoundtableView() {
   // ── Editor view ──
   const setupHead = (
     <>
-      <button type="button" className="wf-btn" onClick={() => setEditing(false)}>← Tables</button>
+      <button
+        type="button"
+        className="wf-btn"
+        onClick={() => setEditing(false)}
+      >
+        ← Tables
+      </button>
       <input
         className="wf-name-input"
         value={saveName}
@@ -1066,48 +1663,93 @@ export function RoundtableView() {
           onClick={() => setShowOutcomes(true)}
           title="Saved transcripts of this roundtable's past runs"
         >
-          <FileText size={16}/> Outcomes{outcomes.length > 0 ? ` (${outcomes.length})` : ""}
+          <FileText size={16} /> Outcomes
+          {outcomes.length > 0 ? ` (${outcomes.length})` : ""}
         </button>
         {PRESETS.map((p) => (
-          <button key={p.id} className="rt-preset-btn" onClick={() => applyPreset(p)}>{p.label}</button>
+          <button
+            key={p.id}
+            className="rt-preset-btn"
+            onClick={() => applyPreset(p)}
+          >
+            {p.label}
+          </button>
         ))}
-        <button className="rt-preset-btn" onClick={resetAll} title="Restore default seats, topic, and settings"><RotateCcw size={16}/> Reset</button>
+        <button
+          className="rt-preset-btn"
+          onClick={resetAll}
+          title="Restore default seats, topic, and settings"
+        >
+          <RotateCcw size={16} /> Reset
+        </button>
       </div>
     </>
   );
   return (
     <div className="rt-root" data-testid="roundtable-setup">
-      {topbarSlot
-        ? createPortal(<div className="rt-setup-head in-topbar">{setupHead}</div>, topbarSlot)
-        : <div className="rt-setup-head">{setupHead}</div>}
+      {topbarSlot ? (
+        createPortal(
+          <div className="rt-setup-head in-topbar">{setupHead}</div>,
+          topbarSlot,
+        )
+      ) : (
+        <div className="rt-setup-head">{setupHead}</div>
+      )}
 
-      {modelErr && <div className="rt-err-banner" role="alert">{modelErr}</div>}
+      {modelErr && (
+        <div className="rt-err-banner" role="alert">
+          {modelErr}
+        </div>
+      )}
 
-      <div className="rt-section-label">Participants <span className="rt-hint">(order = turn order)</span></div>
+      <div className="rt-section-label">
+        Participants <span className="rt-hint">(order = turn order)</span>
+      </div>
       <div className="rt-seats">
         {seats.map((s) => (
-          <div key={s.id} className="rt-seat" style={{ ["--seat" as string]: s.color }}>
+          <div
+            key={s.id}
+            className="rt-seat"
+            style={{ ["--seat" as string]: s.color }}
+          >
             <div className="rt-seat-top">
               <span className="rt-dot" />
-              <Input className="rt-seat-name" value={s.name} onChange={(e) => updateSeat(s.id, { name: e.target.value })} aria-label="Seat name" />
+              <Input
+                className="rt-seat-name"
+                value={s.name}
+                onChange={(e) => updateSeat(s.id, { name: e.target.value })}
+                aria-label="Seat name"
+              />
               <select
                 className="rt-seat-model"
                 value={s.optionKey}
-                onChange={(e) => updateSeat(s.id, { optionKey: e.target.value })}
+                onChange={(e) =>
+                  updateSeat(s.id, { optionKey: e.target.value })
+                }
                 aria-label="Model"
                 disabled={loadingModels}
               >
-                <option value="">{loadingModels ? "Loading models…" : "Pick a model…"}</option>
+                <option value="">
+                  {loadingModels ? "Loading models…" : "Pick a model…"}
+                </option>
                 {Object.entries(groups).map(([g, opts]) => (
                   <optgroup key={g} label={g}>
                     {opts.map((o) => (
-                      <option key={o.key} value={o.key}>{o.label}</option>
+                      <option key={o.key} value={o.key}>
+                        {o.label}
+                      </option>
                     ))}
                   </optgroup>
                 ))}
               </select>
               {seats.length > 2 && (
-                <button className="rt-seat-x" onClick={() => removeSeat(s.id)} aria-label="Remove seat"><X size={16}/></button>
+                <button
+                  className="rt-seat-x"
+                  onClick={() => removeSeat(s.id)}
+                  aria-label="Remove seat"
+                >
+                  <X size={16} />
+                </button>
               )}
             </div>
             <textarea
@@ -1120,7 +1762,11 @@ export function RoundtableView() {
           </div>
         ))}
       </div>
-      {seats.length < 6 && <Button size="sm" variant="secondary" onClick={addSeat}>+ Add participant</Button>}
+      {seats.length < 6 && (
+        <Button size="sm" variant="secondary" onClick={addSeat}>
+          + Add participant
+        </Button>
+      )}
 
       <div className="rt-section-label">Topic</div>
       <textarea
@@ -1134,31 +1780,68 @@ export function RoundtableView() {
       <div className="rt-controls-grid">
         <label className="rt-ctl">
           <span>Memory</span>
-          <select value={memoryMode} onChange={(e) => setMemoryMode(e.target.value as MemoryMode)}>
+          <select
+            value={memoryMode}
+            onChange={(e) => setMemoryMode(e.target.value as MemoryMode)}
+          >
             <option value="recent">Recent (cheaper)</option>
             <option value="full">Full (best memory, costs more)</option>
           </select>
         </label>
         <label className="rt-ctl">
           <span>Max rounds</span>
-          <Input type="number" min={1} max={30} value={maxRounds} onChange={(e) => setMaxRounds(Math.min(30, Math.max(1, Number(e.target.value) || 1)))} />
+          <Input
+            type="number"
+            min={1}
+            max={30}
+            value={maxRounds}
+            onChange={(e) =>
+              setMaxRounds(
+                Math.min(30, Math.max(1, Number(e.target.value) || 1)),
+              )
+            }
+          />
         </label>
         <label className="rt-ctl">
           <span>$ budget (0 = none)</span>
-          <Input type="number" min={0} step={0.1} value={maxUsd} onChange={(e) => setMaxUsd(Math.max(0, Number(e.target.value) || 0))} />
+          <Input
+            type="number"
+            min={0}
+            step={0.1}
+            value={maxUsd}
+            onChange={(e) =>
+              setMaxUsd(Math.max(0, Number(e.target.value) || 0))
+            }
+          />
         </label>
       </div>
 
-      {setupErr && <div className="rt-err-banner" role="alert">{setupErr}</div>}
+      {setupErr && (
+        <div className="rt-err-banner" role="alert">
+          {setupErr}
+        </div>
+      )}
       {localCount >= 2 && (
-        <div className="rt-warn-banner">⚠ Two local (Ollama) models reload on every turn — slow. Prefer cloud models, or one local at most.</div>
+        <div className="rt-warn-banner">
+          ⚠ Two local (Ollama) models reload on every turn — slow. Prefer cloud
+          models, or one local at most.
+        </div>
       )}
 
       <div className="rt-start-row">
         <Button variant="primary" onClick={startRun} disabled={loadingModels}>
-          {loadingModels ? <Spinner label="Loading" /> : <><Play size={16}/> Start roundtable</>}
+          {loadingModels ? (
+            <Spinner label="Loading" />
+          ) : (
+            <>
+              <Play size={16} /> Start roundtable
+            </>
+          )}
         </Button>
-        <Badge tone="neutral">{seats.length} seats · {Math.min(30, Math.max(1, maxRounds))} rounds · cloud-first</Badge>
+        <Badge tone="neutral">
+          {seats.length} seats · {Math.min(30, Math.max(1, maxRounds))} rounds ·
+          cloud-first
+        </Badge>
       </div>
     </div>
   );
