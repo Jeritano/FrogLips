@@ -16,7 +16,7 @@
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex as PLMutex;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -100,7 +100,15 @@ pub fn ensure_schema(conn: &rusqlite::Connection) -> Result<()> {
             text TEXT NOT NULL,
             embedding BLOB NOT NULL
          );
-         CREATE INDEX IF NOT EXISTS idx_rag_chunks_corpus ON rag_chunks(corpus_id);",
+         CREATE INDEX IF NOT EXISTS idx_rag_chunks_corpus ON rag_chunks(corpus_id);
+         CREATE INDEX IF NOT EXISTS idx_rag_chunks_corpus_path ON rag_chunks(corpus_id, path);
+         CREATE TABLE IF NOT EXISTS rag_files (
+            corpus_id INTEGER NOT NULL REFERENCES rag_corpora(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            mtime_ms INTEGER NOT NULL,
+            size INTEGER NOT NULL,
+            PRIMARY KEY (corpus_id, path)
+         );",
     )?;
     Ok(())
 }
@@ -263,6 +271,7 @@ pub fn embed(text: &str) -> Vec<f32> {
 /// In debug builds, asserts the inputs really are unit-length so a
 /// future regression in the embedding pipeline fails loudly instead of
 /// silently misranking results.
+#[cfg(test)]
 pub fn cosine_normalized(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
@@ -307,14 +316,51 @@ pub fn cosine_normalized(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
+/// Dot product of the query against a raw little-endian f32 BLOB in one
+/// pass, no intermediate `Vec<f32>` (perf review M23, 2026-06-09 — the
+/// search hot loop runs this once per chunk). Semantics mirror
+/// `cosine_normalized` for normalized inputs: length mismatch → 0, zero
+/// vector → 0, and the unit-length invariant gets the same once-per-process
+/// breadcrumb instead of a per-call log.
+fn score_blob(q: &[f32], blob: &[u8]) -> f32 {
+    if blob.len() != q.len() * 4 || q.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0f32;
+    let mut sq = 0f32;
+    for (x, c) in q.iter().zip(blob.chunks_exact(4)) {
+        let y = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+        dot += x * y;
+        sq += y * y;
+    }
+    if sq == 0.0 {
+        return 0.0; // cosine(x, 0) = 0 — matches cosine_normalized
+    }
+    if (sq - 1.0).abs() >= 1e-3 {
+        static LOGGED_ONCE: std::sync::Once = std::sync::Once::new();
+        LOGGED_ONCE.call_once(|| {
+            crate::diagnostics::warn_with(
+                "rag",
+                "score_blob invariant violated: stored embedding not unit-length",
+                serde_json::json!({
+                    "note": "results may be misranked until embedder normalization is fixed",
+                }),
+            );
+        });
+    }
+    dot
+}
+
 /// Backwards-compatible alias. Kept so existing callers don't need an
 /// atomic rename across the crate; new code should use the explicit name.
 #[inline]
+#[cfg(test)]
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     cosine_normalized(a, b)
 }
 
 #[inline]
+#[cfg(test)]
 fn is_unit_length(v: &[f32]) -> bool {
     if v.is_empty() {
         return true;
@@ -323,7 +369,9 @@ fn is_unit_length(v: &[f32]) -> bool {
     (sq - 1.0).abs() < 1e-3
 }
 
-use crate::util::{blob_to_vec, vec_to_blob};
+#[cfg(test)]
+use crate::util::blob_to_vec;
+use crate::util::vec_to_blob;
 
 /* ─────────────────────────── Validation ─────────────────────────────── */
 
@@ -511,6 +559,57 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         if meta.len() > MAX_FILE_BYTES {
             continue;
         }
+        let rel = file
+            .strip_prefix(&root_canon)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .into_owned();
+
+        // Perf review M26 (2026-06-09): a re-ingest used to re-read,
+        // re-chunk and re-embed every file even when nothing changed. If the
+        // file's (mtime, size) matches the previous ingest, carry the prior
+        // generation's rows forward with a pure SQL copy — the fresh
+        // AUTOINCREMENT ids land above the watermark, so the final swap
+        // keeps them. No read, no chunking, no embedding. mtime_ms == 0
+        // (unreadable mtime) always takes the full path.
+        let mtime_ms: i64 = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let size = meta.len() as i64;
+        if mtime_ms > 0 {
+            let unchanged = conn
+                .query_row(
+                    "SELECT 1 FROM rag_files
+                     WHERE corpus_id = ?1 AND path = ?2 AND mtime_ms = ?3 AND size = ?4",
+                    params![corpus_id, rel, mtime_ms, size],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if unchanged {
+                let remaining = (MAX_CHUNKS_PER_INGEST - chunks_created) as i64;
+                let copied = conn.execute(
+                    "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
+                     SELECT corpus_id, path, start_byte, end_byte, text, embedding
+                     FROM rag_chunks
+                     WHERE corpus_id = ?1 AND path = ?2 AND id <= ?3
+                     ORDER BY id LIMIT ?4",
+                    params![corpus_id, rel, watermark, remaining],
+                )?;
+                if copied > 0 {
+                    chunks_created += copied;
+                    files_indexed += 1;
+                    total_bytes += size as u64;
+                    continue;
+                }
+                // No prior rows to copy (all chunks were skipped last time,
+                // or the cap cut this file) — fall through to the full path.
+            }
+        }
+
         let text = match std::fs::read_to_string(file) {
             Ok(t) => t,
             Err(e) => {
@@ -526,11 +625,6 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         if chunks.is_empty() {
             continue;
         }
-        let rel = file
-            .strip_prefix(&root_canon)
-            .unwrap_or(file)
-            .to_string_lossy()
-            .into_owned();
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
@@ -573,6 +667,14 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
                 }
             }
         }
+        // Record the file fingerprint so the next ingest can copy-forward
+        // when (mtime, size) still match.
+        tx.execute(
+            "INSERT INTO rag_files (corpus_id, path, mtime_ms, size) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(corpus_id, path) DO UPDATE SET
+               mtime_ms = excluded.mtime_ms, size = excluded.size",
+            params![corpus_id, rel, mtime_ms, size],
+        )?;
         tx.commit()?;
         files_indexed += 1;
     }
@@ -590,6 +692,15 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         tx.execute(
             "UPDATE rag_corpora SET chunk_count = ?1, updated_at = ?2 WHERE id = ?3",
             params![chunks_created as i64, now_unix(), corpus_id],
+        )?;
+        // Drop fingerprints for files that no longer produced chunks this
+        // generation (deleted/renamed/now-skipped) so a future re-appearance
+        // can't false-positive as "unchanged".
+        tx.execute(
+            "DELETE FROM rag_files WHERE corpus_id = ?1 AND path NOT IN (
+                SELECT DISTINCT path FROM rag_chunks WHERE corpus_id = ?1
+             )",
+            params![corpus_id],
         )?;
         tx.commit()?;
     }
@@ -629,25 +740,16 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
         None => anyhow::bail!("corpus '{}' not found", corpus_name),
     };
 
-    let mut stmt = conn.prepare(
-        "SELECT path, start_byte, end_byte, text, embedding FROM rag_chunks
-         WHERE corpus_id = ?1",
-    )?;
-    let rows = stmt.query_map(params![corpus_id], |r| {
-        let path: String = r.get(0)?;
-        let s: i64 = r.get(1)?;
-        let e: i64 = r.get(2)?;
-        let text: String = r.get(3)?;
-        let blob: Vec<u8> = r.get(4)?;
-        Ok((path, s, e, text, blob))
-    })?;
-
-    // Maturity review H1 (2026-05-27): previous impl pushed every
-    // positive-scored chunk into a Vec and full-sorted at the end —
-    // O(N log N) over ~50k chunks. Switched to a BinaryHeap<Reverse<...>>
-    // of capacity k, which gives O(N log k). For top_k=10 against 50k
-    // chunks that's ~50k × log2(10) ≈ 165k cmps vs the old 50k × log2(50k)
-    // ≈ 780k. The win compounds when the user expands the corpus.
+    // Maturity review H1 (2026-05-27): BinaryHeap<Reverse<...>> of capacity
+    // k gives O(N log k) instead of a full sort.
+    //
+    // Perf review M23 (2026-06-09): two-pass scan. The previous single query
+    // decoded EVERY chunk's text + path Strings and converted every 2KB
+    // embedding BLOB into a fresh Vec<f32> per query — ~90-100MB of
+    // allocation churn and 30-100ms at a 20k-chunk corpus, just to keep the
+    // top k. Pass 1 scores straight off the borrowed BLOB bytes inside the
+    // row callback (zero per-row heap allocation) and keeps only (score,
+    // id); pass 2 fetches path/text for the ≤50 winners by id.
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
     // OrderedF32 wrapper — f32 isn't Ord because of NaN, but cosine over
@@ -673,33 +775,68 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
                 .unwrap_or(std::cmp::Ordering::Equal)
         }
     }
-    type Entry = (OrderedF32, String, i64, i64, String);
-    let mut heap: BinaryHeap<Reverse<Entry>> = BinaryHeap::with_capacity(k + 1);
+    let mut stmt = conn.prepare("SELECT id, embedding FROM rag_chunks WHERE corpus_id = ?1")?;
+    let mut heap: BinaryHeap<Reverse<(OrderedF32, i64)>> = BinaryHeap::with_capacity(k + 1);
+    let rows = stmt.query_map(params![corpus_id], |r| {
+        let id: i64 = r.get(0)?;
+        // Borrow the BLOB in place — no Vec<u8>/Vec<f32> per row.
+        let score = match r.get_ref(1)?.as_blob() {
+            Ok(b) => score_blob(&q_emb, b),
+            Err(_) => 0.0,
+        };
+        Ok((id, score))
+    })?;
     for row in rows {
-        let (path, s, e, text, blob) = row?;
-        let emb = blob_to_vec(&blob);
-        let score = cosine(&q_emb, &emb);
+        let (id, score) = row?;
         if score <= 0.0 {
             continue;
         }
-        heap.push(Reverse((OrderedF32(score), path, s, e, text)));
+        heap.push(Reverse((OrderedF32(score), id)));
         // Trim back to k by dropping the smallest. `pop` on a min-heap
         // is O(log k).
         if heap.len() > k {
             heap.pop();
         }
     }
-    // Drain newest-first by repeatedly popping the heap. Heap pops the
-    // smallest first (we wrapped in Reverse), so collect into a Vec and
-    // reverse at the end for descending order.
-    let mut scored: Vec<(f32, String, i64, i64, String)> = heap
+    drop(stmt);
+    // Descending by score. into_sorted_vec yields ascending; reverse it.
+    let mut winners: Vec<(f32, i64)> = heap
         .into_sorted_vec()
         .into_iter()
-        .map(|Reverse((s, p, sb, eb, t))| (s.0, p, sb, eb, t))
+        .map(|Reverse((s, id))| (s.0, id))
         .collect();
-    // into_sorted_vec yields ascending order (smallest first); reverse
-    // for the descending-by-score contract the caller expects.
-    scored.reverse();
+    winners.reverse();
+
+    // Pass 2: fetch the winners' payloads (k ≤ 50, so the IN list is tiny).
+    let mut scored: Vec<(f32, String, i64, i64, String)> = Vec::with_capacity(winners.len());
+    if !winners.is_empty() {
+        let placeholders = vec!["?"; winners.len()].join(",");
+        let mut fetch = conn.prepare(&format!(
+            "SELECT id, path, start_byte, end_byte, text FROM rag_chunks WHERE id IN ({placeholders})"
+        ))?;
+        let id_params = rusqlite::params_from_iter(winners.iter().map(|(_, id)| *id));
+        let mut by_id = std::collections::HashMap::with_capacity(winners.len());
+        let fetched = fetch.query_map(id_params, |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                (
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?,
+                ),
+            ))
+        })?;
+        for row in fetched {
+            let (id, payload) = row?;
+            by_id.insert(id, payload);
+        }
+        for (score, id) in winners {
+            if let Some((path, s, e, text)) = by_id.remove(&id) {
+                scored.push((score, path, s, e, text));
+            }
+        }
+    }
     // Sec re-review H-NEW-3: RAG hits flow back into the agent loop as
     // primary input. Until now they bypassed the injection scanner that
     // wraps every other external-content tool. Wrap the snippet so any
@@ -941,6 +1078,78 @@ mod tests {
         );
 
         // Cleanup.
+        let _ = delete_corpus(&name);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Perf review M23 (2026-06-09): search scores straight off the stored
+    /// BLOB bytes now. Pin the fast path to the reference implementation so
+    /// an encoding/stride regression misranks loudly here, not silently in
+    /// production.
+    #[test]
+    fn score_blob_matches_cosine_reference() {
+        let q = embed("the quick brown fox jumps over the lazy dog");
+        for text in [
+            "a quick brown fox jumped over a lazy hound",
+            "rusqlite database transaction commit rollback",
+            "the quick brown fox jumps over the lazy dog",
+        ] {
+            let v = embed(text);
+            let blob = vec_to_blob(&v);
+            let fast = score_blob(&q, &blob);
+            let reference = cosine(&q, &v);
+            assert!(
+                (fast - reference).abs() < 1e-6,
+                "score_blob {fast} != cosine {reference} for {text:?}"
+            );
+        }
+        // Length mismatch and zero vector are 0, matching cosine semantics.
+        assert_eq!(score_blob(&q, &[0u8; 8]), 0.0);
+        let zero = vec_to_blob(&vec![0.0f32; EMBED_DIM]);
+        assert_eq!(score_blob(&q, &zero), 0.0);
+    }
+
+    /// Perf review M26 (2026-06-09): a re-ingest with untouched files takes
+    /// the copy-forward path (no re-read/re-chunk/re-embed). The copied rows
+    /// must land ABOVE the watermark so the atomic swap keeps them — if the
+    /// copy were broken, the swap would delete the corpus content and this
+    /// search would come back empty.
+    #[test]
+    fn reingest_unchanged_file_carries_chunks_forward() {
+        let tag = format!("{}_cf", std::process::id());
+        let name = format!("__test_carryfwd_{tag}");
+        let dir = std::env::temp_dir().join(format!("rag_carryfwd_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("doc.txt"),
+            "gammaunique gammaunique gammaunique filler text here",
+        )
+        .unwrap();
+        let opts = || IngestOpts {
+            name: name.clone(),
+            root: dir.to_string_lossy().into_owned(),
+            glob: None,
+        };
+
+        let r1 = ingest_folder(opts()).expect("first ingest");
+        assert!(r1.chunks_created >= 1);
+
+        // Second ingest without touching the file — same (mtime, size).
+        let r2 = ingest_folder(opts()).expect("unchanged re-ingest");
+        assert_eq!(
+            r2.chunks_created, r1.chunks_created,
+            "carry-forward must reproduce the same chunk count"
+        );
+        assert_eq!(r2.files_indexed, 1);
+
+        // Content survived the swap and is still searchable.
+        let hits = search(&name, "gammaunique", 10).unwrap();
+        assert!(
+            hits.iter().any(|h| h.snippet.contains("gammaunique")),
+            "carried-forward chunks must remain searchable, got: {hits:?}"
+        );
+
         let _ = delete_corpus(&name);
         let _ = std::fs::remove_dir_all(&dir);
     }

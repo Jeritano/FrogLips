@@ -7,7 +7,11 @@ export type AgentStatus = "idle" | "thinking" | "tool" | "done" | "error";
  * classifiers (`classify_shell_risk`, `classify_applescript_risk`,
  * `classify_http_risk`) and `classifyToolRisk` can produce.
  */
-export type Risk = "normal" | "destructive" | "pipe-from-network" | "privileged";
+export type Risk =
+  | "normal"
+  | "destructive"
+  | "pipe-from-network"
+  | "privileged";
 
 /**
  * Shape of a parsed tool-result body. Tools speak a JSON-over-string
@@ -111,16 +115,29 @@ export interface AgentRunOptions {
   approvedShellPrefixes?: string[];
   /** Called when user opts into "remember this command pattern". */
   onApproveShellPrefix?: (prefix: string) => void;
+  /**
+   * Fires when a canonical message lands in the runner's message array
+   * (assistant reply, assistant-with-tool-calls, tool result) — STRUCTURAL
+   * changes only, never per streamed token. In-flight assistant text is
+   * delivered exclusively through `onAssistantDelta`; consumers that want a
+   * live bubble must accumulate deltas themselves (and coalesce to frames).
+   */
   onUpdate: (msgs: Message[]) => void;
   onStatusChange: (status: AgentStatus) => void;
   onMetrics?: (m: AgentMetrics) => void;
   /**
    * Optional: fires for each raw content delta from the streaming LLM
-   * response. Use this to render an in-flight assistant bubble; the runner
-   * also pushes the partial message into `onUpdate(msgs)` so consumers that
-   * ignore this callback still see streaming progress.
+   * response. The ONLY channel carrying in-flight assistant text — render
+   * the live bubble from this, then drop the accumulator when `onUpdate`
+   * delivers the canonical message that absorbed it.
    */
   onAssistantDelta?: (text: string) => void;
+  /**
+   * Optional: the transport retried the in-flight stream (transient 5xx /
+   * connection fault). Any text accumulated from `onAssistantDelta` for the
+   * current turn belongs to the abandoned attempt — discard it.
+   */
+  onStreamReset?: () => void;
   requestConfirmation: (
     toolName: string,
     args: Record<string, unknown>,

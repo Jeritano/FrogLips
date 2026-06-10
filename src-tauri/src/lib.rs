@@ -225,7 +225,33 @@ pub fn run() {
         .manage(commands::llmpm::LlmpmState::default())
         .setup({
             let state = server_state.clone();
+            let win_geom = persisted.window.clone();
             move |app| {
+                // Perf review C7 (2026-06-09): the window is created hidden
+                // (tauri.conf.json `visible: false`) and geometry is applied
+                // HERE, before show — the old JS-side restore ran after first
+                // paint, so every cold launch flashed 800×600 at the OS
+                // default position then visibly jumped (~150-400ms). Same
+                // sanity bounds as the old hook (>200px). Show is
+                // unconditional: a missing/invalid geometry just shows the
+                // conf default, never a permanently hidden window.
+                if let Some(w) = app.get_webview_window("main") {
+                    if let Some(g) = win_geom.as_ref() {
+                        if g.width > 200.0 && g.height > 200.0 {
+                            let _ = w.set_size(tauri::PhysicalSize::new(
+                                g.width.round() as u32,
+                                g.height.round() as u32,
+                            ));
+                        }
+                        if let (Some(x), Some(y)) = (g.x, g.y) {
+                            let _ = w.set_position(tauri::PhysicalPosition::new(
+                                x.round() as i32,
+                                y.round() as i32,
+                            ));
+                        }
+                    }
+                    let _ = w.show();
+                }
                 state.set_app(app.handle().clone());
                 // Make the AppHandle available to the diagnostics bridge so
                 // background tasks (MCP, RAG, agent workers) can emit

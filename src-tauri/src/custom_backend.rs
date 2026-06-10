@@ -306,7 +306,42 @@ fn custom_ip_blocked(ip: &std::net::IpAddr) -> bool {
 /// resolver to exactly those validated addresses so a DNS rebind between the
 /// check and the connect can't swap in a blocked IP (TOCTOU). Loopback + LAN
 /// stay allowed. Mirrors the MCP transport's `build_pinned_client` posture.
+/// Pinned-client cache (perf review C4, 2026-06-09). Rebuilding the client
+/// per message re-ran DNS + TCP + TLS from scratch — ~30-120ms added to
+/// time-to-first-token on EVERY cloud send, and no connection pooling across
+/// turns. Entries expire after `PINNED_CLIENT_TTL`, at which point the host
+/// is re-resolved and re-validated — the DNS-rebind window is bounded by the
+/// TTL, and a cached client can only ever connect to the addresses it
+/// validated at build time (the pin travels with the client), so the SSRF
+/// posture is unchanged.
+static PINNED_CLIENT_CACHE: Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, reqwest::Client)>>,
+> = Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+const PINNED_CLIENT_TTL: Duration = Duration::from_secs(60);
+
 async fn pinned_client_for(base: &str) -> Result<reqwest::Client> {
+    if let Ok(cache) = PINNED_CLIENT_CACHE.lock() {
+        if let Some((built, client)) = cache.get(base) {
+            if built.elapsed() < PINNED_CLIENT_TTL {
+                return Ok(client.clone());
+            }
+        }
+    }
+    let client = build_pinned_client_for(base).await?;
+    if let Ok(mut cache) = PINNED_CLIENT_CACHE.lock() {
+        // Opportunistic sweep: the key space is tiny (one entry per
+        // configured backend base URL), but don't let removed backends
+        // accumulate stale TLS pools forever.
+        cache.retain(|_, (built, _)| built.elapsed() < PINNED_CLIENT_TTL);
+        cache.insert(
+            base.to_string(),
+            (std::time::Instant::now(), client.clone()),
+        );
+    }
+    Ok(client)
+}
+
+async fn build_pinned_client_for(base: &str) -> Result<reqwest::Client> {
     use std::net::{IpAddr, SocketAddr};
     let url = reqwest::Url::parse(base).map_err(|e| anyhow!("invalid base_url: {e}"))?;
     let host = url

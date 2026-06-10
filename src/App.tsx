@@ -302,6 +302,11 @@ function App() {
       if (s.theme === "light" || s.theme === "dark") {
         setTheme(s.theme);
         document.documentElement.dataset.theme = s.theme;
+        // Mirror for main.tsx's synchronous pre-render read (perf C8) —
+        // keeps the first frame on the right theme next launch.
+        try {
+          localStorage.setItem("froglips-theme", s.theme);
+        } catch { /* best-effort */ }
       }
       // Apply all device-local appearance prefs (per-theme code palettes,
       // code/interface fonts, transcript size, high-contrast) now that the
@@ -505,6 +510,10 @@ function App() {
     const next: "dark" | "light" = theme === "dark" ? "light" : "dark";
     setTheme(next);
     document.documentElement.dataset.theme = next;
+    // Mirror for main.tsx's synchronous pre-render read (perf C8).
+    try {
+      localStorage.setItem("froglips-theme", next);
+    } catch { /* best-effort */ }
     // Re-apply the code palette chosen for the NEW app theme (light/dark each
     // carry their own syntax-palette pick).
     applyCodeTheme(next);

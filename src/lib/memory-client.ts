@@ -31,7 +31,7 @@ const DEFAULT_RECALL_THRESHOLD = 0.55;
 // threshold is later adjusted via the settings UI.
 const DEDUP_DELTA_ABOVE_RECALL = 0.3;
 const DEDUP_THRESHOLD_FLOOR = 0.8;
-const EXTRACTOR_MODEL = "qwen3:4b";          // fallback list checked at runtime
+const EXTRACTOR_MODEL = "qwen3:4b"; // fallback list checked at runtime
 const EXTRACTOR_FALLBACKS = ["phi4-mini:3.8b", "llama3.2:3b", "qwen2.5:7b"];
 
 /**
@@ -42,7 +42,10 @@ const EXTRACTOR_FALLBACKS = ["phi4-mini:3.8b", "llama3.2:3b", "qwen2.5:7b"];
  * tightens or loosens it.
  */
 export function getDedupThreshold(): number {
-  return Math.max(DEDUP_THRESHOLD_FLOOR, _recallThreshold + DEDUP_DELTA_ABOVE_RECALL);
+  return Math.max(
+    DEDUP_THRESHOLD_FLOOR,
+    _recallThreshold + DEDUP_DELTA_ABOVE_RECALL,
+  );
 }
 
 const MODE_KEY = "froglips.memoryMode";
@@ -56,7 +59,10 @@ let _recallThreshold = DEFAULT_RECALL_THRESHOLD;
 const RECALL_THRESHOLD_MIN = 0.05;
 const RECALL_THRESHOLD_MAX = 0.95;
 
-export function configureMemory(opts: { embeddingModel?: string | null; recallThreshold?: number | null }) {
+export function configureMemory(opts: {
+  embeddingModel?: string | null;
+  recallThreshold?: number | null;
+}) {
   if (opts.embeddingModel && typeof opts.embeddingModel === "string") {
     // Maturity review P0 #10: previously the embed LRU survived a model
     // change, so cached vectors from the OLD model (different dimension)
@@ -73,7 +79,10 @@ export function configureMemory(opts: { embeddingModel?: string | null; recallTh
     }
     _embedModel = opts.embeddingModel;
   }
-  if (typeof opts.recallThreshold === "number" && Number.isFinite(opts.recallThreshold)) {
+  if (
+    typeof opts.recallThreshold === "number" &&
+    Number.isFinite(opts.recallThreshold)
+  ) {
     _recallThreshold = Math.min(
       RECALL_THRESHOLD_MAX,
       Math.max(RECALL_THRESHOLD_MIN, opts.recallThreshold),
@@ -81,7 +90,9 @@ export function configureMemory(opts: { embeddingModel?: string | null; recallTh
   }
 }
 
-function EMBED_MODEL(): string { return _embedModel; }
+function EMBED_MODEL(): string {
+  return _embedModel;
+}
 
 /**
  * Wrap a fetch with a timeout, chained to an optional caller AbortSignal so
@@ -100,7 +111,8 @@ function withTimeout(
 
 export function getMemoryMode(): MemoryMode {
   const v = localStorage.getItem(MODE_KEY);
-  if (v === "off" || v === "manual" || v === "queue" || v === "direct") return v;
+  if (v === "off" || v === "manual" || v === "queue" || v === "direct")
+    return v;
   return "manual";
 }
 
@@ -149,7 +161,8 @@ function lruSet(k: string, v: number[]) {
 
 export async function embeddingsReady(signal?: AbortSignal): Promise<boolean> {
   const now = Date.now();
-  const ttl = embeddingAvailable === false ? EMBED_NEGATIVE_TTL_MS : EMBED_READY_TTL_MS;
+  const ttl =
+    embeddingAvailable === false ? EMBED_NEGATIVE_TTL_MS : EMBED_READY_TTL_MS;
   if (embeddingAvailable !== null && now - embeddingCheckedAt < ttl) {
     return embeddingAvailable;
   }
@@ -212,11 +225,39 @@ export async function embeddingsReady(signal?: AbortSignal): Promise<boolean> {
   }
 }
 
-export async function embed(text: string, signal?: AbortSignal): Promise<number[] | null> {
-  const trimmed = text.length > MAX_EMBED_INPUT ? text.slice(0, MAX_EMBED_INPUT) : text;
+// Perf review M22 (2026-06-09): pre-send recall and semantic routing run
+// concurrently (Promise.all in useChatSend) and both embed the SAME user
+// text — the LRU only helps the second call once the first resolved, so the
+// text was embedded twice per send. Coalesce identical in-flight requests:
+// the second caller awaits the first's promise. Entries are dropped on
+// settle, so a failed call doesn't poison later retries.
+const embedInFlight = new Map<string, Promise<number[] | null>>();
+
+export async function embed(
+  text: string,
+  signal?: AbortSignal,
+): Promise<number[] | null> {
+  const trimmed =
+    text.length > MAX_EMBED_INPUT ? text.slice(0, MAX_EMBED_INPUT) : text;
   const cacheKey = `${EMBED_MODEL()}:${trimmed}`;
   const cached = lruGet(cacheKey);
   if (cached) return cached;
+  const inFlight = embedInFlight.get(cacheKey);
+  if (inFlight) return inFlight;
+  const p = embedUncached(trimmed, cacheKey, signal);
+  embedInFlight.set(cacheKey, p);
+  try {
+    return await p;
+  } finally {
+    embedInFlight.delete(cacheKey);
+  }
+}
+
+async function embedUncached(
+  trimmed: string,
+  cacheKey: string,
+  signal?: AbortSignal,
+): Promise<number[] | null> {
   if (!(await embeddingsReady(signal))) return null;
   const to = withTimeout(signal, MEMORY_FETCH_TIMEOUT_MS);
   try {
@@ -269,7 +310,12 @@ export async function recall(
   const emb = await embed(query, signal);
   if (emb && emb.length) {
     try {
-      const hits = await api.searchMemoriesVector(emb, k, _recallThreshold, ctx);
+      const hits = await api.searchMemoriesVector(
+        emb,
+        k,
+        _recallThreshold,
+        ctx,
+      );
       if (hits.length) return hits;
     } catch (err) {
       logDiag({
@@ -346,7 +392,9 @@ let extractorModel: string | null = null;
 let extractorPickedAt = 0;
 const EXTRACTOR_TTL_MS = 60_000;
 
-async function pickExtractorModel(signal?: AbortSignal): Promise<string | null> {
+async function pickExtractorModel(
+  signal?: AbortSignal,
+): Promise<string | null> {
   const now = Date.now();
   if (extractorModel && now - extractorPickedAt < EXTRACTOR_TTL_MS) {
     return extractorModel;
@@ -359,7 +407,11 @@ async function pickExtractorModel(signal?: AbortSignal): Promise<string | null> 
     const data = await res.json();
     const installed: string[] = (data?.models ?? []).map((m: any) => m.name);
     for (const candidate of [EXTRACTOR_MODEL, ...EXTRACTOR_FALLBACKS]) {
-      if (installed.some((n) => n === candidate || n.startsWith(candidate.split(":")[0] + ":"))) {
+      if (
+        installed.some(
+          (n) => n === candidate || n.startsWith(candidate.split(":")[0] + ":"),
+        )
+      ) {
         extractorModel = candidate;
         extractorPickedAt = now;
         return extractorModel;
@@ -406,24 +458,24 @@ export interface ExtractedFact {
 // 2026-05-25 maturity review.
 const SECRET_PATTERNS: RegExp[] = [
   /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b/, // AWS access key
-  /\b(?:sk|pk)-[A-Za-z0-9]{20,}\b/,                                    // OpenAI-style dash form
-  /\b(?:sk|pk|rk)_(?:test|live)_[A-Za-z0-9]{20,}\b/,                   // Stripe underscore form (added)
-  /\bghp_[A-Za-z0-9]{30,}\b/,                                          // GitHub personal token
-  /\bgh[oprs]_[A-Za-z0-9]{30,}\b/,                                     // GitHub other tokens
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,                                  // Slack token
-  /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/,  // JWT
-  /(?:key|secret|token|password|pwd)\s*[:=]\s*[A-Fa-f0-9]{32,}/i,    // labeled hex credential
+  /\b(?:sk|pk)-[A-Za-z0-9]{20,}\b/, // OpenAI-style dash form
+  /\b(?:sk|pk|rk)_(?:test|live)_[A-Za-z0-9]{20,}\b/, // Stripe underscore form (added)
+  /\bghp_[A-Za-z0-9]{30,}\b/, // GitHub personal token
+  /\bgh[oprs]_[A-Za-z0-9]{30,}\b/, // GitHub other tokens
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/, // Slack token
+  /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/, // JWT
+  /(?:key|secret|token|password|pwd)\s*[:=]\s*[A-Fa-f0-9]{32,}/i, // labeled hex credential
   /private[_-]?key/i,
   /password\s*[:=]/i,
   /api[_-]?key\s*[:=]/i,
   /bearer\s+[A-Za-z0-9._-]{20,}/i,
   // Added 2026-05-25 maturity review:
-  /"type"\s*:\s*"service_account"/i,                                  // GCP service-account JSON
-  /\bAC[a-f0-9]{32}\b/,                                                // Twilio Account SID
+  /"type"\s*:\s*"service_account"/i, // GCP service-account JSON
+  /\bAC[a-f0-9]{32}\b/, // Twilio Account SID
   /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s]+:[^@\s]+@/i, // DB URL w/ creds
-  /-----BEGIN(?:\s+(?:RSA|EC|OPENSSH|DSA|PGP))?\s+PRIVATE\s+KEY-----/,// PEM private key
-  /\bAAAA[A-Za-z0-9_-]{60,}\b/,                                        // Firebase FCM-style long token
-  /xoxb-[A-Za-z0-9-]{20,}/,                                            // Slack bot token (precise)
+  /-----BEGIN(?:\s+(?:RSA|EC|OPENSSH|DSA|PGP))?\s+PRIVATE\s+KEY-----/, // PEM private key
+  /\bAAAA[A-Za-z0-9_-]{60,}\b/, // Firebase FCM-style long token
+  /xoxb-[A-Za-z0-9-]{20,}/, // Slack bot token (precise)
 ];
 
 /** Exported for unit tests. */
@@ -466,7 +518,10 @@ export async function extractFacts(
         stream: false,
         options: { temperature: 0.2 },
         messages: [
-          { role: "system", content: "Extract durable facts. Output ONLY a JSON array." },
+          {
+            role: "system",
+            content: "Extract durable facts. Output ONLY a JSON array.",
+          },
           { role: "user", content: EXTRACT_PROMPT + exchange },
         ],
       }),

@@ -45,17 +45,25 @@ const CONTEXT_OVERRIDES: Array<{ pattern: RegExp; tokens: number }> = [
   // Llama 4 (Scout/Maverick) ship very large windows; treat the family
   // as 128k for a safe budget floor even though Scout advertises more.
   {
-    pattern: /(?:^|[^a-z0-9])(?:128k|llama-?4|llama-?3\.[123]|llama3[._-]?[123])(?![a-z0-9])/i,
+    pattern:
+      /(?:^|[^a-z0-9])(?:128k|llama-?4|llama-?3\.[123]|llama3[._-]?[123])(?![a-z0-9])/i,
     tokens: 128_000,
   },
   // Qwen2.5 / Qwen3 / Mistral-Nemo / Command-R all 32k+ class.
   {
-    pattern: /(?:^|[^a-z0-9])(?:qwen2\.5|qwen3|mistral-?nemo|command-?r)(?![a-z0-9])/i,
+    pattern:
+      /(?:^|[^a-z0-9])(?:qwen2\.5|qwen3|mistral-?nemo|command-?r)(?![a-z0-9])/i,
     tokens: 32_768,
   },
-  { pattern: /(?:^|[^a-z0-9])(?:mistral|mixtral|mistral-?small)(?![a-z0-9])/i, tokens: 32_768 },
+  {
+    pattern: /(?:^|[^a-z0-9])(?:mistral|mixtral|mistral-?small)(?![a-z0-9])/i,
+    tokens: 32_768,
+  },
   // Gemma 2/3 → 8k. Phi-3.5/4 → 16k (Phi-3 base stays 4k below).
-  { pattern: /(?:^|[^a-z0-9])(?:phi-?3\.5|phi-?4)(?![a-z0-9])/i, tokens: 16_384 },
+  {
+    pattern: /(?:^|[^a-z0-9])(?:phi-?3\.5|phi-?4)(?![a-z0-9])/i,
+    tokens: 16_384,
+  },
   // Gemma 4 ships a large (~128k) window; gemma 2/3 stay 8k. Keep gemma4
   // ABOVE the gemma-2/3 rule so it wins. (Ollama /api/show is still the
   // authoritative source when available — this is the fallback for the
@@ -94,13 +102,10 @@ export function estimateTokens(text: string): number {
  * after a tool-result splice) and an updated `content` produces a new
  * key entry on next access.
  *
- * Note: `content` is mutated in place on the streaming assistant msg
- * (`streamingMsg.content += delta`) — that same Message ref keeps its
- * cached estimate stale. The runner re-creates a fresh Message before
- * each `applyContextBudget` call only for the streaming bubble; the
- * other messages don't mutate in place so this is correct in practice.
- * Callers that violate that contract should use `invalidateMessageTokens`
- * below.
+ * Note: correctness rests on messages never being mutated in place once
+ * estimated (the runner replaces, never mutates, since the streaming
+ * placeholder was removed in the 2026-06-09 perf pass). Callers that DO
+ * mutate a Message in place must call `invalidateMessageTokens` below.
  */
 const MESSAGE_TOKEN_CACHE = new WeakMap<Message, number>();
 
@@ -180,29 +185,41 @@ function truncateToolBody(body: string, headBytes: number): string {
  * It is a heuristic textual digest only — flagged as such so a reader (human
  * or model) knows it is lossy and not an actual assistant statement.
  */
-function summarizeCollapsedTurns(turns: Message[], conversationId: number): Message {
+function digestLine(m: Message): string | null {
+  const role =
+    m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : m.role;
+  const text = (m.content ?? "").replace(/\s+/g, " ").trim();
+  const snippet = text.length > 200 ? text.slice(0, 200) + "…" : text;
+  if (m.role === "assistant" && m.tool_calls?.length) {
+    const names = m.tool_calls.map((t) => t.function?.name ?? "?").join(", ");
+    return `${role}: (called tools: ${names})${snippet ? ` ${snippet}` : ""}`;
+  }
+  if (m.role === "tool") return `Tool result: ${snippet}`;
+  if (snippet) return `${role}: ${snippet}`;
+  return null;
+}
+
+function summaryHeader(count: number): string {
+  return (
+    `[Conversation summary — heuristic digest of ${count} earlier ` +
+    `message(s), NOT model-generated. Earlier detail was elided to fit the ` +
+    `context window.]\n`
+  );
+}
+
+function summarizeCollapsedTurns(
+  turns: Message[],
+  conversationId: number,
+): Message {
   const lines: string[] = [];
   for (const m of turns) {
-    const role = m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : m.role;
-    const text = (m.content ?? "").replace(/\s+/g, " ").trim();
-    const snippet = text.length > 200 ? text.slice(0, 200) + "…" : text;
-    if (m.role === "assistant" && m.tool_calls?.length) {
-      const names = m.tool_calls.map((t) => t.function?.name ?? "?").join(", ");
-      lines.push(`${role}: (called tools: ${names})${snippet ? ` ${snippet}` : ""}`);
-    } else if (m.role === "tool") {
-      lines.push(`Tool result: ${snippet}`);
-    } else if (snippet) {
-      lines.push(`${role}: ${snippet}`);
-    }
+    const line = digestLine(m);
+    if (line != null) lines.push(line);
   }
   return {
     conversation_id: conversationId,
     role: "system",
-    content:
-      `[Conversation summary — heuristic digest of ${turns.length} earlier ` +
-      `message(s), NOT model-generated. Earlier detail was elided to fit the ` +
-      `context window.]\n` +
-      lines.join("\n"),
+    content: summaryHeader(turns.length) + lines.join("\n"),
   };
 }
 
@@ -253,8 +270,7 @@ export function applyContextBudget(
   msgs: Message[],
   opts: BudgetOptions = {},
 ): BudgetResult {
-  const contextTokens =
-    opts.contextTokens ?? modelContextTokens(opts.model);
+  const contextTokens = opts.contextTokens ?? modelContextTokens(opts.model);
   const reserve = opts.replyReserveFraction ?? DEFAULT_REPLY_RESERVE;
   const headBytes = opts.toolResultHeadBytes ?? DEFAULT_TOOL_HEAD_BYTES;
   const budget = Math.max(256, Math.floor(contextTokens * (1 - reserve)));
@@ -321,10 +337,31 @@ export function applyContextBudget(
     // Collapse from the front until we fit or only the most recent turn
     // remains. We always keep at least the final message so the model has
     // the live user request to act on.
-    for (let collapseCount = 0; collapseCount < rest.length - 1; collapseCount++) {
-      const collapsedSlice = rest.slice(0, collapseCount + 1);
-      const summary = summarizeCollapsedTurns(collapsedSlice, convId);
-      const summaryCost = estimateOneMessage(summary);
+    //
+    // Perf review M3 (2026-06-09): the previous loop materialized the full
+    // summary Message per candidate — `summarizeCollapsedTurns(rest.slice(0,
+    // k+1))` re-digested an ever-growing prefix, O(k²) string work per
+    // budget pass (measured 4-40ms per agent iteration at 50-140 messages,
+    // recurring every iteration once over budget). Each message's digest
+    // line is independent of the others, so build lines incrementally and
+    // track the joined length; the summary cost mirrors estimateOneMessage
+    // for a system message: ceil(contentLen / 4) + 4. The actual summary
+    // string is only built once, on the success branch.
+    const digestLines: string[] = [];
+    let digestLen = 0; // length of lines.join("\n")
+    for (
+      let collapseCount = 0;
+      collapseCount < rest.length - 1;
+      collapseCount++
+    ) {
+      const line = digestLine(rest[collapseCount]);
+      if (line != null) {
+        digestLen += (digestLines.length > 0 ? 1 : 0) + line.length;
+        digestLines.push(line);
+      }
+      const summaryCost =
+        Math.ceil((summaryHeader(collapseCount + 1).length + digestLen) / 4) +
+        4;
       const keptSum = totalRest - prefix[collapseCount + 1];
       const candidateCost = headCost + summaryCost + keptSum;
       if (candidateCost <= budget) {

@@ -3,9 +3,27 @@ import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
 import { streamNativeChat } from "../lib/native-client";
 import { streamCustomChat } from "../lib/custom-client";
-import { runAgentLoop, cancelActiveShell } from "../lib/agent-loop";
-import type { AgentMetrics, AgentStatus, ConfirmDecision } from "../lib/agent-loop";
-import type { ChatImage, Conversation, ConversationParams, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
+// Perf review M29 (2026-06-09): the agent-loop package (runner + dispatch +
+// tools, ~55 KB minified) is the largest first-party block that used to ride
+// the boot chunk. Load it on first agent-mode send instead; `import()`
+// resolves from the module cache after that. Type imports below are erased
+// at compile time and keep nothing eager.
+const loadAgentLoop = () => import("../lib/agent-loop");
+import { applyContextBudget } from "../lib/agent-loop/context-manager";
+import type {
+  AgentMetrics,
+  AgentStatus,
+  ConfirmDecision,
+} from "../lib/agent-loop";
+import type {
+  ChatImage,
+  Conversation,
+  ConversationParams,
+  Memory,
+  Message,
+  ProjectPolicy,
+  ServerStatus,
+} from "../types";
 import {
   getMemoryMode,
   recall,
@@ -15,7 +33,11 @@ import {
 } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
 import { formatUserProfile } from "../lib/user-profile";
-import { loadRoutes, routeChatMessage, type RouteDecision } from "../lib/chat-router";
+import {
+  loadRoutes,
+  routeChatMessage,
+  type RouteDecision,
+} from "../lib/chat-router";
 import { loadAllPresets } from "../lib/agent-presets";
 import type { AgentSettings } from "./useAgentSettings";
 import { useEvent } from "./useEvent";
@@ -184,136 +206,161 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
    * those updates aren't visible here via the closure yet. Passing the truth
    * explicitly avoids dup'd user messages and stale-history pollution.
    */
-  const runSend = useEvent(async (
-    text: string,
-    images?: ChatImage[],
-    priorHistory?: Message[],
-  ): Promise<void> => {
-    const {
-      status, agentMode, agentAvailable, workspaceRoot, projectPolicy,
-      convParams, agent, messages, ensureConversation, convRef,
-      requestConfirmation, setMessages, setStreaming, setErr, setRecalled,
-      setAgentStatus, setAgentMetrics, onMemoriesChanged,
-      routingEnabled, onRouted,
-    } = config;
+  const runSend = useEvent(
+    async (
+      text: string,
+      images?: ChatImage[],
+      priorHistory?: Message[],
+    ): Promise<void> => {
+      const {
+        status,
+        agentMode,
+        agentAvailable,
+        workspaceRoot,
+        projectPolicy,
+        convParams,
+        agent,
+        messages,
+        ensureConversation,
+        convRef,
+        requestConfirmation,
+        setMessages,
+        setStreaming,
+        setErr,
+        setRecalled,
+        setAgentStatus,
+        setAgentMetrics,
+        onMemoriesChanged,
+        routingEnabled,
+        onRouted,
+      } = config;
 
-    if (!status?.running || !status.model) {
-      setErr("Start a model first");
-      return;
-    }
-    setErr(null);
+      if (!status?.running || !status.model) {
+        setErr("Start a model first");
+        return;
+      }
+      setErr(null);
 
-    let conv: Conversation;
-    try {
-      conv = await ensureConversation();
-    } catch (e) {
-      setErr(`Failed to create conversation: ${e}`);
-      return;
-    }
-    const mode = getMemoryMode();
+      let conv: Conversation;
+      try {
+        conv = await ensureConversation();
+      } catch (e) {
+        setErr(`Failed to create conversation: ${e}`);
+        return;
+      }
+      const mode = getMemoryMode();
 
-    const userMsg: Message = {
-      _tmpKey: tmpKey(),
-      conversation_id: conv.id,
-      role: "user",
-      content: text,
-      images,
-    };
-    let userId: number;
-    try {
-      userId = await api.addMessage(conv.id, "user", text, null, images);
-    } catch (e) {
-      setErr(`Failed to save message: ${e}`);
-      return;
-    }
-    userMsg.id = userId;
-    const baseHistory = [...(priorHistory ?? messages), userMsg];
-    const streamConvId = conv.id;
-    const isStreamConvActive = () => convRef.current?.id === streamConvId;
-    if (isStreamConvActive()) setMessages(baseHistory);
+      const userMsg: Message = {
+        _tmpKey: tmpKey(),
+        conversation_id: conv.id,
+        role: "user",
+        content: text,
+        images,
+      };
+      let userId: number;
+      try {
+        userId = await api.addMessage(conv.id, "user", text, null, images);
+      } catch (e) {
+        setErr(`Failed to save message: ${e}`);
+        return;
+      }
+      userMsg.id = userId;
+      const baseHistory = [...(priorHistory ?? messages), userMsg];
+      const streamConvId = conv.id;
+      const isStreamConvActive = () => convRef.current?.id === streamConvId;
+      if (isStreamConvActive()) setMessages(baseHistory);
 
-    // Abort any still-streaming send before starting a new one — otherwise the
-    // older controller is orphaned and its stream keeps appending tokens.
-    // Created here (before recall) so Stop can also cancel memory recall.
-    // Cancel any in-flight shell tied to the PREVIOUS controller's signal
-    // (each agent loop keys its active-shell entry by its own AbortSignal,
-    // so passing the prior signal targets the correct loop's shell).
-    const prevSignal = abortRef.current?.signal;
-    abortRef.current?.abort();
-    if (prevSignal) cancelActiveShell(prevSignal);
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
+      // Abort any still-streaming send before starting a new one — otherwise the
+      // older controller is orphaned and its stream keeps appending tokens.
+      // Created here (before recall) so Stop can also cancel memory recall.
+      // Cancel any in-flight shell tied to the PREVIOUS controller's signal
+      // (each agent loop keys its active-shell entry by its own AbortSignal,
+      // so passing the prior signal targets the correct loop's shell).
+      const prevSignal = abortRef.current?.signal;
+      abortRef.current?.abort();
+      // Lazy module: if agent-loop never loaded this session, no shell can be
+      // running and the import resolves from cache to a no-op call.
+      if (prevSignal)
+        void loadAgentLoop().then((m) => m.cancelActiveShell(prevSignal));
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
 
-    // ── Concurrent pre-stream work ──
-    // Memory recall and route classification are independent network/compute
-    // awaits on the pre-first-token critical path; run them CONCURRENTLY and
-    // apply their (synchronous) UI side-effects only AFTER both settle. Each
-    // promise swallows its own failure (recall → [], routing → null) so one
-    // can't sink the other, and the existing abort checks are preserved below.
-    const recallP: Promise<Memory[]> =
-      mode !== "off"
-        ? recall(text, 5, { cwd: workspaceRoot, convId: conv.id }, ctrl.signal).catch((err) => {
+      // ── Concurrent pre-stream work ──
+      // Memory recall and route classification are independent network/compute
+      // awaits on the pre-first-token critical path; run them CONCURRENTLY and
+      // apply their (synchronous) UI side-effects only AFTER both settle. Each
+      // promise swallows its own failure (recall → [], routing → null) so one
+      // can't sink the other, and the existing abort checks are preserved below.
+      const recallP: Promise<Memory[]> =
+        mode !== "off"
+          ? recall(
+              text,
+              5,
+              { cwd: workspaceRoot, convId: conv.id },
+              ctrl.signal,
+            ).catch((err) => {
+              logDiag({
+                level: "warn",
+                source: "memory-recall",
+                message:
+                  "recall() threw — proceeding without recalled memories",
+                detail: err,
+              });
+              return [] as Memory[];
+            })
+          : Promise.resolve([] as Memory[]);
+
+      const routes =
+        routingEnabled && !(agentMode && agentAvailable) ? loadRoutes() : [];
+      const routeP =
+        routes.length > 0
+          ? routeChatMessage(text, routes, {
+              status,
+              stickyRouteId: stickyRouteRef.current.get(conv.id) ?? null,
+              signal: ctrl.signal,
+            }).catch((e) => {
+              logDiag({
+                level: "warn",
+                source: "chat-router",
+                message: "routing failed; using active model",
+                detail: e,
+              });
+              return null;
+            })
+          : Promise.resolve(null);
+
+      const [recallHits, routeDecision] = await Promise.all([recallP, routeP]);
+
+      // Recall side-effects
+      let recallBlock: string | null = null;
+      if (mode !== "off") {
+        recallBlock = formatRecallBlock(recallHits);
+        if (isStreamConvActive()) setRecalled(recallHits);
+        if (recallHits.length > 0) {
+          api.touchMemories(recallHits.map((m) => m.id)).catch((err) =>
             logDiag({
               level: "warn",
               source: "memory-recall",
-              message: "recall() threw — proceeding without recalled memories",
+              message: "touchMemories failed — recency scores may be stale",
               detail: err,
-            });
-            return [] as Memory[];
-          })
-        : Promise.resolve([] as Memory[]);
-
-    const routes =
-      routingEnabled && !(agentMode && agentAvailable) ? loadRoutes() : [];
-    const routeP =
-      routes.length > 0
-        ? routeChatMessage(text, routes, {
-            status,
-            stickyRouteId: stickyRouteRef.current.get(conv.id) ?? null,
-            signal: ctrl.signal,
-          }).catch((e) => {
-            logDiag({
-              level: "warn",
-              source: "chat-router",
-              message: "routing failed; using active model",
-              detail: e,
-            });
-            return null;
-          })
-        : Promise.resolve(null);
-
-    const [recallHits, routeDecision] = await Promise.all([recallP, routeP]);
-
-    // Recall side-effects
-    let recallBlock: string | null = null;
-    if (mode !== "off") {
-      recallBlock = formatRecallBlock(recallHits);
-      if (isStreamConvActive()) setRecalled(recallHits);
-      if (recallHits.length > 0) {
-        api.touchMemories(recallHits.map((m) => m.id)).catch((err) =>
-          logDiag({
-            level: "warn",
-            source: "memory-recall",
-            message: "touchMemories failed — recency scores may be stale",
-            detail: err,
-          }),
-        );
+            }),
+          );
+        }
+      } else {
+        if (isStreamConvActive()) setRecalled([]);
       }
-    } else {
-      if (isStreamConvActive()) setRecalled([]);
-    }
 
-    // ── Multi-model routing (plain chat only in MVP) ──
-    // Apply the route decision: maybe swap the model/backend + role for THIS
-    // turn. Falls back to the active model on any failure. Agent mode keeps the
-    // active model (routing the tool loop is a phased follow-up).
-    let effModel: string = status.model;
-    let effBackend: string = status.backend ?? "ollama";
-    let routePreset: string | null = null;
-    if (routes.length > 0) {
-      {
-        const decision = routeDecision;
-        if (decision && !ctrl.signal.aborted) {
+      // ── Multi-model routing (plain chat only in MVP) ──
+      // Apply the route decision: maybe swap the model/backend + role for THIS
+      // turn. Falls back to the active model on any failure. Agent mode keeps the
+      // active model (routing the tool loop is a phased follow-up).
+      let effModel: string = status.model;
+      let effBackend: string = status.backend ?? "ollama";
+      let routePreset: string | null = null;
+      if (routes.length > 0) {
+        {
+          const decision = routeDecision;
+          if (decision && !ctrl.signal.aborted) {
             // MVP: ollama loads on demand and custom/openrouter are cloud, so
             // those swap freely. mlx/native can't hot-swap a model without a
             // preload step (phased), so only honor them when they match the
@@ -328,7 +375,10 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
               routePreset = decision.preset;
               // Cap the sticky map (FIFO) so a long session with many
               // conversations can't grow it unbounded.
-              if (stickyRouteRef.current.size >= 256 && !stickyRouteRef.current.has(conv.id)) {
+              if (
+                stickyRouteRef.current.size >= 256 &&
+                !stickyRouteRef.current.has(conv.id)
+              ) {
                 const oldest = stickyRouteRef.current.keys().next().value;
                 if (oldest !== undefined) stickyRouteRef.current.delete(oldest);
               }
@@ -345,458 +395,600 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           } else if (isStreamConvActive()) {
             onRouted?.(null);
           }
+        }
+      } else if (isStreamConvActive()) {
+        onRouted?.(null);
       }
-    } else if (isStreamConvActive()) {
-      onRouted?.(null);
-    }
 
-    // Authoritative model-identity preamble. Some cloud-routed Ollama tags
-    // (e.g. *:cloud) return inconsistent self-identity in reply text — this
-    // pins the model to its actual tag so "what model are you?" answers
-    // truthfully regardless of the upstream training data.
-    const identityPrompt =
-      `You are model "${effModel}" running via the ${effBackend} backend on the user's machine. ` +
-      `When asked about your identity, name, version, or which model you are, respond with the exact identifier above ("${effModel}"). ` +
-      `Do not claim to be GPT, Claude, Gemini, DeepSeek, Kimi, Llama, Qwen, or any other model unless that name appears literally inside "${effModel}". ` +
-      `If you genuinely don't know, say "I'm running as ${effModel}; I don't have additional details about my training."`;
+      // Authoritative model-identity preamble. Some cloud-routed Ollama tags
+      // (e.g. *:cloud) return inconsistent self-identity in reply text — this
+      // pins the model to its actual tag so "what model are you?" answers
+      // truthfully regardless of the upstream training data.
+      const identityPrompt =
+        `You are model "${effModel}" running via the ${effBackend} backend on the user's machine. ` +
+        `When asked about your identity, name, version, or which model you are, respond with the exact identifier above ("${effModel}"). ` +
+        `Do not claim to be GPT, Claude, Gemini, DeepSeek, Kimi, Llama, Qwen, or any other model unless that name appears literally inside "${effModel}". ` +
+        `If you genuinely don't know, say "I'm running as ${effModel}; I don't have additional details about my training."`;
 
-    const systemPreamble: Message[] = [
-      { _tmpKey: tmpKey(), conversation_id: conv.id, role: "system", content: identityPrompt },
-    ];
-    // "About You" profile — the user-authored identity block. Injected here so
-    // it reaches both plain chat and agent mode (both consume `historyForApi`).
-    // A failed settings read just omits the block; chat proceeds normally.
-    //
-    // Code review M5: previously called api.settingsGet() on every send,
-    // round-tripping the entire settings blob just to read user_profile.
-    // Cached for the lifetime of the module + invalidated by a global
-    // `settings-changed` event the settings IPC fires after settings_set.
-    try {
-      const settings = await getCachedSettings();
-      const profileBlock = formatUserProfile(settings?.user_profile);
-      if (profileBlock) {
-        systemPreamble.push({
+      const systemPreamble: Message[] = [
+        {
           _tmpKey: tmpKey(),
           conversation_id: conv.id,
           role: "system",
-          content: profileBlock,
-        });
-      }
-    } catch (err) {
-      logDiag({
-        level: "warn",
-        source: "user-profile",
-        message: "settingsGet() failed — sending without the About You profile",
-        detail: err,
-      });
-    }
-    // Per-conversation system prompt — prepended as its own system message so
-    // it composes with (rather than replaces) the identity preamble. Unset =
-    // no extra message, exactly as before.
-    if (convParams.system_prompt) {
-      systemPreamble.push({
-        _tmpKey: tmpKey(),
-        conversation_id: conv.id,
-        role: "system",
-        content: convParams.system_prompt,
-      });
-    }
-    // Routed Role: inject the chosen route's preset system prompt (persona /
-    // output format) so a "Coder" or "Researcher" route actually behaves like
-    // one. Composes with the identity + profile blocks above.
-    if (routePreset) {
-      const preset = loadAllPresets().find((p) => p.id === routePreset);
-      if (preset?.systemPromptOverride) {
-        systemPreamble.push({
-          _tmpKey: tmpKey(),
-          conversation_id: conv.id,
-          role: "system",
-          content: preset.systemPromptOverride,
-        });
-      }
-    }
-    if (recallBlock) {
-      systemPreamble.push({ _tmpKey: tmpKey(), conversation_id: conv.id, role: "system", content: recallBlock });
-    }
-    const historyForApi: Message[] = [...systemPreamble, ...baseHistory];
-
-    // 2026-05-25 user-reported "model doesn't see history across a stop/start"
-    // verification log. Records the full message manifest sent to the model
-    // on every send so a reviewer can confirm the prior turns are present
-    // in the outbound payload (DB-backed; survives backend stop/start since
-    // React state in ChatWindow.tsx:130 is keyed on conversation.id, not
-    // on `status.running`). Flushed to BOTH the in-memory ring + disk
-    // (~/.local-llm-app/diag.log via append_diag_log) so it's recoverable
-    // after a process restart.
-    const rolesSummary = historyForApi.map((m) => m.role).join(",");
-    const manifestLine = `outbound history conv=${conv.id} msgs=${historyForApi.length} roles=[${rolesSummary}] running=${!!status.running} ready=${!!status.ready}`;
-    logDiag({ level: "info", source: "chat-send", message: manifestLine });
-    try {
-      // Wrapped: api.appendDiagLog is absent in some test mocks. Disk
-      // write is best-effort — the in-memory ring above is the canonical
-      // record.
-      void api.appendDiagLog?.(`[chat-send] ${manifestLine}`).catch(() => undefined);
-    } catch {
-      /* swallow — diag write is observational only */
-    }
-
-    // Numeric params threaded into the backend request. The system prompt is
-    // already injected above, so only the numeric fields go to the clients.
-    const chatParams = {
-      temperature: convParams.temperature,
-      top_p: convParams.top_p,
-      max_tokens: convParams.max_tokens,
-    };
-
-    /* ── Agent mode ── */
-    if (agentMode && agentAvailable) {
-      if (isStreamConvActive()) setAgentStatus("thinking");
+          content: identityPrompt,
+        },
+      ];
+      // "About You" profile — the user-authored identity block. Injected here so
+      // it reaches both plain chat and agent mode (both consume `historyForApi`).
+      // A failed settings read just omits the block; chat proceeds normally.
+      //
+      // Code review M5: previously called api.settingsGet() on every send,
+      // round-tripping the entire settings blob just to read user_profile.
+      // Cached for the lifetime of the module + invalidated by a global
+      // `settings-changed` event the settings IPC fires after settings_set.
       try {
-        setAgentMetrics(null);
-        // Preset's allowedTools wins when non-empty; otherwise fall back to manual allowlist
-        const effectiveAllowlist =
-          agent.activePreset && agent.activePreset.allowedTools.length > 0
-            ? agent.activePreset.allowedTools
-            : agent.allowlist;
-        // rAF-coalesce the per-delta onUpdate firehose. The runner mutates
-        // its message snapshot once per token; without coalescing we'd thrash
-        // React at 100+ tok/s. Latest snapshot wins; we never drop the final
-        // state because the runner also emits onUpdate after stream end.
-        let pendingMsgs: Message[] | null = null;
-        let rafHandle = 0;
-        const flush = () => {
-          rafHandle = 0;
-          const snap = pendingMsgs;
-          pendingMsgs = null;
-          // Code review H4: an in-flight rAF callback can fire AFTER the
-          // user aborts and starts the next send, landing a stale
-          // pre-abort snapshot on the new conversation's message list.
-          // Skip the setMessages if either the conversation has moved or
-          // this send's controller was aborted.
-          if (ctrl.signal.aborted) return;
-          if (snap && isStreamConvActive()) {
-            setMessages(snap.filter((m) => m.role !== "system"));
-          }
-        };
-        const finalText = await runAgentLoop({
-          model: status.model,
-          messages: historyForApi,
-          conversationId: conv.id,
-          workspaceRoot,
-          // Gated by `agentAvailable` above, so backend is "ollama" | "mlx".
-          backend: status.backend === "mlx" ? "mlx" : "ollama",
-          serverStatus: status,
-          projectPolicy,
-          params: chatParams,
-          systemPromptOverride: agent.activePreset?.systemPromptOverride,
-          toolAllowlist: effectiveAllowlist,
-          approveAllShell: agent.approveAllShell,
-          approveAllWrite: agent.approveAllWrite,
-          dryRun: agent.dryRun,
-          approvedShellPrefixes: agent.approvedShellPrefixes,
-          onApproveShellPrefix: (p) => {
-            agent.setApprovedShellPrefixes((prev) => (prev.includes(p) ? prev : [...prev, p]));
-          },
-          onUpdate: (msgs) => {
-            if (!isStreamConvActive()) return;
-            pendingMsgs = msgs;
-            if (!rafHandle) rafHandle = requestAnimationFrame(flush);
-          },
-          onAssistantDelta: () => {
-            // onUpdate already carries the streaming text; this hook exists
-            // so callers can wire side-effects (e.g. token-level metrics)
-            // without re-scanning the message list. No-op here.
-          },
-          onStatusChange: (s) => {
-            if (isStreamConvActive()) setAgentStatus(s);
-          },
-          onMetrics: (m) => {
-            if (isStreamConvActive()) setAgentMetrics(m);
-          },
-          requestConfirmation,
-          signal: ctrl.signal,
+        const settings = await getCachedSettings();
+        const profileBlock = formatUserProfile(settings?.user_profile);
+        if (profileBlock) {
+          systemPreamble.push({
+            _tmpKey: tmpKey(),
+            conversation_id: conv.id,
+            role: "system",
+            content: profileBlock,
+          });
+        }
+      } catch (err) {
+        logDiag({
+          level: "warn",
+          source: "user-profile",
+          message:
+            "settingsGet() failed — sending without the About You profile",
+          detail: err,
         });
-        // Flush any pending rAF snapshot so the final state lands before we
-        // persist the assistant turn below.
-        if (rafHandle) {
-          cancelAnimationFrame(rafHandle);
-          flush();
+      }
+      // Per-conversation system prompt — prepended as its own system message so
+      // it composes with (rather than replaces) the identity preamble. Unset =
+      // no extra message, exactly as before.
+      if (convParams.system_prompt) {
+        systemPreamble.push({
+          _tmpKey: tmpKey(),
+          conversation_id: conv.id,
+          role: "system",
+          content: convParams.system_prompt,
+        });
+      }
+      // Routed Role: inject the chosen route's preset system prompt (persona /
+      // output format) so a "Coder" or "Researcher" route actually behaves like
+      // one. Composes with the identity + profile blocks above.
+      if (routePreset) {
+        const preset = loadAllPresets().find((p) => p.id === routePreset);
+        if (preset?.systemPromptOverride) {
+          systemPreamble.push({
+            _tmpKey: tmpKey(),
+            conversation_id: conv.id,
+            role: "system",
+            content: preset.systemPromptOverride,
+          });
+        }
+      }
+      if (recallBlock) {
+        systemPreamble.push({
+          _tmpKey: tmpKey(),
+          conversation_id: conv.id,
+          role: "system",
+          content: recallBlock,
+        });
+      }
+      const historyForApi: Message[] = [...systemPreamble, ...baseHistory];
+
+      // 2026-05-25 user-reported "model doesn't see history across a stop/start"
+      // verification log. Records the full message manifest sent to the model
+      // on every send so a reviewer can confirm the prior turns are present
+      // in the outbound payload (DB-backed; survives backend stop/start since
+      // React state in ChatWindow.tsx:130 is keyed on conversation.id, not
+      // on `status.running`). Flushed to BOTH the in-memory ring + disk
+      // (~/.local-llm-app/diag.log via append_diag_log) so it's recoverable
+      // after a process restart.
+      const rolesSummary = historyForApi.map((m) => m.role).join(",");
+      const manifestLine = `outbound history conv=${conv.id} msgs=${historyForApi.length} roles=[${rolesSummary}] running=${!!status.running} ready=${!!status.ready}`;
+      logDiag({ level: "info", source: "chat-send", message: manifestLine });
+      try {
+        // Wrapped: api.appendDiagLog is absent in some test mocks. Disk
+        // write is best-effort — the in-memory ring above is the canonical
+        // record.
+        void api
+          .appendDiagLog?.(`[chat-send] ${manifestLine}`)
+          .catch(() => undefined);
+      } catch {
+        /* swallow — diag write is observational only */
+      }
+
+      // Numeric params threaded into the backend request. The system prompt is
+      // already injected above, so only the numeric fields go to the clients.
+      const chatParams = {
+        temperature: convParams.temperature,
+        top_p: convParams.top_p,
+        max_tokens: convParams.max_tokens,
+      };
+
+      /* ── Agent mode ── */
+      if (agentMode && agentAvailable) {
+        if (isStreamConvActive()) setAgentStatus("thinking");
+        // Perf review C1 (2026-06-09): in-flight agent text renders through
+        // the same plain-text StreamingMessage path as regular chat. The old
+        // design pushed a placeholder Message mutated in place through
+        // onUpdate — MessageRow's memo saw identical props every flush, so
+        // the bubble FROZE at its first frame while the history memo busted
+        // 60×/s for nothing. Now: deltas accumulate here and flush to
+        // `setStreaming` once per animation frame (escaped plain text, one
+        // markdown parse when the canonical row lands); `onUpdate` is
+        // structural-only and retires the bubble in the same flush that
+        // lands the message which absorbed its text. Declared outside the
+        // try so the finally can tear the bubble down on every exit path.
+        let agentAcc = "";
+        let accRaf = 0;
+        const flushAcc = () => {
+          accRaf = 0;
+          if (ctrl.signal.aborted) return;
+          if (isStreamConvActive()) setStreaming(agentAcc);
+        };
+        try {
+          setAgentMetrics(null);
+          // Preset's allowedTools wins when non-empty; otherwise fall back to manual allowlist
+          const effectiveAllowlist =
+            agent.activePreset && agent.activePreset.allowedTools.length > 0
+              ? agent.activePreset.allowedTools
+              : agent.allowlist;
+          // rAF-coalesce structural onUpdate snapshots (tool results can land
+          // in bursts). Latest snapshot wins; the final state is never dropped
+          // because the runner emits onUpdate after the loop settles.
+          let pendingMsgs: Message[] | null = null;
+          let rafHandle = 0;
+          const flush = () => {
+            rafHandle = 0;
+            const snap = pendingMsgs;
+            pendingMsgs = null;
+            // Code review H4: an in-flight rAF callback can fire AFTER the
+            // user aborts and starts the next send, landing a stale
+            // pre-abort snapshot on the new conversation's message list.
+            // Skip the setMessages if either the conversation has moved or
+            // this send's controller was aborted.
+            if (ctrl.signal.aborted) return;
+            if (snap && isStreamConvActive()) {
+              setMessages(snap.filter((m) => m.role !== "system"));
+              // Retire the in-flight bubble unless a new iteration already
+              // started streaming into the accumulator (cleared synchronously
+              // in onUpdate, so non-empty here means fresh text arrived since).
+              if (agentAcc === "") {
+                if (accRaf) {
+                  cancelAnimationFrame(accRaf);
+                  accRaf = 0;
+                }
+                setStreaming(undefined);
+              }
+            }
+          };
+          const { runAgentLoop } = await loadAgentLoop();
+          const finalText = await runAgentLoop({
+            model: status.model,
+            messages: historyForApi,
+            conversationId: conv.id,
+            workspaceRoot,
+            // Gated by `agentAvailable` above, so backend is "ollama" | "mlx".
+            backend: status.backend === "mlx" ? "mlx" : "ollama",
+            serverStatus: status,
+            projectPolicy,
+            params: chatParams,
+            systemPromptOverride: agent.activePreset?.systemPromptOverride,
+            toolAllowlist: effectiveAllowlist,
+            approveAllShell: agent.approveAllShell,
+            approveAllWrite: agent.approveAllWrite,
+            dryRun: agent.dryRun,
+            approvedShellPrefixes: agent.approvedShellPrefixes,
+            onApproveShellPrefix: (p) => {
+              agent.setApprovedShellPrefixes((prev) =>
+                prev.includes(p) ? prev : [...prev, p],
+              );
+            },
+            onUpdate: (msgs) => {
+              if (!isStreamConvActive()) return;
+              // The canonical message landing here absorbed any streamed
+              // prelude — clear the accumulator synchronously so a delta from
+              // the NEXT iteration arriving before the rAF flush can't splice
+              // old text in front of it.
+              agentAcc = "";
+              pendingMsgs = msgs;
+              if (!rafHandle) rafHandle = requestAnimationFrame(flush);
+            },
+            onAssistantDelta: (d) => {
+              agentAcc += d;
+              if (!accRaf) accRaf = requestAnimationFrame(flushAcc);
+            },
+            onStreamReset: () => {
+              // Transport retry — the half-streamed attempt's text is being
+              // re-sent from scratch; drop it immediately (retries are rare,
+              // no need to coalesce the reset).
+              agentAcc = "";
+              if (!ctrl.signal.aborted && isStreamConvActive())
+                setStreaming("");
+            },
+            onStatusChange: (s) => {
+              if (isStreamConvActive()) setAgentStatus(s);
+            },
+            onMetrics: (m) => {
+              if (isStreamConvActive()) setAgentMetrics(m);
+            },
+            requestConfirmation,
+            signal: ctrl.signal,
+          });
+          // Flush any pending rAF snapshot so the final state lands before we
+          // persist the assistant turn below.
+          if (rafHandle) {
+            cancelAnimationFrame(rafHandle);
+            flush();
+          }
+
+          if (finalText != null) {
+            // Persist final assistant response to DB and assign id to message in
+            // state. Strictly gate BOTH the persistence-driven setMessages AND
+            // the addMessage-result handling on isStreamConvActive(): if the
+            // user navigated to a different conversation mid-run, the message
+            // must still be saved to the DB under the original conversation_id
+            // but must NOT appear in the now-active conversation's UI buffer.
+            if (!isStreamConvActive()) {
+              // Fire-and-forget DB persistence under the original conv id.
+              api
+                .addMessage(conv.id, "assistant", finalText, status.model)
+                .catch((err) =>
+                  logDiag({
+                    level: "warn",
+                    source: "agent-loop",
+                    message: "background addMessage (stale conv) failed",
+                    detail: err,
+                  }),
+                );
+            } else {
+              try {
+                const id = await api.addMessage(
+                  conv.id,
+                  "assistant",
+                  finalText,
+                  status.model,
+                );
+                if (isStreamConvActive()) {
+                  setMessages((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last && !last.id && last._tmpKey) {
+                      return [...prev.slice(0, -1), { ...last, id }];
+                    }
+                    return prev;
+                  });
+                }
+              } catch (e) {
+                if (isStreamConvActive())
+                  setErr(`Failed to save response: ${e}`);
+              }
+            }
+
+            if (mode === "queue" || mode === "direct") {
+              void extractAndSaveFacts(
+                text,
+                finalText,
+                conv.id,
+                mode,
+                "agent-mode",
+                () => onMemoriesChanged?.(),
+                ctrl.signal,
+              );
+            }
+          }
+        } catch (e) {
+          if (!ctrl.signal.aborted && isStreamConvActive()) {
+            logDiag({
+              level: "error",
+              source: "agent-loop",
+              message: "agent run failed",
+              detail: e,
+            });
+            setErr(
+              `Agent run failed: ${e}. Your message was kept — send again to retry.`,
+            );
+          }
+        } finally {
+          // Tear down the in-flight bubble on every exit path (done / error /
+          // abort) — same gating as the plain-stream path's cleanup.
+          if (accRaf) {
+            cancelAnimationFrame(accRaf);
+            accRaf = 0;
+          }
+          if (isStreamConvActive()) setStreaming(undefined);
+          // Audit re-review HIGH (2026-05-28): only null out if this send's
+          // controller is still the active one. Otherwise a second send
+          // that already installed its own controller would lose its Stop
+          // affordance — the first send's finally would wipe the second's
+          // abortRef and the next Stop click would be a no-op.
+          if (abortRef.current === ctrl) {
+            abortRef.current = null;
+            // `agentStatus` is ChatWindow-global, not per-conversation. Gating
+            // this reset on isStreamConvActive() would strand it on
+            // "thinking"/"tool" forever if the user switched conversations mid
+            // run — freezing the composer (isWorking) on the now-displayed chat.
+            // Always clear when THIS send's controller is the one tearing down.
+            setAgentStatus("idle");
+          }
+        }
+        return;
+      }
+
+      /* ── Regular streaming mode ── */
+      if (isStreamConvActive()) setStreaming("");
+      // Accumulate tokens in a buffer (O(1) push) and only materialize the full
+      // string once per animation frame on flush — avoids growing/flattening a
+      // string on every token at 100+ tok/s. `acc` holds the flushed-so-far text.
+      let acc = "";
+      const pending: string[] = [];
+      let accLen = 0;
+      let aborted = false;
+      let truncatedAtCap = false;
+      const ACC_MAX = 262_144;
+      // Coalesce streaming updates to one per animation frame. At 100+ tok/s
+      // a setState per chunk thrashes the renderer; rAF caps it to ~60 Hz.
+      let scheduled = 0;
+      const flushStreaming = () => {
+        scheduled = 0;
+        if (pending.length) {
+          acc += pending.join("");
+          pending.length = 0;
+        }
+        if (isStreamConvActive()) setStreaming(acc);
+      };
+      // Perf review C3 (2026-06-09): the plain path used to ship the ENTIRE
+      // history every send — unbounded growth, with pasted images re-inlined
+      // as base64 forever (~1.5 MB each, every send, on the loopback path).
+      // Two-step fit, mirroring what the agent path already does per
+      // iteration: (1) strip images from all but the two most recent
+      // image-carrying user turns — the token estimator can't see base64
+      // weight, so images must be handled before budgeting; (2) run
+      // applyContextBudget so a long chat collapses old turns instead of
+      // having the backend silently truncate the prompt head. Operates on
+      // copies; the displayed/persisted history is never touched.
+      let plainHistory: Message[] = historyForApi;
+      {
+        let imageTurnsKept = 0;
+        let stripped: Message[] | null = null;
+        for (let i = plainHistory.length - 1; i >= 0; i--) {
+          const m = plainHistory[i];
+          if (m.role !== "user" || !m.images?.length) continue;
+          if (imageTurnsKept < 2) {
+            imageTurnsKept++;
+            continue;
+          }
+          if (!stripped) stripped = plainHistory.slice();
+          const { images: _dropped, ...withoutImages } = m;
+          stripped[i] = withoutImages;
+        }
+        if (stripped) plainHistory = stripped;
+        const budgeted = applyContextBudget(plainHistory, { model: effModel });
+        if (budgeted.trimmed) {
+          logDiag({
+            level: "info",
+            source: "chat-send",
+            message:
+              `Context budget applied (plain chat): ${budgeted.estimatedBefore} → ` +
+              `${budgeted.estimatedAfter} est. tokens (budget ${budgeted.budget})`,
+          });
+        }
+        plainHistory = budgeted.messages;
+      }
+      try {
+        // Backend dispatch. `custom` routes to a user-configured
+        // OpenAI-compatible cloud endpoint; `status.model` carries the
+        // CustomBackend id (the picker encodes it there for custom
+        // selections). `native` is in-process mistralrs; everything else
+        // is the MLX/Ollama OpenAI-compat loopback path.
+        // Effective target for this turn — equals the active model unless the
+        // router swapped it above. For ollama/mlx we pass a cloned status with
+        // the effective model (ollama loads it on demand).
+        const effStatus: ServerStatus = {
+          ...status,
+          model: effModel,
+          backend: effBackend,
+        };
+        const stream =
+          effBackend === "openrouter"
+            ? // OpenRouter built-in: one backend id, effModel is the
+              // picked catalogue model (passed as the per-call override).
+              streamCustomChat("openrouter", plainHistory, {
+                model: effModel,
+                signal: ctrl.signal,
+                temperature: chatParams.temperature ?? undefined,
+                top_p: chatParams.top_p ?? undefined,
+                maxTokens: chatParams.max_tokens ?? undefined,
+              })
+            : effBackend === "custom"
+              ? streamCustomChat(effModel, plainHistory, {
+                  signal: ctrl.signal,
+                  temperature: chatParams.temperature ?? undefined,
+                  top_p: chatParams.top_p ?? undefined,
+                  maxTokens: chatParams.max_tokens ?? undefined,
+                })
+              : effBackend === "native"
+                ? streamNativeChat(plainHistory, {
+                    signal: ctrl.signal,
+                    temperature: chatParams.temperature ?? undefined,
+                    top_p: chatParams.top_p ?? undefined,
+                    maxTokens: chatParams.max_tokens ?? undefined,
+                  })
+                : streamChat(effStatus, plainHistory, {
+                    signal: ctrl.signal,
+                    temperature: chatParams.temperature ?? undefined,
+                    topP: chatParams.top_p ?? undefined,
+                    maxTokens: chatParams.max_tokens ?? undefined,
+                  });
+        for await (const chunk of stream) {
+          if (chunk.done) break;
+          pending.push(chunk.delta);
+          accLen += chunk.delta.length;
+          if (accLen > ACC_MAX) {
+            // Code review L2: previously truncated silently — surface it in
+            // diagnostics so a user investigating a clipped reply has a
+            // breadcrumb. The user-visible UI still gets the truncated
+            // response; this is a developer / support hint.
+            logDiag({
+              level: "warn",
+              source: "chat-send",
+              message: `streaming response hit ACC_MAX (${ACC_MAX} bytes) — truncated`,
+              detail: { backend: status.backend, model: status.model },
+            });
+            truncatedAtCap = true;
+            ctrl.abort();
+            break;
+          }
+          if (!scheduled) scheduled = requestAnimationFrame(flushStreaming);
+        }
+      } catch (e) {
+        if (e instanceof DOMException && e.name === "AbortError") {
+          aborted = true;
+        } else if (isStreamConvActive()) {
+          logDiag({
+            level: "error",
+            source: "chat-stream",
+            message: "streaming chat failed",
+            detail: e,
+          });
+          setErr(`The model stopped responding: ${e}. Send again to retry.`);
+        }
+      } finally {
+        // Drain any tokens that arrived since the last frame flush so `acc` is
+        // the complete reply for persistence below (the loop can break on `done`
+        // with pending tokens unflushed).
+        if (pending.length) {
+          acc += pending.join("");
+          pending.length = 0;
+        }
+        if (scheduled) cancelAnimationFrame(scheduled);
+        // Only null out if this send's controller is still active. Audit
+        // re-review HIGH (2026-05-28) — same race as the agent-path
+        // finally above; second send's controller must survive the first's
+        // teardown.
+        if (abortRef.current === ctrl) abortRef.current = null;
+        // No need to flush the final acc here — the assistant message gets
+        // appended to `messages` below from `acc`, which renders the final
+        // text via the normal MessageRow path. Clearing streaming hides the
+        // cursor bubble.
+        if (isStreamConvActive()) setStreaming(undefined);
+      }
+
+      const sameConv = isStreamConvActive;
+
+      if (acc) {
+        // Persist `acc` cleanly to the DB — never with a UI-only suffix like
+        // "[stopped]". On reload + regen/edit, history sent to the model must
+        // be the raw assistant text, not editorial markers. The suffix is
+        // applied to the in-memory message we render (displayContent) so the
+        // user still sees that the stream was interrupted.
+        const displayContent = aborted
+          ? acc +
+            (truncatedAtCap
+              ? "\n\n[Response truncated at the 256 KB limit — send a follow-up to continue.]"
+              : "\n\n[stopped]")
+          : acc;
+        const asst: Message = {
+          _tmpKey: tmpKey(),
+          conversation_id: conv.id,
+          role: "assistant",
+          content: displayContent,
+          model: effModel,
+        };
+        // Strict same-conv gate: if the user switched conversations mid-stream
+        // the assistant turn STILL gets persisted under its original
+        // conversation_id, but it must not be appended to the now-active
+        // conversation's UI buffer. We persist fire-and-forget in that case.
+        if (!sameConv()) {
+          api.addMessage(conv.id, "assistant", acc, effModel).catch((err) =>
+            logDiag({
+              level: "warn",
+              source: "chat-stream",
+              message: "background addMessage (stale conv) failed",
+              detail: err,
+            }),
+          );
+        } else {
+          try {
+            const id = await api.addMessage(
+              conv.id,
+              "assistant",
+              acc,
+              effModel,
+            );
+            asst.id = id;
+          } catch (e) {
+            if (sameConv()) setErr(`Failed to save response: ${e}`);
+          }
+          if (sameConv()) setMessages((m) => [...m, asst]);
         }
 
-        if (finalText != null) {
-          // Persist final assistant response to DB and assign id to message in
-          // state. Strictly gate BOTH the persistence-driven setMessages AND
-          // the addMessage-result handling on isStreamConvActive(): if the
-          // user navigated to a different conversation mid-run, the message
-          // must still be saved to the DB under the original conversation_id
-          // but must NOT appear in the now-active conversation's UI buffer.
-          if (!isStreamConvActive()) {
-            // Fire-and-forget DB persistence under the original conv id.
-            api.addMessage(conv.id, "assistant", finalText, status.model).catch((err) =>
+        if (mode === "queue" || mode === "direct") {
+          void extractAndSaveFacts(
+            text,
+            acc,
+            conv.id,
+            mode,
+            "chat",
+            () => onMemoriesChanged?.(),
+            ctrl.signal,
+          );
+        }
+      } else if (aborted) {
+        const tombstone: Message = {
+          _tmpKey: tmpKey(),
+          conversation_id: conv.id,
+          role: "assistant",
+          content: "[stopped before response]",
+          model: effModel,
+        };
+        if (!sameConv()) {
+          api
+            .addMessage(conv.id, "assistant", tombstone.content, effModel)
+            .catch((err) =>
               logDiag({
                 level: "warn",
-                source: "agent-loop",
-                message: "background addMessage (stale conv) failed",
+                source: "chat-window",
+                message: "background addMessage tombstone (stale conv) failed",
                 detail: err,
               }),
             );
-          } else {
-            try {
-              const id = await api.addMessage(conv.id, "assistant", finalText, status.model);
-              if (isStreamConvActive()) {
-                setMessages((prev) => {
-                  const last = prev[prev.length - 1];
-                  if (last && !last.id && last._tmpKey) {
-                    return [...prev.slice(0, -1), { ...last, id }];
-                  }
-                  return prev;
-                });
-              }
-            } catch (e) {
-              if (isStreamConvActive()) setErr(`Failed to save response: ${e}`);
-            }
-          }
-
-          if (mode === "queue" || mode === "direct") {
-            void extractAndSaveFacts(text, finalText, conv.id, mode, "agent-mode", () =>
-              onMemoriesChanged?.(), ctrl.signal,
+        } else {
+          try {
+            const id = await api.addMessage(
+              conv.id,
+              "assistant",
+              tombstone.content,
+              effModel,
             );
+            tombstone.id = id;
+          } catch (err) {
+            logDiag({
+              level: "warn",
+              source: "chat-window",
+              message:
+                "failed to persist abort tombstone — message stays unsaved",
+              detail: err,
+            });
           }
-        }
-      } catch (e) {
-        if (!ctrl.signal.aborted && isStreamConvActive()) {
-          logDiag({
-            level: "error",
-            source: "agent-loop",
-            message: "agent run failed",
-            detail: e,
-          });
-          setErr(`Agent run failed: ${e}. Your message was kept — send again to retry.`);
-        }
-      } finally {
-        // Audit re-review HIGH (2026-05-28): only null out if this send's
-        // controller is still the active one. Otherwise a second send
-        // that already installed its own controller would lose its Stop
-        // affordance — the first send's finally would wipe the second's
-        // abortRef and the next Stop click would be a no-op.
-        if (abortRef.current === ctrl) {
-          abortRef.current = null;
-          // `agentStatus` is ChatWindow-global, not per-conversation. Gating
-          // this reset on isStreamConvActive() would strand it on
-          // "thinking"/"tool" forever if the user switched conversations mid
-          // run — freezing the composer (isWorking) on the now-displayed chat.
-          // Always clear when THIS send's controller is the one tearing down.
-          setAgentStatus("idle");
+          if (sameConv()) setMessages((m) => [...m, tombstone]);
         }
       }
-      return;
-    }
-
-    /* ── Regular streaming mode ── */
-    if (isStreamConvActive()) setStreaming("");
-    // Accumulate tokens in a buffer (O(1) push) and only materialize the full
-    // string once per animation frame on flush — avoids growing/flattening a
-    // string on every token at 100+ tok/s. `acc` holds the flushed-so-far text.
-    let acc = "";
-    const pending: string[] = [];
-    let accLen = 0;
-    let aborted = false;
-    let truncatedAtCap = false;
-    const ACC_MAX = 262_144;
-    // Coalesce streaming updates to one per animation frame. At 100+ tok/s
-    // a setState per chunk thrashes the renderer; rAF caps it to ~60 Hz.
-    let scheduled = 0;
-    const flushStreaming = () => {
-      scheduled = 0;
-      if (pending.length) {
-        acc += pending.join("");
-        pending.length = 0;
-      }
-      if (isStreamConvActive()) setStreaming(acc);
-    };
-    try {
-      // Backend dispatch. `custom` routes to a user-configured
-      // OpenAI-compatible cloud endpoint; `status.model` carries the
-      // CustomBackend id (the picker encodes it there for custom
-      // selections). `native` is in-process mistralrs; everything else
-      // is the MLX/Ollama OpenAI-compat loopback path.
-      // Effective target for this turn — equals the active model unless the
-      // router swapped it above. For ollama/mlx we pass a cloned status with
-      // the effective model (ollama loads it on demand).
-      const effStatus: ServerStatus = { ...status, model: effModel, backend: effBackend };
-      const stream = effBackend === "openrouter"
-        ? // OpenRouter built-in: one backend id, effModel is the
-          // picked catalogue model (passed as the per-call override).
-          streamCustomChat("openrouter", historyForApi, {
-            model: effModel,
-            signal: ctrl.signal,
-            temperature: chatParams.temperature ?? undefined,
-            top_p: chatParams.top_p ?? undefined,
-            maxTokens: chatParams.max_tokens ?? undefined,
-          })
-        : effBackend === "custom"
-        ? streamCustomChat(effModel, historyForApi, {
-            signal: ctrl.signal,
-            temperature: chatParams.temperature ?? undefined,
-            top_p: chatParams.top_p ?? undefined,
-            maxTokens: chatParams.max_tokens ?? undefined,
-          })
-        : effBackend === "native"
-        ? streamNativeChat(historyForApi, {
-            signal: ctrl.signal,
-            temperature: chatParams.temperature ?? undefined,
-            top_p: chatParams.top_p ?? undefined,
-            maxTokens: chatParams.max_tokens ?? undefined,
-          })
-        : streamChat(effStatus, historyForApi, {
-            signal: ctrl.signal,
-            temperature: chatParams.temperature ?? undefined,
-            topP: chatParams.top_p ?? undefined,
-            maxTokens: chatParams.max_tokens ?? undefined,
-          });
-      for await (const chunk of stream) {
-        if (chunk.done) break;
-        pending.push(chunk.delta);
-        accLen += chunk.delta.length;
-        if (accLen > ACC_MAX) {
-          // Code review L2: previously truncated silently — surface it in
-          // diagnostics so a user investigating a clipped reply has a
-          // breadcrumb. The user-visible UI still gets the truncated
-          // response; this is a developer / support hint.
-          logDiag({
-            level: "warn",
-            source: "chat-send",
-            message: `streaming response hit ACC_MAX (${ACC_MAX} bytes) — truncated`,
-            detail: { backend: status.backend, model: status.model },
-          });
-          truncatedAtCap = true;
-          ctrl.abort();
-          break;
-        }
-        if (!scheduled) scheduled = requestAnimationFrame(flushStreaming);
-      }
-    } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError") {
-        aborted = true;
-      } else if (isStreamConvActive()) {
-        logDiag({
-          level: "error",
-          source: "chat-stream",
-          message: "streaming chat failed",
-          detail: e,
-        });
-        setErr(`The model stopped responding: ${e}. Send again to retry.`);
-      }
-    } finally {
-      // Drain any tokens that arrived since the last frame flush so `acc` is
-      // the complete reply for persistence below (the loop can break on `done`
-      // with pending tokens unflushed).
-      if (pending.length) {
-        acc += pending.join("");
-        pending.length = 0;
-      }
-      if (scheduled) cancelAnimationFrame(scheduled);
-      // Only null out if this send's controller is still active. Audit
-      // re-review HIGH (2026-05-28) — same race as the agent-path
-      // finally above; second send's controller must survive the first's
-      // teardown.
-      if (abortRef.current === ctrl) abortRef.current = null;
-      // No need to flush the final acc here — the assistant message gets
-      // appended to `messages` below from `acc`, which renders the final
-      // text via the normal MessageRow path. Clearing streaming hides the
-      // cursor bubble.
-      if (isStreamConvActive()) setStreaming(undefined);
-    }
-
-    const sameConv = isStreamConvActive;
-
-    if (acc) {
-      // Persist `acc` cleanly to the DB — never with a UI-only suffix like
-      // "[stopped]". On reload + regen/edit, history sent to the model must
-      // be the raw assistant text, not editorial markers. The suffix is
-      // applied to the in-memory message we render (displayContent) so the
-      // user still sees that the stream was interrupted.
-      const displayContent = aborted
-        ? acc +
-          (truncatedAtCap
-            ? "\n\n[Response truncated at the 256 KB limit — send a follow-up to continue.]"
-            : "\n\n[stopped]")
-        : acc;
-      const asst: Message = {
-        _tmpKey: tmpKey(),
-        conversation_id: conv.id,
-        role: "assistant",
-        content: displayContent,
-        model: effModel,
-      };
-      // Strict same-conv gate: if the user switched conversations mid-stream
-      // the assistant turn STILL gets persisted under its original
-      // conversation_id, but it must not be appended to the now-active
-      // conversation's UI buffer. We persist fire-and-forget in that case.
-      if (!sameConv()) {
-        api.addMessage(conv.id, "assistant", acc, effModel).catch((err) =>
-          logDiag({
-            level: "warn",
-            source: "chat-stream",
-            message: "background addMessage (stale conv) failed",
-            detail: err,
-          }),
-        );
-      } else {
-        try {
-          const id = await api.addMessage(conv.id, "assistant", acc, effModel);
-          asst.id = id;
-        } catch (e) {
-          if (sameConv()) setErr(`Failed to save response: ${e}`);
-        }
-        if (sameConv()) setMessages((m) => [...m, asst]);
-      }
-
-      if (mode === "queue" || mode === "direct") {
-        void extractAndSaveFacts(text, acc, conv.id, mode, "chat", () =>
-          onMemoriesChanged?.(), ctrl.signal,
-        );
-      }
-    } else if (aborted) {
-      const tombstone: Message = {
-        _tmpKey: tmpKey(),
-        conversation_id: conv.id,
-        role: "assistant",
-        content: "[stopped before response]",
-        model: effModel,
-      };
-      if (!sameConv()) {
-        api.addMessage(conv.id, "assistant", tombstone.content, effModel).catch((err) =>
-          logDiag({
-            level: "warn",
-            source: "chat-window",
-            message: "background addMessage tombstone (stale conv) failed",
-            detail: err,
-          }),
-        );
-      } else {
-        try {
-          const id = await api.addMessage(conv.id, "assistant", tombstone.content, effModel);
-          tombstone.id = id;
-        } catch (err) {
-          logDiag({
-            level: "warn",
-            source: "chat-window",
-            message: "failed to persist abort tombstone — message stays unsaved",
-            detail: err,
-          });
-        }
-        if (sameConv()) setMessages((m) => [...m, tombstone]);
-      }
-    }
-  });
+    },
+  );
 
   const send = useCallback(
     (text: string, images?: ChatImage[]) => runSend(text, images),
     [runSend],
   );
   const resend = useCallback(
-    (text: string, priorHistory: Message[]) => runSend(text, undefined, priorHistory),
+    (text: string, priorHistory: Message[]) =>
+      runSend(text, undefined, priorHistory),
     [runSend],
   );
   const abort = useCallback(() => {
@@ -804,7 +996,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     // THIS loop's shell, not whichever happened to be set last in a
     // module-singleton (the old race-prone behaviour).
     const sig = abortRef.current?.signal ?? null;
-    cancelActiveShell(sig);
+    void loadAgentLoop().then((m) => m.cancelActiveShell(sig));
     abortRef.current?.abort();
   }, []);
 

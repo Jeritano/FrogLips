@@ -1,3 +1,16 @@
+// Perf review C8 (2026-06-09): apply the persisted theme SYNCHRONOUSLY,
+// before the first render. The authoritative copy lives in settings.json
+// behind an async IPC — light-theme users got a full dark first frame every
+// launch while that round-trip resolved. App.tsx mirrors every theme change
+// into localStorage; this read is best-effort (falls back to the dark
+// default) and the settings value still wins once it arrives.
+try {
+  const t = localStorage.getItem("froglips-theme");
+  if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+} catch {
+  /* localStorage unavailable — keep the dark default */
+}
+
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
@@ -22,11 +35,13 @@ const detached = parseDetachedParams(window.location.search);
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary label="App">
-      {isQuick
-        ? <QuickPrompt />
-        : detached
-          ? <DetachedChatView conversationId={detached.conversationId} />
-          : <App />}
+      {isQuick ? (
+        <QuickPrompt />
+      ) : detached ? (
+        <DetachedChatView conversationId={detached.conversationId} />
+      ) : (
+        <App />
+      )}
     </ErrorBoundary>
   </React.StrictMode>,
 );

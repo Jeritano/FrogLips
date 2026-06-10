@@ -21,7 +21,10 @@ const { auditMock, metricsMock, listDirMock } = vi.hoisted(() => ({
   metricsMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
     async () => undefined,
   ),
-  listDirMock: vi.fn(async () => ({ entries: ["a.txt", "b.txt"], truncated: false })),
+  listDirMock: vi.fn(async () => ({
+    entries: ["a.txt", "b.txt"],
+    truncated: false,
+  })),
 }));
 
 vi.mock("../../tauri-api", () => {
@@ -73,7 +76,10 @@ function scriptedFetch(responses: object[]) {
   });
 }
 
-function baseOpts(collected: Message[][], metrics: { last: AgentMetrics | null }): AgentRunOptions {
+function baseOpts(
+  collected: Message[][],
+  metrics: { last: AgentMetrics | null },
+): AgentRunOptions {
   return {
     model: "test",
     messages: [{ conversation_id: 1, role: "user", content: "list the dir" }],
@@ -81,7 +87,9 @@ function baseOpts(collected: Message[][], metrics: { last: AgentMetrics | null }
     workspaceRoot: null,
     onUpdate: (m) => collected.push([...m]),
     onStatusChange: () => {},
-    onMetrics: (m) => { metrics.last = { ...m }; },
+    onMetrics: (m) => {
+      metrics.last = { ...m };
+    },
     requestConfirmation: async () => ({ approve: true }),
     signal: new AbortController().signal,
   };
@@ -147,13 +155,69 @@ describe("runAgentLoop integration", () => {
     expect(metricsMock).toHaveBeenCalledTimes(1);
   });
 
+  it("streams text only via onAssistantDelta; onUpdate is structural-only (perf C1)", async () => {
+    // Multi-chunk NDJSON final reply — exercises the per-delta path. The old
+    // design pushed an in-place-mutated placeholder through onUpdate per
+    // flush: invisible to the memoized row (same object identity) yet
+    // re-rendering the history every frame. The contract is now: deltas →
+    // onAssistantDelta, onUpdate ONLY when a canonical message lands.
+    const chunks = ["The ", "answer ", "is 42."];
+    const body =
+      chunks
+        .map((c) => JSON.stringify({ message: { content: c } }))
+        .join("\n") +
+      "\n" +
+      JSON.stringify({
+        message: { content: "" },
+        done: true,
+        prompt_eval_count: 5,
+        eval_count: 9,
+      }) +
+      "\n";
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "application/x-ndjson" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const collected: Message[][] = [];
+    const metrics = { last: null as AgentMetrics | null };
+    const deltas: string[] = [];
+    const opts = baseOpts(collected, metrics);
+    opts.onAssistantDelta = (d) => deltas.push(d);
+    const result = await runAgentLoop(opts);
+
+    // Every delta arrived raw, in order, and concatenates to the final text.
+    expect(deltas.join("")).toBe("The answer is 42.");
+    expect(result).toBe("The answer is 42.");
+
+    // No onUpdate snapshot ever contained an in-flight partial: every
+    // assistant message in every snapshot is either complete final text or a
+    // canonical tool-call turn — never a growing prefix of the reply.
+    for (const snap of collected) {
+      for (const m of snap) {
+        if (m.role !== "assistant") continue;
+        expect(
+          m.content === "The answer is 42." || (m.tool_calls?.length ?? 0) > 0,
+        ).toBe(true);
+      }
+    }
+    // Exactly one structural update for a no-tool run: the final message.
+    expect(collected.length).toBe(1);
+  });
+
   it("terminates at MAX_ITERATIONS when the model never stops calling tools", async () => {
     // Every fetch returns a tool call — but each carries unique args so the
     // dedupe guard never short-circuits the loop. The runner must instead
     // hit the iteration cap.
     let n = 0;
     const fetchMock = vi.fn(async () => {
-      const payload = ollamaToolCall(`tc-${n}`, "list_dir", { path: `/tmp/d${n}` });
+      const payload = ollamaToolCall(`tc-${n}`, "list_dir", {
+        path: `/tmp/d${n}`,
+      });
       n++;
       return new Response(JSON.stringify(payload), {
         status: 200,

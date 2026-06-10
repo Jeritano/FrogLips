@@ -7,7 +7,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { runWorkflow } from "./runner";
+// Perf review M29 (2026-06-09): the workflow runner statically imports the
+// whole agent-loop package; importing it here (this provider mounts eagerly
+// in App) dragged ~55 KB minified into the boot chunk even for chat-only
+// sessions. Load it when a run actually starts — user-initiated, so the
+// one-time dynamic-import cost (~ms, cached after) is invisible.
+const loadRunner = () => import("./runner");
 import type {
   RunWorkflowOptions,
   WorkflowHooks,
@@ -93,8 +98,12 @@ const CardCtx = createContext<WorkflowRunCardCtx | null>(null);
  * tears down the run.
  */
 export function WorkflowRunProvider({ children }: { children: ReactNode }) {
-  const [runningWorkflowId, setRunningWorkflowId] = useState<number | null>(null);
-  const [cardStates, setCardStates] = useState<Record<string, CardRunSnapshot>>({});
+  const [runningWorkflowId, setRunningWorkflowId] = useState<number | null>(
+    null,
+  );
+  const [cardStates, setCardStates] = useState<Record<string, CardRunSnapshot>>(
+    {},
+  );
   const [lastSummary, setLastSummary] = useState<RunSummary | null>(null);
   // Synchronous mirror — needed because `start` may be called twice in
   // the same event-loop tick (e.g. click + workflow-trigger event) and
@@ -148,6 +157,9 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
           // a single setCardStates that produces one React reconcile per
           // tick instead of one per delta.
           const deltaBuf = new Map<string, string[]>();
+          // Display tail kept per card in the run panel (full output is
+          // unaffected — it flows to downstream cards and the run record).
+          const OUTPUT_TAIL_MAX = 32_768;
           let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
           const flushDeltas = () => {
             coalesceTimer = null;
@@ -158,8 +170,26 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
               const next = { ...s };
               for (const [id, parts] of batch) {
                 const joined = parts.join("");
-                const prev = next[id] ?? { state: "running" as CardRunState, output: "" };
-                next[id] = { ...prev, output: prev.output + joined };
+                const prev = next[id] ?? {
+                  state: "running" as CardRunState,
+                  output: "",
+                };
+                // Perf review C5 (2026-06-09): cap the DISPLAY buffer to a
+                // tail. The run panel renders this as one <pre>; past
+                // ~30-60 KB each 16ms flush re-laid-out thousands of wrapped
+                // lines (multi-ms frames) and the buffer was retained
+                // unbounded after the run. Status panel is read-only — the
+                // full output still reaches the next card and the run
+                // record. Slice on a char boundary (slice can split a
+                // surrogate pair only if the cut lands mid-pair; guard it).
+                let merged = prev.output + joined;
+                if (merged.length > OUTPUT_TAIL_MAX) {
+                  let cut = merged.length - OUTPUT_TAIL_MAX;
+                  const c = merged.charCodeAt(cut);
+                  if (c >= 0xdc00 && c <= 0xdfff) cut++;
+                  merged = merged.slice(cut);
+                }
+                next[id] = { ...prev, output: merged };
               }
               return next;
             });
@@ -188,8 +218,12 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
               }
               flushDeltas();
               if (result.status === "ok") updateCard(id, { state: "done" });
-              else if (result.status === "skipped") updateCard(id, { state: "idle" });
-              else if (result.status === "aborted" || result.status === "error") {
+              else if (result.status === "skipped")
+                updateCard(id, { state: "idle" });
+              else if (
+                result.status === "aborted" ||
+                result.status === "error"
+              ) {
                 updateCard(id, { state: "failed" });
               }
             },
@@ -201,13 +235,16 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
               // in-WorkflowsPage logic so the UX is unchanged.
               let errorBanner: string | null = null;
               if (results.status === "failed") {
-                const failed = results.cards.filter((c) => c.status === "error");
+                const failed = results.cards.filter(
+                  (c) => c.status === "error",
+                );
                 if (failed.length > 0) {
                   const sample = failed.slice(0, 3).map((c) => {
                     const errMsg = (c.error ?? "unknown error").slice(0, 200);
                     return `${c.name}: ${errMsg}`;
                   });
-                  const more = failed.length > 3 ? ` (+${failed.length - 3} more)` : "";
+                  const more =
+                    failed.length > 3 ? ` (+${failed.length - 3} more)` : "";
                   errorBanner = `Workflow failed — ${failed.length} card(s) errored:\n${sample.join("\n")}${more}`;
                 }
               }
@@ -228,6 +265,7 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
             },
           };
 
+          const { runWorkflow } = await loadRunner();
           await runWorkflow(graph, hooks, {
             ...opts,
             workflowId,

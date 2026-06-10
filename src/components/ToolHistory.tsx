@@ -18,7 +18,11 @@ interface Pair {
 
 function parseArgs(raw: unknown): unknown {
   if (typeof raw === "string") {
-    try { return JSON.parse(raw); } catch { return raw; }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
   }
   return raw ?? {};
 }
@@ -33,24 +37,44 @@ function parseResult(content: string): { ok: boolean; pretty: string } {
   }
 }
 
+// Parse each tool result once per Message object, not once per `messages`
+// identity change — with the panel open during an agent run, every landing
+// tool result used to re-parse + re-pretty-print EVERY prior result (tens of
+// KB each). Tool messages are never mutated in place (only the old streaming
+// placeholder was, and that's gone), so object-identity keying is sound.
+const resultCache = new WeakMap<Message, { ok: boolean; pretty: string }>();
+
+function cachedResult(m: Message): { ok: boolean; pretty: string } {
+  let r = resultCache.get(m);
+  if (!r) {
+    r = parseResult(m.content);
+    resultCache.set(m, r);
+  }
+  return r;
+}
+
 export function ToolHistory({ messages, onClose }: Props) {
   const [expandedArgs, setExpandedArgs] = useState<Set<string>>(new Set());
-  const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
+  const [expandedResults, setExpandedResults] = useState<Set<string>>(
+    new Set(),
+  );
 
   const pairs: Pair[] = useMemo(() => {
     const out: Pair[] = [];
     // Walk messages, pair assistant tool_calls with subsequent tool results by id
-    const resultsById = new Map<string, string>();
+    const resultsById = new Map<string, Message>();
     for (const m of messages) {
       if (m.role === "tool" && m.tool_call_id) {
-        resultsById.set(m.tool_call_id, m.content);
+        resultsById.set(m.tool_call_id, m);
       }
     }
     for (const m of messages) {
       if (m.role === "assistant" && m.tool_calls?.length) {
         for (const tc of m.tool_calls) {
           const result = tc.id ? resultsById.get(tc.id) : undefined;
-          const parsed = result ? parseResult(result) : { ok: true, pretty: "(no result)" };
+          const parsed = result
+            ? cachedResult(result)
+            : { ok: true, pretty: "(no result)" };
           out.push({
             id: tc.id ?? `${out.length}`,
             name: tc.function?.name ?? "unknown",
@@ -64,7 +88,11 @@ export function ToolHistory({ messages, onClose }: Props) {
     return out;
   }, [messages]);
 
-  function toggle(set: Set<string>, id: string, setter: (s: Set<string>) => void) {
+  function toggle(
+    set: Set<string>,
+    id: string,
+    setter: (s: Set<string>) => void,
+  ) {
     const next = new Set(set);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -76,11 +104,24 @@ export function ToolHistory({ messages, onClose }: Props) {
       className="tool-history-overlay"
       role="dialog"
       aria-label="Tool history"
-      onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+        }
+      }}
     >
       <div className="tool-history-header">
-        <span className="tool-history-title">Tool history ({pairs.length})</span>
-        <button className="tool-history-close" onClick={onClose} aria-label="Close tool history"><X size={16} /></button>
+        <span className="tool-history-title">
+          Tool history ({pairs.length})
+        </span>
+        <button
+          className="tool-history-close"
+          onClick={onClose}
+          aria-label="Close tool history"
+        >
+          <X size={16} />
+        </button>
       </div>
       <div className="tool-history-list">
         {pairs.length === 0 && (
@@ -110,13 +151,17 @@ export function ToolHistory({ messages, onClose }: Props) {
                 </button>
                 <button
                   className="tool-history-toggle"
-                  onClick={() => toggle(expandedResults, resKey, setExpandedResults)}
+                  onClick={() =>
+                    toggle(expandedResults, resKey, setExpandedResults)
+                  }
                 >
                   {resExpanded ? "Hide result" : "Result"}
                 </button>
               </div>
               {argsExpanded && (
-                <pre className="tool-history-args">{JSON.stringify(p.args, null, 2)}</pre>
+                <pre className="tool-history-args">
+                  {JSON.stringify(p.args, null, 2)}
+                </pre>
               )}
               {resExpanded && (
                 <pre className="tool-history-result">{p.result}</pre>

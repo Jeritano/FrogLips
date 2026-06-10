@@ -46,9 +46,25 @@ export default defineConfig(async () => ({
     chunkSizeWarningLimit: 400,
     rollupOptions: {
       output: {
-        manualChunks: {
-          markdown: ["marked", "highlight.js", "dompurify"],
-          reactflow: ["@xyflow/react"],
+        // Perf review C6 + M27 (2026-06-09):
+        // - The `reactflow: ["@xyflow/react"]` entry is GONE. The object-form
+        //   manual chunk forced 189 KB of xyflow+d3 to fetch/parse/execute on
+        //   every boot even though the only importer (WorkflowsPage) is
+        //   React.lazy — Rollup now folds it into that async chunk, so
+        //   chat-only sessions never load it.
+        // - Function form for the markdown chunk: the old array form matched
+        //   only the package ENTRY ids, so `highlight.js/lib/languages/*`
+        //   subpath imports (64.5 KB of grammars in markdown.ts) leaked into
+        //   the main chunk. Match by path so every hljs/marked/dompurify
+        //   module lands in the markdown chunk together.
+        manualChunks(id: string) {
+          if (
+            id.includes("node_modules/highlight.js") ||
+            id.includes("node_modules/marked") ||
+            id.includes("node_modules/dompurify")
+          ) {
+            return "markdown";
+          }
         },
       },
     },

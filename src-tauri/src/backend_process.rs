@@ -72,6 +72,13 @@ pub struct ServerState {
     /// intentional shutdown apart from an unexpected crash so a user-initiated
     /// stop never triggers auto-restart.
     intentional_stop: Arc<AtomicBool>,
+    /// Last `server-status` payload actually emitted. The 2s watcher tick
+    /// used to re-emit an unchanged status forever — every tick crossed the
+    /// IPC bridge and re-rendered the React shell at idle (perf review
+    /// M12/M30, 2026-06-09). Real transitions always differ field-wise
+    /// (ready flip, model change, last_error update), so suppressing
+    /// identical payloads loses nothing.
+    last_emitted: PLMutex<Option<ServerStatus>>,
 }
 
 struct RunningServer {
@@ -80,7 +87,7 @@ struct RunningServer {
     backend: String,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, PartialEq)]
 pub struct ServerStatus {
     pub running: bool,
     /// True when the backend port accepts TCP connections. For Ollama this is
@@ -100,6 +107,13 @@ impl ServerState {
 
     fn emit(&self, status: &ServerStatus) {
         if let Some(app) = self.app.lock().clone() {
+            {
+                let mut last = self.last_emitted.lock();
+                if last.as_ref() == Some(status) {
+                    return; // unchanged — skip the IPC + frontend re-render
+                }
+                *last = Some(status.clone());
+            }
             let _ = app.emit("server-status", status);
         }
     }

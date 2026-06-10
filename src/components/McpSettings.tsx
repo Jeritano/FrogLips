@@ -39,7 +39,8 @@ function loadConfigs(): McpServerConfig[] {
     logDiag({
       level: "warn",
       source: "mcp",
-      message: "loadConfigs: malformed localStorage 'mcp.servers' — defaulting to []",
+      message:
+        "loadConfigs: malformed localStorage 'mcp.servers' — defaulting to []",
       detail: err,
     });
     return [];
@@ -56,7 +57,9 @@ function saveConfigs(list: McpServerConfig[]) {
 }
 
 export function McpSettings({ onConfigsChanged }: Props) {
-  const [configs, setConfigs] = useState<McpServerConfig[]>(() => loadConfigs());
+  const [configs, setConfigs] = useState<McpServerConfig[]>(() =>
+    loadConfigs(),
+  );
   const [servers, setServers] = useState<McpServerInfo[]>([]);
   const [tools, setTools] = useState<Record<string, string[]>>({});
   const [err, setErr] = useState<string | null>(null);
@@ -65,7 +68,10 @@ export function McpSettings({ onConfigsChanged }: Props) {
   const [draftCommand, setDraftCommand] = useState("");
   const [draftArgs, setDraftArgs] = useState("");
   const [draftEnv, setDraftEnv] = useState("");
-  const [stderrPanel, setStderrPanel] = useState<{ name: string; text: string } | null>(null);
+  const [stderrPanel, setStderrPanel] = useState<{
+    name: string;
+    text: string;
+  } | null>(null);
   // Tauri 2 webview disables window.confirm — use an inline two-click pattern
   // so the destructive flow can't short-circuit silently.
   const removeConfirm = useTwoClickConfirm();
@@ -98,9 +104,20 @@ export function McpSettings({ onConfigsChanged }: Props) {
   useEffect(() => {
     refresh();
     // Light polling — keeps status fresh after start/stop without the
-    // complexity of event-based push.
-    const t = setInterval(refresh, 4000);
-    return () => clearInterval(t);
+    // complexity of event-based push. Skips ticks while the window is
+    // hidden and refreshes immediately on regaining visibility (perf M31 —
+    // same gate McpView got).
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, 4000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [refresh]);
 
   function persist(next: McpServerConfig[]) {
@@ -194,10 +211,16 @@ export function McpSettings({ onConfigsChanged }: Props) {
   }
 
   async function showStderr(name: string) {
-    if (stderrPanel?.name === name) { setStderrPanel(null); return; }
+    if (stderrPanel?.name === name) {
+      setStderrPanel(null);
+      return;
+    }
     try {
       const text = await api.mcpServerStderr(name);
-      setStderrPanel({ name, text: text && text.trim() ? text : "(no stderr captured)" });
+      setStderrPanel({
+        name,
+        text: text && text.trim() ? text : "(no stderr captured)",
+      });
     } catch (e) {
       setStderrPanel({ name, text: String(e) });
     }
@@ -210,12 +233,14 @@ export function McpSettings({ onConfigsChanged }: Props) {
       <div className="agent-settings-row">
         <span className="agent-settings-label">MCP servers:</span>
         <span className="agent-settings-hint">
-          External tool providers (stdio JSON-RPC). Spawn with full user privileges — only add commands you trust.
+          External tool providers (stdio JSON-RPC). Spawn with full user
+          privileges — only add commands you trust.
         </span>
       </div>
       {configs.length === 0 && (
         <div className="agent-settings-hint" style={{ padding: "4px 0 8px 0" }}>
-          No MCP servers configured. Example: <code>npx -y @modelcontextprotocol/server-filesystem /tmp</code>
+          No MCP servers configured. Example:{" "}
+          <code>npx -y @modelcontextprotocol/server-filesystem /tmp</code>
         </div>
       )}
       {configs.map((cfg) => {
@@ -233,7 +258,14 @@ export function McpSettings({ onConfigsChanged }: Props) {
               background: "var(--surface)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
               <strong style={{ fontSize: 13 }}>{cfg.name}</strong>
               <span
                 className={`agent-status-pill status-${status === "running" ? "tool" : "idle"}`}
@@ -246,22 +278,55 @@ export function McpSettings({ onConfigsChanged }: Props) {
               </span>
               <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
                 {status === "running" ? (
-                  <button className="agent-settings-btn" onClick={() => stopServer(cfg.name)}>Stop</button>
+                  <button
+                    className="agent-settings-btn"
+                    onClick={() => stopServer(cfg.name)}
+                  >
+                    Stop
+                  </button>
                 ) : (
-                  <button className="agent-settings-btn" onClick={() => startConfig(cfg)}>Start</button>
+                  <button
+                    className="agent-settings-btn"
+                    onClick={() => startConfig(cfg)}
+                  >
+                    Start
+                  </button>
                 )}
-                <button className="agent-settings-btn" onClick={() => restartConfig(cfg)}>Restart</button>
-                <button className="agent-settings-btn" onClick={() => showStderr(cfg.name)}>Stderr</button>
                 <button
                   className="agent-settings-btn"
-                  onClick={() => removeConfirm.request(cfg.name, (n) => { void removeConfig(n); })}
+                  onClick={() => restartConfig(cfg)}
+                >
+                  Restart
+                </button>
+                <button
+                  className="agent-settings-btn"
+                  onClick={() => showStderr(cfg.name)}
+                >
+                  Stderr
+                </button>
+                <button
+                  className="agent-settings-btn"
+                  onClick={() =>
+                    removeConfirm.request(cfg.name, (n) => {
+                      void removeConfig(n);
+                    })
+                  }
                 >
                   {removeConfirm.labelFor(cfg.name, "Remove")}
                 </button>
               </div>
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "4px 0" }}>
-              <code>{cfg.command}{cfg.args && cfg.args.length ? " " + cfg.args.join(" ") : ""}</code>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--text-muted)",
+                padding: "4px 0",
+              }}
+            >
+              <code>
+                {cfg.command}
+                {cfg.args && cfg.args.length ? " " + cfg.args.join(" ") : ""}
+              </code>
             </div>
             {live?.last_error && (
               <ErrorBar
@@ -273,7 +338,8 @@ export function McpSettings({ onConfigsChanged }: Props) {
             )}
             {toolNames.length > 0 && (
               <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                tools: {toolNames.map((n) => `mcp__${cfg.name}__${n}`).join(", ")}
+                tools:{" "}
+                {toolNames.map((n) => `mcp__${cfg.name}__${n}`).join(", ")}
               </div>
             )}
             {stderrPanel?.name === cfg.name && (
@@ -299,7 +365,9 @@ export function McpSettings({ onConfigsChanged }: Props) {
       })}
 
       {!adding ? (
-        <button className="agent-settings-btn" onClick={() => setAdding(true)}>+ Add MCP server</button>
+        <button className="agent-settings-btn" onClick={() => setAdding(true)}>
+          + Add MCP server
+        </button>
       ) : (
         <div
           style={{
@@ -341,11 +409,22 @@ export function McpSettings({ onConfigsChanged }: Props) {
             style={inputStyle}
           />
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-            ⚠ This command runs with full user privileges. Only add servers you trust.
+            ⚠ This command runs with full user privileges. Only add servers you
+            trust.
           </div>
           <div style={{ display: "flex", gap: 4 }}>
-            <button className="agent-settings-btn" onClick={addServer}>Add & start</button>
-            <button className="agent-settings-btn" onClick={() => { setAdding(false); setErr(null); }}>Cancel</button>
+            <button className="agent-settings-btn" onClick={addServer}>
+              Add & start
+            </button>
+            <button
+              className="agent-settings-btn"
+              onClick={() => {
+                setAdding(false);
+                setErr(null);
+              }}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}

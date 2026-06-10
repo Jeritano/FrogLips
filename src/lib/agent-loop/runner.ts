@@ -1,4 +1,10 @@
-import type { AuditApproval, AuditOutcome, Message, ProjectPolicy, ToolCall } from "../../types";
+import type {
+  AuditApproval,
+  AuditOutcome,
+  Message,
+  ProjectPolicy,
+  ToolCall,
+} from "../../types";
 import type { AgentMetrics, AgentRunOptions, Risk, ToolResult } from "./types";
 import { TOOLS } from "./tools";
 import {
@@ -16,9 +22,14 @@ import {
 } from "./dispatch";
 import { buildSystemPrompt } from "./system-prompt";
 import { classifyToolFitness } from "../model-capabilities";
-import { applyContextBudget, invalidateMessageTokens } from "./context-manager";
+import { applyContextBudget } from "./context-manager";
 import { streamAgentChat } from "./agent-chat";
-import { awaitSubagents, listSubagents, runSubagent, spawnSubagentAsync } from "./subagent";
+import {
+  awaitSubagents,
+  listSubagents,
+  runSubagent,
+  spawnSubagentAsync,
+} from "./subagent";
 import { fetchMcpTools, isMcpToolName } from "./mcp-tools";
 import { api } from "../tauri-api";
 import { logDiag } from "../diagnostics";
@@ -35,19 +46,19 @@ import { logDiag } from "../diagnostics";
  * upstream sees a steady prefix across turns.
  */
 const CLAUDE_SKILLS_STUB_HEADER =
-  "You have access to imported Claude Skills. Each is a markdown instruction set the user has imported into Froglips.\n\n"
-  + "Tool-name translation (Anthropic tool names → Froglips tool names that exist in your current allowlist):\n"
-  + "  Read → read_file\n"
-  + "  Write → write_file\n"
-  + "  Edit → edit_file\n"
-  + "  MultiEdit → multi_edit\n"
-  + "  Bash → run_shell\n"
-  + "  Glob → search_files (use glob arg)\n"
-  + "  Grep → search_files (use pattern arg)\n"
-  + "  WebFetch → web_fetch\n"
-  + "  WebSearch → web_search\n"
-  + "  TodoWrite → workflow_set (not a perfect mapping; use scratchpad)\n\n"
-  + "When a skill body references one of the above Anthropic tool names, call the Froglips equivalent instead.";
+  "You have access to imported Claude Skills. Each is a markdown instruction set the user has imported into Froglips.\n\n" +
+  "Tool-name translation (Anthropic tool names → Froglips tool names that exist in your current allowlist):\n" +
+  "  Read → read_file\n" +
+  "  Write → write_file\n" +
+  "  Edit → edit_file\n" +
+  "  MultiEdit → multi_edit\n" +
+  "  Bash → run_shell\n" +
+  "  Glob → search_files (use glob arg)\n" +
+  "  Grep → search_files (use pattern arg)\n" +
+  "  WebFetch → web_fetch\n" +
+  "  WebSearch → web_search\n" +
+  "  TodoWrite → workflow_set (not a perfect mapping; use scratchpad)\n\n" +
+  "When a skill body references one of the above Anthropic tool names, call the Froglips equivalent instead.";
 
 /**
  * Inject Claude Skills context into `msgs` immediately after the main
@@ -82,7 +93,8 @@ async function injectClaudeSkillsContext(
     logDiag({
       level: "warn",
       source: "claude-skills",
-      message: "claude_skill_list failed at chat start — continuing without skill context",
+      message:
+        "claude_skill_list failed at chat start — continuing without skill context",
       detail: { error: e instanceof Error ? e.message : String(e) },
     });
     return;
@@ -107,9 +119,9 @@ async function injectClaudeSkillsContext(
       .map((s) => `  - ${s.name}: ${s.description}`)
       .join("\n");
     const stub =
-      `${CLAUDE_SKILLS_STUB_HEADER}\n\n`
-      + `Available skills:\n${bullets}\n\n`
-      + "Call list_claude_skills() to refresh this list, load_claude_skill(name) to read the full instructions on demand.";
+      `${CLAUDE_SKILLS_STUB_HEADER}\n\n` +
+      `Available skills:\n${bullets}\n\n` +
+      "Call list_claude_skills() to refresh this list, load_claude_skill(name) to read the full instructions on demand.";
     msgs.splice(insertAt, 0, {
       conversation_id: conversationId,
       role: "system",
@@ -215,7 +227,10 @@ function safeShellPrefix(command: string): string | null {
   return first;
 }
 
-function policyShellVerdict(policy: ProjectPolicy, command: string): PolicyVerdict {
+function policyShellVerdict(
+  policy: ProjectPolicy,
+  command: string,
+): PolicyVerdict {
   const prefixes = policy.allowed_shell_prefixes;
   if (!prefixes || prefixes.length === 0) return "needs-confirm";
   const first = safeShellPrefix(command);
@@ -223,7 +238,10 @@ function policyShellVerdict(policy: ProjectPolicy, command: string): PolicyVerdi
   return prefixes.includes(first) ? "auto" : "needs-confirm";
 }
 
-function policyWriteVerdict(policy: ProjectPolicy, path: string): PolicyVerdict {
+function policyWriteVerdict(
+  policy: ProjectPolicy,
+  path: string,
+): PolicyVerdict {
   if (!path) return "needs-confirm";
   if (policy.denied_write_paths) {
     for (const p of policy.denied_write_paths) {
@@ -357,7 +375,11 @@ const APPROVE_ALL_WRITE_FS = new Set([
 
 /** Reasons valid on a deny-path `ConfirmDecision`. Anything else is normalised
  * to `"user_deny"` for both the model-facing message body and the audit row. */
-const VALID_DENY_REASONS = new Set(["user_deny", "aborted", "unattended_denied"]);
+const VALID_DENY_REASONS = new Set([
+  "user_deny",
+  "aborted",
+  "unattended_denied",
+]);
 
 /** Per-reason text shown to the model in the rejection body. */
 const DENY_MESSAGE_BY_REASON: Record<string, string> = {
@@ -387,7 +409,10 @@ function makeTmpKey() {
  * Failure paths (db locked / disk full / IPC unavailable in tests) must never
  * affect the agent run — caller voids the returned promise.
  */
-function recordSessionMetricsSafe(conversationId: number, metrics: AgentMetrics): void {
+function recordSessionMetricsSafe(
+  conversationId: number,
+  metrics: AgentMetrics,
+): void {
   try {
     void api
       .agentSessionMetricsRecord({
@@ -401,10 +426,20 @@ function recordSessionMetricsSafe(conversationId: number, metrics: AgentMetrics)
         completion_tokens: metrics.completionTokens,
       })
       .catch((e) => {
-        logDiag({ level: "warn", source: "session-metrics", message: "record failed", detail: e });
+        logDiag({
+          level: "warn",
+          source: "session-metrics",
+          message: "record failed",
+          detail: e,
+        });
       });
   } catch (e) {
-    logDiag({ level: "warn", source: "session-metrics", message: "record sync error", detail: e });
+    logDiag({
+      level: "warn",
+      source: "session-metrics",
+      message: "record sync error",
+      detail: e,
+    });
   }
 }
 
@@ -484,7 +519,10 @@ function sigMultiset(sigs: string[]): Map<string, number> {
  * multisets restricts the rejection to "the model just made the same set of
  * calls again, in any order, with the same arity".
  */
-function isDuplicateTurn(currentSigs: string[], prevSigs: string[] | null): boolean {
+function isDuplicateTurn(
+  currentSigs: string[],
+  prevSigs: string[] | null,
+): boolean {
   if (!prevSigs || prevSigs.length === 0) return false;
   if (currentSigs.length !== prevSigs.length) return false;
   const cur = sigMultiset(currentSigs);
@@ -567,7 +605,10 @@ const ABORTED_TOOL_RESULT = JSON.stringify({
  * `opts.signal`. A normal rejection is re-thrown unchanged so the caller's
  * existing try/catch error handling is preserved.
  */
-function abortableToolResult(p: Promise<string>, signal: AbortSignal): Promise<string> {
+function abortableToolResult(
+  p: Promise<string>,
+  signal: AbortSignal,
+): Promise<string> {
   if (signal.aborted) {
     p.catch(() => {});
     return Promise.resolve(ABORTED_TOOL_RESULT);
@@ -600,12 +641,24 @@ function abortableToolResult(p: Promise<string>, signal: AbortSignal): Promise<s
   });
 }
 
-export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null> {
+export async function runAgentLoop(
+  opts: AgentRunOptions,
+): Promise<string | null> {
   const {
-    onUpdate, onStatusChange, onMetrics, onAssistantDelta, requestConfirmation, signal,
-    workspaceRoot, systemPromptOverride,
-    toolAllowlist = [], approveAllShell, approveAllWrite,
-    approvedShellPrefixes = [], onApproveShellPrefix,
+    onUpdate,
+    onStatusChange,
+    onMetrics,
+    onAssistantDelta,
+    onStreamReset,
+    requestConfirmation,
+    signal,
+    workspaceRoot,
+    systemPromptOverride,
+    toolAllowlist = [],
+    approveAllShell,
+    approveAllWrite,
+    approvedShellPrefixes = [],
+    onApproveShellPrefix,
     dryRun = false,
   } = opts;
   // Root-cause guard for tool-call/result pairing: drop any incoming
@@ -654,7 +707,8 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   // user knows a repo policy is in effect; its auto-approve entries are
   // ignored downstream in policyDecisionFor.
   if (projectPolicy && isRepoLocalPolicy(projectPolicy)) {
-    const hasAutoApprove = (projectPolicy.auto_approve_dangerous_tools?.length ?? 0) > 0;
+    const hasAutoApprove =
+      (projectPolicy.auto_approve_dangerous_tools?.length ?? 0) > 0;
     logDiag({
       level: "warn",
       source: "agent-policy",
@@ -782,10 +836,7 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   // Filter tool defs by allowlist. The allowlist applies to both built-in
   // and MCP tools — if a user-set allowlist is in effect, MCP tool names
   // (`mcp__server__tool`) must appear explicitly to be exposed.
-  const allTools = [
-    ...TOOLS,
-    ...mcpTools,
-  ] as unknown as typeof TOOLS;
+  const allTools = [...TOOLS, ...mcpTools] as unknown as typeof TOOLS;
   // Maturity review P0 #5: precompute allowlist Set once. The original
   // `.filter(... .includes(...))` was O(n×m) and ran every agent iteration
   // when re-deriving the tool list. The allowlist is run-scoped + immutable
@@ -815,20 +866,16 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   // agent doing focused codebase exploration is doing exactly what it
   // should be, and nudging it to write before it understands the
   // problem is counterproductive.
-  const RESEARCH_TOOLS = new Set([
-    "web_search",
-    "web_fetch",
-    "read_pdf",
-  ]);
+  const RESEARCH_TOOLS = new Set(["web_search", "web_fetch", "read_pdf"]);
   // Nudge fires when the card has SOME way to commit the deliverable.
   // edit_file and multi_edit count too — a Coder-style card may prefer
   // edit_file over write_file, but it still needs to land its work on
   // disk eventually.
   const canWriteFile =
-    !toolAllowlist.length
-    || toolAllowlist.includes("write_file")
-    || toolAllowlist.includes("edit_file")
-    || toolAllowlist.includes("multi_edit");
+    !toolAllowlist.length ||
+    toolAllowlist.includes("write_file") ||
+    toolAllowlist.includes("edit_file") ||
+    toolAllowlist.includes("multi_edit");
   // Narrow RESEARCH_TOOLS to *external* research so local read_file /
   // list_dir / search_files don't trip the nudge for Coder agents that
   // legitimately read many files before issuing the first edit. Pure
@@ -838,688 +885,741 @@ export async function runAgentLoop(opts: AgentRunOptions): Promise<string | null
   let researchNudgeFired = false;
 
   try {
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    if (signal.aborted) return null;
-    metrics.iterations = i + 1;
-
-    const llmStart = performance.now();
-    // Streaming placeholder: pushed into msgs so consumers see in-flight text.
-    // After the stream resolves we either (a) leave it as the final reply, or
-    // (b) annotate it with tool_calls and proceed to dispatch.
-    const streamingKey = makeTmpKey();
-    const streamingMsg: Message = {
-      _tmpKey: streamingKey,
-      conversation_id: opts.conversationId,
-      role: "assistant",
-      content: "",
-    };
-    msgs.push(streamingMsg);
-    let streamPushed = true;
-
-    // Budget the SENT copy against the model's context window. Operates on a
-    // copy — the persisted/displayed `msgs` array is never mutated. Keeps the
-    // system prompt (first message) intact; truncates oversized tool results
-    // and collapses old turns when the array would overflow the window.
-    const budgeted = applyContextBudget(
-      msgs.filter((m) => m._tmpKey !== streamingKey),
-      { model: opts.model, contextTokens: opts.contextTokens },
-    );
-    if (budgeted.trimmed) {
-      logDiag({
-        level: "info",
-        source: "agent-context",
-        message:
-          `Context budget applied: ${budgeted.estimatedBefore} → ` +
-          `${budgeted.estimatedAfter} est. tokens (budget ${budgeted.budget})`,
-        detail: {
-          toolResultsTruncated: budgeted.toolResultsTruncated,
-          turnsCollapsed: budgeted.turnsCollapsed,
-        },
-      });
-    }
-
-    // C5: re-apply the unpaired-tool-call sanitizer to the BUDGETED copy that
-    // is actually sent. `applyContextBudget` collapses old turns and can drop a
-    // `role:"tool"` result while keeping its assistant `tool_calls` turn (or
-    // vice versa); an unpaired tool_call id 400s the next request
-    // ("tool_call_id not found"). The runner sanitizes its input (line 606) and
-    // every appended message, but the post-budget array is the one on the wire,
-    // so it gets the same guard here.
-    const sentMessages = stripUnpairedToolCalls(budgeted.messages);
-
-    let result: { content: string; tool_calls: ToolCall[]; prompt_eval_count?: number; eval_count?: number };
-    // Stream-delta coalescing (audit H5 + H6, 2026-05-27).
-    // - H5: every delta previously did `onUpdate([...msgs])` — full-array
-    //   spread per chunk. A 200-token reply with 50 deltas = 50 full
-    //   array allocations + 50 React reconcile rounds.
-    // - H6: `streamingMsg.content += delta` is O(n²) under the hood for
-    //   long replies. Buffer deltas into a string[] and `.join("")` lazily.
-    // Strategy: append delta to a buffer + bump a dirty flag; a 16ms
-    // timer (one webview frame) flushes the buffer into content and
-    // calls onUpdate once. Final flush is synchronous on stream
-    // resolve/error/abort so the persisted msgs always reflect the
-    // final content.
-    const deltaBuf: string[] = [];
-    let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
-    const flushStream = () => {
-      if (coalesceTimer != null) {
-        clearTimeout(coalesceTimer);
-        coalesceTimer = null;
-      }
-      if (deltaBuf.length === 0) return;
-      streamingMsg.content += deltaBuf.join("");
-      deltaBuf.length = 0;
-      // Mutated `content` in place — invalidate cached token estimate
-      // (audit H4 contract: in-place mutation requires explicit drop).
-      invalidateMessageTokens(streamingMsg);
-      onUpdate([...msgs]);
-    };
-    const scheduleFlush = () => {
-      if (coalesceTimer != null) return;
-      coalesceTimer = setTimeout(flushStream, 16);
-    };
-    try {
-      result = await streamAgentChat(
-        opts,
-        sentMessages,
-        tools,
-        signal,
-        (delta) => {
-          deltaBuf.push(delta);
-          // onAssistantDelta is for raw stream consumers (DiagnosticsPanel,
-          // workflow card output stream); they want every delta, not the
-          // coalesced flush. Forward immediately.
-          onAssistantDelta?.(delta);
-          scheduleFlush();
-        },
-        () => {
-          // Retry fired — bump the counter and reset the placeholder so the
-          // bubble doesn't duplicate text from the half-streamed attempt.
-          metrics.retries++;
-          if (coalesceTimer != null) {
-            clearTimeout(coalesceTimer);
-            coalesceTimer = null;
-          }
-          deltaBuf.length = 0;
-          streamingMsg.content = "";
-          invalidateMessageTokens(streamingMsg);
-        },
-      );
-      // Final synchronous flush so the placeholder carries the full reply
-      // before downstream code reads `streamingMsg.content`.
-      flushStream();
-    } catch (e) {
-      // Drop any pending coalesce timer before unwinding the error path.
-      if (coalesceTimer != null) {
-        clearTimeout(coalesceTimer);
-        coalesceTimer = null;
-      }
-      deltaBuf.length = 0;
-      // Drop the streaming placeholder so error paths don't leak a stub bubble.
-      if (streamPushed) {
-        const idx = msgs.findIndex((m) => m._tmpKey === streamingKey);
-        if (idx !== -1) msgs.splice(idx, 1);
-        streamPushed = false;
-      }
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
       if (signal.aborted) return null;
-      throw e;
-    }
-    metrics.totalLlmMs += performance.now() - llmStart;
-    const promptTok = result.prompt_eval_count;
-    const evalTok = result.eval_count;
-    if (typeof promptTok === "number") metrics.promptTokens += promptTok;
-    if (typeof evalTok === "number") metrics.completionTokens += evalTok;
-    onMetrics?.({ ...metrics });
+      metrics.iterations = i + 1;
 
-    // Cloud-routing Ollama models (kimi-k2.6:cloud, deepseek-v4-pro:cloud, …)
-    // have been observed to reject the next request with the cryptic
-    // "Value looks like object, but can't find closing '}' symbol" 400
-    // when an assistant turn carries multiple parallel tool_calls. Force
-    // serial execution on those routes: keep only the first tool_call,
-    // and the model will re-issue any remaining intent on the next turn
-    // (the prompt loop is unchanged — agent loops are designed to handle
-    // one-tool-per-turn flows transparently). Local Ollama + MLX + native
-    // backends keep full parallel tool-call support.
-    let toolCalls = result.tool_calls;
-    let droppedParallelCount = 0;
-    if (
-      typeof opts.model === "string" &&
-      opts.model.endsWith(":cloud") &&
-      toolCalls.length > 1
-    ) {
-      droppedParallelCount = toolCalls.length - 1;
-      toolCalls = [toolCalls[0]];
-    }
-    const preludeText = result.content;
-    // Pop the streaming placeholder; the loop below re-pushes the canonical
-    // message (final reply OR assistant-with-tool-calls) using makeTmpKey.
-    if (streamPushed) {
-      const idx = msgs.findIndex((m) => m._tmpKey === streamingKey);
-      if (idx !== -1) msgs.splice(idx, 1);
-      streamPushed = false;
-    }
+      const llmStart = performance.now();
 
-    if (toolCalls.length === 0) {
-      // Final text response
-      const finalMsg: Message = {
-        _tmpKey: makeTmpKey(),
-        conversation_id: opts.conversationId,
-        role: "assistant",
-        content: preludeText,
+      // Budget the SENT copy against the model's context window. Operates on a
+      // copy — the persisted/displayed `msgs` array is never mutated. Keeps the
+      // system prompt (first message) intact; truncates oversized tool results
+      // and collapses old turns when the array would overflow the window.
+      const budgeted = applyContextBudget(msgs, {
+        model: opts.model,
+        contextTokens: opts.contextTokens,
+      });
+      if (budgeted.trimmed) {
+        logDiag({
+          level: "info",
+          source: "agent-context",
+          message:
+            `Context budget applied: ${budgeted.estimatedBefore} → ` +
+            `${budgeted.estimatedAfter} est. tokens (budget ${budgeted.budget})`,
+          detail: {
+            toolResultsTruncated: budgeted.toolResultsTruncated,
+            turnsCollapsed: budgeted.turnsCollapsed,
+          },
+        });
+      }
+
+      // C5: re-apply the unpaired-tool-call sanitizer to the BUDGETED copy that
+      // is actually sent. `applyContextBudget` collapses old turns and can drop a
+      // `role:"tool"` result while keeping its assistant `tool_calls` turn (or
+      // vice versa); an unpaired tool_call id 400s the next request
+      // ("tool_call_id not found"). The runner sanitizes its input (line 606) and
+      // every appended message, but the post-budget array is the one on the wire,
+      // so it gets the same guard here.
+      const sentMessages = stripUnpairedToolCalls(budgeted.messages);
+
+      let result: {
+        content: string;
+        tool_calls: ToolCall[];
+        prompt_eval_count?: number;
+        eval_count?: number;
       };
-      msgs.push(finalMsg);
-      onUpdate([...msgs]);
-      onStatusChange("done");
-      return preludeText;
-    }
+      // Streaming contract (perf review 2026-06-09, finding C1): in-flight text
+      // travels ONLY through `onAssistantDelta`; `onUpdate` fires on structural
+      // changes (a canonical message landing in `msgs`), never per token. The
+      // old in-place-mutated placeholder + per-flush `onUpdate([...msgs])` was
+      // invisible anyway — the placeholder kept referential identity across
+      // flushes, so the display layer's MessageRow memo never repainted it —
+      // while still busting the history memo every frame. Display layers own
+      // accumulation + frame coalescing of the delta stream; on transport retry
+      // `onStreamReset` tells them to drop the half-streamed attempt's text.
+      try {
+        result = await streamAgentChat(
+          opts,
+          sentMessages,
+          tools,
+          signal,
+          (delta) => {
+            onAssistantDelta?.(delta);
+          },
+          () => {
+            metrics.retries++;
+            onStreamReset?.();
+          },
+        );
+      } catch (e) {
+        if (signal.aborted) return null;
+        throw e;
+      }
+      metrics.totalLlmMs += performance.now() - llmStart;
+      const promptTok = result.prompt_eval_count;
+      const evalTok = result.eval_count;
+      if (typeof promptTok === "number") metrics.promptTokens += promptTok;
+      if (typeof evalTok === "number") metrics.completionTokens += evalTok;
+      onMetrics?.({ ...metrics });
 
-    // Dedupe: if every tool call this turn was already seen in the recent
-    // window, inject a hint as the tool response instead of executing.
-    // Every tool_call needs a matching tool message (per OpenAI tool-call
-    // protocol) or the backend will reject the next request — so push one
-    // duplicate_call response per call, not just the first.
-    const sigs = toolCalls.map(toolCallSig);
-    if (isDuplicateTurn(sigs, prevTurnSigs)) {
-      msgs.push({
+      // Cloud-routing Ollama models (kimi-k2.6:cloud, deepseek-v4-pro:cloud, …)
+      // have been observed to reject the next request with the cryptic
+      // "Value looks like object, but can't find closing '}' symbol" 400
+      // when an assistant turn carries multiple parallel tool_calls. Force
+      // serial execution on those routes: keep only the first tool_call,
+      // and the model will re-issue any remaining intent on the next turn
+      // (the prompt loop is unchanged — agent loops are designed to handle
+      // one-tool-per-turn flows transparently). Local Ollama + MLX + native
+      // backends keep full parallel tool-call support.
+      let toolCalls = result.tool_calls;
+      let droppedParallelCount = 0;
+      if (
+        typeof opts.model === "string" &&
+        opts.model.endsWith(":cloud") &&
+        toolCalls.length > 1
+      ) {
+        droppedParallelCount = toolCalls.length - 1;
+        toolCalls = [toolCalls[0]];
+      }
+      const preludeText = result.content;
+
+      if (toolCalls.length === 0) {
+        // Final text response
+        const finalMsg: Message = {
+          _tmpKey: makeTmpKey(),
+          conversation_id: opts.conversationId,
+          role: "assistant",
+          content: preludeText,
+        };
+        msgs.push(finalMsg);
+        onUpdate([...msgs]);
+        onStatusChange("done");
+        return preludeText;
+      }
+
+      // Dedupe: if every tool call this turn was already seen in the recent
+      // window, inject a hint as the tool response instead of executing.
+      // Every tool_call needs a matching tool message (per OpenAI tool-call
+      // protocol) or the backend will reject the next request — so push one
+      // duplicate_call response per call, not just the first.
+      const sigs = toolCalls.map(toolCallSig);
+      if (isDuplicateTurn(sigs, prevTurnSigs)) {
+        msgs.push({
+          _tmpKey: makeTmpKey(),
+          conversation_id: opts.conversationId,
+          role: "assistant",
+          content: preludeText,
+          tool_calls: toolCalls,
+        });
+        const dupBody = rejectionBody(
+          "duplicate_call",
+          "You just called this exact tool with these exact arguments. Try a different approach or report what you've learned to the user.",
+        );
+        for (const tc of toolCalls) {
+          const dupParsed = parseArgs(tc.function?.arguments);
+          pushToolResult(
+            msgs,
+            opts.conversationId,
+            onUpdate,
+            tc,
+            dupBody,
+            {
+              approval: "auto",
+              outcome: "duplicate",
+              errorKind: "duplicate_call",
+              args: dupParsed.ok ? dupParsed.args : {},
+            },
+            opts.workflowRunId ?? null,
+          );
+        }
+        // Update prev-turn sigs even on a dup so two-back→one-back→now also fires.
+        prevTurnSigs = sigs;
+        continue;
+      }
+      // Snapshot this turn's tool-call signatures for next iteration's compare.
+      prevTurnSigs = sigs;
+
+      // Assistant turn with tool calls
+      const asstMsg: Message = {
         _tmpKey: makeTmpKey(),
         conversation_id: opts.conversationId,
         role: "assistant",
         content: preludeText,
         tool_calls: toolCalls,
-      });
-      const dupBody = rejectionBody(
-        "duplicate_call",
-        "You just called this exact tool with these exact arguments. Try a different approach or report what you've learned to the user.",
-      );
-      for (const tc of toolCalls) {
-        const dupParsed = parseArgs(tc.function?.arguments);
-        pushToolResult(msgs, opts.conversationId, onUpdate, tc, dupBody, {
-          approval: "auto",
-          outcome: "duplicate",
-          errorKind: "duplicate_call",
-          args: dupParsed.ok ? dupParsed.args : {},
-        }, opts.workflowRunId ?? null);
-      }
-      // Update prev-turn sigs even on a dup so two-back→one-back→now also fires.
-      prevTurnSigs = sigs;
-      continue;
-    }
-    // Snapshot this turn's tool-call signatures for next iteration's compare.
-    prevTurnSigs = sigs;
+      };
+      msgs.push(asstMsg);
+      onUpdate([...msgs]);
+      onStatusChange("tool");
 
-    // Assistant turn with tool calls
-    const asstMsg: Message = {
+      for (const tc of toolCalls) {
+        if (signal.aborted) return null;
+
+        const fnName = tc.function?.name ?? "";
+
+        // Allowlist gate — uses the precomputed Set (P0 #5).
+        if (allowlistSet && !allowlistSet.has(fnName)) {
+          const naParsed = parseArgs(tc.function?.arguments);
+          pushToolResult(
+            msgs,
+            opts.conversationId,
+            onUpdate,
+            tc,
+            rejectionBody(
+              "tool_not_allowed",
+              `Tool '${fnName}' is not enabled for this conversation.`,
+            ),
+            {
+              approval: "denied",
+              outcome: "denied",
+              errorKind: "tool_not_allowed",
+              args: naParsed.ok ? naParsed.args : {},
+            },
+            opts.workflowRunId ?? null,
+          );
+          continue;
+        }
+
+        const parsed = parseArgs(tc.function?.arguments);
+        if (!parsed.ok) {
+          pushToolResult(
+            msgs,
+            opts.conversationId,
+            onUpdate,
+            tc,
+            rejectionBody("bad_arguments", parsed.err),
+            { approval: "auto", outcome: "error", errorKind: "bad_arguments" },
+            opts.workflowRunId ?? null,
+          );
+          continue;
+        }
+        const args = parsed.args;
+
+        // Stall guard: if the agent keeps re-reading the same file in chunks,
+        // bail out with a hint instead of letting it eat the iteration budget.
+        // Skip a re-read the read-only cache will serve instantly (no IPC) — only
+        // genuine backend reads should count toward the stall limit, otherwise a
+        // legitimately-cached re-read is penalized as if it were chunk-thrashing.
+        const servedFromCache =
+          isReadOnlyTool(fnName) && readOnlyCache.has(cacheKey(fnName, args));
+        if (!servedFromCache) {
+          const stall = isReadFileStalling(fnName, args, readCounts);
+          if (stall.stalling) {
+            pushToolResult(
+              msgs,
+              opts.conversationId,
+              onUpdate,
+              tc,
+              rejectionBody(
+                "stall_guard",
+                `read_file has been called ${stall.count} times for '${stall.path}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`,
+              ),
+              {
+                approval: "auto",
+                outcome: "stall_guard",
+                errorKind: "stall_guard",
+                args,
+              },
+              opts.workflowRunId ?? null,
+            );
+            continue;
+          }
+        }
+
+        // Track which approval branch authorised this call — used in the
+        // audit row so we can later distinguish auto/session/user approvals.
+        let auditApproval: AuditApproval = "auto";
+
+        // Confirmation gate for dangerous tools. MCP-provided tools are
+        // out-of-process and not in the built-in DANGEROUS_TOOLS list, so they
+        // are gated explicitly here — classifyToolRisk returns a non-normal
+        // risk for them, and a careless/malicious MCP tool must never auto-run.
+        if (DANGEROUS_TOOLS.has(fnName) || isMcpToolName(fnName)) {
+          const risk = await classifyToolRisk(fnName, args);
+
+          // Policy wins over session approval state. A loaded policy can
+          // either auto-approve (skip confirmation) or deny outright. Risk is
+          // passed so a policy can never auto-approve a non-normal-risk call.
+          const policyVerdict = policyDecisionFor(
+            projectPolicy,
+            fnName,
+            args,
+            risk,
+          );
+          if (policyVerdict === "denied") {
+            pushToolResult(
+              msgs,
+              opts.conversationId,
+              onUpdate,
+              tc,
+              rejectionBody(
+                "policy_denied",
+                `Tool call denied by project policy${projectPolicy?.source_path ? ` (${projectPolicy.source_path})` : ""}.`,
+              ),
+              {
+                approval: "denied",
+                outcome: "denied",
+                errorKind: "policy_denied",
+                args,
+              },
+              opts.workflowRunId ?? null,
+            );
+            continue;
+          }
+
+          const cmd = String(args.command ?? "");
+          // safeShellPrefix returns null if the command contains shell
+          // metacharacters (`;`, `&`, `|`, `>`, `<`, backtick, `$(`) — that
+          // makes prefix-based session approval ineligible, forcing the
+          // confirmation prompt.
+          const firstWord = safeShellPrefix(cmd) ?? "";
+          const prefixApproved =
+            fnName === SHELL_TOOL &&
+            risk === "normal" &&
+            firstWord !== "" &&
+            approvedShellPrefixes.includes(firstWord);
+          // UX re-review C1 (2026-05-24): tools in IRREVERSIBLE_TOOLS NEVER
+          // ride the session-blanket-approve branch. delete_path,
+          // kill_process, agent_undo all permanently change state in ways
+          // the user can't recover from with another agent call.
+          const isIrreversible = IRREVERSIBLE_TOOLS.has(fnName);
+          const sessionApproved =
+            !isIrreversible &&
+            (policyVerdict === "auto" ||
+              prefixApproved ||
+              (fnName === SHELL_TOOL && approveAllShell && risk === "normal") ||
+              // Blanket write-approval only covers normal-risk *filesystem*
+              // writes — an elevated call (sensitive-path-classified write,
+              // http_request, etc.) always needs explicit confirmation.
+              (APPROVE_ALL_WRITE_FS.has(fnName) &&
+                approveAllWrite &&
+                risk === "normal"));
+          if (sessionApproved) {
+            auditApproval = "session_allowed";
+          }
+          if (!sessionApproved) {
+            const decision = await requestConfirmation(fnName, args, risk);
+            if (!decision.approve) {
+              // Three deny paths the audit log must distinguish:
+              //   - human clicked Deny       → reason: "user_deny"
+              //   - run was cancelled        → reason: "aborted"
+              //   - default deny-all fired   → reason: "unattended_denied"
+              // Anything outside the allowed set (including a stray
+              // "user_allow" that callers must never produce on a deny
+              // path) is normalised to "user_deny" so the audit row +
+              // tool body stay coherent.
+              const rawReason = decision.reason ?? "user_deny";
+              const auditReason = VALID_DENY_REASONS.has(rawReason)
+                ? rawReason
+                : "user_deny";
+              // Model-facing `kind`: collapse to a single learnable error
+              // class ("permission_denied"). Models trained on standard
+              // permission errors recognise this; the internal taxonomy
+              // (user_deny / aborted / unattended_denied) lives ONLY in
+              // the audit row so post-hoc reviewers retain full fidelity.
+              pushToolResult(
+                msgs,
+                opts.conversationId,
+                onUpdate,
+                tc,
+                rejectionBody(
+                  "permission_denied",
+                  DENY_MESSAGE_BY_REASON[auditReason] ??
+                    DENY_MESSAGE_BY_REASON.user_deny,
+                ),
+                {
+                  approval: "denied",
+                  outcome: "denied",
+                  errorKind: auditReason,
+                  args,
+                },
+                opts.workflowRunId ?? null,
+              );
+              continue;
+            }
+            auditApproval = "user_allowed";
+            if (
+              decision.remember &&
+              fnName === SHELL_TOOL &&
+              risk === "normal" &&
+              firstWord !== ""
+            ) {
+              onApproveShellPrefix?.(firstWord);
+            }
+          }
+        }
+
+        // Re-check abort AFTER the (possibly long) confirmation wait. If the user
+        // hit Stop while the modal was open, do NOT execute the tool they tried
+        // to cancel — even on a late "Allow" click. Pair THIS tool call with a
+        // denied/aborted result before bailing so the assistant tool_calls
+        // message is never left with an unpaired id (which would 400 the next
+        // send). Round 6 HIGH (2026-05-30).
+        if (signal.aborted) {
+          pushToolResult(
+            msgs,
+            opts.conversationId,
+            onUpdate,
+            tc,
+            rejectionBody(
+              "permission_denied",
+              DENY_MESSAGE_BY_REASON.aborted ??
+                DENY_MESSAGE_BY_REASON.user_deny,
+            ),
+            {
+              approval: "denied",
+              outcome: "denied",
+              errorKind: "aborted",
+              args,
+            },
+            opts.workflowRunId ?? null,
+          );
+          return null;
+        }
+
+        const toolStart = performance.now();
+        let result: string;
+        let toolErrorKind: string | null = null;
+        try {
+          if (fnName === "spawn_subagent") {
+            const mode = typeof args.mode === "string" ? args.mode : "sync";
+            if (mode === "async") {
+              result = await spawnSubagentAsync(args, opts);
+            } else {
+              result = await runSubagent(args, opts);
+            }
+          } else if (fnName === "await_subagents") {
+            const ids = Array.isArray(args.subagent_ids)
+              ? (args.subagent_ids as unknown[]).map((v) => String(v))
+              : [];
+            // Clamp the model-supplied timeout: floor 0, ceiling 10 min, so a
+            // bogus huge value can't wedge the loop indefinitely. Coerce via
+            // Number() so a stringified "30" (which the previous typeof check
+            // silently rejected, falling back to 600s) is honored. Non-finite
+            // / NaN inputs collapse to the 600s default rather than 0 (a 0s
+            // timeout would fire immediately and orphan the subagents).
+            const AWAIT_TIMEOUT_CAP_MS = 600_000;
+            const coerced = Number(args.timeout_seconds ?? 600);
+            const rawTimeoutSecs = Number.isFinite(coerced) ? coerced : 600;
+            const timeoutMs = Math.min(
+              AWAIT_TIMEOUT_CAP_MS,
+              Math.max(0, rawTimeoutSecs) * 1000,
+            );
+            result = await awaitSubagents(ids, timeoutMs);
+          } else if (fnName === "list_subagents") {
+            result = listSubagents();
+          } else {
+            // Read-only cache short-circuit: if the model just called the same
+            // read-only tool with the same args (e.g. read_file the same path
+            // twice across two iterations), return the cached payload instead
+            // of round-tripping IPC. The cache is invalidated below whenever a
+            // non-read-only tool succeeds.
+            const isCacheable = isReadOnlyTool(fnName);
+            const ckey = isCacheable ? cacheKey(fnName, args) : null;
+            if (ckey != null && readOnlyCache.has(ckey)) {
+              result = readOnlyCache.get(ckey)!;
+            } else {
+              // `shellTrackKey: signal` keys this loop's active-shell entry
+              // by its AbortSignal. Sibling loops (parent + subagent) get
+              // distinct signals and therefore distinct map entries, so a
+              // `run_shell` in one loop can't be overwritten or cancelled by
+              // the other.
+              // C1: race the tool against the abort signal so a Stop mid-tool
+              // returns control to the loop promptly instead of blocking on the
+              // tool's own timeout. `signal` is also passed into executeTool so
+              // backend-cancellable long-running tools can terminate their op.
+              result = await abortableToolResult(
+                executeTool(fnName, args, {
+                  dryRun,
+                  shellTrackKey: signal,
+                  signal,
+                  // Surfaced for tools that tag their output to a conversation.
+                  // The runner already carries the active conversation id in
+                  // opts; pass it down unmodified.
+                  conversationId: opts.conversationId,
+                  // Project scope for the memory tools (remember/recall).
+                  workspaceRoot,
+                  // Thread the parent workflow_runs.id (if any) so that nested
+                  // tools that emit their own audit rows (today: the skill
+                  // invocation start/end markers) can correlate back to the
+                  // run that produced them. L-A2 (2026-05-28).
+                  workflowRunId: opts.workflowRunId ?? null,
+                }),
+                signal,
+              );
+              // Skill allowlist ENFORCEMENT (review finding 2026-06): when a
+              // skill with a declared allowed_tools loads, narrow the run's tool
+              // gate to that set, intersected with the existing grant (least
+              // privilege). The hard gate above (`allowlistSet && !has`) then
+              // blocks any call the skill didn't authorize. Skill meta-tools stay
+              // callable so the model can still load/refresh skills.
+              if (fnName === "load_claude_skill") {
+                try {
+                  const r = JSON.parse(result) as {
+                    ok?: boolean;
+                    allowed_tools?: unknown;
+                  };
+                  if (
+                    r?.ok &&
+                    Array.isArray(r.allowed_tools) &&
+                    r.allowed_tools.length > 0
+                  ) {
+                    const skillSet = new Set<string>(
+                      (r.allowed_tools as unknown[]).filter(
+                        (t): t is string => typeof t === "string",
+                      ),
+                    );
+                    skillSet.add("load_claude_skill");
+                    skillSet.add("list_claude_skills");
+                    allowlistSet = allowlistSet
+                      ? new Set(
+                          [...allowlistSet].filter((t) => skillSet.has(t)),
+                        )
+                      : skillSet;
+                  }
+                } catch {
+                  /* malformed result — leave the gate unchanged */
+                }
+              }
+              if (ckey != null) {
+                // Only cache responses that don't look like errors — caching
+                // a transient `{ok:false}` would mask a retry.
+                let cacheable = true;
+                try {
+                  const r = JSON.parse(result) as { ok?: boolean } | null;
+                  if (r && r.ok === false) cacheable = false;
+                } catch {
+                  /* non-JSON read result — cache it */
+                }
+                if (cacheable) cacheStore(ckey, result);
+              }
+            }
+          }
+        } catch (e) {
+          result = formatToolError(e);
+          toolErrorKind = "tool_error";
+        }
+        const durationMs = performance.now() - toolStart;
+        // C1: if Stop fired during the tool, `abortableToolResult` returned the
+        // aborted sentinel. Pair it and END the loop rather than feeding it back
+        // to the model for another turn. Pairing a result before returning keeps
+        // the assistant tool_calls message from carrying an unpaired id.
+        if (signal.aborted) {
+          pushToolResult(
+            msgs,
+            opts.conversationId,
+            onUpdate,
+            tc,
+            result,
+            {
+              approval: auditApproval,
+              outcome: "denied",
+              errorKind: "aborted",
+              args,
+              durationMs,
+            },
+            opts.workflowRunId ?? null,
+          );
+          return null;
+        }
+        metrics.totalToolMs += durationMs;
+        metrics.toolCalls++;
+        // P1 #23: per-tool breakdown. ok flag flipped from toolErrorKind
+        // since it isn't computed until a few lines below — but a tool
+        // that *threw* always sets toolErrorKind in the catch block above,
+        // so checking it here is correct for the catch path. For the
+        // success branch we'll record ok=true; the post-parse outcome
+        // re-classification below (which may flip a returned-but-failed
+        // result to "error") is recorded against errorKind in the audit
+        // log, not in metrics.
+        recordToolStat(fnName, durationMs, !toolErrorKind);
+        onMetrics?.({ ...metrics });
+
+        // Determine final outcome by sniffing the result body — many tool
+        // wrappers return `{ok:false, kind:...}` rather than throwing. The tool
+        // protocol is JSON-over-string, so parse into a `ToolResult` shape
+        // rather than `any`.
+        let outcome: AuditOutcome = toolErrorKind ? "error" : "ok";
+        if (!toolErrorKind) {
+          try {
+            const parsedResult = JSON.parse(
+              result,
+            ) as Partial<ToolResult> | null;
+            if (parsedResult && typeof parsedResult === "object") {
+              // Dry-run results take precedence — they're recorded as `dry_run`
+              // regardless of `ok` status so the suppressed call shows up
+              // distinctly in the audit log.
+              if (parsedResult.dry_run === true) {
+                outcome = "dry_run";
+                if (
+                  parsedResult.ok === false &&
+                  typeof parsedResult.blocked_by_safety === "string"
+                ) {
+                  toolErrorKind = "blocked_by_safety";
+                } else if (
+                  parsedResult.ok === false &&
+                  typeof parsedResult.kind === "string"
+                ) {
+                  toolErrorKind = parsedResult.kind;
+                }
+              } else if (parsedResult.ok === false) {
+                outcome = "error";
+                if (typeof parsedResult.kind === "string") {
+                  toolErrorKind = parsedResult.kind;
+                }
+              }
+            }
+          } catch {
+            /* result not JSON — leave outcome=ok */
+          }
+        }
+
+        pushToolResult(
+          msgs,
+          opts.conversationId,
+          onUpdate,
+          tc,
+          result,
+          {
+            approval: auditApproval,
+            outcome,
+            errorKind: toolErrorKind,
+            args,
+            durationMs,
+          },
+          opts.workflowRunId ?? null,
+        );
+
+        // Track research-vs-write balance so the post-turn block below can
+        // inject a "stop researching, write the file" nudge before the
+        // iteration budget is exhausted. `outcome` of `error` is not
+        // counted — only successful research calls accumulate. (Denied
+        // calls short-circuited earlier via `continue` and never reach
+        // this point in the loop.)
+        if (outcome !== "error") {
+          if (RESEARCH_TOOLS.has(fnName)) researchCallCount++;
+          if (
+            fnName === "write_file" ||
+            fnName === "edit_file" ||
+            fnName === "multi_edit"
+          ) {
+            writeCallCount++;
+          }
+        }
+
+        // Consecutive-error budget: a real failure (error outcome) bumps the
+        // counter; any non-error outcome resets it. Dry-run results count as
+        // successes — they're a deliberate suppression, not a failure.
+        if (outcome === "error") {
+          consecutiveToolErrors++;
+          if (consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
+            stopAndReportHintPending = true;
+          }
+        } else {
+          consecutiveToolErrors = 0;
+        }
+
+        // Invalidate the read-only cache whenever a non-read-only tool ran
+        // successfully — any cached read for the affected file/dir/process
+        // table could now be stale. Conservative: nuke the whole map rather
+        // than try to dependency-track by path.
+        if (outcome !== "error" && !isReadOnlyTool(fnName)) {
+          readOnlyCache.clear();
+        }
+      }
+
+      // Surface dropped parallel tool_calls (cloud-route truncation) as a
+      // synthetic system reminder for the NEXT turn. Pushed AFTER the tool
+      // result(s) so the assistant↔tool message pairing stays adjacent —
+      // some cloud gateways (Ollama `*:cloud`) re-validate body shape and
+      // reject any system message interleaved between an assistant tool_calls
+      // turn and its tool result. The model sees this reminder when it
+      // composes its NEXT response, prompting it to reissue the dropped
+      // calls instead of assuming they ran.
+      if (droppedParallelCount > 0) {
+        msgs.push({
+          _tmpKey: makeTmpKey(),
+          conversation_id: opts.conversationId,
+          role: "system",
+          content:
+            `[agent-loop] Cloud-route only executes ONE tool call per turn. ` +
+            `${droppedParallelCount} additional tool call(s) you issued in the previous turn were dropped — ` +
+            `reissue any that still matter on your next turn.`,
+        });
+        onUpdate([...msgs]);
+        // No explicit reset — `droppedParallelCount` is a per-iteration
+        // `let` declared at the top of the for-body and re-initialises
+        // to 0 each turn.
+      }
+
+      // After a run of consecutive tool failures, inject a system hint so the
+      // model stops retrying and reports the blocker to the user. This is an
+      // additional guard layered on top of the dedupe / stall / MAX_ITERATIONS
+      // logic — the dedupe window only catches IDENTICAL repeated calls.
+      let stopAndReportInjectedThisIter = false;
+      if (stopAndReportHintPending) {
+        stopAndReportHintPending = false;
+        consecutiveToolErrors = 0;
+        stopAndReportInjectedThisIter = true;
+        msgs.push({
+          _tmpKey: makeTmpKey(),
+          conversation_id: opts.conversationId,
+          role: "system",
+          content:
+            `[agent-loop] ${MAX_CONSECUTIVE_TOOL_ERRORS} tool calls in a row failed. ` +
+            "Stop retrying tools. Report to the user what you were trying to do, " +
+            "what failed, and the error messages — then ask how to proceed.",
+        });
+        onUpdate([...msgs]);
+      }
+
+      // Research-budget nudge: if the agent has done a lot of read-only
+      // research without producing a file (despite write_file being in
+      // its allowlist), inject a one-time strong reminder. Many models —
+      // kimi-k2.6:cloud in particular — happily spin on web_search and
+      // never get around to the write step the user asked for. This nudge
+      // breaks the loop. Fires once per run.
+      //
+      // Skip the nudge on a turn where the stop-and-report hint already
+      // fired — the two messages give conflicting instructions ("stop
+      // retrying, report the blocker" vs "stop researching, write the
+      // file") and the model gets muddled. Stop-and-report wins because
+      // it indicates the runner is in a failure mode, not just spinning.
+      if (
+        !researchNudgeFired &&
+        !stopAndReportInjectedThisIter &&
+        canWriteFile &&
+        writeCallCount === 0 &&
+        researchCallCount >= RESEARCH_NUDGE_THRESHOLD
+      ) {
+        researchNudgeFired = true;
+        msgs.push({
+          _tmpKey: makeTmpKey(),
+          conversation_id: opts.conversationId,
+          role: "system",
+          content:
+            `[agent-loop] You have already made ${researchCallCount} research calls without committing a file. ` +
+            "STOP RESEARCHING. On your next turn, call `write_file` (or `edit_file` / `multi_edit` for existing " +
+            "files) with the deliverable using the information you already have. The user is waiting for the " +
+            "file — not more research. " +
+            `Remaining turn budget: ${MAX_ITERATIONS - (i + 1)}.`,
+        });
+        onUpdate([...msgs]);
+      }
+
+      onStatusChange("thinking");
+    }
+
+    const limitMsg: Message = {
       _tmpKey: makeTmpKey(),
       conversation_id: opts.conversationId,
       role: "assistant",
-      content: preludeText,
-      tool_calls: toolCalls,
+      content:
+        "[Agent reached the maximum iteration limit without completing the task.]",
     };
-    msgs.push(asstMsg);
+    msgs.push(limitMsg);
     onUpdate([...msgs]);
-    onStatusChange("tool");
-
-    for (const tc of toolCalls) {
-      if (signal.aborted) return null;
-
-      const fnName = tc.function?.name ?? "";
-
-      // Allowlist gate — uses the precomputed Set (P0 #5).
-      if (allowlistSet && !allowlistSet.has(fnName)) {
-        const naParsed = parseArgs(tc.function?.arguments);
-        pushToolResult(msgs, opts.conversationId, onUpdate, tc,
-          rejectionBody("tool_not_allowed", `Tool '${fnName}' is not enabled for this conversation.`),
-          {
-            approval: "denied",
-            outcome: "denied",
-            errorKind: "tool_not_allowed",
-            args: naParsed.ok ? naParsed.args : {},
-          }, opts.workflowRunId ?? null);
-        continue;
-      }
-
-      const parsed = parseArgs(tc.function?.arguments);
-      if (!parsed.ok) {
-        pushToolResult(msgs, opts.conversationId, onUpdate, tc,
-          rejectionBody("bad_arguments", parsed.err),
-          { approval: "auto", outcome: "error", errorKind: "bad_arguments" },
-          opts.workflowRunId ?? null);
-        continue;
-      }
-      const args = parsed.args;
-
-      // Stall guard: if the agent keeps re-reading the same file in chunks,
-      // bail out with a hint instead of letting it eat the iteration budget.
-      // Skip a re-read the read-only cache will serve instantly (no IPC) — only
-      // genuine backend reads should count toward the stall limit, otherwise a
-      // legitimately-cached re-read is penalized as if it were chunk-thrashing.
-      const servedFromCache =
-        isReadOnlyTool(fnName) && readOnlyCache.has(cacheKey(fnName, args));
-      if (!servedFromCache) {
-        const stall = isReadFileStalling(fnName, args, readCounts);
-        if (stall.stalling) {
-          pushToolResult(msgs, opts.conversationId, onUpdate, tc,
-            rejectionBody(
-              "stall_guard",
-              `read_file has been called ${stall.count} times for '${stall.path}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`,
-            ),
-            { approval: "auto", outcome: "stall_guard", errorKind: "stall_guard", args },
-            opts.workflowRunId ?? null);
-          continue;
-        }
-      }
-
-      // Track which approval branch authorised this call — used in the
-      // audit row so we can later distinguish auto/session/user approvals.
-      let auditApproval: AuditApproval = "auto";
-
-      // Confirmation gate for dangerous tools. MCP-provided tools are
-      // out-of-process and not in the built-in DANGEROUS_TOOLS list, so they
-      // are gated explicitly here — classifyToolRisk returns a non-normal
-      // risk for them, and a careless/malicious MCP tool must never auto-run.
-      if (DANGEROUS_TOOLS.has(fnName) || isMcpToolName(fnName)) {
-        const risk = await classifyToolRisk(fnName, args);
-
-        // Policy wins over session approval state. A loaded policy can
-        // either auto-approve (skip confirmation) or deny outright. Risk is
-        // passed so a policy can never auto-approve a non-normal-risk call.
-        const policyVerdict = policyDecisionFor(projectPolicy, fnName, args, risk);
-        if (policyVerdict === "denied") {
-          pushToolResult(msgs, opts.conversationId, onUpdate, tc,
-            rejectionBody(
-              "policy_denied",
-              `Tool call denied by project policy${projectPolicy?.source_path ? ` (${projectPolicy.source_path})` : ""}.`,
-            ),
-            { approval: "denied", outcome: "denied", errorKind: "policy_denied", args },
-            opts.workflowRunId ?? null);
-          continue;
-        }
-
-        const cmd = String(args.command ?? "");
-        // safeShellPrefix returns null if the command contains shell
-        // metacharacters (`;`, `&`, `|`, `>`, `<`, backtick, `$(`) — that
-        // makes prefix-based session approval ineligible, forcing the
-        // confirmation prompt.
-        const firstWord = safeShellPrefix(cmd) ?? "";
-        const prefixApproved =
-          fnName === SHELL_TOOL &&
-          risk === "normal" &&
-          firstWord !== "" &&
-          approvedShellPrefixes.includes(firstWord);
-        // UX re-review C1 (2026-05-24): tools in IRREVERSIBLE_TOOLS NEVER
-        // ride the session-blanket-approve branch. delete_path,
-        // kill_process, agent_undo all permanently change state in ways
-        // the user can't recover from with another agent call.
-        const isIrreversible = IRREVERSIBLE_TOOLS.has(fnName);
-        const sessionApproved =
-          !isIrreversible &&
-          (policyVerdict === "auto" ||
-            prefixApproved ||
-            (fnName === SHELL_TOOL && approveAllShell && risk === "normal") ||
-            // Blanket write-approval only covers normal-risk *filesystem*
-            // writes — an elevated call (sensitive-path-classified write,
-            // http_request, etc.) always needs explicit confirmation.
-            (APPROVE_ALL_WRITE_FS.has(fnName) && approveAllWrite && risk === "normal"));
-        if (sessionApproved) {
-          auditApproval = "session_allowed";
-        }
-        if (!sessionApproved) {
-          const decision = await requestConfirmation(fnName, args, risk);
-          if (!decision.approve) {
-            // Three deny paths the audit log must distinguish:
-            //   - human clicked Deny       → reason: "user_deny"
-            //   - run was cancelled        → reason: "aborted"
-            //   - default deny-all fired   → reason: "unattended_denied"
-            // Anything outside the allowed set (including a stray
-            // "user_allow" that callers must never produce on a deny
-            // path) is normalised to "user_deny" so the audit row +
-            // tool body stay coherent.
-            const rawReason = decision.reason ?? "user_deny";
-            const auditReason = VALID_DENY_REASONS.has(rawReason) ? rawReason : "user_deny";
-            // Model-facing `kind`: collapse to a single learnable error
-            // class ("permission_denied"). Models trained on standard
-            // permission errors recognise this; the internal taxonomy
-            // (user_deny / aborted / unattended_denied) lives ONLY in
-            // the audit row so post-hoc reviewers retain full fidelity.
-            pushToolResult(msgs, opts.conversationId, onUpdate, tc,
-              rejectionBody(
-                "permission_denied",
-                DENY_MESSAGE_BY_REASON[auditReason] ?? DENY_MESSAGE_BY_REASON.user_deny,
-              ),
-              { approval: "denied", outcome: "denied", errorKind: auditReason, args },
-              opts.workflowRunId ?? null);
-            continue;
-          }
-          auditApproval = "user_allowed";
-          if (
-            decision.remember &&
-            fnName === SHELL_TOOL &&
-            risk === "normal" &&
-            firstWord !== ""
-          ) {
-            onApproveShellPrefix?.(firstWord);
-          }
-        }
-      }
-
-      // Re-check abort AFTER the (possibly long) confirmation wait. If the user
-      // hit Stop while the modal was open, do NOT execute the tool they tried
-      // to cancel — even on a late "Allow" click. Pair THIS tool call with a
-      // denied/aborted result before bailing so the assistant tool_calls
-      // message is never left with an unpaired id (which would 400 the next
-      // send). Round 6 HIGH (2026-05-30).
-      if (signal.aborted) {
-        pushToolResult(msgs, opts.conversationId, onUpdate, tc,
-          rejectionBody(
-            "permission_denied",
-            DENY_MESSAGE_BY_REASON.aborted ?? DENY_MESSAGE_BY_REASON.user_deny,
-          ),
-          { approval: "denied", outcome: "denied", errorKind: "aborted", args },
-          opts.workflowRunId ?? null);
-        return null;
-      }
-
-      const toolStart = performance.now();
-      let result: string;
-      let toolErrorKind: string | null = null;
-      try {
-        if (fnName === "spawn_subagent") {
-          const mode = typeof args.mode === "string" ? args.mode : "sync";
-          if (mode === "async") {
-            result = await spawnSubagentAsync(args, opts);
-          } else {
-            result = await runSubagent(args, opts);
-          }
-        } else if (fnName === "await_subagents") {
-          const ids = Array.isArray(args.subagent_ids)
-            ? (args.subagent_ids as unknown[]).map((v) => String(v))
-            : [];
-          // Clamp the model-supplied timeout: floor 0, ceiling 10 min, so a
-          // bogus huge value can't wedge the loop indefinitely. Coerce via
-          // Number() so a stringified "30" (which the previous typeof check
-          // silently rejected, falling back to 600s) is honored. Non-finite
-          // / NaN inputs collapse to the 600s default rather than 0 (a 0s
-          // timeout would fire immediately and orphan the subagents).
-          const AWAIT_TIMEOUT_CAP_MS = 600_000;
-          const coerced = Number(args.timeout_seconds ?? 600);
-          const rawTimeoutSecs = Number.isFinite(coerced) ? coerced : 600;
-          const timeoutMs = Math.min(AWAIT_TIMEOUT_CAP_MS, Math.max(0, rawTimeoutSecs) * 1000);
-          result = await awaitSubagents(ids, timeoutMs);
-        } else if (fnName === "list_subagents") {
-          result = listSubagents();
-        } else {
-          // Read-only cache short-circuit: if the model just called the same
-          // read-only tool with the same args (e.g. read_file the same path
-          // twice across two iterations), return the cached payload instead
-          // of round-tripping IPC. The cache is invalidated below whenever a
-          // non-read-only tool succeeds.
-          const isCacheable = isReadOnlyTool(fnName);
-          const ckey = isCacheable ? cacheKey(fnName, args) : null;
-          if (ckey != null && readOnlyCache.has(ckey)) {
-            result = readOnlyCache.get(ckey)!;
-          } else {
-            // `shellTrackKey: signal` keys this loop's active-shell entry
-            // by its AbortSignal. Sibling loops (parent + subagent) get
-            // distinct signals and therefore distinct map entries, so a
-            // `run_shell` in one loop can't be overwritten or cancelled by
-            // the other.
-            // C1: race the tool against the abort signal so a Stop mid-tool
-            // returns control to the loop promptly instead of blocking on the
-            // tool's own timeout. `signal` is also passed into executeTool so
-            // backend-cancellable long-running tools can terminate their op.
-            result = await abortableToolResult(
-              executeTool(fnName, args, {
-                dryRun,
-                shellTrackKey: signal,
-                signal,
-                // Surfaced for tools that tag their output to a conversation.
-                // The runner already carries the active conversation id in
-                // opts; pass it down unmodified.
-                conversationId: opts.conversationId,
-                // Project scope for the memory tools (remember/recall).
-                workspaceRoot,
-                // Thread the parent workflow_runs.id (if any) so that nested
-                // tools that emit their own audit rows (today: the skill
-                // invocation start/end markers) can correlate back to the
-                // run that produced them. L-A2 (2026-05-28).
-                workflowRunId: opts.workflowRunId ?? null,
-              }),
-              signal,
-            );
-            // Skill allowlist ENFORCEMENT (review finding 2026-06): when a
-            // skill with a declared allowed_tools loads, narrow the run's tool
-            // gate to that set, intersected with the existing grant (least
-            // privilege). The hard gate above (`allowlistSet && !has`) then
-            // blocks any call the skill didn't authorize. Skill meta-tools stay
-            // callable so the model can still load/refresh skills.
-            if (fnName === "load_claude_skill") {
-              try {
-                const r = JSON.parse(result) as { ok?: boolean; allowed_tools?: unknown };
-                if (r?.ok && Array.isArray(r.allowed_tools) && r.allowed_tools.length > 0) {
-                  const skillSet = new Set<string>(
-                    (r.allowed_tools as unknown[]).filter((t): t is string => typeof t === "string"),
-                  );
-                  skillSet.add("load_claude_skill");
-                  skillSet.add("list_claude_skills");
-                  allowlistSet = allowlistSet
-                    ? new Set([...allowlistSet].filter((t) => skillSet.has(t)))
-                    : skillSet;
-                }
-              } catch {
-                /* malformed result — leave the gate unchanged */
-              }
-            }
-            if (ckey != null) {
-              // Only cache responses that don't look like errors — caching
-              // a transient `{ok:false}` would mask a retry.
-              let cacheable = true;
-              try {
-                const r = JSON.parse(result) as { ok?: boolean } | null;
-                if (r && r.ok === false) cacheable = false;
-              } catch {
-                /* non-JSON read result — cache it */
-              }
-              if (cacheable) cacheStore(ckey, result);
-            }
-          }
-        }
-      } catch (e) {
-        result = formatToolError(e);
-        toolErrorKind = "tool_error";
-      }
-      const durationMs = performance.now() - toolStart;
-      // C1: if Stop fired during the tool, `abortableToolResult` returned the
-      // aborted sentinel. Pair it and END the loop rather than feeding it back
-      // to the model for another turn. Pairing a result before returning keeps
-      // the assistant tool_calls message from carrying an unpaired id.
-      if (signal.aborted) {
-        pushToolResult(msgs, opts.conversationId, onUpdate, tc, result, {
-          approval: auditApproval,
-          outcome: "denied",
-          errorKind: "aborted",
-          args,
-          durationMs,
-        }, opts.workflowRunId ?? null);
-        return null;
-      }
-      metrics.totalToolMs += durationMs;
-      metrics.toolCalls++;
-      // P1 #23: per-tool breakdown. ok flag flipped from toolErrorKind
-      // since it isn't computed until a few lines below — but a tool
-      // that *threw* always sets toolErrorKind in the catch block above,
-      // so checking it here is correct for the catch path. For the
-      // success branch we'll record ok=true; the post-parse outcome
-      // re-classification below (which may flip a returned-but-failed
-      // result to "error") is recorded against errorKind in the audit
-      // log, not in metrics.
-      recordToolStat(fnName, durationMs, !toolErrorKind);
-      onMetrics?.({ ...metrics });
-
-      // Determine final outcome by sniffing the result body — many tool
-      // wrappers return `{ok:false, kind:...}` rather than throwing. The tool
-      // protocol is JSON-over-string, so parse into a `ToolResult` shape
-      // rather than `any`.
-      let outcome: AuditOutcome = toolErrorKind ? "error" : "ok";
-      if (!toolErrorKind) {
-        try {
-          const parsedResult = JSON.parse(result) as Partial<ToolResult> | null;
-          if (parsedResult && typeof parsedResult === "object") {
-            // Dry-run results take precedence — they're recorded as `dry_run`
-            // regardless of `ok` status so the suppressed call shows up
-            // distinctly in the audit log.
-            if (parsedResult.dry_run === true) {
-              outcome = "dry_run";
-              if (parsedResult.ok === false && typeof parsedResult.blocked_by_safety === "string") {
-                toolErrorKind = "blocked_by_safety";
-              } else if (parsedResult.ok === false && typeof parsedResult.kind === "string") {
-                toolErrorKind = parsedResult.kind;
-              }
-            } else if (parsedResult.ok === false) {
-              outcome = "error";
-              if (typeof parsedResult.kind === "string") {
-                toolErrorKind = parsedResult.kind;
-              }
-            }
-          }
-        } catch {
-          /* result not JSON — leave outcome=ok */
-        }
-      }
-
-      pushToolResult(msgs, opts.conversationId, onUpdate, tc, result, {
-        approval: auditApproval,
-        outcome,
-        errorKind: toolErrorKind,
-        args,
-        durationMs,
-      }, opts.workflowRunId ?? null);
-
-      // Track research-vs-write balance so the post-turn block below can
-      // inject a "stop researching, write the file" nudge before the
-      // iteration budget is exhausted. `outcome` of `error` is not
-      // counted — only successful research calls accumulate. (Denied
-      // calls short-circuited earlier via `continue` and never reach
-      // this point in the loop.)
-      if (outcome !== "error") {
-        if (RESEARCH_TOOLS.has(fnName)) researchCallCount++;
-        if (fnName === "write_file" || fnName === "edit_file" || fnName === "multi_edit") {
-          writeCallCount++;
-        }
-      }
-
-      // Consecutive-error budget: a real failure (error outcome) bumps the
-      // counter; any non-error outcome resets it. Dry-run results count as
-      // successes — they're a deliberate suppression, not a failure.
-      if (outcome === "error") {
-        consecutiveToolErrors++;
-        if (consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
-          stopAndReportHintPending = true;
-        }
-      } else {
-        consecutiveToolErrors = 0;
-      }
-
-      // Invalidate the read-only cache whenever a non-read-only tool ran
-      // successfully — any cached read for the affected file/dir/process
-      // table could now be stale. Conservative: nuke the whole map rather
-      // than try to dependency-track by path.
-      if (outcome !== "error" && !isReadOnlyTool(fnName)) {
-        readOnlyCache.clear();
-      }
-    }
-
-    // Surface dropped parallel tool_calls (cloud-route truncation) as a
-    // synthetic system reminder for the NEXT turn. Pushed AFTER the tool
-    // result(s) so the assistant↔tool message pairing stays adjacent —
-    // some cloud gateways (Ollama `*:cloud`) re-validate body shape and
-    // reject any system message interleaved between an assistant tool_calls
-    // turn and its tool result. The model sees this reminder when it
-    // composes its NEXT response, prompting it to reissue the dropped
-    // calls instead of assuming they ran.
-    if (droppedParallelCount > 0) {
-      msgs.push({
-        _tmpKey: makeTmpKey(),
-        conversation_id: opts.conversationId,
-        role: "system",
-        content:
-          `[agent-loop] Cloud-route only executes ONE tool call per turn. ` +
-          `${droppedParallelCount} additional tool call(s) you issued in the previous turn were dropped — ` +
-          `reissue any that still matter on your next turn.`,
-      });
-      onUpdate([...msgs]);
-      // No explicit reset — `droppedParallelCount` is a per-iteration
-      // `let` declared at the top of the for-body and re-initialises
-      // to 0 each turn.
-    }
-
-    // After a run of consecutive tool failures, inject a system hint so the
-    // model stops retrying and reports the blocker to the user. This is an
-    // additional guard layered on top of the dedupe / stall / MAX_ITERATIONS
-    // logic — the dedupe window only catches IDENTICAL repeated calls.
-    let stopAndReportInjectedThisIter = false;
-    if (stopAndReportHintPending) {
-      stopAndReportHintPending = false;
-      consecutiveToolErrors = 0;
-      stopAndReportInjectedThisIter = true;
-      msgs.push({
-        _tmpKey: makeTmpKey(),
-        conversation_id: opts.conversationId,
-        role: "system",
-        content:
-          `[agent-loop] ${MAX_CONSECUTIVE_TOOL_ERRORS} tool calls in a row failed. ` +
-          "Stop retrying tools. Report to the user what you were trying to do, " +
-          "what failed, and the error messages — then ask how to proceed.",
-      });
-      onUpdate([...msgs]);
-    }
-
-    // Research-budget nudge: if the agent has done a lot of read-only
-    // research without producing a file (despite write_file being in
-    // its allowlist), inject a one-time strong reminder. Many models —
-    // kimi-k2.6:cloud in particular — happily spin on web_search and
-    // never get around to the write step the user asked for. This nudge
-    // breaks the loop. Fires once per run.
-    //
-    // Skip the nudge on a turn where the stop-and-report hint already
-    // fired — the two messages give conflicting instructions ("stop
-    // retrying, report the blocker" vs "stop researching, write the
-    // file") and the model gets muddled. Stop-and-report wins because
-    // it indicates the runner is in a failure mode, not just spinning.
-    if (
-      !researchNudgeFired &&
-      !stopAndReportInjectedThisIter &&
-      canWriteFile &&
-      writeCallCount === 0 &&
-      researchCallCount >= RESEARCH_NUDGE_THRESHOLD
-    ) {
-      researchNudgeFired = true;
-      msgs.push({
-        _tmpKey: makeTmpKey(),
-        conversation_id: opts.conversationId,
-        role: "system",
-        content:
-          `[agent-loop] You have already made ${researchCallCount} research calls without committing a file. ` +
-          "STOP RESEARCHING. On your next turn, call `write_file` (or `edit_file` / `multi_edit` for existing " +
-          "files) with the deliverable using the information you already have. The user is waiting for the " +
-          "file — not more research. " +
-          `Remaining turn budget: ${MAX_ITERATIONS - (i + 1)}.`,
-      });
-      onUpdate([...msgs]);
-    }
-
-    onStatusChange("thinking");
-  }
-
-  const limitMsg: Message = {
-    _tmpKey: makeTmpKey(),
-    conversation_id: opts.conversationId,
-    role: "assistant",
-    content: "[Agent reached the maximum iteration limit without completing the task.]",
-  };
-  msgs.push(limitMsg);
-  onUpdate([...msgs]);
-  onStatusChange("done");
-  return null;
+    onStatusChange("done");
+    return null;
   } finally {
     recordMetricsOnce();
   }
