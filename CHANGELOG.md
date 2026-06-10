@@ -4,6 +4,26 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-06-09
+
+### Distribution
+- **Notarized builds** — releases are now signed with a Developer ID
+  certificate, notarized by Apple, and stapled. The app opens with a normal
+  double-click; the Gatekeeper right-click/`xattr` workaround is gone.
+- Release pipeline verifies notarization (`spctl` must report
+  "Notarized Developer ID") and self-heals a bundler signature clobber
+  before shipping; the release aborts if Gatekeeper rejects the build.
+
+### Performance
+- Agent-mode replies now stream live into the chat bubble (previously the
+  bubble froze on its first frame until the turn finished).
+- Boot: main bundle slimmed 606 → 437 kB; window opens at its saved size and
+  position with no resize jump; theme applies before first paint.
+- Long chats: plain chat now fits history to the model's context window and
+  stops re-sending old pasted images every turn.
+- Cloud sends reuse a pooled TLS connection (~30-120 ms faster first token);
+  RAG search and re-indexing are dramatically cheaper on large corpora.
+
 ### Multi-model chat router
 - **Auto-route** — a chat toggle that picks the best-fit configured model per
   message: keyword fast-path → semantic match → small-LLM classifier → default.
