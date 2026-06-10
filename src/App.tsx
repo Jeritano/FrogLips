@@ -519,6 +519,27 @@ function App() {
     if (editingId !== null) editInputRef.current?.select();
   }, [editingId]);
 
+  // View navigation requests from components that don't own view state
+  // (launchpad cards in EmptyChatLanding). Validated against ViewId so a
+  // stray event can't put the app into a nonsense view.
+  useEffect(() => {
+    const VALID: ViewId[] = [
+      "chat",
+      "workflows",
+      "knowledge",
+      "mcp",
+      "roundtable",
+    ];
+    const handler = (e: Event) => {
+      const v = (e as CustomEvent<{ view?: string }>).detail?.view as
+        | ViewId
+        | undefined;
+      if (v && VALID.includes(v)) setView(v);
+    };
+    window.addEventListener("froglips:navigate", handler);
+    return () => window.removeEventListener("froglips:navigate", handler);
+  }, []);
+
   // Debounced message-content search. Merges conversation ids whose message
   // bodies match into the title-only filter. Falls back gracefully if the
   // backend command is missing (older builds) — title search still works.

@@ -1840,3 +1840,46 @@ button.cancel {
   color: var(--text-muted, var(--fg-dim, #888));
   line-height: 1.4;
 }
+
+/* ── Launchpad cards (empty-chat workstation landing) ─────────────────── */
+.launchpad-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(200px, 240px));
+  gap: 10px;
+  margin: 18px 0 6px;
+  justify-content: center;
+}
+.launchpad-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  background: var(--overlay-softer, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-md, 10px);
+  color: var(--fg, inherit);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+.launchpad-card:hover {
+  border-color: var(--accent);
+  background: var(--overlay-soft, rgba(255, 255, 255, 0.06));
+}
+.launchpad-icon {
+  color: var(--accent);
+  display: inline-flex;
+}
+.launchpad-title {
+  font-weight: 600;
+  font-size: var(--fs-sm, 13px);
+}
+.launchpad-desc {
+  font-size: var(--fs-2xs, 11px);
+  color: var(--fg-dim, #9aa0a6);
+  line-height: 1.35;
+}
+@media (max-width: 720px) {
+  .launchpad-cards { grid-template-columns: 1fr; }
+}
