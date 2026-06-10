@@ -35,7 +35,10 @@ interface BackendProbe {
   /** Hint shown under the row name (one line). */
   hint: string;
   /** What the install button does. null = no install action (already shipped). */
-  installAction: { kind: "url"; url: string } | { kind: "inline"; text: string } | null;
+  installAction:
+    | { kind: "url"; url: string }
+    | { kind: "inline"; text: string }
+    | null;
 }
 
 interface StarterModel {
@@ -113,14 +116,27 @@ const SAMPLE_PROMPTS: { title: string; text: string }[] = [
   },
 ];
 
+/** What the wizard hands back to App on completion. */
+export interface SetupWizardResult {
+  /** Chosen sample prompt — prefilled in the composer, NOT auto-sent. */
+  samplePrompt: string | null;
+  /** Model downloaded in step 2 (null when the user skipped). */
+  modelId: string | null;
+  /** Backend of the downloaded model ("ollama" | "mlx" | "native"). */
+  backend: string | null;
+}
+
 interface Props {
   /**
    * Called when the user finishes (or skips through) the wizard. The parent
-   * is responsible for persisting `setup_complete=true` and unmounting; we
-   * pass back the chosen sample prompt so it can be prefilled in the
-   * composer (NOT auto-sent — user reviews first per spec).
+   * is responsible for persisting `setup_complete=true` and unmounting.
+   * Product review 2026-06-10 (onboarding #1): the wizard now also reports
+   * WHAT was downloaded so App can hand a tool-prompt off to agent mode —
+   * previously the sample agent prompts ran in plain chat against a model
+   * that wasn't even started, and the model hallucinated a directory listing
+   * as the user's very first impression.
    */
-  onDone: (samplePrompt: string | null) => void;
+  onDone: (result: SetupWizardResult) => void;
 }
 
 export function SetupWizard({ onDone }: Props) {
@@ -234,7 +250,10 @@ export function SetupWizard({ onDone }: Props) {
                       ...p,
                       available: false,
                       hint: "Installed, but the daemon isn't running.",
-                      installAction: { kind: "inline", text: "Run: ollama serve — then re-run setup." },
+                      installAction: {
+                        kind: "inline",
+                        text: "Run: ollama serve — then re-run setup.",
+                      },
                     }
                   : p,
               ),
@@ -307,17 +326,36 @@ export function SetupWizard({ onDone }: Props) {
         await api.pullHfModel(m.id);
       }
       // Persist as last-selected so the model picker picks it up after
-      // wizard closes. The picker will load + start the server on first use.
+      // wizard closes.
       await api
         .settingsSet({ last_model: m.id, last_backend: m.backend })
         .catch((err) => {
           logDiag({
             level: "info",
             source: "setup-wizard",
-            message: "settingsSet(last_model) failed after download — not fatal",
+            message:
+              "settingsSet(last_model) failed after download — not fatal",
             detail: err,
           });
         });
+      // Auto-start the model NOW (product review 2026-06-10, onboarding #1):
+      // the wizard used to leave the server stopped, so the user's very
+      // first send hit "pick a model and press Start". Fire-and-forget —
+      // the server-status event stream updates the picker/header as it
+      // comes up, and a failure here just lands the user on the old manual
+      // Start path.
+      const startP =
+        m.backend === "native"
+          ? api.nativeLoadModel(m.id)
+          : api.startServer(m.id, m.backend);
+      void Promise.resolve(startP).catch((err) => {
+        logDiag({
+          level: "warn",
+          source: "setup-wizard",
+          message: `auto-start after wizard download failed for ${m.id} (${m.backend}) — user can press Start manually`,
+          detail: err,
+        });
+      });
       setDownloaded(m);
     } catch (err) {
       setDownloadErr(String(err));
@@ -331,7 +369,11 @@ export function SetupWizard({ onDone }: Props) {
   }
 
   function finish(samplePrompt: string | null) {
-    onDone(samplePrompt);
+    onDone({
+      samplePrompt,
+      modelId: downloaded?.id ?? null,
+      backend: downloaded?.backend ?? null,
+    });
   }
 
   // ── Rendering ────────────────────────────────────────────────────────────
@@ -339,7 +381,10 @@ export function SetupWizard({ onDone }: Props) {
   return (
     <WizardOverlay>
       <div className="setup-wizard-modal">
-        <div className="setup-wizard-stepper" data-testid="setup-wizard-stepper">
+        <div
+          className="setup-wizard-stepper"
+          data-testid="setup-wizard-stepper"
+        >
           {[1, 2, 3].map((n) => (
             <div
               key={n}
@@ -363,7 +408,10 @@ export function SetupWizard({ onDone }: Props) {
               First, let's check which backends are already installed.
             </p>
 
-            <table className="setup-wizard-table" data-testid="setup-wizard-probe-table">
+            <table
+              className="setup-wizard-table"
+              data-testid="setup-wizard-probe-table"
+            >
               <thead>
                 <tr>
                   <th>Backend</th>
@@ -457,12 +505,15 @@ export function SetupWizard({ onDone }: Props) {
           <div className="setup-wizard-step" data-testid="setup-wizard-step-2">
             <h2>Pick a starter model</h2>
             <p className="setup-wizard-pitch">
-              Choose one to download now. You can add more later from the
-              model browser.
+              Choose one to download now. You can add more later from the model
+              browser.
             </p>
 
             {availableStarters().length === 0 && (
-              <div className="setup-wizard-empty" data-testid="setup-wizard-no-backend">
+              <div
+                className="setup-wizard-empty"
+                data-testid="setup-wizard-no-backend"
+              >
                 No backend available — go back and install one, or skip and
                 configure manually.
               </div>
@@ -471,68 +522,77 @@ export function SetupWizard({ onDone }: Props) {
             <div className="setup-wizard-cards">
               {(() => {
                 const starters = availableStarters();
-                const { recommended, fit } = recommendStarter(starters, ramGb ?? 16);
-                return starters.map((m) => {
-                const isDownloading = downloading?.id === m.id;
-                const isDone = downloaded?.id === m.id;
-                const isRecommended = recommended?.id === m.id;
-                const tier = fit.get(m.id);
-                return (
-                  <button
-                    key={`${m.backend}:${m.id}`}
-                    className={`setup-wizard-card ${isDone ? "done" : ""}${isRecommended ? " is-recommended" : ""}`}
-                    data-testid={`setup-wizard-card-${m.id}`}
-                    onClick={() => {
-                      if (!isDownloading && !isDone) void downloadModel(m);
-                    }}
-                    disabled={isDownloading || downloading !== null}
-                  >
-                    {isRecommended && (
-                      <div className="setup-wizard-rec-ribbon">
-                        {ramGb ? `Recommended for your ${fmtGb(ramGb)} Mac` : "Recommended"}
-                      </div>
-                    )}
-                    <div className="setup-wizard-card-label">{m.label}</div>
-                    <div className="setup-wizard-card-meta">
-                      {m.size} · {m.backend}
-                      {tier && (
-                        <span className="headroom-badge" data-tier={tier}>
-                          {tier === "comfortable"
-                            ? "Fits"
-                            : tier === "tight"
-                              ? "Tight"
-                              : tier === "thrash"
-                                ? "Heavy"
-                                : "Too big"}
-                        </span>
-                      )}
-                    </div>
-                    <div className="setup-wizard-card-desc">{m.description}</div>
-                    {isDownloading && (
-                      <div className="setup-wizard-card-state">Downloading…</div>
-                    )}
-                    {isDone && (
-                      <div className="setup-wizard-card-state done">
-                        Downloaded <Check size={14} />
-                      </div>
-                    )}
-                  </button>
+                const { recommended, fit } = recommendStarter(
+                  starters,
+                  ramGb ?? 16,
                 );
+                return starters.map((m) => {
+                  const isDownloading = downloading?.id === m.id;
+                  const isDone = downloaded?.id === m.id;
+                  const isRecommended = recommended?.id === m.id;
+                  const tier = fit.get(m.id);
+                  return (
+                    <button
+                      key={`${m.backend}:${m.id}`}
+                      className={`setup-wizard-card ${isDone ? "done" : ""}${isRecommended ? " is-recommended" : ""}`}
+                      data-testid={`setup-wizard-card-${m.id}`}
+                      onClick={() => {
+                        if (!isDownloading && !isDone) void downloadModel(m);
+                      }}
+                      disabled={isDownloading || downloading !== null}
+                    >
+                      {isRecommended && (
+                        <div className="setup-wizard-rec-ribbon">
+                          {ramGb
+                            ? `Recommended for your ${fmtGb(ramGb)} Mac`
+                            : "Recommended"}
+                        </div>
+                      )}
+                      <div className="setup-wizard-card-label">{m.label}</div>
+                      <div className="setup-wizard-card-meta">
+                        {m.size} · {m.backend}
+                        {tier && (
+                          <span className="headroom-badge" data-tier={tier}>
+                            {tier === "comfortable"
+                              ? "Fits"
+                              : tier === "tight"
+                                ? "Tight"
+                                : tier === "thrash"
+                                  ? "Heavy"
+                                  : "Too big"}
+                          </span>
+                        )}
+                      </div>
+                      <div className="setup-wizard-card-desc">
+                        {m.description}
+                      </div>
+                      {isDownloading && (
+                        <div className="setup-wizard-card-state">
+                          Downloading…
+                        </div>
+                      )}
+                      {isDone && (
+                        <div className="setup-wizard-card-state done">
+                          Downloaded <Check size={14} />
+                        </div>
+                      )}
+                    </button>
+                  );
                 });
               })()}
             </div>
 
             {downloadErr && (
-              <div className="setup-wizard-error" data-testid="setup-wizard-dl-err">
+              <div
+                className="setup-wizard-error"
+                data-testid="setup-wizard-dl-err"
+              >
                 Download failed: {downloadErr}
               </div>
             )}
 
             <div className="setup-wizard-nav">
-              <button
-                className="setup-wizard-skip"
-                onClick={() => setStep(1)}
-              >
+              <button className="setup-wizard-skip" onClick={() => setStep(1)}>
                 Back
               </button>
               <button
@@ -556,9 +616,9 @@ export function SetupWizard({ onDone }: Props) {
                 className="setup-wizard-primary"
                 onClick={() => setStep(3)}
                 disabled={
-                  downloaded === null
-                  && availableStarters().length > 0
-                  && existingModelsCount === 0
+                  downloaded === null &&
+                  availableStarters().length > 0 &&
+                  existingModelsCount === 0
                 }
                 data-testid="setup-wizard-next-2"
               >
@@ -591,10 +651,7 @@ export function SetupWizard({ onDone }: Props) {
             </div>
 
             <div className="setup-wizard-nav">
-              <button
-                className="setup-wizard-skip"
-                onClick={() => setStep(2)}
-              >
+              <button className="setup-wizard-skip" onClick={() => setStep(2)}>
                 Back
               </button>
               <button

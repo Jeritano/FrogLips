@@ -1,4 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   MessageSquare,
   Users,
@@ -24,6 +33,11 @@ import {
   Moon,
 } from "lucide-react";
 import { Kbd } from "./components/ui";
+import {
+  CommandPalette,
+  paletteIcons,
+  type PaletteAction,
+} from "./components/CommandPalette";
 import { api } from "./lib/tauri-api";
 import { applyAllAppearance, applyCodeTheme } from "./lib/appearance";
 import { applyBubbleColor } from "./lib/bubble-color";
@@ -45,8 +59,14 @@ import { Toast } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ErrorBar } from "./components/ErrorBar";
 import { LiveRegion } from "./components/LiveRegion";
-import { WorkflowRunProvider, useWorkflowRunControl } from "./lib/workflow/run-context";
-import { RoundtableRunProvider, useRoundtableRun } from "./lib/roundtable/run-context";
+import {
+  WorkflowRunProvider,
+  useWorkflowRunControl,
+} from "./lib/workflow/run-context";
+import {
+  RoundtableRunProvider,
+  useRoundtableRun,
+} from "./lib/roundtable/run-context";
 
 type ViewId = "chat" | "workflows" | "knowledge" | "mcp" | "roundtable";
 
@@ -67,6 +87,10 @@ const NAV_ITEMS: { id: ViewId; label: string; icon: React.ReactNode }[] = [
   { id: "workflows", label: "Flows", icon: <Zap size={17} /> },
   { id: "chat", label: "Chat", icon: <MessageSquare size={17} /> },
   { id: "roundtable", label: "Table", icon: <Users size={17} /> },
+  // Knowledge is a PILLAR (memory + RAG + history) — it was exiled to the
+  // hamburger menu next to "Re-run setup wizard", making the pillar
+  // undiscoverable in session one (product review 2026-06-10, IA #4).
+  { id: "knowledge", label: "Knowledge", icon: <BookOpen size={17} /> },
   { id: "mcp", label: "Tools", icon: <Wrench size={17} /> },
 ];
 
@@ -105,7 +129,9 @@ function ViewNav({
             onClick={() => setView(it.id)}
             data-testid={`view-tab-${it.id}`}
           >
-            <span className="view-nav-icon" aria-hidden="true">{it.icon}</span>
+            <span className="view-nav-icon" aria-hidden="true">
+              {it.icon}
+            </span>
             <span className="view-nav-label">{it.label}</span>
             {busy && <span className="view-nav-dot" />}
           </button>
@@ -126,19 +152,27 @@ const Dashboard = lazy(() =>
   import("./components/Dashboard").then((m) => ({ default: m.Dashboard })),
 );
 const DiagnosticsPanel = lazy(() =>
-  import("./components/DiagnosticsPanel").then((m) => ({ default: m.DiagnosticsPanel })),
+  import("./components/DiagnosticsPanel").then((m) => ({
+    default: m.DiagnosticsPanel,
+  })),
 );
 const PrivacyPanel = lazy(() =>
-  import("./components/PrivacyPanel").then((m) => ({ default: m.PrivacyPanel })),
+  import("./components/PrivacyPanel").then((m) => ({
+    default: m.PrivacyPanel,
+  })),
 );
 const ForkTreeModal = lazy(() =>
   import("./components/ForkTree").then((m) => ({ default: m.ForkTreeModal })),
 );
 const AboutYouModal = lazy(() =>
-  import("./components/AboutYouModal").then((m) => ({ default: m.AboutYouModal })),
+  import("./components/AboutYouModal").then((m) => ({
+    default: m.AboutYouModal,
+  })),
 );
 const AppearanceModal = lazy(() =>
-  import("./components/AppearanceModal").then((m) => ({ default: m.AppearanceModal })),
+  import("./components/AppearanceModal").then((m) => ({
+    default: m.AppearanceModal,
+  })),
 );
 // First-run-only flow: never seen by returning users, so it has no business
 // living in the initial chunk. Mounts behind `wizardOpen === true`.
@@ -148,18 +182,24 @@ const SetupWizard = lazy(() =>
 // Workflows canvas — React Flow + its CSS are heavy, so this stays in its own
 // chunk that only fetches when the user opens the Workflows view.
 const WorkflowsPage = lazy(() =>
-  import("./components/workflows/WorkflowsPage").then((m) => ({ default: m.WorkflowsPage })),
+  import("./components/workflows/WorkflowsPage").then((m) => ({
+    default: m.WorkflowsPage,
+  })),
 );
 // Knowledge surface — same lazy split as Workflows. The chunk only fetches
 // when the user opens the Knowledge view, so first paint stays unaffected.
 const KnowledgeView = lazy(() =>
-  import("./components/KnowledgeView").then((m) => ({ default: m.KnowledgeView })),
+  import("./components/KnowledgeView").then((m) => ({
+    default: m.KnowledgeView,
+  })),
 );
 const McpView = lazy(() =>
   import("./components/McpView").then((m) => ({ default: m.McpView })),
 );
 const RoundtableView = lazy(() =>
-  import("./components/RoundtableView").then((m) => ({ default: m.RoundtableView })),
+  import("./components/RoundtableView").then((m) => ({
+    default: m.RoundtableView,
+  })),
 );
 
 function App() {
@@ -173,7 +213,9 @@ function App() {
   const [tagDraft, setTagDraft] = useState("");
   // Content-search results: conversation ids whose messages match `convSearch`.
   // null = no content search performed (title-only filtering).
-  const [contentMatchIds, setContentMatchIds] = useState<Set<number> | null>(null);
+  const [contentMatchIds, setContentMatchIds] = useState<Set<number> | null>(
+    null,
+  );
   // Pending soft-delete. We delay the destructive IPC call by 5s so the undo
   // toast can cancel it — this preserves the conversation AND its messages.
   const [pendingDelete, setPendingDelete] = useState<{
@@ -188,6 +230,7 @@ function App() {
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   // Silent background update check → a tasteful, dismissable toast.
   const availableUpdate = useUpdateCheck();
   const [updateDismissed, setUpdateDismissed] = useState(false);
@@ -220,22 +263,33 @@ function App() {
   // hook is no longer needed here because the existing soft-delete
   // toast (`pendingDelete`, 5s undo window) already provides the safety
   // net for accidental delete clicks.
-  const [convContextMenu, setConvContextMenu] = useState<
-    { conv: Conversation; x: number; y: number } | null
-  >(null);
+  const [convContextMenu, setConvContextMenu] = useState<{
+    conv: Conversation;
+    x: number;
+    y: number;
+  } | null>(null);
   // Viewport-clamped render position for the conversation context menu. The
   // raw click coords (convContextMenu.x/y) can put the menu off the right/
   // bottom edge; after it mounts we measure it and shift it back on-screen.
   const convMenuRef = useRef<HTMLDivElement>(null);
-  const [convMenuPos, setConvMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [convMenuPos, setConvMenuPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   useLayoutEffect(() => {
     if (!convContextMenu) return;
     const el = convMenuRef.current;
     if (!el) return;
     const M = 8; // keep an 8px gutter from each edge
     const r = el.getBoundingClientRect();
-    const left = Math.max(M, Math.min(convContextMenu.x, window.innerWidth - r.width - M));
-    const top = Math.max(M, Math.min(convContextMenu.y, window.innerHeight - r.height - M));
+    const left = Math.max(
+      M,
+      Math.min(convContextMenu.x, window.innerWidth - r.width - M),
+    );
+    const top = Math.max(
+      M,
+      Math.min(convContextMenu.y, window.innerHeight - r.height - M),
+    );
     setConvMenuPos({ top, left });
   }, [convContextMenu]);
   useModalA11y({
@@ -273,7 +327,10 @@ function App() {
     Promise.all([api.setupCompleteGet(), api.settingsGet()])
       .then(async ([done, s]) => {
         if (ignored) return;
-        if (done) { setWizardOpen(false); return; }
+        if (done) {
+          setWizardOpen(false);
+          return;
+        }
         if (s.last_model) {
           await api.setupCompleteSet(true).catch(() => {});
           if (ignored) return;
@@ -287,41 +344,48 @@ function App() {
         logDiag({
           level: "info",
           source: "app",
-          message: "setupCompleteGet/settingsGet rejected — defaulting to showing the wizard",
+          message:
+            "setupCompleteGet/settingsGet rejected — defaulting to showing the wizard",
           detail: err,
         });
         setWizardOpen(true);
       });
     // Configure the memory client + apply the persisted theme.
-    api.settingsGet().then((s) => {
-      if (ignored) return;
-      configureMemory({
-        embeddingModel: s.embedding_model,
-        recallThreshold: s.recall_threshold,
+    api
+      .settingsGet()
+      .then((s) => {
+        if (ignored) return;
+        configureMemory({
+          embeddingModel: s.embedding_model,
+          recallThreshold: s.recall_threshold,
+        });
+        if (s.theme === "light" || s.theme === "dark") {
+          setTheme(s.theme);
+          document.documentElement.dataset.theme = s.theme;
+          // Mirror for main.tsx's synchronous pre-render read (perf C8) —
+          // keeps the first frame on the right theme next launch.
+          try {
+            localStorage.setItem("froglips-theme", s.theme);
+          } catch {
+            /* best-effort */
+          }
+        }
+        // Apply all device-local appearance prefs (per-theme code palettes,
+        // code/interface fonts, transcript size, high-contrast) now that the
+        // app theme is set, plus the chat-bubble color.
+        applyAllAppearance();
+        applyBubbleColor();
+      })
+      .catch((err) => {
+        if (ignored) return;
+        logDiag({
+          level: "warn",
+          source: "app",
+          message:
+            "settingsGet() rejected on startup — memory client may use defaults",
+          detail: err,
+        });
       });
-      if (s.theme === "light" || s.theme === "dark") {
-        setTheme(s.theme);
-        document.documentElement.dataset.theme = s.theme;
-        // Mirror for main.tsx's synchronous pre-render read (perf C8) —
-        // keeps the first frame on the right theme next launch.
-        try {
-          localStorage.setItem("froglips-theme", s.theme);
-        } catch { /* best-effort */ }
-      }
-      // Apply all device-local appearance prefs (per-theme code palettes,
-      // code/interface fonts, transcript size, high-contrast) now that the
-      // app theme is set, plus the chat-bubble color.
-      applyAllAppearance();
-      applyBubbleColor();
-    }).catch((err) => {
-      if (ignored) return;
-      logDiag({
-        level: "warn",
-        source: "app",
-        message: "settingsGet() rejected on startup — memory client may use defaults",
-        detail: err,
-      });
-    });
     return () => {
       ignored = true;
     };
@@ -358,7 +422,12 @@ function App() {
 
   // Rust-side warnings: forward into the in-app diagnostics ring buffer so
   // MCP/RAG/agent failures surface in the panel alongside frontend diagnostics.
-  useTauriEvent<{ level: "info" | "warn" | "error"; source: string; message: string; detail?: unknown }>(
+  useTauriEvent<{
+    level: "info" | "warn" | "error";
+    source: string;
+    message: string;
+    detail?: unknown;
+  }>(
     "app-diagnostics",
     useCallback((e) => {
       const p = e.payload;
@@ -378,17 +447,23 @@ function App() {
   // conversation switch (cheap; just reads in-memory state on the Rust side).
   useEffect(() => {
     let cancelled = false;
-    api.agentGetWorkspace().then((p) => {
-      if (!cancelled) setPanelWorkspace(p ?? null);
-    }).catch((err) =>
-      logDiag({
-        level: "warn",
-        source: "app",
-        message: "agentGetWorkspace failed — MemoryPanel will fall back to global scope",
-        detail: err,
-      }),
-    );
-    return () => { cancelled = true; };
+    api
+      .agentGetWorkspace()
+      .then((p) => {
+        if (!cancelled) setPanelWorkspace(p ?? null);
+      })
+      .catch((err) =>
+        logDiag({
+          level: "warn",
+          source: "app",
+          message:
+            "agentGetWorkspace failed — MemoryPanel will fall back to global scope",
+          detail: err,
+        }),
+      );
+    return () => {
+      cancelled = true;
+    };
   }, [memoryTick, current?.id]);
 
   // Global keyboard shortcuts: Cmd+N new chat, Cmd+L library, Cmd+K model picker focus
@@ -403,7 +478,7 @@ function App() {
       // `isContentEditable` is the inherited property — a nested child of a
       // contenteditable root reports true, unlike `matches('[contenteditable]')`
       // which only catches the element with the attribute itself.
-      const t = e.target as (Element | null);
+      const t = e.target as Element | null;
       if (
         t instanceof HTMLInputElement ||
         t instanceof HTMLTextAreaElement ||
@@ -412,18 +487,27 @@ function App() {
         return;
       }
       const key = e.key.toLowerCase();
-      if (key === "n") { e.preventDefault(); newChat(); return; }
+      if (key === "n") {
+        e.preventDefault();
+        newChat();
+        return;
+      }
       if (key === "l") {
         e.preventDefault();
         // Click the Browse & download models option in picker
-        const lib = document.querySelector<HTMLButtonElement>("[data-shortcut='open-library']");
+        const lib = document.querySelector<HTMLButtonElement>(
+          "[data-shortcut='open-library']",
+        );
         lib?.click();
         return;
       }
       if (key === "k") {
+        // Cmd+K is the command palette now (product review 2026-06-10,
+        // IA #7). The old behavior (focus the model picker) lives on as a
+        // palette action, so the muscle memory path is Cmd+K → "model" →
+        // Enter.
         e.preventDefault();
-        const sel = document.querySelector<HTMLElement>("[data-shortcut='focus-model']");
-        sel?.focus();
+        setPaletteOpen((v) => !v);
         return;
       }
     };
@@ -446,7 +530,8 @@ function App() {
     }
     let cancelled = false;
     const t = setTimeout(() => {
-      api.searchMessages(q)
+      api
+        .searchMessages(q)
         .then((hits) => {
           if (cancelled) return;
           setContentMatchIds(new Set(hits.map((h) => h.conversation_id)));
@@ -457,12 +542,16 @@ function App() {
           logDiag({
             level: "info",
             source: "app",
-            message: "searchMessages failed — falling back to title-only search",
+            message:
+              "searchMessages failed — falling back to title-only search",
             detail: err,
           });
         });
     }, 220);
-    return () => { cancelled = true; clearTimeout(t); };
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [convSearch]);
 
   // On unmount ONLY, commit any pending soft-delete (deleting then quitting
@@ -513,7 +602,9 @@ function App() {
     // Mirror for main.tsx's synchronous pre-render read (perf C8).
     try {
       localStorage.setItem("froglips-theme", next);
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
     // Re-apply the code palette chosen for the NEW app theme (light/dark each
     // carry their own syntax-palette pick).
     applyCodeTheme(next);
@@ -569,8 +660,8 @@ function App() {
     // A conv is a "root" for sidebar purposes if its parent isn't in the
     // currently-visible (search-filtered) list — that way filtered children
     // still appear at depth 0 rather than vanishing.
-    const roots = filteredConversations.filter((c) =>
-      c.parent_conv_id == null || !knownIds.has(c.parent_conv_id),
+    const roots = filteredConversations.filter(
+      (c) => c.parent_conv_id == null || !knownIds.has(c.parent_conv_id),
     );
     const out: { conv: Conversation; depth: number }[] = [];
     const visited = new Set<number>();
@@ -694,7 +785,9 @@ function App() {
       // the user may have switched conversations; writing back the stale
       // `current` would clobber the new selection. Only rewrite the title if
       // `prev` is still the conversation we renamed.
-      setCurrent((prev) => (prev && prev.id === id ? { ...prev, title } : prev));
+      setCurrent((prev) =>
+        prev && prev.id === id ? { ...prev, title } : prev,
+      );
       await refreshConversations();
     } catch (e) {
       setErr(`Rename failed: ${e}`);
@@ -706,6 +799,120 @@ function App() {
     setEditingId(null);
     setEditingTitle("");
   }
+
+  // Command-palette action registry (Cmd+K). Flat list, fuzzy-filtered in
+  // the palette; conversation jumping is wired separately via the
+  // `conversations` prop. Function deps (newChat/toggleTheme) are component
+  // function declarations — stable enough; the registry only needs to be
+  // referentially fresh when the wizard/menu setters change, which is never.
+  const paletteActions = useMemo<PaletteAction[]>(
+    () => [
+      {
+        id: "view-flows",
+        label: "Go to Flows",
+        hint: "view",
+        icon: paletteIcons.flows,
+        run: () => setView("workflows"),
+      },
+      {
+        id: "view-chat",
+        label: "Go to Chat",
+        hint: "view",
+        icon: paletteIcons.chat,
+        run: () => setView("chat"),
+      },
+      {
+        id: "view-table",
+        label: "Go to Table (Roundtable)",
+        hint: "view",
+        icon: paletteIcons.table,
+        run: () => setView("roundtable"),
+      },
+      {
+        id: "view-knowledge",
+        label: "Go to Knowledge",
+        hint: "view",
+        icon: paletteIcons.knowledge,
+        run: () => setView("knowledge"),
+      },
+      {
+        id: "view-tools",
+        label: "Go to Tools (MCP)",
+        hint: "view",
+        icon: paletteIcons.tools,
+        run: () => setView("mcp"),
+      },
+      {
+        id: "new-chat",
+        label: "New chat",
+        hint: "⌘N",
+        icon: paletteIcons.newChat,
+        run: () => {
+          setView("chat");
+          newChat();
+        },
+      },
+      {
+        id: "toggle-theme",
+        label: "Toggle light/dark theme",
+        icon: paletteIcons.theme,
+        run: () => toggleTheme(),
+      },
+      {
+        id: "open-memories",
+        label: "Open Memories",
+        hint: "modal",
+        run: () => setMemoriesOpen(true),
+      },
+      {
+        id: "open-dashboard",
+        label: "Open Dashboard",
+        hint: "modal",
+        run: () => setDashboardOpen(true),
+      },
+      {
+        id: "open-diagnostics",
+        label: "Open Diagnostics",
+        hint: "modal",
+        run: () => setDiagnosticsOpen(true),
+      },
+      {
+        id: "open-privacy",
+        label: "Open Privacy & Security",
+        hint: "modal",
+        run: () => setPrivacyOpen(true),
+      },
+      {
+        id: "focus-model",
+        label: "Focus model picker",
+        run: () =>
+          document
+            .querySelector<HTMLElement>("[data-shortcut='focus-model']")
+            ?.focus(),
+      },
+      {
+        id: "open-library",
+        label: "Browse & download models",
+        hint: "⌘L",
+        run: () =>
+          document
+            .querySelector<HTMLButtonElement>("[data-shortcut='open-library']")
+            ?.click(),
+      },
+      {
+        id: "rerun-wizard",
+        label: "Re-run setup wizard",
+        run: () => setWizardOpen(true),
+      },
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    ],
+    [],
+  );
+
+  const onPaletteOpenConversation = useCallback((c: Conversation) => {
+    setView("chat");
+    setCurrent(c);
+  }, []);
 
   // Stable ChatWindow callbacks — inline arrow handlers caused MessageRow
   // (React.memo) to bust on every parent render, which during streaming
@@ -743,7 +950,8 @@ function App() {
       logDiag({
         level: "info",
         source: "app",
-        message: "onForked: listConversations after fork failed — sidebar still reflects the new conv",
+        message:
+          "onForked: listConversations after fork failed — sidebar still reflects the new conv",
         detail: err,
       });
     }
@@ -777,7 +985,8 @@ function App() {
                 setMenuOpen((v) => !v);
               }}
               onBlur={() => {
-                if (menuCloseTimer.current != null) clearTimeout(menuCloseTimer.current);
+                if (menuCloseTimer.current != null)
+                  clearTimeout(menuCloseTimer.current);
                 menuCloseTimer.current = window.setTimeout(() => {
                   setMenuOpen(false);
                   menuCloseTimer.current = null;
@@ -794,7 +1003,10 @@ function App() {
                   role="menuitem"
                   data-testid="open-dashboard"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { setDashboardOpen(true); setMenuOpen(false); }}
+                  onClick={() => {
+                    setDashboardOpen(true);
+                    setMenuOpen(false);
+                  }}
                 >
                   <BarChart3 size={16} aria-hidden="true" /> Dashboard
                 </button>
@@ -803,7 +1015,10 @@ function App() {
                   role="menuitem"
                   data-testid="menu-memories"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { setMemoriesOpen(true); setMenuOpen(false); }}
+                  onClick={() => {
+                    setMemoriesOpen(true);
+                    setMenuOpen(false);
+                  }}
                 >
                   <Star size={16} aria-hidden="true" /> Memories
                 </button>
@@ -812,7 +1027,10 @@ function App() {
                   role="menuitem"
                   data-testid="menu-about-you"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { setAboutYouOpen(true); setMenuOpen(false); }}
+                  onClick={() => {
+                    setAboutYouOpen(true);
+                    setMenuOpen(false);
+                  }}
                 >
                   <User size={16} aria-hidden="true" /> About You
                 </button>
@@ -821,7 +1039,10 @@ function App() {
                   role="menuitem"
                   data-testid="menu-appearance"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { setAppearanceOpen(true); setMenuOpen(false); }}
+                  onClick={() => {
+                    setAppearanceOpen(true);
+                    setMenuOpen(false);
+                  }}
                 >
                   <ImageIcon size={16} aria-hidden="true" /> Appearance
                 </button>
@@ -831,7 +1052,10 @@ function App() {
                     role="menuitem"
                     data-testid="menu-fork-tree"
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => { setForkTreeOpen(true); setMenuOpen(false); }}
+                    onClick={() => {
+                      setForkTreeOpen(true);
+                      setMenuOpen(false);
+                    }}
                   >
                     <GitBranch size={16} aria-hidden="true" /> Branches
                   </button>
@@ -841,7 +1065,10 @@ function App() {
                   role="menuitem"
                   data-testid="menu-knowledge"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { setView("knowledge"); setMenuOpen(false); }}
+                  onClick={() => {
+                    setView("knowledge");
+                    setMenuOpen(false);
+                  }}
                 >
                   <BookOpen size={16} aria-hidden="true" /> Knowledge
                 </button>
@@ -850,16 +1077,23 @@ function App() {
                   role="menuitem"
                   data-testid="menu-privacy"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { setPrivacyOpen(true); setMenuOpen(false); }}
+                  onClick={() => {
+                    setPrivacyOpen(true);
+                    setMenuOpen(false);
+                  }}
                 >
-                  <ShieldCheck size={16} aria-hidden="true" /> Privacy &amp; safety
+                  <ShieldCheck size={16} aria-hidden="true" /> Privacy &amp;
+                  safety
                 </button>
                 <button
                   type="button"
                   role="menuitem"
                   data-testid="menu-diagnostics"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { setDiagnosticsOpen(true); setMenuOpen(false); }}
+                  onClick={() => {
+                    setDiagnosticsOpen(true);
+                    setMenuOpen(false);
+                  }}
                 >
                   <Stethoscope size={16} aria-hidden="true" /> Diagnostics
                 </button>
@@ -870,11 +1104,14 @@ function App() {
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={async () => {
                     setMenuOpen(false);
-                    try { await api.setupCompleteSet(false); } catch (err) {
+                    try {
+                      await api.setupCompleteSet(false);
+                    } catch (err) {
                       logDiag({
                         level: "warn",
                         source: "app",
-                        message: "setupCompleteSet(false) failed — wizard still opening locally",
+                        message:
+                          "setupCompleteSet(false) failed — wizard still opening locally",
                         detail: err,
                       });
                     }
@@ -889,7 +1126,9 @@ function App() {
           <button
             type="button"
             className="topbar-btn topbar-collapse"
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={
+              sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"
+            }
             aria-pressed={sidebarCollapsed}
             onClick={() => setSidebarCollapsed((v) => !v)}
             title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -914,7 +1153,12 @@ function App() {
         {/* Stacked view-nav buttons (one per view). Knowledge stays in the
             hamburger menu (less-frequent editorial surface). */}
         <ViewNav view={view} setView={setView} />
-        <button className="new-chat" onClick={newChat} data-testid="new-chat-btn" title="New chat (⌘N)">
+        <button
+          className="new-chat"
+          onClick={newChat}
+          data-testid="new-chat-btn"
+          title="New chat (⌘N)"
+        >
           + New chat <Kbd>⌘N</Kbd>
         </button>
         <input
@@ -947,81 +1191,113 @@ function App() {
           {orderedConversations.map(({ conv: c, depth }) => {
             const tags = parseTags(c.tags);
             return (
-            <li
-              key={c.id}
-              data-testid="conv-item"
-              data-depth={depth}
-              data-pinned={c.pinned ? "true" : undefined}
-              className={`conv-row-anim${current?.id === c.id ? " active" : ""}`}
-              onClick={() => {
-                if (editingId === c.id || tagEditingId === c.id) return;
-                setCurrent(c);
-                setView("chat");
-              }}
-              onDoubleClick={(e) => startEdit(c, e)}
-              onContextMenu={(e) => {
-                if (editingId === c.id || tagEditingId === c.id) return;
-                e.preventDefault();
-                e.stopPropagation();
-                setConvMenuPos(null);
-                setConvContextMenu({ conv: c, x: e.clientX, y: e.clientY });
-              }}
-              title={depth > 0 ? "Branch — forked from another conversation" : "Right-click for actions; double-click to rename"}
-              style={depth > 0 ? { paddingLeft: 8 + Math.min(depth, 4) * 14 } : undefined}
-            >
-              {editingId === c.id ? (
-                <input
-                  ref={editInputRef}
-                  className="conv-rename"
-                  value={editingTitle}
-                  onChange={(e) => setEditingTitle(e.target.value)}
-                  onBlur={commitEdit}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
-                    else if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  autoFocus
-                />
-              ) : (
-                <span className="conv-title">
-                  <span className="conv-title-line">
-                    {c.pinned && (
-                      <span className="conv-pin-dot" aria-hidden="true" title="Pinned"><Pin size={11} /></span>
-                    )}
-                    {depth > 0 && (
-                      <span className="conv-branch-marker" aria-hidden="true">↳ </span>
-                    )}
-                    <span className="conv-title-text">{c.title}</span>
-                  </span>
-                  {tagEditingId === c.id ? (
-                    <input
-                      className="conv-tag-input"
-                      value={tagDraft}
-                      placeholder="tags, comma-separated"
-                      onChange={(e) => setTagDraft(e.target.value)}
-                      onBlur={commitTagEdit}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") { e.preventDefault(); commitTagEdit(); }
-                        else if (e.key === "Escape") { e.preventDefault(); cancelTagEdit(); }
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      autoFocus
-                    />
-                  ) : tags.length > 0 ? (
-                    <span className="conv-tags" onClick={(e) => startTagEdit(c, e)} title="Edit tags">
-                      {tags.map((t) => (
-                        <span key={t} className="conv-tag-chip">{t}</span>
-                      ))}
+              <li
+                key={c.id}
+                data-testid="conv-item"
+                data-depth={depth}
+                data-pinned={c.pinned ? "true" : undefined}
+                className={`conv-row-anim${current?.id === c.id ? " active" : ""}`}
+                onClick={() => {
+                  if (editingId === c.id || tagEditingId === c.id) return;
+                  setCurrent(c);
+                  setView("chat");
+                }}
+                onDoubleClick={(e) => startEdit(c, e)}
+                onContextMenu={(e) => {
+                  if (editingId === c.id || tagEditingId === c.id) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setConvMenuPos(null);
+                  setConvContextMenu({ conv: c, x: e.clientX, y: e.clientY });
+                }}
+                title={
+                  depth > 0
+                    ? "Branch — forked from another conversation"
+                    : "Right-click for actions; double-click to rename"
+                }
+                style={
+                  depth > 0
+                    ? { paddingLeft: 8 + Math.min(depth, 4) * 14 }
+                    : undefined
+                }
+              >
+                {editingId === c.id ? (
+                  <input
+                    ref={editInputRef}
+                    className="conv-rename"
+                    value={editingTitle}
+                    onChange={(e) => setEditingTitle(e.target.value)}
+                    onBlur={commitEdit}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        commitEdit();
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        cancelEdit();
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    autoFocus
+                  />
+                ) : (
+                  <span className="conv-title">
+                    <span className="conv-title-line">
+                      {c.pinned && (
+                        <span
+                          className="conv-pin-dot"
+                          aria-hidden="true"
+                          title="Pinned"
+                        >
+                          <Pin size={11} />
+                        </span>
+                      )}
+                      {depth > 0 && (
+                        <span className="conv-branch-marker" aria-hidden="true">
+                          ↳{" "}
+                        </span>
+                      )}
+                      <span className="conv-title-text">{c.title}</span>
                     </span>
-                  ) : null}
-                </span>
-              )}
-              {/* Action chrome (pin / tags / detach / delete) now lives in
+                    {tagEditingId === c.id ? (
+                      <input
+                        className="conv-tag-input"
+                        value={tagDraft}
+                        placeholder="tags, comma-separated"
+                        onChange={(e) => setTagDraft(e.target.value)}
+                        onBlur={commitTagEdit}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            commitTagEdit();
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            cancelTagEdit();
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        autoFocus
+                      />
+                    ) : tags.length > 0 ? (
+                      <span
+                        className="conv-tags"
+                        onClick={(e) => startTagEdit(c, e)}
+                        title="Edit tags"
+                      >
+                        {tags.map((t) => (
+                          <span key={t} className="conv-tag-chip">
+                            {t}
+                          </span>
+                        ))}
+                      </span>
+                    ) : null}
+                  </span>
+                )}
+                {/* Action chrome (pin / tags / detach / delete) now lives in
                   the right-click context menu rendered below the list. The
                   pinned `📌` glyph still appears as a left-side indicator
                   inside `.conv-title-line` for at-a-glance state. */}
-            </li>
+              </li>
             );
           })}
         </ul>
@@ -1065,7 +1341,8 @@ function App() {
                   setConvContextMenu(null);
                 }}
               >
-                <Pin size={16} /> {convContextMenu.conv.pinned ? "Unpin" : "Pin"}
+                <Pin size={16} />{" "}
+                {convContextMenu.conv.pinned ? "Unpin" : "Pin"}
               </button>
               <button
                 type="button"
@@ -1087,9 +1364,11 @@ function App() {
                   const conv = convContextMenu.conv;
                   // Fire-and-forget; the Rust side focuses an existing
                   // window when one already exists for this conv id.
-                  api.openConversationWindow(conv.id, conv.title).catch((err) => {
-                    setErr(`Failed to open window: ${err}`);
-                  });
+                  api
+                    .openConversationWindow(conv.id, conv.title)
+                    .catch((err) => {
+                      setErr(`Failed to open window: ${err}`);
+                    });
                   setConvContextMenu(null);
                 }}
               >
@@ -1166,7 +1445,11 @@ function App() {
           <button
             className="theme-toggle topbar-theme"
             onClick={toggleTheme}
-            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            title={
+              theme === "dark"
+                ? "Switch to light theme"
+                : "Switch to dark theme"
+            }
             aria-label="Toggle theme"
           >
             {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
@@ -1222,13 +1505,18 @@ function App() {
        */}
       {dashboardOpen && (
         <Suspense fallback={null}>
-          <Dashboard open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
+          <Dashboard
+            open={dashboardOpen}
+            onClose={() => setDashboardOpen(false)}
+          />
         </Suspense>
       )}
       {memoriesOpen && (
         <div
           className="memories-overlay"
-          onClick={(e) => { if (e.target === e.currentTarget) setMemoriesOpen(false); }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setMemoriesOpen(false);
+          }}
           // WCAG 2.1 Level A: modal dialogs must close on Escape. Without this,
           // keyboard-only users had no way to dismiss the modal except by
           // tab-navigating to the × button.
@@ -1246,7 +1534,13 @@ function App() {
           <div className="memories-modal" ref={memoriesModalRef}>
             <div className="memories-modal-header">
               <span>Memories</span>
-              <button onClick={() => setMemoriesOpen(false)} aria-label="Close" className="memories-close"><X size={16} /></button>
+              <button
+                onClick={() => setMemoriesOpen(false)}
+                aria-label="Close"
+                className="memories-close"
+              >
+                <X size={16} />
+              </button>
             </div>
             <MemoryPanel
               refreshToken={memoryTick}
@@ -1273,14 +1567,27 @@ function App() {
       )}
       {diagnosticsOpen && (
         <Suspense fallback={null}>
-          <DiagnosticsPanel open={diagnosticsOpen} onClose={() => setDiagnosticsOpen(false)} />
+          <DiagnosticsPanel
+            open={diagnosticsOpen}
+            onClose={() => setDiagnosticsOpen(false)}
+          />
         </Suspense>
       )}
       {privacyOpen && (
         <Suspense fallback={null}>
-          <PrivacyPanel open={privacyOpen} onClose={() => setPrivacyOpen(false)} />
+          <PrivacyPanel
+            open={privacyOpen}
+            onClose={() => setPrivacyOpen(false)}
+          />
         </Suspense>
       )}
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        actions={paletteActions}
+        conversations={conversations}
+        onOpenConversation={onPaletteOpenConversation}
+      />
       {forkTreeOpen && (
         <Suspense fallback={null}>
           <ForkTreeModal
@@ -1298,35 +1605,49 @@ function App() {
       {wizardOpen === true && (
         <Suspense fallback={null}>
           <SetupWizard
-            onDone={async (samplePrompt) => {
-            // Persist the wizard-complete flag so the next launch lands the
-            // user straight in the chat. We do this even on the "Skip setup"
-            // path — the user has explicitly opted out, so don't nag again.
-            try {
-              await api.setupCompleteSet(true);
-            } catch (err) {
-              logDiag({
-                level: "warn",
-                source: "app",
-                message: "setupCompleteSet(true) failed — wizard will reopen on next launch",
-                detail: err,
-              });
-            }
-            setWizardOpen(false);
-            if (samplePrompt) {
-              // Defer until the wizard has fully unmounted so ChatInput is
-              // mounted and listening. The composer focuses + selects on
-              // prefill internally.
-              setTimeout(() => {
-                window.dispatchEvent(
-                  new CustomEvent("chat-input:prefill", {
-                    detail: { text: samplePrompt },
-                  }),
-                );
-              }, 0);
-            }
-          }}
-        />
+            onDone={async ({ samplePrompt, backend }) => {
+              // Persist the wizard-complete flag so the next launch lands the
+              // user straight in the chat. We do this even on the "Skip setup"
+              // path — the user has explicitly opted out, so don't nag again.
+              try {
+                await api.setupCompleteSet(true);
+              } catch (err) {
+                logDiag({
+                  level: "warn",
+                  source: "app",
+                  message:
+                    "setupCompleteSet(true) failed — wizard will reopen on next launch",
+                  detail: err,
+                });
+              }
+              setWizardOpen(false);
+              if (samplePrompt) {
+                // Defer until the wizard has fully unmounted so ChatInput is
+                // mounted and listening. The composer focuses + selects on
+                // prefill internally.
+                //
+                // The sample prompts are agent-TOOL prompts ("what's in my
+                // directory"). On a tool-capable backend, also arm agent mode
+                // (ChatWindow flips it on once the just-auto-started server
+                // reports ready, and opens the workspace picker if none is
+                // set) so the first send actually reads real files instead of
+                // hallucinating in plain chat.
+                const agentCapable = backend === "ollama" || backend === "mlx";
+                setTimeout(() => {
+                  window.dispatchEvent(
+                    new CustomEvent("chat-input:prefill", {
+                      detail: { text: samplePrompt },
+                    }),
+                  );
+                  if (agentCapable) {
+                    window.dispatchEvent(
+                      new CustomEvent("chat-window:agent-first-run"),
+                    );
+                  }
+                }, 0);
+              }
+            }}
+          />
         </Suspense>
       )}
       {pendingDelete && (
@@ -1339,7 +1660,10 @@ function App() {
             // delete run; nothing to do here. (The 5s soft-delete timer and
             // the toast both run ~5s, so this is just a safety net.)
             setPendingDelete((p) => {
-              if (p) { clearTimeout(p.timer); void commitDelete(p.conv.id); }
+              if (p) {
+                clearTimeout(p.timer);
+                void commitDelete(p.conv.id);
+              }
               return null;
             });
           }}
@@ -1356,7 +1680,9 @@ function App() {
           actionLabel={updateInstalling ? undefined : "Update & restart"}
           onAction={() => {
             setUpdateInstalling(true);
-            void availableUpdate.install().catch(() => setUpdateInstalling(false));
+            void availableUpdate
+              .install()
+              .catch(() => setUpdateInstalling(false));
           }}
           onDismiss={() => setUpdateDismissed(true)}
           durationMs={3_600_000}

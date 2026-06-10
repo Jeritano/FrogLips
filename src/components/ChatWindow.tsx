@@ -5,7 +5,14 @@ import type { ConfirmDecision } from "../lib/agent-loop";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
-import type { Conversation, ConversationParams, Memory, Message, ProjectPolicy, ServerStatus } from "../types";
+import type {
+  Conversation,
+  ConversationParams,
+  Memory,
+  Message,
+  ProjectPolicy,
+  ServerStatus,
+} from "../types";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { ContextRolloverBanner } from "./ContextRolloverBanner";
@@ -50,7 +57,13 @@ interface ConfirmState {
   risk: string;
 }
 
-export function ChatWindow({ status, conversation, onConversationCreated, onMemoriesChanged, onForked }: Props) {
+export function ChatWindow({
+  status,
+  conversation,
+  onConversationCreated,
+  onMemoriesChanged,
+  onForked,
+}: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streaming, setStreaming] = useState<string | undefined>();
   const [err, setErr] = useState<string | null>(null);
@@ -73,9 +86,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const [showToolHistory, setShowToolHistory] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
-  const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(null);
+  const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(
+    null,
+  );
   // Edit-and-retry: holds the user message being edited plus its draft text.
-  const [editState, setEditState] = useState<{ msg: Message; text: string } | null>(null);
+  const [editState, setEditState] = useState<{
+    msg: Message;
+    text: string;
+  } | null>(null);
   // Per-conversation model parameters (temperature / top-p / max tokens /
   // system prompt). Decoded from `conversation.params`; all-null = defaults.
   const [convParams, setConvParams] = useState<ConversationParams>(emptyParams);
@@ -99,14 +117,17 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   const confirmResolveRef = useRef<((v: ConfirmDecision) => void) | null>(null);
 
   useEffect(() => {
-    api.agentGetWorkspace().then(setWorkspaceRoot).catch((err) =>
-      logDiag({
-        level: "warn",
-        source: "chat-window",
-        message: "agentGetWorkspace failed on mount",
-        detail: err,
-      }),
-    );
+    api
+      .agentGetWorkspace()
+      .then(setWorkspaceRoot)
+      .catch((err) =>
+        logDiag({
+          level: "warn",
+          source: "chat-window",
+          message: "agentGetWorkspace failed on mount",
+          detail: err,
+        }),
+      );
   }, []);
 
   // Refresh the active project policy whenever the workspace changes.
@@ -117,8 +138,11 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       return;
     }
     let cancelled = false;
-    api.policyLoad(workspaceRoot)
-      .then((p) => { if (!cancelled) setProjectPolicy(p ?? null); })
+    api
+      .policyLoad(workspaceRoot)
+      .then((p) => {
+        if (!cancelled) setProjectPolicy(p ?? null);
+      })
       .catch((err) => {
         if (!cancelled) setProjectPolicy(null);
         // A malformed .froglips/policy.json or unreadable file used to vanish
@@ -133,7 +157,9 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           detail: err,
         });
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [workspaceRoot]);
 
   useEffect(() => {
@@ -144,9 +170,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     // resolution after that is dropped.
     let ignore = false;
     if (conversation) {
-      api.listMessages(conversation.id)
-        .then((msgs) => { if (!ignore) setMessages(msgs); })
-        .catch((e) => { if (!ignore) setErr(String(e)); });
+      api
+        .listMessages(conversation.id)
+        .then((msgs) => {
+          if (!ignore) setMessages(msgs);
+        })
+        .catch((e) => {
+          if (!ignore) setErr(String(e));
+        });
     } else {
       setMessages([]);
     }
@@ -154,7 +185,9 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     setRoutedNotice(null); // clear the previous chat's route chip on switch
     setConvParams(parseConversationParams(conversation?.params));
     setShowParamsPanel(false);
-    return () => { ignore = true; };
+    return () => {
+      ignore = true;
+    };
   }, [conversation?.id]);
 
   const ensureConversation = useEvent(async (): Promise<Conversation> => {
@@ -174,23 +207,29 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       return c;
     })();
     creatingConvRef.current = promise;
-    try { return await promise; } finally { creatingConvRef.current = null; }
+    try {
+      return await promise;
+    } finally {
+      creatingConvRef.current = null;
+    }
   });
 
   /* ── Confirmation gate for dangerous agent tools ── */
 
-  const requestConfirmation = useEvent((
-    toolName: string,
-    args: Record<string, unknown>,
-    risk: string,
-  ): Promise<ConfirmDecision> => {
-    setRememberPrefix(false);
-    setDestructiveAck(false);
-    return new Promise((resolve) => {
-      confirmResolveRef.current = resolve;
-      setConfirmState({ toolName, args, risk });
-    });
-  });
+  const requestConfirmation = useEvent(
+    (
+      toolName: string,
+      args: Record<string, unknown>,
+      risk: string,
+    ): Promise<ConfirmDecision> => {
+      setRememberPrefix(false);
+      setDestructiveAck(false);
+      return new Promise((resolve) => {
+        confirmResolveRef.current = resolve;
+        setConfirmState({ toolName, args, risk });
+      });
+    },
+  );
 
   async function chooseWorkspace() {
     setWorkspaceErr(null);
@@ -224,7 +263,8 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         logDiag({
           level: "warn",
           source: "chat-window",
-          message: "workspace dialog open() failed — falling back to typed entry",
+          message:
+            "workspace dialog open() failed — falling back to typed entry",
           detail: e,
         });
         setWorkspaceErr(`Workspace picker unavailable: ${msg}`);
@@ -294,10 +334,14 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     abort();
   });
 
-  const isWorking = streaming !== undefined || agentStatus === "thinking" || agentStatus === "tool";
+  const isWorking =
+    streaming !== undefined ||
+    agentStatus === "thinking" ||
+    agentStatus === "tool";
   // Agent mode (tool-calling loop) runs on Ollama and MLX. The native
   // (mistralrs) backend has no tool-call support — agent mode is disabled.
-  const agentAvailable = status?.backend === "ollama" || status?.backend === "mlx";
+  const agentAvailable =
+    status?.backend === "ollama" || status?.backend === "mlx";
 
   /* ── Send pipeline ── */
   const { send, resend, abort } = useChatSend({
@@ -344,7 +388,10 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     const conv = convRef.current;
     if (!conv) return; // no conversation yet — keep the draft in state only.
     try {
-      await api.updateConversationParams(conv.id, serializeConversationParams(next));
+      await api.updateConversationParams(
+        conv.id,
+        serializeConversationParams(next),
+      );
     } catch (e) {
       setErr(`Failed to save conversation parameters: ${e}`);
     }
@@ -355,6 +402,29 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   useEffect(() => {
     if (!agentAvailable && agentMode) setAgentMode(false);
   }, [agentAvailable, agentMode]);
+
+  // First-run handoff from the setup wizard (product review 2026-06-10,
+  // onboarding #1). The wizard's sample prompts are agent-TOOL prompts —
+  // running them in plain chat made the model hallucinate a directory
+  // listing as the user's first-ever response. The wizard auto-starts the
+  // downloaded model and App fires this event; we ARM agent mode here and
+  // flip it on once the backend reports agent-capable (the server may still
+  // be loading when the event lands — flipping immediately would be undone
+  // by the agentAvailable guard above). Then prompt for a workspace so
+  // "what's in my current directory?" resolves to a real folder.
+  const [firstRunArmed, setFirstRunArmed] = useState(false);
+  useEffect(() => {
+    const arm = () => setFirstRunArmed(true);
+    window.addEventListener("chat-window:agent-first-run", arm);
+    return () => window.removeEventListener("chat-window:agent-first-run", arm);
+  }, []);
+  useEffect(() => {
+    if (!firstRunArmed || !agentAvailable) return;
+    setFirstRunArmed(false);
+    setAgentMode(true);
+    if (!workspaceRoot) void chooseWorkspace();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstRunArmed, agentAvailable, workspaceRoot]);
 
   // 2026-05-25 user-reported "Stop model didn't unstick the spinner". When
   // `status.running` flips false while a send is in flight, abort the
@@ -382,9 +452,17 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     let lastAsstIdx = -1;
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
-      if (lastAsstIdx === -1 && m.role === "assistant" && !m.tool_calls?.length) {
+      if (
+        lastAsstIdx === -1 &&
+        m.role === "assistant" &&
+        !m.tool_calls?.length
+      ) {
         lastAsstIdx = i;
-      } else if (lastAsstIdx !== -1 && lastUserIdx === -1 && m.role === "user") {
+      } else if (
+        lastAsstIdx !== -1 &&
+        lastUserIdx === -1 &&
+        m.role === "user"
+      ) {
         lastUserIdx = i;
         break;
       }
@@ -394,7 +472,9 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     for (let i = lastUserIdx; i <= lastAsstIdx; i++) {
       const id = messages[i]?.id;
       if (id != null) {
-        try { await api.deleteMessage(id); } catch (err) {
+        try {
+          await api.deleteMessage(id);
+        } catch (err) {
           logDiag({
             level: "warn",
             source: "chat-window",
@@ -404,7 +484,9 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
         }
       }
     }
-    const truncated = messages.slice(0, lastUserIdx).concat(messages.slice(lastAsstIdx + 1));
+    const truncated = messages
+      .slice(0, lastUserIdx)
+      .concat(messages.slice(lastAsstIdx + 1));
     setMessages(truncated);
     await resend(userText, truncated);
   });
@@ -424,14 +506,18 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
     setEditState(null);
     if (!newText) return;
     const editIdx = messages.findIndex(
-      (m) => (msg.id != null && m.id === msg.id) || (msg._tmpKey && m._tmpKey === msg._tmpKey),
+      (m) =>
+        (msg.id != null && m.id === msg.id) ||
+        (msg._tmpKey && m._tmpKey === msg._tmpKey),
     );
     if (editIdx === -1) return;
     // Delete the edited user message and everything after it from the DB.
     for (let i = editIdx; i < messages.length; i++) {
       const id = messages[i]?.id;
       if (id != null) {
-        try { await api.deleteMessage(id); } catch (err) {
+        try {
+          await api.deleteMessage(id);
+        } catch (err) {
           logDiag({
             level: "warn",
             source: "chat-window",
@@ -470,7 +556,11 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
   return (
     <div className="chat-window" onClick={citation.onCitationClick}>
       {agentMode && agent.dryRun && (
-        <div className="dry-run-banner" data-testid="agent-dry-run-banner" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div
+          className="dry-run-banner"
+          data-testid="agent-dry-run-banner"
+          style={{ display: "flex", alignItems: "center", gap: 6 }}
+        >
           <ShieldCheck size={14} /> Dry-run: tool side-effects suppressed
         </div>
       )}
@@ -492,8 +582,11 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       <div className="chat-input-wrap">
         {recalled.length > 0 && (
           <div className="recall-pill">
-            <span className="recall-icon"><Zap size={16} /></span>
-            Recalled {recalled.length} memor{recalled.length === 1 ? "y" : "ies"} for this turn
+            <span className="recall-icon">
+              <Zap size={16} />
+            </span>
+            Recalled {recalled.length} memor
+            {recalled.length === 1 ? "y" : "ies"} for this turn
           </div>
         )}
         <ErrorBar message={err} onDismiss={() => setErr(null)} />
@@ -513,19 +606,31 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             <Shuffle size={14} /> Auto-route {autoRoute ? "on" : "off"}
           </button>
           {autoRoute && (
-            <button type="button" className="route-manage" onClick={() => setShowRoutes(true)}>
+            <button
+              type="button"
+              className="route-manage"
+              onClick={() => setShowRoutes(true)}
+            >
               Manage routes
             </button>
           )}
           {autoRoute && routedNotice && (
-            <span className="route-chip" title={routedNotice.reason ?? routedNotice.method}>
+            <span
+              className="route-chip"
+              title={routedNotice.reason ?? routedNotice.method}
+            >
               → {routedNotice.label} · <code>{routedNotice.model}</code>
               <span className="route-method"> · {routedNotice.method}</span>
             </span>
           )}
         </div>
 
-        {showRoutes && <RoutesSettings status={status} onClose={() => setShowRoutes(false)} />}
+        {showRoutes && (
+          <RoutesSettings
+            status={status}
+            onClose={() => setShowRoutes(false)}
+          />
+        )}
 
         <AgentToolbar
           conversation={conversation}
@@ -597,7 +702,10 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
       </div>
 
       {showToolHistory && (
-        <ToolHistory messages={messages} onClose={() => setShowToolHistory(false)} />
+        <ToolHistory
+          messages={messages}
+          onClose={() => setShowToolHistory(false)}
+        />
       )}
 
       {askUser.askUserReq && (
@@ -607,16 +715,35 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           title="Agent asks:"
           actions={
             <>
-              <button className="agent-confirm-deny" onClick={askUser.cancelAskUser}>Cancel</button>
-              <button className="agent-confirm-allow" onClick={askUser.submitAskUser} disabled={!askUser.askUserAnswer.trim()}>
+              <button
+                className="agent-confirm-deny"
+                onClick={askUser.cancelAskUser}
+              >
+                Cancel
+              </button>
+              <button
+                className="agent-confirm-allow"
+                onClick={askUser.submitAskUser}
+                disabled={!askUser.askUserAnswer.trim()}
+              >
                 Send
               </button>
             </>
           }
         >
-          <div style={{ padding: "8px 0", fontSize: 13 }}>{askUser.askUserReq.question}</div>
+          <div style={{ padding: "8px 0", fontSize: 13 }}>
+            {askUser.askUserReq.question}
+          </div>
           {askUser.askUserReq.hint && (
-            <div style={{ padding: "0 0 8px 0", fontSize: 11, color: "var(--text-muted)" }}>{askUser.askUserReq.hint}</div>
+            <div
+              style={{
+                padding: "0 0 8px 0",
+                fontSize: 11,
+                color: "var(--text-muted)",
+              }}
+            >
+              {askUser.askUserReq.hint}
+            </div>
           )}
           <textarea
             className="ask-user-input"
@@ -635,10 +762,16 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             autoFocus
             rows={3}
             style={{
-              width: "100%", boxSizing: "border-box",
-              background: "var(--surface)", color: "var(--text)",
-              border: "1px solid var(--border)", borderRadius: 6,
-              padding: 8, fontSize: 13, fontFamily: "inherit", resize: "vertical",
+              width: "100%",
+              boxSizing: "border-box",
+              background: "var(--surface)",
+              color: "var(--text)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: 8,
+              fontSize: 13,
+              fontFamily: "inherit",
+              resize: "vertical",
             }}
           />
         </ConfirmDialog>
@@ -653,7 +786,12 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           title="Edit message"
           actions={
             <>
-              <button className="agent-confirm-deny" onClick={() => setEditState(null)}>Cancel</button>
+              <button
+                className="agent-confirm-deny"
+                onClick={() => setEditState(null)}
+              >
+                Cancel
+              </button>
               <button
                 data-testid="edit-message-submit"
                 className="agent-confirm-allow"
@@ -668,7 +806,9 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           <textarea
             className="ask-user-input"
             value={editState.text}
-            onChange={(e) => setEditState((s) => (s ? { ...s, text: e.target.value } : s))}
+            onChange={(e) =>
+              setEditState((s) => (s ? { ...s, text: e.target.value } : s))
+            }
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
@@ -682,10 +822,16 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             autoFocus
             rows={4}
             style={{
-              width: "100%", boxSizing: "border-box",
-              background: "var(--surface)", color: "var(--text)",
-              border: "1px solid var(--border)", borderRadius: 6,
-              padding: 8, fontSize: 13, fontFamily: "inherit", resize: "vertical",
+              width: "100%",
+              boxSizing: "border-box",
+              background: "var(--surface)",
+              color: "var(--text)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: 8,
+              fontSize: 13,
+              fontFamily: "inherit",
+              resize: "vertical",
             }}
           />
         </ConfirmDialog>
@@ -701,7 +847,10 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           title="Open file in editor?"
           actions={
             <>
-              <button className="agent-confirm-deny" onClick={citation.dismissConfirm}>
+              <button
+                className="agent-confirm-deny"
+                onClick={citation.dismissConfirm}
+              >
                 Cancel
               </button>
               <button
@@ -714,11 +863,21 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
             </>
           }
         >
-          <div style={{ padding: "8px 0", fontSize: 12, color: "var(--text-muted)" }}>
-            This citation was written by the model. It will open in an external editor:
+          <div
+            style={{
+              padding: "8px 0",
+              fontSize: 12,
+              color: "var(--text-muted)",
+            }}
+          >
+            This citation was written by the model. It will open in an external
+            editor:
           </div>
           <pre className="agent-confirm-args">
-            {citation.citationConfirm.resolved}{citation.citationConfirm.line ? `:${citation.citationConfirm.line}` : ""}
+            {citation.citationConfirm.resolved}
+            {citation.citationConfirm.line
+              ? `:${citation.citationConfirm.line}`
+              : ""}
           </pre>
         </ConfirmDialog>
       )}
@@ -742,12 +901,20 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           }
           actions={
             <>
-              <button data-testid="agent-confirm-deny" className="agent-confirm-deny" onClick={() => handleConfirm(false)}>Deny</button>
+              <button
+                data-testid="agent-confirm-deny"
+                className="agent-confirm-deny"
+                onClick={() => handleConfirm(false)}
+              >
+                Deny
+              </button>
               <button
                 data-testid="agent-confirm-allow"
                 className="agent-confirm-allow"
                 onClick={() => handleConfirm(true)}
-                disabled={confirmState.risk === "destructive" && !destructiveAck}
+                disabled={
+                  confirmState.risk === "destructive" && !destructiveAck
+                }
               >
                 Allow
               </button>
@@ -757,9 +924,13 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
           {confirmState.risk === "destructive" && (
             <>
               <div className="agent-risk-warning">
-                ⚠ This action matches a known destructive pattern. Read it carefully before approving.
+                ⚠ This action matches a known destructive pattern. Read it
+                carefully before approving.
               </div>
-              <label className="agent-confirm-remember" style={{ color: "var(--danger-fg, #fca5a5)" }}>
+              <label
+                className="agent-confirm-remember"
+                style={{ color: "var(--danger-fg, #fca5a5)" }}
+              >
                 <input
                   type="checkbox"
                   checked={destructiveAck}
@@ -773,133 +944,163 @@ export function ChatWindow({ status, conversation, onConversationCreated, onMemo
               model requested a non-default timeout_secs so the user
               isn't surprised by a 5-min hang from a JSON arg buried in
               the &lt;pre&gt; below. */}
-          {confirmState.toolName === "run_shell" && (() => {
-            const t = (confirmState.args as Record<string, unknown>).timeout_secs;
-            if (typeof t === "number" && t > 60) {
-              return (
-                <div className="agent-confirm-chip" data-testid="agent-confirm-long-running">
-                  <Clock size={16} /> Long-running ({t}s budget)
-                </div>
-              );
-            }
-            return null;
-          })()}
+          {confirmState.toolName === "run_shell" &&
+            (() => {
+              const t = (confirmState.args as Record<string, unknown>)
+                .timeout_secs;
+              if (typeof t === "number" && t > 60) {
+                return (
+                  <div
+                    className="agent-confirm-chip"
+                    data-testid="agent-confirm-long-running"
+                  >
+                    <Clock size={16} /> Long-running ({t}s budget)
+                  </div>
+                );
+              }
+              return null;
+            })()}
           {/* UX re-review M10: kill_process modal previously showed raw
               {pid: 12345} with no process name — the user couldn't tell
               if pid 12345 was their editor or Finder. Surface pid +
               signal in plain language. */}
-          {confirmState.toolName === "kill_process" && (() => {
-            const a = confirmState.args as Record<string, unknown>;
-            const pid = typeof a.pid === "number" ? a.pid : "?";
-            const signal = typeof a.signal === "string" ? a.signal.toUpperCase() : "TERM";
-            return (
-              <div
-                className="agent-confirm-chip danger"
-                data-testid="agent-confirm-kill"
-              >
-                ⚠ Send SIG{signal} to pid {String(pid)} — irreversible
-              </div>
-            );
-          })()}
+          {confirmState.toolName === "kill_process" &&
+            (() => {
+              const a = confirmState.args as Record<string, unknown>;
+              const pid = typeof a.pid === "number" ? a.pid : "?";
+              const signal =
+                typeof a.signal === "string" ? a.signal.toUpperCase() : "TERM";
+              return (
+                <div
+                  className="agent-confirm-chip danger"
+                  data-testid="agent-confirm-kill"
+                >
+                  ⚠ Send SIG{signal} to pid {String(pid)} — irreversible
+                </div>
+              );
+            })()}
           {/* UX re-review M10 generalized: every IRREVERSIBLE tool gets a
               loud plain-language chip in addition to the destructive
               risk badge. */}
-          {(confirmState.toolName === "delete_path" || confirmState.toolName === "agent_undo") && (() => {
-            const a = confirmState.args as Record<string, unknown>;
-            if (confirmState.toolName === "delete_path") {
-              const recursive = a.recursive === true;
-              const path = typeof a.path === "string" ? a.path : "?";
+          {(confirmState.toolName === "delete_path" ||
+            confirmState.toolName === "agent_undo") &&
+            (() => {
+              const a = confirmState.args as Record<string, unknown>;
+              if (confirmState.toolName === "delete_path") {
+                const recursive = a.recursive === true;
+                const path = typeof a.path === "string" ? a.path : "?";
+                return (
+                  <div
+                    className="agent-confirm-chip"
+                    style={{
+                      background: "var(--danger-bg)",
+                      color: "var(--danger-fg)",
+                    }}
+                    data-testid="agent-confirm-delete"
+                  >
+                    ⚠ {recursive ? "Recursively delete" : "Delete"}{" "}
+                    <code>{path}</code> — cannot be undone unless captured by
+                    agent_undo
+                  </div>
+                );
+              }
+              // UX re-review L-new-3: the modal doesn't have access to
+              // list_undo() here, so we can't tell whether the top entry
+              // was an Absent-marker (create → undo deletes) or a Bytes
+              // entry (edit → undo restores). Surface both possibilities.
               return (
                 <div
-                  className="agent-confirm-chip"
-                  style={{ background: "var(--danger-bg)", color: "var(--danger-fg)" }}
-                  data-testid="agent-confirm-delete"
+                  className="agent-confirm-chip danger"
+                  data-testid="agent-confirm-undo"
                 >
-                  ⚠ {recursive ? "Recursively delete" : "Delete"} <code>{path}</code> — cannot be undone unless captured by agent_undo
+                  ⚠ Revert the most recent agent file write (may delete a
+                  created file) — cannot be redone
                 </div>
               );
-            }
-            // UX re-review L-new-3: the modal doesn't have access to
-            // list_undo() here, so we can't tell whether the top entry
-            // was an Absent-marker (create → undo deletes) or a Bytes
-            // entry (edit → undo restores). Surface both possibilities.
-            return (
-              <div
-                className="agent-confirm-chip danger"
-                data-testid="agent-confirm-undo"
-              >
-                ⚠ Revert the most recent agent file write (may delete a created file) — cannot be redone
-              </div>
-            );
-          })()}
+            })()}
           <pre className="agent-confirm-args" data-testid="agent-confirm-args">
             {JSON.stringify(confirmState.args, null, 2)}
           </pre>
-          {confirmState.toolName === "run_shell" && confirmState.risk === "normal" && (() => {
-            const cmd = String(confirmState.args.command ?? "");
-            const first = cmd.trim().split(/\s+/)[0] ?? "";
-            if (!first) return null;
-            return (
-              <label className="agent-confirm-remember">
-                <input
-                  type="checkbox"
-                  checked={rememberPrefix}
-                  onChange={(e) => setRememberPrefix(e.target.checked)}
-                />
-                Also approve all <code>{first} *</code> commands this session
-              </label>
-            );
-          })()}
+          {confirmState.toolName === "run_shell" &&
+            confirmState.risk === "normal" &&
+            (() => {
+              const cmd = String(confirmState.args.command ?? "");
+              const first = cmd.trim().split(/\s+/)[0] ?? "";
+              if (!first) return null;
+              return (
+                <label className="agent-confirm-remember">
+                  <input
+                    type="checkbox"
+                    checked={rememberPrefix}
+                    onChange={(e) => setRememberPrefix(e.target.checked)}
+                  />
+                  Also approve all <code>{first} *</code> commands this session
+                </label>
+              );
+            })()}
         </ConfirmDialog>
       )}
 
-      {quickToast && (() => {
-        const activateToast = () => {
-          if (quickToast.error) { dismissToast(); return; }
-          // Activate → dump the reply into the clipboard as a starting point.
-          // Strict v1.3: no auto-resubmit, no conversation creation.
-          try {
-            navigator.clipboard.writeText(quickToast.reply).catch((err) =>
+      {quickToast &&
+        (() => {
+          const activateToast = () => {
+            if (quickToast.error) {
+              dismissToast();
+              return;
+            }
+            // Activate → dump the reply into the clipboard as a starting point.
+            // Strict v1.3: no auto-resubmit, no conversation creation.
+            try {
+              navigator.clipboard.writeText(quickToast.reply).catch((err) =>
+                logDiag({
+                  level: "info",
+                  source: "chat-window",
+                  message: "quick-toast clipboard.writeText rejected",
+                  detail: err,
+                }),
+              );
+            } catch (err) {
               logDiag({
                 level: "info",
                 source: "chat-window",
-                message: "quick-toast clipboard.writeText rejected",
+                message: "quick-toast clipboard write threw synchronously",
                 detail: err,
-              }),
-            );
-          } catch (err) {
-            logDiag({
-              level: "info",
-              source: "chat-window",
-              message: "quick-toast clipboard write threw synchronously",
-              detail: err,
-            });
-          }
-          dismissToast();
-        };
-        return (
-        <div
-          className="quick-toast"
-          data-testid="quick-prompt-toast"
-          role={quickToast.error ? "alert" : "button"}
-          aria-label={quickToast.error ? undefined : "Copy quick reply to clipboard"}
-          tabIndex={0}
-          onClick={activateToast}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              activateToast();
+              });
             }
-          }}
-        >
-          {quickToast.error ? (
-            <span>Quick prompt failed: {quickToast.error}</span>
-          ) : (
-            <span>Quick reply ready ↗ <em style={{ color: "var(--text-muted)", fontStyle: "normal" }}>(click to copy)</em></span>
-          )}
-        </div>
-        );
-      })()}
+            dismissToast();
+          };
+          return (
+            <div
+              className="quick-toast"
+              data-testid="quick-prompt-toast"
+              role={quickToast.error ? "alert" : "button"}
+              aria-label={
+                quickToast.error ? undefined : "Copy quick reply to clipboard"
+              }
+              tabIndex={0}
+              onClick={activateToast}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  activateToast();
+                }
+              }}
+            >
+              {quickToast.error ? (
+                <span>Quick prompt failed: {quickToast.error}</span>
+              ) : (
+                <span>
+                  Quick reply ready ↗{" "}
+                  <em
+                    style={{ color: "var(--text-muted)", fontStyle: "normal" }}
+                  >
+                    (click to copy)
+                  </em>
+                </span>
+              )}
+            </div>
+          );
+        })()}
     </div>
   );
 }

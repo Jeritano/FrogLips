@@ -40,7 +40,9 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("../../lib/tauri-api", () => ({ api: apiMocks }));
 vi.mock("../../lib/diagnostics", () => ({ logDiag: vi.fn() }));
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { SetupWizard } from "../SetupWizard";
 
@@ -91,14 +93,24 @@ describe("SetupWizard", () => {
     const { container, root } = await mount();
 
     // Wizard mounted.
-    expect(container.querySelector('[data-testid="setup-wizard"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="setup-wizard"]'),
+    ).not.toBeNull();
     // Step 1 visible.
-    expect(container.querySelector('[data-testid="setup-wizard-step-1"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="setup-wizard-step-1"]'),
+    ).not.toBeNull();
 
     // Probe table has three backend rows.
-    expect(container.querySelector('[data-testid="setup-wizard-probe-native"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="setup-wizard-probe-mlx"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="setup-wizard-probe-ollama"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="setup-wizard-probe-native"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="setup-wizard-probe-mlx"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="setup-wizard-probe-ollama"]'),
+    ).not.toBeNull();
 
     // Probes resolved per the mock setup (native=true, mlx=false, ollama=true).
     const nativeStatus = container.querySelector(
@@ -119,7 +131,9 @@ describe("SetupWizard", () => {
     expect(apiMocks.mlxProbe).toHaveBeenCalledTimes(1);
     expect(apiMocks.ollamaStatus).toHaveBeenCalledTimes(1);
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("Done button hands the chosen sample prompt back via onDone", async () => {
@@ -133,7 +147,9 @@ describe("SetupWizard", () => {
       nextBtn.click();
     });
     await flush();
-    expect(container.querySelector('[data-testid="setup-wizard-step-2"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="setup-wizard-step-2"]'),
+    ).not.toBeNull();
 
     // Skip the model step (download not required for the wizard contract).
     await act(async () => {
@@ -143,7 +159,9 @@ describe("SetupWizard", () => {
       skip.click();
     });
     await flush();
-    expect(container.querySelector('[data-testid="setup-wizard-step-3"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="setup-wizard-step-3"]'),
+    ).not.toBeNull();
 
     // Done with no prompt selected → onDone(null).
     await act(async () => {
@@ -155,24 +173,35 @@ describe("SetupWizard", () => {
     await flush();
 
     expect(onDone).toHaveBeenCalledTimes(1);
-    expect(onDone).toHaveBeenCalledWith(null);
+    // Skipped model + no prompt → all-null result object.
+    expect(onDone).toHaveBeenCalledWith({
+      samplePrompt: null,
+      modelId: null,
+      backend: null,
+    });
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("clicking a sample prompt card invokes onDone with that prompt text", async () => {
     const { container, root, onDone } = await mount();
 
     await act(async () => {
-      (container.querySelector(
-        '[data-testid="setup-wizard-next-1"]',
-      ) as HTMLButtonElement).click();
+      (
+        container.querySelector(
+          '[data-testid="setup-wizard-next-1"]',
+        ) as HTMLButtonElement
+      ).click();
     });
     await flush();
     await act(async () => {
-      (container.querySelector(
-        '[data-testid="setup-wizard-skip-model"]',
-      ) as HTMLButtonElement).click();
+      (
+        container.querySelector(
+          '[data-testid="setup-wizard-skip-model"]',
+        ) as HTMLButtonElement
+      ).click();
     });
     await flush();
 
@@ -181,14 +210,25 @@ describe("SetupWizard", () => {
       '[data-testid^="setup-wizard-prompt-"]',
     );
     expect(card).not.toBeNull();
-    await act(async () => { card!.click(); });
+    await act(async () => {
+      card!.click();
+    });
     await flush();
 
     expect(onDone).toHaveBeenCalledTimes(1);
-    const arg = onDone.mock.calls[0][0];
-    expect(typeof arg).toBe("string");
-    expect((arg as string).length).toBeGreaterThan(0);
+    const arg = onDone.mock.calls[0][0] as {
+      samplePrompt: string | null;
+      modelId: string | null;
+      backend: string | null;
+    };
+    expect(typeof arg.samplePrompt).toBe("string");
+    expect((arg.samplePrompt as string).length).toBeGreaterThan(0);
+    // Model step was skipped, so no model/backend travels with the prompt.
+    expect(arg.modelId).toBeNull();
+    expect(arg.backend).toBeNull();
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
   });
 });
