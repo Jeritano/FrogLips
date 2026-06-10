@@ -2,6 +2,8 @@
 
 ![Froglips](assets/banner.png)
 
+![Froglips — local-LLM power workstation](assets/screenshot-app.png)
+
 **Froglips — the local-LLM power workstation.** A native macOS app that turns a model running entirely on your own machine into a real working environment. Plain chat is the substrate; the product is built on four pillars:
 
 - **Agent** — a tool-calling loop with filesystem/shell/web/code/task tools, MCP servers, an optional workspace sandbox, dry-run mode, and risk-classified confirmation.
@@ -44,13 +46,11 @@ Froglips ships its own **native backend** — an in-process engine (`mistralrs` 
 1. Go to the [latest release](https://github.com/Jeritano/FrogLips/releases/latest)
 2. Download `Froglips_X.Y.Z_aarch64.dmg`
 3. Open the DMG, drag `Froglips.app` into `/Applications`, eject the DMG
-4. **First-launch warning:** macOS will refuse to open the app because it's not notarized.
-   - Right-click `/Applications/Froglips.app` → **Open** → click **Open** in the dialog
-   - Or strip Gatekeeper quarantine in one line:
-     ```bash
-     xattr -dr com.apple.quarantine /Applications/Froglips.app
-     ```
-5. Open Froglips → model dropdown → **⚡ Load a HuggingFace model natively…** → enter a small repo id like `NousResearch/Llama-3.2-1B` → **Start**
+4. Double-click to open — releases are signed with a Developer ID certificate and
+   notarized by Apple, so there is no Gatekeeper warning to click through
+5. The setup wizard walks you through picking a starter model (or use the model
+   dropdown → **⚡ Load a HuggingFace model natively…** with a small repo id like
+   `NousResearch/Llama-3.2-1B`)
 
 That's it. No daemon, no Python, no separate downloads — Froglips's native backend runs the model in-process via embedded Metal kernels. First model load pulls weights from HuggingFace into `~/.cache/huggingface/hub`; subsequent loads are instant.
 
