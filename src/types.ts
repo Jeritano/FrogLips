@@ -298,7 +298,12 @@ export interface FormatResult {
   duration_ms: number;
 }
 
-export type TaskStatus = "pending" | "running" | "done" | "cancelled" | "failed";
+export type TaskStatus =
+  | "pending"
+  | "running"
+  | "done"
+  | "cancelled"
+  | "failed";
 
 export interface TaskInfo {
   id: string;
@@ -486,8 +491,18 @@ export type PolicyDecision = "auto" | "needs-confirm" | "denied";
 
 /* ── Agent audit log ── */
 
-export type AuditApproval = "auto" | "user_allowed" | "session_allowed" | "denied";
-export type AuditOutcome = "ok" | "error" | "denied" | "stall_guard" | "duplicate" | "dry_run";
+export type AuditApproval =
+  | "auto"
+  | "user_allowed"
+  | "session_allowed"
+  | "denied";
+export type AuditOutcome =
+  | "ok"
+  | "error"
+  | "denied"
+  | "stall_guard"
+  | "duplicate"
+  | "dry_run";
 
 export interface AgentAuditEntry {
   ts?: number;
@@ -512,6 +527,17 @@ export interface AgentAuditFilter {
   until_ts?: number | null;
   limit?: number | null;
   offset?: number | null;
+}
+
+/** One FTS5 message-level search hit (Knowledge → History). */
+export interface FtsMessageHit {
+  message_id: number;
+  conversation_id: number;
+  conversation_title: string;
+  role: string;
+  created_at: number;
+  /** snippet() output with [ ] markers around matched terms. */
+  snippet: string;
 }
 
 export interface AgentAuditRow {
@@ -703,7 +729,11 @@ export interface WorkflowCard {
    * agent-loop `params` field which the backend client honors.
    * Null/absent fields fall back to the backend default.
    */
-  params?: { temperature?: number | null; top_p?: number | null; max_tokens?: number | null } | null;
+  params?: {
+    temperature?: number | null;
+    top_p?: number | null;
+    max_tokens?: number | null;
+  } | null;
   /**
    * Optional accent color for the card's canvas node — a hex string from
    * {@link WORKFLOW_CARD_COLORS}. Null/absent = the default neutral
@@ -820,13 +850,41 @@ export const WORKFLOW_NODE_TYPES: ReadonlyArray<{
   blurb: string;
 }> = [
   { value: "agent", label: "Agent", blurb: "One agent pass (default)." },
-  { value: "moa", label: "Mixture-of-Agents", blurb: "N agents in parallel → synthesized answer." },
-  { value: "consistency", label: "Self-Consistency", blurb: "Sample N times → vote / merge." },
-  { value: "critic", label: "Critic Loop", blurb: "Generate → critique → revise until it passes." },
-  { value: "cascade", label: "Cascade", blurb: "Cheap model first; escalate to a stronger one if weak." },
-  { value: "router", label: "Router", blurb: "Classify the task → run the best-fit model/role." },
-  { value: "blackboard", label: "Blackboard", blurb: "Summarize / snapshot / clear shared run memory." },
-  { value: "budget", label: "Budget", blurb: "Run under a token/time ceiling; return best effort." },
+  {
+    value: "moa",
+    label: "Mixture-of-Agents",
+    blurb: "N agents in parallel → synthesized answer.",
+  },
+  {
+    value: "consistency",
+    label: "Self-Consistency",
+    blurb: "Sample N times → vote / merge.",
+  },
+  {
+    value: "critic",
+    label: "Critic Loop",
+    blurb: "Generate → critique → revise until it passes.",
+  },
+  {
+    value: "cascade",
+    label: "Cascade",
+    blurb: "Cheap model first; escalate to a stronger one if weak.",
+  },
+  {
+    value: "router",
+    label: "Router",
+    blurb: "Classify the task → run the best-fit model/role.",
+  },
+  {
+    value: "blackboard",
+    label: "Blackboard",
+    blurb: "Summarize / snapshot / clear shared run memory.",
+  },
+  {
+    value: "budget",
+    label: "Budget",
+    blurb: "Run under a token/time ceiling; return best effort.",
+  },
 ];
 
 /**
@@ -835,7 +893,10 @@ export const WORKFLOW_NODE_TYPES: ReadonlyArray<{
  * colours (idle grey / running amber / done green / failed red). `value` is
  * stored verbatim in `WorkflowCard.color`; `null` is the neutral default.
  */
-export const WORKFLOW_CARD_COLORS: ReadonlyArray<{ name: string; value: string | null }> = [
+export const WORKFLOW_CARD_COLORS: ReadonlyArray<{
+  name: string;
+  value: string | null;
+}> = [
   { name: "Default", value: null },
   { name: "Indigo", value: "#6366f1" },
   { name: "Sky", value: "#0ea5e9" },
@@ -960,12 +1021,15 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
   const SYSTEM_PROMPT_MAX = 16_384;
   const rawSys = typeof c.systemPrompt === "string" ? c.systemPrompt : null;
   const systemPrompt =
-    rawSys && rawSys.length > SYSTEM_PROMPT_MAX ? rawSys.slice(0, SYSTEM_PROMPT_MAX) : rawSys;
+    rawSys && rawSys.length > SYSTEM_PROMPT_MAX
+      ? rawSys.slice(0, SYSTEM_PROMPT_MAX)
+      : rawSys;
   // Card accent color: only accept a value that's in the curated palette
   // (or null). A corrupt/adversarial blob can't inject an arbitrary CSS
   // string into the node's inline `style` this way.
   const color =
-    typeof c.color === "string" && WORKFLOW_CARD_COLORS.some((p) => p.value === c.color)
+    typeof c.color === "string" &&
+    WORKFLOW_CARD_COLORS.some((p) => p.value === c.color)
       ? c.color
       : null;
   return {
@@ -988,16 +1052,28 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
     // Reject NaN, ±Infinity, and absurd magnitudes — `typeof NaN === "number"`
     // and React Flow's viewport math goes off the rails if a node lands at
     // 1e308. A finite range of ±1e6 covers every reasonable canvas position.
-    x: typeof c.x === "number" && Number.isFinite(c.x) && Math.abs(c.x) <= 1e6 ? c.x : 0,
-    y: typeof c.y === "number" && Number.isFinite(c.y) && Math.abs(c.y) <= 1e6 ? c.y : 0,
+    x:
+      typeof c.x === "number" && Number.isFinite(c.x) && Math.abs(c.x) <= 1e6
+        ? c.x
+        : 0,
+    y:
+      typeof c.y === "number" && Number.isFinite(c.y) && Math.abs(c.y) <= 1e6
+        ? c.y
+        : 0,
     // Phase 1.6 retry policy. Caps: max ≤ 5 retries (anything higher
     // is almost always a config mistake), backoff_ms ≤ 60s.
     retry: (() => {
       const r = c.retry as Record<string, unknown> | null | undefined;
       if (!r || typeof r !== "object") return null;
-      const max = typeof r.max === "number" && Number.isFinite(r.max) ? Math.max(0, Math.min(5, Math.floor(r.max))) : null;
+      const max =
+        typeof r.max === "number" && Number.isFinite(r.max)
+          ? Math.max(0, Math.min(5, Math.floor(r.max)))
+          : null;
       if (max === null || max === 0) return null;
-      const rawBackoff = typeof r.backoff_ms === "number" && Number.isFinite(r.backoff_ms) ? r.backoff_ms : 1000;
+      const rawBackoff =
+        typeof r.backoff_ms === "number" && Number.isFinite(r.backoff_ms)
+          ? r.backoff_ms
+          : 1000;
       const backoff = Math.max(0, Math.min(60_000, Math.floor(rawBackoff)));
       return { max, backoff_ms: backoff };
     })(),
@@ -1013,19 +1089,29 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
       const temperature = clamp(p.temperature, 0, 2);
       const top_p = clamp(p.top_p, 0, 1);
       const max_tokens = (() => {
-        if (typeof p.max_tokens !== "number" || !Number.isFinite(p.max_tokens)) return null;
+        if (typeof p.max_tokens !== "number" || !Number.isFinite(p.max_tokens))
+          return null;
         if (p.max_tokens <= 0) return null;
         return Math.max(1, Math.min(131072, Math.floor(p.max_tokens)));
       })();
-      if (temperature == null && top_p == null && max_tokens == null) return null;
+      if (temperature == null && top_p == null && max_tokens == null)
+        return null;
       return { temperature, top_p, max_tokens };
     })(),
     // Orchestration node type. Unknown/absent → "agent" (legacy single pass).
     nodeType: ((): WorkflowNodeType => {
       const valid: WorkflowNodeType[] = [
-        "agent", "moa", "consistency", "critic", "cascade", "router", "blackboard", "budget",
+        "agent",
+        "moa",
+        "consistency",
+        "critic",
+        "cascade",
+        "router",
+        "blackboard",
+        "budget",
       ];
-      return typeof c.nodeType === "string" && (valid as string[]).includes(c.nodeType)
+      return typeof c.nodeType === "string" &&
+        (valid as string[]).includes(c.nodeType)
         ? (c.nodeType as WorkflowNodeType)
         : "agent";
     })(),
@@ -1058,7 +1144,8 @@ function normalizeNodeConfig(raw: unknown): WorkflowNodeConfig | null {
   if (synthPrompt) out.synthPrompt = synthPrompt;
   out.synthModel = str(r.synthModel);
   out.synthBackend = str(r.synthBackend);
-  if (r.voteMode === "synth" || r.voteMode === "vote") out.voteMode = r.voteMode;
+  if (r.voteMode === "synth" || r.voteMode === "vote")
+    out.voteMode = r.voteMode;
   const maxIters = intIn(r.maxIters, 1, 6);
   if (maxIters != null) out.maxIters = maxIters;
   const passThreshold = intIn(r.passThreshold, 0, 100);
@@ -1077,13 +1164,23 @@ function normalizeNodeConfig(raw: unknown): WorkflowNodeConfig | null {
       const label = str(o.label);
       const when = str(o.when);
       if (!label || !when) continue;
-      routes.push({ label, when, model: str(o.model), backend: str(o.backend), preset: str(o.preset) });
+      routes.push({
+        label,
+        when,
+        model: str(o.model),
+        backend: str(o.backend),
+        preset: str(o.preset),
+      });
     }
     if (routes.length > 0) out.routes = routes;
   }
   out.routerModel = str(r.routerModel);
   out.routerBackend = str(r.routerBackend);
-  if (r.blackboardOp === "summarize" || r.blackboardOp === "snapshot" || r.blackboardOp === "clear") {
+  if (
+    r.blackboardOp === "summarize" ||
+    r.blackboardOp === "snapshot" ||
+    r.blackboardOp === "clear"
+  ) {
     out.blackboardOp = r.blackboardOp;
   }
   const maxTokens = intIn(r.maxTokens, 1, 1_000_000);
@@ -1128,7 +1225,9 @@ export function parseWorkflow(raw: RawWorkflow): Workflow {
       );
       graph = { cards, edges };
     }
-  } catch {/* malformed column → empty graph */}
+  } catch {
+    /* malformed column → empty graph */
+  }
   return {
     id: raw.id,
     name: raw.name,
@@ -1220,4 +1319,3 @@ export interface ClaudeSkillRow extends ClaudeSkillSummary {
   allowed_tools_json: string | null;
   imported_at: number;
 }
-

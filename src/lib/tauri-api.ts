@@ -35,7 +35,10 @@ export interface ApprovalPayload {
  * local before any further `await`, so a fast burst of dangerous calls
  * can't interleave their mint/consume across the renderer event loop.
  */
-async function mintApproval(tool: string, payload?: ApprovalPayload): Promise<string> {
+async function mintApproval(
+  tool: string,
+  payload?: ApprovalPayload,
+): Promise<string> {
   return await invoke<string>("mint_tool_approval", {
     tool,
     command: payload?.command ?? null,
@@ -155,19 +158,22 @@ export const api = {
       }[]
     >("modelscope_search", { query: query ?? null }),
 
-
   /** Append a single line to ~/.local-llm-app/diag.log. Best-effort —
    *  callers should `.catch(() => undefined)`. Used for on-disk
    *  diagnostic capture (in-memory ring is volatile across restart). */
   appendDiagLog: (line: string) => invoke<void>("append_diag_log", { line }),
-  pullOllamaModel: (name: string) => invoke<string>("pull_ollama_model", { name }),
+  pullOllamaModel: (name: string) =>
+    invoke<string>("pull_ollama_model", { name }),
   pullHfModel: (repoId: string) => invoke<string>("pull_hf_model", { repoId }),
   // Scrape + parse <https://ollama.com/library>. Cached server-side for 10
   // minutes. Throws on network/parse failure so the caller can fall back to
   // the curated `OLLAMA` array.
-  ollamaLibraryFetch: () => invoke<OllamaLibraryEntry[]>("ollama_library_fetch"),
-  deleteOllamaModel: (name: string) => invoke<void>("delete_ollama_model", { name }),
-  deleteMlxModel: (repoId: string) => invoke<void>("delete_mlx_model", { repoId }),
+  ollamaLibraryFetch: () =>
+    invoke<OllamaLibraryEntry[]>("ollama_library_fetch"),
+  deleteOllamaModel: (name: string) =>
+    invoke<void>("delete_ollama_model", { name }),
+  deleteMlxModel: (repoId: string) =>
+    invoke<void>("delete_mlx_model", { repoId }),
   openExternal: (url: string) => invoke<void>("open_external", { url }),
 
   // Local crash log — returns the last ~64 KB of `~/.local-llm-app/crash.log`,
@@ -180,10 +186,8 @@ export const api = {
   // and throws on a schema mismatch.
   backupDatabase: (destPath: string) =>
     invoke<void>("backup_database", { destPath }),
-  exportData: (destPath: string) =>
-    invoke<void>("export_data", { destPath }),
-  importData: (srcPath: string) =>
-    invoke<void>("import_data", { srcPath }),
+  exportData: (destPath: string) => invoke<void>("export_data", { destPath }),
+  importData: (srcPath: string) => invoke<void>("import_data", { srcPath }),
   exportDiagnosticsBundle: (destPath: string) =>
     invoke<void>("export_diagnostics_bundle", { destPath }),
 
@@ -205,6 +209,12 @@ export const api = {
     invoke<void>("set_conversation_pinned", { id, pinned }),
   setConversationTags: (id: number, tags: string | null) =>
     invoke<void>("set_conversation_tags", { id, tags }),
+  /** Message-level FTS5 search (BM25-ranked, snippeted). */
+  searchMessagesFts: (query: string, limit: number) =>
+    invoke<import("../types").FtsMessageHit[]>("search_messages_fts", {
+      query,
+      limit,
+    }),
   searchMessages: (query: string) =>
     invoke<MessageSearchHit[]>("search_messages", { query }),
   listMessages: async (conversationId: number) => {
@@ -224,7 +234,9 @@ export const api = {
         if (Array.isArray(parsed)) {
           return { ...m, images: parsed } as Message;
         }
-      } catch {/* fall through */}
+      } catch {
+        /* fall through */
+      }
       const { images: _drop, ...rest } = m;
       return rest as Message;
     });
@@ -235,15 +247,16 @@ export const api = {
     content: string,
     model?: string | null,
     images?: ChatImage[] | null,
-  ) => invoke<number>("add_message", {
-    conversationId,
-    role,
-    content,
-    model: model ?? null,
-    // Persist as a JSON string in the messages.images TEXT column. Skipping
-    // when there are no attachments keeps the column NULL for the common case.
-    imagesJson: images && images.length > 0 ? JSON.stringify(images) : null,
-  }),
+  ) =>
+    invoke<number>("add_message", {
+      conversationId,
+      role,
+      content,
+      model: model ?? null,
+      // Persist as a JSON string in the messages.images TEXT column. Skipping
+      // when there are no attachments keeps the column NULL for the common case.
+      imagesJson: images && images.length > 0 ? JSON.stringify(images) : null,
+    }),
   deleteMessage: (id: number) => invoke<void>("delete_message", { id }),
 
   // Conversation branching — `conversationFork` deep-copies messages from
@@ -267,16 +280,17 @@ export const api = {
     status?: "active" | "pending" | "archived";
     scope?: "global" | "project" | "conversation";
     projectRoot?: string | null;
-  }) => invoke<number>("add_memory", {
-    content: args.content,
-    conversationId: args.conversationId ?? null,
-    sourceMsgId: args.sourceMsgId ?? null,
-    tags: args.tags ?? "",
-    embedding: args.embedding ?? null,
-    status: args.status ?? "active",
-    scope: args.scope ?? "global",
-    projectRoot: args.projectRoot ?? null,
-  }),
+  }) =>
+    invoke<number>("add_memory", {
+      content: args.content,
+      conversationId: args.conversationId ?? null,
+      sourceMsgId: args.sourceMsgId ?? null,
+      tags: args.tags ?? "",
+      embedding: args.embedding ?? null,
+      status: args.status ?? "active",
+      scope: args.scope ?? "global",
+      projectRoot: args.projectRoot ?? null,
+    }),
   listMemories: (
     status?: "active" | "pending" | "archived",
     cwd?: string | null,
@@ -317,14 +331,21 @@ export const api = {
       convId: ctx?.convId ?? null,
     }),
   findDuplicateMemory: (embedding: number[], threshold?: number) =>
-    invoke<number | null>("find_duplicate_memory", { embedding, threshold: threshold ?? 0.85 }),
+    invoke<number | null>("find_duplicate_memory", {
+      embedding,
+      threshold: threshold ?? 0.85,
+    }),
   /** Drop the Rust embedding cache (call on embedding-model change). */
   memoryInvalidateEmbeddingCache: () =>
     invoke<void>("memory_invalidate_embedding_cache"),
   // Scope mutators
   memoryPromote: (id: number) => invoke<void>("memory_promote", { id }),
   memoryDemote: (id: number) => invoke<void>("memory_demote", { id }),
-  memorySetContext: (id: number, projectRoot?: string | null, convId?: number | null) =>
+  memorySetContext: (
+    id: number,
+    projectRoot?: string | null,
+    convId?: number | null,
+  ) =>
     invoke<void>("memory_set_context", {
       id,
       projectRoot: projectRoot ?? null,
@@ -341,11 +362,16 @@ export const api = {
   // Payload shape mirrors `ApprovalPayload` in src-tauri/src/commands/agent.rs.
   // Only the fields the target tool requires need to be set; the rest stay
   // undefined (the canonical-string builder substitutes empty strings).
-  mintToolApproval: (tool: string, payload?: ApprovalPayload) => mintApproval(tool, payload),
+  mintToolApproval: (tool: string, payload?: ApprovalPayload) =>
+    mintApproval(tool, payload),
 
   // Agent tools
   agentReadFile: (path: string, offset?: number, limit?: number) =>
-    invoke<ReadResult>("agent_read_file", { path, offset: offset ?? null, limit: limit ?? null }),
+    invoke<ReadResult>("agent_read_file", {
+      path,
+      offset: offset ?? null,
+      limit: limit ?? null,
+    }),
   agentListDir: (path: string) =>
     invoke<DirListing>("agent_list_dir", { path }),
   agentRunShell: async (command: string, opts?: ShellOpts, opId?: string) =>
@@ -369,7 +395,10 @@ export const api = {
       timeoutSecs: timeoutSecs ?? null,
       opId: opId ?? null,
       // Approval bound to language+code (same fields the Rust side hashes).
-      approval: await mintApproval("agent_run_code", { command: code, text: language }),
+      approval: await mintApproval("agent_run_code", {
+        command: code,
+        text: language,
+      }),
     }),
   agentWriteFile: async (path: string, content: string) =>
     invoke<void>("agent_write_file", {
@@ -377,7 +406,12 @@ export const api = {
       content,
       approval: await mintApproval("agent_write_file", { path }),
     }),
-  agentEditFile: async (path: string, oldString: string, newString: string, replaceAll?: boolean) =>
+  agentEditFile: async (
+    path: string,
+    oldString: string,
+    newString: string,
+    replaceAll?: boolean,
+  ) =>
     invoke<EditResult>("agent_edit_file", {
       path,
       oldString,
@@ -387,9 +421,15 @@ export const api = {
     }),
   agentFileExists: (path: string) =>
     invoke<ExistsResult>("agent_file_exists", { path }),
-  agentSearchFiles: (path: string, pattern: string, glob?: string, regex?: boolean) =>
+  agentSearchFiles: (
+    path: string,
+    pattern: string,
+    glob?: string,
+    regex?: boolean,
+  ) =>
     invoke<SearchResult>("agent_search_files", {
-      path, pattern,
+      path,
+      pattern,
       glob: glob ?? null,
       regex: regex ?? null,
     }),
@@ -431,15 +471,27 @@ export const api = {
       approval: await mintApproval("agent_make_dir", { path }),
     }),
   agentHashFile: (path: string, algorithm?: "sha256" | "sha512") =>
-    invoke<{ algorithm: string; hex: string; size_bytes: number }>("agent_hash_file", {
-      path,
-      algorithm: algorithm ?? null,
-    }),
+    invoke<{ algorithm: string; hex: string; size_bytes: number }>(
+      "agent_hash_file",
+      {
+        path,
+        algorithm: algorithm ?? null,
+      },
+    ),
   agentDiffFiles: (left: string, right: string) =>
-    invoke<{ diff: string; identical: boolean }>("agent_diff_files", { left, right }),
+    invoke<{ diff: string; identical: boolean }>("agent_diff_files", {
+      left,
+      right,
+    }),
   agentListProcesses: (filter?: string) =>
     invoke<
-      Array<{ pid: number; ppid: number; cpu_pct: number; mem_mib: number; command: string }>
+      Array<{
+        pid: number;
+        ppid: number;
+        cpu_pct: number;
+        mem_mib: number;
+        command: string;
+      }>
     >("agent_list_processes", { filter: filter ?? null }),
   agentKillProcess: async (pid: number, signal?: string) =>
     invoke<{ pid: number; signal: string }>("agent_kill_process", {
@@ -449,20 +501,34 @@ export const api = {
     }),
   agentListUndo: () =>
     invoke<
-      Array<{ path: string; kind: string; taken_at_ms: number; size_bytes: number; was_absent: boolean }>
+      Array<{
+        path: string;
+        kind: string;
+        taken_at_ms: number;
+        size_bytes: number;
+        was_absent: boolean;
+      }>
     >("agent_list_undo"),
   agentUndoLast: async () =>
-    invoke<{ path: string; kind: string; restored_bytes: number; was_absent: boolean }>(
-      "agent_undo_last",
-      { approval: await mintApproval("agent_undo_last") },
-    ),
+    invoke<{
+      path: string;
+      kind: string;
+      restored_bytes: number;
+      was_absent: boolean;
+    }>("agent_undo_last", { approval: await mintApproval("agent_undo_last") }),
   agentClearUndoStack: () => invoke<void>("agent_clear_undo_stack"),
   agentGitStatus: (path?: string) =>
     invoke<GitResult>("agent_git_status", { path: path ?? null }),
   agentGitDiff: (path?: string, staged?: boolean) =>
-    invoke<GitResult>("agent_git_diff", { path: path ?? null, staged: staged ?? null }),
+    invoke<GitResult>("agent_git_diff", {
+      path: path ?? null,
+      staged: staged ?? null,
+    }),
   agentGitLog: (path?: string, limit?: number) =>
-    invoke<GitResult>("agent_git_log", { path: path ?? null, limit: limit ?? null }),
+    invoke<GitResult>("agent_git_log", {
+      path: path ?? null,
+      limit: limit ?? null,
+    }),
   agentGitShow: (reference: string, path?: string) =>
     invoke<GitResult>("agent_git_show", { reference, path: path ?? null }),
   agentGitBranches: (path?: string) =>
@@ -484,8 +550,7 @@ export const api = {
       outPath: outPath ?? null,
       approval: await mintApproval("agent_screenshot", { path: outPath }),
     }),
-  agentClipboardGet: () =>
-    invoke<string>("agent_clipboard_get"),
+  agentClipboardGet: () => invoke<string>("agent_clipboard_get"),
   agentClipboardSet: async (text: string) =>
     invoke<void>("agent_clipboard_set", {
       text,
@@ -522,9 +587,15 @@ export const api = {
       approval: await mintApproval("agent_http_request", { url: input.url }),
     }),
   agentFindDefinition: (symbol: string, path?: string) =>
-    invoke<SearchResult>("agent_find_definition", { symbol, path: path ?? null }),
+    invoke<SearchResult>("agent_find_definition", {
+      symbol,
+      path: path ?? null,
+    }),
   agentFindReferences: (symbol: string, path?: string) =>
-    invoke<SearchResult>("agent_find_references", { symbol, path: path ?? null }),
+    invoke<SearchResult>("agent_find_references", {
+      symbol,
+      path: path ?? null,
+    }),
   agentFormatCode: async (path: string) =>
     invoke<FormatResult>("agent_format_code", {
       path,
@@ -615,8 +686,7 @@ export const api = {
     invoke<string>("agent_classify_http", { method, hasAuth }),
   agentSetWorkspace: (path: string | null) =>
     invoke<string | null>("agent_set_workspace", { path }),
-  agentGetWorkspace: () =>
-    invoke<string | null>("agent_get_workspace"),
+  agentGetWorkspace: () => invoke<string | null>("agent_get_workspace"),
 
   // Multi-window: detached per-conversation windows
   openConversationWindow: (conversationId: number, title?: string | null) =>
@@ -701,9 +771,14 @@ export const api = {
       mcp_args: [],
       mcp_env_keys: [],
     });
-    return invoke<McpToolDescriptor[]>("mcp_oauth_connect", { name, url, approval });
+    return invoke<McpToolDescriptor[]>("mcp_oauth_connect", {
+      name,
+      url,
+      approval,
+    });
   },
-  mcpOauthRefresh: (name: string) => invoke<boolean>("mcp_oauth_refresh", { name }),
+  mcpOauthRefresh: (name: string) =>
+    invoke<boolean>("mcp_oauth_refresh", { name }),
   mcpRemoteHasToken: (name: string) =>
     invoke<boolean>("mcp_remote_has_token", { name }),
   mcpDeleteRemoteToken: (name: string) =>
@@ -713,17 +788,23 @@ export const api = {
       source,
       query: query ?? null,
     }),
-  mcpStopServer: (name: string) =>
-    invoke<void>("mcp_stop_server", { name }),
+  mcpStopServer: (name: string) => invoke<void>("mcp_stop_server", { name }),
   mcpListServers: () => invoke<McpServerInfo[]>("mcp_list_servers"),
   mcpListTools: (name: string) =>
     invoke<McpToolDescriptor[]>("mcp_list_tools", { name }),
-  mcpCallTool: async (server: string, tool: string, args: Record<string, unknown>) =>
+  mcpCallTool: async (
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+  ) =>
     invoke<string>("mcp_call_tool", {
       server,
       tool,
       args,
-      approval: await mintApproval("mcp_call_tool", { mcp_server: server, mcp_tool: tool }),
+      approval: await mintApproval("mcp_call_tool", {
+        mcp_server: server,
+        mcp_tool: tool,
+      }),
     }),
   mcpServerStderr: (name: string) =>
     invoke<string | null>("mcp_server_stderr", { name }),
@@ -762,7 +843,9 @@ export const api = {
       filter: filter ?? null,
     }),
   agentDashboardSummary: (filter?: AgentAuditFilter) =>
-    invoke<DashboardSummary>("agent_dashboard_summary", { filter: filter ?? null }),
+    invoke<DashboardSummary>("agent_dashboard_summary", {
+      filter: filter ?? null,
+    }),
 
   // Native inference (alpha)
   nativeSupported: () => invoke<boolean>("native_supported"),
@@ -787,7 +870,8 @@ export const api = {
 
   /** Cancel an in-flight native chat stream by op_id. Best-effort; resolves
    *  true if a stream was actually pending. (2026-05-30) */
-  nativeCancelChat: (opId: string) => invoke<boolean>("native_cancel", { opId }),
+  nativeCancelChat: (opId: string) =>
+    invoke<boolean>("native_cancel", { opId }),
 
   /**
    * Stream a chat completion from a custom OpenAI-compatible cloud backend.
@@ -825,22 +909,25 @@ export const api = {
 
   /** Live OpenRouter model catalogue (no key needed to list). */
   openrouterListModels: () =>
-    invoke<{
-      id: string;
-      name: string;
-      context_length: number;
-      prompt_price: string;
-      completion_price: string;
-      vision: boolean;
-      audio: boolean;
-      tools: boolean;
-      reasoning: boolean;
-      description: string;
-      moderated: boolean;
-      max_output: number;
-    }[]>("openrouter_list_models"),
+    invoke<
+      {
+        id: string;
+        name: string;
+        context_length: number;
+        prompt_price: string;
+        completion_price: string;
+        vision: boolean;
+        audio: boolean;
+        tools: boolean;
+        reasoning: boolean;
+        description: string;
+        moderated: boolean;
+        max_output: number;
+      }[]
+    >("openrouter_list_models"),
   /** Store (or clear, on "") the OpenRouter API key in the Keychain. */
-  openrouterSetKey: (key: string) => invoke<void>("openrouter_set_key", { key }),
+  openrouterSetKey: (key: string) =>
+    invoke<void>("openrouter_set_key", { key }),
   /** Whether an OpenRouter key is configured (never returns the key). */
   openrouterHasKey: () => invoke<boolean>("openrouter_has_key"),
 
@@ -860,11 +947,16 @@ export const api = {
   // `null` for `id` to create — and returns the row id. `workflowRunRecord`
   // persists one execution summary and returns its run id.
   workflowList: () => invoke<RawWorkflow[]>("workflow_list"),
-  workflowGet: (id: number) => invoke<RawWorkflow | null>("workflow_get", { id }),
+  workflowGet: (id: number) =>
+    invoke<RawWorkflow | null>("workflow_get", { id }),
   workflowSave: (id: number | null, name: string, graphJson: string) =>
     invoke<number>("workflow_save", { id, name, graphJson }),
   workflowDelete: (id: number) => invoke<void>("workflow_delete", { id }),
-  workflowRunRecord: (workflowId: number, status: string, resultsJson: string) =>
+  workflowRunRecord: (
+    workflowId: number,
+    status: string,
+    resultsJson: string,
+  ) =>
     invoke<number>("workflow_run_record", { workflowId, status, resultsJson }),
 
   // ── Roundtable outcomes (persisted transcripts) ──
@@ -877,11 +969,19 @@ export const api = {
     turns: number,
     transcriptJson: string,
   ) =>
-    invoke<number>("roundtable_run_save", { tableId, name, topic, turns, transcriptJson }),
+    invoke<number>("roundtable_run_save", {
+      tableId,
+      name,
+      topic,
+      turns,
+      transcriptJson,
+    }),
   roundtableRunList: (tableId: string | null) =>
     invoke<RoundtableRunSummary[]>("roundtable_run_list", { tableId }),
-  roundtableRunGet: (id: number) => invoke<RoundtableRun>("roundtable_run_get", { id }),
-  roundtableRunDelete: (id: number) => invoke<void>("roundtable_run_delete", { id }),
+  roundtableRunGet: (id: number) =>
+    invoke<RoundtableRun>("roundtable_run_get", { id }),
+  roundtableRunDelete: (id: number) =>
+    invoke<void>("roundtable_run_delete", { id }),
   /** Write exported transcript content (markdown/json) to a chosen path. */
   roundtableSaveFile: (destPath: string, content: string) =>
     invoke<void>("roundtable_save_file", { destPath, content }),
@@ -948,5 +1048,4 @@ export const api = {
     invoke<void>("claude_skill_set_pinned", { name, pinned }),
   claudeSkillDelete: (name: string) =>
     invoke<void>("claude_skill_delete", { name }),
-
 };

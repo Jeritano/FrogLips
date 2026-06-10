@@ -437,6 +437,14 @@ const MIGRATIONS: &[Migration] = &[
         version: 17,
         apply: crate::roundtable::ensure_roundtable_tables,
     },
+    // v18 — full-text message search (product review Act 2, 2026-06-10).
+    // External-content FTS5 table over messages.content with sync triggers
+    // and a one-time rebuild, so "where did we discuss X" lands on the
+    // MESSAGE (BM25-ranked, snippeted) instead of a bare conversation list.
+    Migration {
+        version: 18,
+        apply: ensure_messages_fts,
+    },
 ];
 
 /// Target schema version — the highest rung of the ladder.
@@ -522,6 +530,95 @@ fn setup_schema(conn: &Connection) -> Result<()> {
     // Install RAG tables (idempotent).
     crate::rag::ensure_schema(conn)?;
     Ok(())
+}
+
+/// v18: external-content FTS5 index over `messages.content`. Triggers keep it
+/// in sync with INSERT/DELETE/UPDATE; `rebuild` backfills existing rows once.
+/// External-content keeps the index small (it references messages.rowid
+/// instead of duplicating bodies).
+pub(crate) fn ensure_messages_fts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            content,
+            content='messages',
+            content_rowid='id',
+            tokenize='porter unicode61'
+         );
+         CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+         END;
+         CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
+         END;
+         CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+         END;
+         INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');",
+    )?;
+    Ok(())
+}
+
+/// One full-text hit for the Knowledge → History search. (Distinct from the
+/// sidebar's LIKE-based conversation-level `MessageSearchHit` below.)
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct FtsMessageHit {
+    pub message_id: i64,
+    pub conversation_id: i64,
+    pub conversation_title: String,
+    pub role: String,
+    pub created_at: i64,
+    /// snippet() output with [ ] markers around matched terms.
+    pub snippet: String,
+}
+
+/// BM25-ranked message search. The raw user query is wrapped per-token in
+/// double quotes so FTS5 operators (AND/OR/NEAR/^/*) in user text can't
+/// inject query syntax errors — every token is a plain phrase term.
+pub fn search_messages_fts(query: &str, limit: u32) -> Result<Vec<FtsMessageHit>> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let safe: Vec<String> = trimmed
+        .split_whitespace()
+        .take(12)
+        .map(|t| format!("\"{}\"", t.replace('"', "")))
+        .collect();
+    if safe.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fts_query = safe.join(" ");
+    let limit = limit.clamp(1, 100) as i64;
+
+    let conn = get_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.conversation_id, c.title, m.role, m.created_at,
+                snippet(messages_fts, 0, '[', ']', '…', 12)
+         FROM messages_fts
+         JOIN messages m ON m.id = messages_fts.rowid
+         JOIN conversations c ON c.id = m.conversation_id
+         WHERE messages_fts MATCH ?1
+         ORDER BY bm25(messages_fts)
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![fts_query, limit], |r| {
+        Ok(FtsMessageHit {
+            message_id: r.get(0)?,
+            conversation_id: r.get(1)?,
+            conversation_title: r.get(2)?,
+            role: r.get(3)?,
+            created_at: r.get(4)?,
+            snippet: r.get(5)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 /// Idempotently add the `images` JSON column to the `messages` table. Detects
@@ -1388,6 +1485,49 @@ fn fork_tree_node(conn: &Connection, id: i64, depth: usize) -> Result<ForkTree> 
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    /// v18 FTS5: triggers keep the index live, BM25 search returns the
+    /// MESSAGE with a snippet, and the per-token quoting neutralizes FTS
+    /// operator injection ("NEAR(", unbalanced quotes, column filters).
+    #[test]
+    fn fts_message_search_round_trip() {
+        let tag = format!("zfts{}", std::process::id());
+        let conv = create_conversation(&format!("__test_fts_{tag}"), None).unwrap();
+        let msg = add_message(
+            conv,
+            "assistant",
+            &format!("we fixed the {tag} watermark swap during ingest"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let hits = search_messages_fts(&format!("{tag} watermark"), 10).unwrap();
+        assert!(
+            hits.iter()
+                .any(|h| h.message_id == msg && h.conversation_id == conv),
+            "expected the inserted message in hits: {hits:?}"
+        );
+        let hit = hits.iter().find(|h| h.message_id == msg).unwrap();
+        assert!(
+            hit.snippet.contains('['),
+            "snippet should mark matches: {}",
+            hit.snippet
+        );
+
+        // Operator-shaped queries must not error (quoted as plain phrases).
+        for hostile in ["NEAR(", "a AND b OR", "col:x", "\"unbalanced", "*"] {
+            let _ = search_messages_fts(hostile, 5).expect("hostile query must not error");
+        }
+
+        // Delete trigger drops the index rows with the conversation cascade.
+        delete_conversation(conv).unwrap();
+        let after = search_messages_fts(&format!("{tag} watermark"), 10).unwrap();
+        assert!(
+            !after.iter().any(|h| h.message_id == msg),
+            "deleted message must leave the index"
+        );
+    }
 
     /// Build a fresh in-memory DB pre-populated with the *pre-images* schema
     /// shape, then run the migration twice. Tests both correctness (column

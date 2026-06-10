@@ -145,6 +145,17 @@ pub async fn search_messages(query: String) -> Result<Vec<history::MessageSearch
     blocking(move || history::search_messages(&query)).await
 }
 
+/// Full-text message search (FTS5, BM25-ranked, snippeted) for the
+/// Knowledge → History surface. Message-level hits, unlike `search_messages`
+/// which returns one row per conversation for the sidebar filter.
+#[tauri::command]
+pub async fn search_messages_fts(
+    query: String,
+    limit: u32,
+) -> Result<Vec<history::FtsMessageHit>, String> {
+    blocking(move || history::search_messages_fts(&query, limit)).await
+}
+
 /* ── Conversation branching ── */
 
 #[tauri::command]

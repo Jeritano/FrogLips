@@ -210,6 +210,13 @@ const RoundtableView = lazy(() =>
 function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  // Ref mirror for window-event handlers registered with [] deps
+  // (froglips:open-conversation) — they need the LATEST list without
+  // re-subscribing per refresh.
+  const conversationsRef = useRef<Conversation[]>([]);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
   const [current, setCurrent] = useState<Conversation | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
@@ -550,6 +557,23 @@ function App() {
     };
     window.addEventListener("froglips:navigate", handler);
     return () => window.removeEventListener("froglips:navigate", handler);
+  }, []);
+
+  // Open a specific conversation by id (Knowledge → History hits). Resolves
+  // against the loaded list; unknown ids no-op rather than blanking the view.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent<{ id?: number }>).detail?.id;
+      if (typeof id !== "number") return;
+      const c = conversationsRef.current.find((x) => x.id === id);
+      if (c) {
+        setView("chat");
+        setCurrent(c);
+      }
+    };
+    window.addEventListener("froglips:open-conversation", handler);
+    return () =>
+      window.removeEventListener("froglips:open-conversation", handler);
   }, []);
 
   // Debounced message-content search. Merges conversation ids whose message

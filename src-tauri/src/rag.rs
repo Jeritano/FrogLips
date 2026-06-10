@@ -77,6 +77,8 @@ const TEXT_EXTS: &[&str] = &[
     "java", "kt", "swift", "c", "cc", "cpp", "h", "hpp", "cs", "php", "lua", "sh", "bash", "zsh",
     "fish", "json", "jsonc", "yaml", "yml", "toml", "ini", "cfg", "conf", "html", "htm", "css",
     "scss", "sass", "less", "sql", "graphql", "gql", "proto", "tex", "bib",
+    // Act 2 (2026-06-10): PDFs enter the pipeline via pdf-extract.
+    "pdf",
 ];
 
 /* ───────────────────────────── Schema ────────────────────────────────── */
@@ -110,6 +112,12 @@ pub fn ensure_schema(conn: &rusqlite::Connection) -> Result<()> {
             PRIMARY KEY (corpus_id, path)
          );",
     )?;
+    // Act 2 (2026-06-10): which embedder produced this corpus's vectors.
+    // Old DBs lack the column — the ALTER fails harmlessly when it exists.
+    let _ = conn.execute(
+        "ALTER TABLE rag_corpora ADD COLUMN embedder TEXT NOT NULL DEFAULT 'hashed-v1'",
+        [],
+    );
     Ok(())
 }
 
@@ -501,9 +509,14 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     // an atomic old→new swap. If the ingest is interrupted before that final
     // tx, the OLD corpus is still fully intact; the orphaned new chunks are
     // reclaimed by the next successful ingest's watermark.
+    // Pick the embedder for THIS generation up front. If it differs from the
+    // one that produced the existing corpus, every carry-forward is invalid
+    // (different vector space/dimension) — force a full re-embed.
+    let chosen = crate::embedder::Embedder::detect();
+
     let mut conn = get_db()?;
     let now = now_unix();
-    let (corpus_id, watermark): (i64, i64) = {
+    let (corpus_id, watermark, force_reembed): (i64, i64, bool) = {
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
@@ -524,8 +537,28 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         let wm: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM rag_chunks", [], |r| {
             r.get(0)
         })?;
+        let stored: String = tx
+            .query_row(
+                "SELECT embedder FROM rag_corpora WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| crate::embedder::HASHED_ID.to_string());
+        let force = stored != chosen.id();
+        if force {
+            // Stale fingerprints would let the copy-forward resurrect vectors
+            // from the old embedding space.
+            tx.execute("DELETE FROM rag_files WHERE corpus_id = ?1", params![id])?;
+            crate::diagnostics::info(
+                "rag-ingest",
+                &format!(
+                    "embedder changed {stored} -> {} — full re-embed",
+                    chosen.id()
+                ),
+            );
+        }
         tx.commit()?;
-        (id, wm)
+        (id, wm, force)
     };
     drop(conn);
 
@@ -579,7 +612,7 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let size = meta.len() as i64;
-        if mtime_ms > 0 {
+        if mtime_ms > 0 && !force_reembed {
             let unchanged = conn
                 .query_row(
                     "SELECT 1 FROM rag_files
@@ -610,14 +643,54 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
             }
         }
 
-        let text = match std::fs::read_to_string(file) {
-            Ok(t) => t,
-            Err(e) => {
-                crate::diagnostics::info(
-                    "rag-ingest",
-                    &format!("skipping non-utf8/unreadable {} ({})", file.display(), e),
-                );
-                continue;
+        let is_pdf = file
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+        let text = if is_pdf {
+            // pdf-extract is already a dependency (the read_pdf agent tool).
+            // It is known to panic on exotic PDFs — contain that to a skip.
+            let path = file.clone();
+            match std::panic::catch_unwind(move || pdf_extract::extract_text(&path)) {
+                Ok(Ok(t)) => {
+                    // Cap extracted text at the same budget as source files so
+                    // one giant PDF can't dominate the chunk cap.
+                    let mut t = t;
+                    if t.len() > MAX_FILE_BYTES as usize {
+                        let mut cut = MAX_FILE_BYTES as usize;
+                        while !t.is_char_boundary(cut) {
+                            cut -= 1;
+                        }
+                        t.truncate(cut);
+                    }
+                    t
+                }
+                Ok(Err(e)) => {
+                    crate::diagnostics::info(
+                        "rag-ingest",
+                        &format!("skipping unreadable pdf {} ({})", file.display(), e),
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    crate::diagnostics::warn_with(
+                        "rag-ingest",
+                        "pdf extractor panicked — file skipped",
+                        serde_json::json!({ "path": file.display().to_string() }),
+                    );
+                    continue;
+                }
+            }
+        } else {
+            match std::fs::read_to_string(file) {
+                Ok(t) => t,
+                Err(e) => {
+                    crate::diagnostics::info(
+                        "rag-ingest",
+                        &format!("skipping non-utf8/unreadable {} ({})", file.display(), e),
+                    );
+                    continue;
+                }
             }
         };
         total_bytes += text.len() as u64;
@@ -625,46 +698,51 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         if chunks.is_empty() {
             continue;
         }
+        // Defense-in-depth filter FIRST (chunks with prompt-injection markers
+        // never enter the corpus — search-time scan_and_wrap remains the
+        // second layer), then embed the survivors as ONE batch: the learned
+        // embedder is an HTTP round-trip, and per-chunk calls would make a
+        // 20k-chunk corpus take minutes instead of seconds.
+        let mut kept: Vec<&(usize, usize, String)> = Vec::with_capacity(chunks.len());
+        for c in &chunks {
+            let (_wrapped, hits) = crate::agent::injection_scan::scan_and_wrap(&c.2);
+            if hits > 0 {
+                crate::diagnostics::warn_with(
+                    "rag-ingest",
+                    "skipped chunk with injection markers",
+                    serde_json::json!({ "path": rel, "start": c.0, "end": c.1, "hits": hits }),
+                );
+                continue;
+            }
+            kept.push(c);
+        }
+        let room = MAX_CHUNKS_PER_INGEST - chunks_created;
+        if kept.len() > room {
+            kept.truncate(room);
+        }
+        if kept.is_empty() {
+            continue;
+        }
+        let texts: Vec<&str> = kept.iter().map(|c| c.2.as_str()).collect();
+        let embs = chosen
+            .embed_batch(&texts)
+            .with_context(|| format!("embedding failed for {rel} via {}", chosen.id()))?;
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
-            for (s, e, chunk) in &chunks {
-                // Defense-in-depth: chunks that obviously embed prompt-
-                // injection markers are flagged here so they never enter
-                // the corpus in the first place. Search-time `scan_and_wrap`
-                // (line ~516) still runs as a second layer for chunks that
-                // slipped past these heuristics; pairing both makes
-                // attacker-controlled docs harder to weaponize.
-                let (_wrapped, hits) = crate::agent::injection_scan::scan_and_wrap(chunk);
-                if hits > 0 {
-                    crate::diagnostics::warn_with(
-                        "rag-ingest",
-                        "skipped chunk with injection markers",
-                        serde_json::json!({
-                            "path": rel,
-                            "start": *s,
-                            "end": *e,
-                            "hits": hits,
-                        }),
-                    );
-                    continue;
-                }
-                let emb = embed(chunk);
+            for ((s, e, chunk), emb) in kept.iter().map(|c| (&c.0, &c.1, &c.2)).zip(&embs) {
                 stmt.execute(params![
                     corpus_id,
                     rel,
                     *s as i64,
                     *e as i64,
                     chunk,
-                    vec_to_blob(&emb),
+                    vec_to_blob(emb),
                 ])?;
                 chunks_created += 1;
-                if chunks_created >= MAX_CHUNKS_PER_INGEST {
-                    break;
-                }
             }
         }
         // Record the file fingerprint so the next ingest can copy-forward
@@ -690,8 +768,8 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
             params![corpus_id, watermark],
         )?;
         tx.execute(
-            "UPDATE rag_corpora SET chunk_count = ?1, updated_at = ?2 WHERE id = ?3",
-            params![chunks_created as i64, now_unix(), corpus_id],
+            "UPDATE rag_corpora SET chunk_count = ?1, updated_at = ?2, embedder = ?4 WHERE id = ?3",
+            params![chunks_created as i64, now_unix(), corpus_id, chosen.id()],
         )?;
         // Drop fingerprints for files that no longer produced chunks this
         // generation (deleted/renamed/now-skipped) so a future re-appearance
@@ -725,20 +803,28 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
         anyhow::bail!("query exceeds 4096 chars");
     }
     let k = top_k.clamp(1, 50) as usize;
-    let q_emb = embed(trimmed);
 
     let conn = get_db()?;
-    let corpus_id: Option<i64> = conn
+    let row: Option<(i64, String)> = conn
         .query_row(
-            "SELECT id FROM rag_corpora WHERE name = ?1",
+            "SELECT id, embedder FROM rag_corpora WHERE name = ?1",
             params![corpus_name],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok();
-    let corpus_id = match corpus_id {
-        Some(id) => id,
+    let (corpus_id, embedder_id) = match row {
+        Some(v) => v,
         None => anyhow::bail!("corpus '{}' not found", corpus_name),
     };
+    // The query MUST be embedded in the same vector space as the corpus —
+    // cross-space scoring silently returns garbage ranks.
+    let q_emb = crate::embedder::Embedder::from_id(&embedder_id)
+        .embed_one(trimmed)
+        .with_context(|| {
+            format!(
+                "corpus '{corpus_name}' uses '{embedder_id}' embeddings but that embedder is                  unavailable — start Ollama (or re-ingest the corpus) and retry"
+            )
+        })?;
 
     // Maturity review H1 (2026-05-27): BinaryHeap<Reverse<...>> of capacity
     // k gives O(N log k) instead of a full sort.

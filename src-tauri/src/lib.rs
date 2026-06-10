@@ -9,6 +9,7 @@ mod crash_log;
 mod custom_backend;
 mod data_backup;
 mod diagnostics;
+mod embedder;
 mod gguf;
 mod history;
 mod logging;
@@ -446,6 +447,7 @@ pub fn run() {
             commands::history::set_conversation_pinned,
             commands::history::set_conversation_tags,
             commands::history::search_messages,
+            commands::history::search_messages_fts,
             commands::memory::add_memory,
             commands::memory::list_memories,
             commands::memory::delete_memory,
