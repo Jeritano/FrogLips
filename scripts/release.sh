@@ -9,7 +9,15 @@ echo "▶ Building Froglips v${VERSION}…"
 # NOTE: matches Contents/MacOS specifically — avoids killing bundle_dmg.sh,
 # which has "Froglips.app" in its argv and was getting clobbered before.
 pkill -f "Froglips.app/Contents/MacOS" 2>/dev/null || true
-sleep 1
+# Wait for the instance AND its WebKit helpers to fully exit. Installing and
+# relaunching ~1s after a kill produced "unsealed contents" rejections and a
+# self-deleting bundle (2026-06-10) — teardown of the killed instance was
+# still touching the bundle path. Poll until gone, then settle.
+for _ in $(seq 1 20); do
+  pgrep -f "Froglips.app/Contents/MacOS" >/dev/null 2>&1 || break
+  sleep 1
+done
+sleep 3
 
 # Detach any stale hdiutil mounts — they break DMG bundling.
 hdiutil info 2>/dev/null | awk '/^\/dev\/disk/{print $1}' | \
