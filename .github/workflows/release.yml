@@ -61,8 +61,76 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Developer ID signing + notarization. The Tauri bundler imports the
+          # base64 .p12 into a temporary keychain itself when APPLE_CERTIFICATE
+          # is set, signs with hardened runtime, submits to the notary service,
+          # and staples — same env contract as scripts/release.sh.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           npm run tauri build -- --features native-mistralrs --target aarch64-apple-darwin
+
+      # The bundler has a deterministic defect (observed on every notarized
+      # build so far, 2026-06-09/10): it notarizes + staples the .app, then a
+      # later bundling step re-signs it AD-HOC — stripping Developer ID +
+      # hardened runtime and unbinding the ticket. Detect, repair (re-sign →
+      # re-notarize → re-staple → rebuild DMG + updater tarball), and hard-gate
+      # on Gatekeeper acceptance. Mirrors the self-heal in scripts/release.sh.
+      - name: Verify + self-heal notarization
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="src-tauri/target/aarch64-apple-darwin/release/bundle"
+          [ -d "$BASE" ] || BASE="src-tauri/target/release/bundle"
+          APP="$BASE/macos/Froglips.app"
+          VERSION="${GITHUB_REF##*/v}"
+
+          sig_ok=1
+          codesign -dvv "$APP" 2>&1 | grep -q "Authority=Developer ID Application" || sig_ok=0
+          xcrun stapler validate "$APP" >/dev/null 2>&1 || sig_ok=0
+          if [ "$sig_ok" -ne 1 ]; then
+            echo "Bundler clobbered the Developer ID signature — repairing"
+            codesign --force --options runtime --timestamp \
+              --entitlements src-tauri/Entitlements.plist \
+              --sign "$APPLE_SIGNING_IDENTITY" "$APP"
+            ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+            xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" --wait
+            xcrun stapler staple "$APP"
+
+            DMG="$BASE/dmg/Froglips_${VERSION}_aarch64.dmg"
+            rm -f "$DMG"
+            hdiutil create -volname "Froglips" -srcfolder "$APP" -ov -format UDZO "$DMG"
+            codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG"
+            xcrun notarytool submit "$DMG" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" --wait
+            xcrun stapler staple "$DMG"
+
+            TARBALL="$BASE/macos/Froglips.app.tar.gz"
+            rm -f "$TARBALL" "$TARBALL.sig"
+            tar -czf "$TARBALL" -C "$BASE/macos" Froglips.app
+            # Signer CLI: env var carries key CONTENT; do not mix with
+            # --private-key-path (see scripts/release.sh).
+            npx @tauri-apps/cli signer sign "$TARBALL"
+          fi
+          spctl -a -vv "$APP" 2>&1 | grep -q "Notarized Developer ID" || {
+            echo "::error::Gatekeeper does not accept the build as Notarized Developer ID"
+            exit 1
+          }
+          echo "Notarization verified"
 
       - name: Collect bundle artifacts
         shell: bash
