@@ -129,7 +129,12 @@ if [[ -n "${APPLE_SIGNING_IDENTITY:-}" && -d "$NOTARIZE_APP" ]]; then
     rm -f "$REPAIR_TAR" "$REPAIR_TAR.sig"
     tar -czf "$REPAIR_TAR" -C src-tauri/target/release/bundle/macos Froglips.app
     if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
-      npx @tauri-apps/cli signer sign \
+      # The signer CLI treats TAURI_SIGNING_PRIVATE_KEY env as --private-key
+      # (key CONTENT) and refuses to combine it with --private-key-path; our
+      # env var holds a PATH, so clear both vars for this one call and pass
+      # the path explicitly.
+      env -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+        npx @tauri-apps/cli signer sign \
         --private-key-path "$TAURI_SIGNING_PRIVATE_KEY" \
         --password "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$REPAIR_TAR"
     fi
