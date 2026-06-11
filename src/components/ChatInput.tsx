@@ -1,5 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { X, Mic, Square, ArrowUp } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
+import { api } from "../lib/tauri-api";
 import type { ChatImage, ServerStatus } from "../types";
 import {
   MAX_IMAGES_PER_MESSAGE,
@@ -33,12 +35,14 @@ interface SpeechRecognitionLike {
   lang: string;
   start: () => void;
   stop: () => void;
-  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onresult:
+    | ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void)
+    | null;
   onerror: ((e: { error?: string }) => void) | null;
   onend: (() => void) | null;
 }
 interface SpeechRecognitionCtor {
-  new(): SpeechRecognitionLike;
+  new (): SpeechRecognitionLike;
 }
 interface WindowWithSpeech extends Window {
   SpeechRecognition?: SpeechRecognitionCtor;
@@ -53,7 +57,10 @@ interface WindowWithSpeech extends Window {
  * value or immediately after whitespace. Returns null otherwise so callers
  * can hide the menu.
  */
-function detectSlashContext(value: string, caret: number): { start: number; prefix: string } | null {
+function detectSlashContext(
+  value: string,
+  caret: number,
+): { start: number; prefix: string } | null {
   if (caret === 0) return null;
   let i = caret - 1;
   while (i >= 0) {
@@ -89,7 +96,9 @@ const IMAGE_MIME_RE = /^image\/(png|jpe?g|webp|gif|bmp)$/i;
 /** Re-encode an image File to PNG via Canvas. This strips EXIF (privacy)
  *  and gives us a uniform `image/png` MIME going forward. Returns the raw
  *  base64 (no data: prefix), plus the byte count of the new PNG. */
-async function fileToScrubbedPng(file: File): Promise<{ base64: string; size_bytes: number }> {
+async function fileToScrubbedPng(
+  file: File,
+): Promise<{ base64: string; size_bytes: number }> {
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(String(r.result));
@@ -118,15 +127,27 @@ async function fileToScrubbedPng(file: File): Promise<{ base64: string; size_byt
   return { base64, size_bytes };
 }
 
-export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, status }: Props) {
+export function ChatInput({
+  disabled,
+  onSend,
+  onAbort,
+  streaming,
+  currentModel,
+  status,
+}: Props) {
   const [text, setText] = useState("");
   const [dropping, setDropping] = useState(false);
   const [images, setImages] = useState<ChatImage[]>([]);
   const [dropMsg, setDropMsg] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [voiceErr, setVoiceErr] = useState<string | null>(null);
-  const [templates, setTemplates] = useState<PromptTemplate[]>(() => loadAllTemplates());
-  const [slashCtx, setSlashCtx] = useState<{ start: number; prefix: string } | null>(null);
+  const [templates, setTemplates] = useState<PromptTemplate[]>(() =>
+    loadAllTemplates(),
+  );
+  const [slashCtx, setSlashCtx] = useState<{
+    start: number;
+    prefix: string;
+  } | null>(null);
   const [menuIndex, setMenuIndex] = useState(0);
   const [showLibrary, setShowLibrary] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -152,7 +173,9 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
     void prefetchVisionSupport(currentModel, status).then((v) => {
       if (!cancelled && v != null) setVisionTick((t) => t + 1);
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [currentModel, status]);
   // visionTick forces a re-evaluation when the prefetch lands; the value
   // itself isn't read (the cache inside resolveVisionSupport holds it).
@@ -213,7 +236,12 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
     return () => {
       mountedRef.current = false;
       recogRef.current?.stop?.();
+      if (nativeActiveRef.current) {
+        cleanupNative();
+        void api.dictationStop().catch(() => {});
+      }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auto-clear transient drop messages after a few seconds so the UI doesn't
@@ -266,7 +294,14 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
     baseTextRef.current = "";
     lastVoiceTextRef.current = "";
     if (listening) {
-      recogRef.current?.stop?.();
+      if (nativeActiveRef.current) {
+        // Unsubscribe FIRST so the final native flush can't repopulate the
+        // composer we just cleared (same leftover-text bug as webkit).
+        cleanupNative();
+        void api.dictationStop().catch(() => {});
+      } else {
+        recogRef.current?.stop?.();
+      }
       setListening(false);
     }
   }
@@ -313,22 +348,33 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
 
     if (imageFiles.length > 0) {
       if (!visionOK) {
-        setDropMsg("Selected model doesn't support images. Switch to a vision-capable model (llava, qwen2-vl, gemma3, etc).");
+        setDropMsg(
+          "Selected model doesn't support images. Switch to a vision-capable model (llava, qwen2-vl, gemma3, etc).",
+        );
       } else {
         const slotsLeft = MAX_IMAGES_PER_MESSAGE - images.length;
         const accepted: ChatImage[] = [];
         let rejectedSize = 0;
         let rejectedSlots = 0;
         for (const f of imageFiles) {
-          if (accepted.length >= slotsLeft) { rejectedSlots++; continue; }
-          if (f.size > MAX_IMAGE_BYTES) { rejectedSize++; continue; }
+          if (accepted.length >= slotsLeft) {
+            rejectedSlots++;
+            continue;
+          }
+          if (f.size > MAX_IMAGE_BYTES) {
+            rejectedSize++;
+            continue;
+          }
           try {
             const { base64, size_bytes } = await fileToScrubbedPng(f);
             // Re-check AFTER the canvas PNG re-encode: a lossy source (JPEG/
             // WebP) routinely balloons 3–6× as lossless PNG, so a sub-4 MiB
             // file can exceed the cap once scrubbed. Reject rather than ship a
             // payload several times larger than the stated limit. (2026-05-30)
-            if (size_bytes > MAX_IMAGE_BYTES) { rejectedSize++; continue; }
+            if (size_bytes > MAX_IMAGE_BYTES) {
+              rejectedSize++;
+              continue;
+            }
             accepted.push({
               base64,
               mime: "image/png",
@@ -342,8 +388,12 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
         if (accepted.length > 0) setImages((prev) => [...prev, ...accepted]);
         if (rejectedSize > 0 || rejectedSlots > 0) {
           const parts: string[] = [];
-          if (rejectedSize > 0) parts.push(`${rejectedSize} too large (>4 MiB — crop first)`);
-          if (rejectedSlots > 0) parts.push(`${rejectedSlots} over the ${MAX_IMAGES_PER_MESSAGE}-image limit`);
+          if (rejectedSize > 0)
+            parts.push(`${rejectedSize} too large (>4 MiB — crop first)`);
+          if (rejectedSlots > 0)
+            parts.push(
+              `${rejectedSlots} over the ${MAX_IMAGES_PER_MESSAGE}-image limit`,
+            );
           setDropMsg(`Skipped: ${parts.join(", ")}`);
         }
       }
@@ -431,12 +481,102 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
     if (files.length > 0) await ingestFiles(files);
   }
 
-  function toggleVoice() {
+  /* ── Native dictation (2026-06-11) ─────────────────────────────────────
+   * webkitSpeechRecognition is default-denied inside WKWebView — wry has no
+   * speech permission delegate, so the JS API errors `not-allowed` without
+   * ever consulting macOS TCC (no prompt can fix it). Dictation therefore
+   * runs app-side (Rust: AVAudioEngine → SFSpeechRecognizer) and streams the
+   * cumulative transcript back via dictation-* events. The webkit path below
+   * survives only as a fallback for non-Tauri dev/browser runs. */
+  const nativeUnsubsRef = useRef<(() => void)[]>([]);
+  const nativeActiveRef = useRef(false);
+
+  function cleanupNative() {
+    nativeUnsubsRef.current.forEach((u) => u());
+    nativeUnsubsRef.current = [];
+    nativeActiveRef.current = false;
+  }
+
+  function mapDictationError(msg: string): string {
+    if (msg.startsWith("mic-denied"))
+      return "Microphone permission denied. Grant access in System Settings → Privacy & Security → Microphone.";
+    if (msg.startsWith("speech-denied"))
+      return "Speech Recognition permission denied. Grant access in System Settings → Privacy & Security → Speech Recognition.";
+    if (msg.startsWith("speech-unavailable"))
+      return "Speech recognition unavailable — enable Dictation in System Settings → Keyboard.";
+    return `Voice error: ${msg}`;
+  }
+
+  /** Returns false when the native path doesn't exist (non-Tauri runtime)
+   *  so the caller can fall back to webkitSpeechRecognition. Errors from a
+   *  REAL native path are surfaced here and return true (no double-report
+   *  through the fallback). */
+  async function startNativeVoice(): Promise<boolean> {
+    baseTextRef.current = text ? text + (text.endsWith(" ") ? "" : " ") : "";
+    const unsubs: (() => void)[] = [];
+    try {
+      unsubs.push(
+        await listen<string>("dictation-partial", (e) => {
+          // Same rebase contract as the webkit onresult handler: the event
+          // carries the session-cumulative transcript, appended to base.
+          if (!listeningRef.current) return;
+          const combined = (e.payload ?? "").trim();
+          const base = baseTextRef.current;
+          const next =
+            base && combined && !base.endsWith(" ")
+              ? base + " " + combined
+              : base + combined;
+          lastVoiceTextRef.current = next;
+          setText(next);
+        }),
+        await listen("dictation-end", () => {
+          cleanupNative();
+          listeningRef.current = false;
+          if (mountedRef.current) setListening(false);
+        }),
+        await listen<string>("dictation-error", (e) => {
+          cleanupNative();
+          listeningRef.current = false;
+          if (!mountedRef.current) return;
+          setListening(false);
+          setVoiceErr(mapDictationError(String(e.payload ?? "unknown")));
+        }),
+      );
+      nativeUnsubsRef.current = unsubs;
+      await api.dictationStart();
+      nativeActiveRef.current = true;
+      listeningRef.current = true;
+      setListening(true);
+      return true;
+    } catch (err) {
+      unsubs.forEach((u) => u());
+      nativeUnsubsRef.current = [];
+      const msg = err instanceof Error ? err.message : String(err);
+      // No Tauri runtime (browser dev / vitest) or non-macOS build → let the
+      // webkit fallback try.
+      if (/__TAURI|macos-only/i.test(msg)) return false;
+      setVoiceErr(mapDictationError(msg));
+      return true;
+    }
+  }
+
+  async function toggleVoice() {
     setVoiceErr(null);
     if (listening) {
-      recogRef.current?.stop?.();
+      if (nativeActiveRef.current) {
+        // Graceful stop: Rust flushes a final transcript, then emits
+        // dictation-end which finishes the UI teardown.
+        void api.dictationStop().catch(() => {});
+      } else {
+        recogRef.current?.stop?.();
+      }
       return;
     }
+    if (await startNativeVoice()) return;
+    startWebkitVoice();
+  }
+
+  function startWebkitVoice() {
     const w = window as WindowWithSpeech;
     const Recog = w.SpeechRecognition ?? w.webkitSpeechRecognition;
     if (!Recog) {
@@ -473,7 +613,9 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
         if (!mountedRef.current) return;
         const code = e?.error || "unknown";
         if (code === "not-allowed" || code === "service-not-allowed") {
-          setVoiceErr("Microphone permission denied. Grant access in System Settings → Privacy → Microphone.");
+          setVoiceErr(
+            "Microphone permission denied. Grant access in System Settings → Privacy → Microphone.",
+          );
         } else if (code === "no-speech") {
           // silent timeout — not really an error
         } else {
@@ -503,13 +645,19 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
   // reliably populated on dragenter/over.
   function dragHasImage(e: React.DragEvent): boolean {
     const items = Array.from(e.dataTransfer?.items ?? []);
-    return items.some((it) => it.kind === "file" && IMAGE_MIME_RE.test(it.type));
+    return items.some(
+      (it) => it.kind === "file" && IMAGE_MIME_RE.test(it.type),
+    );
   }
 
   return (
     <>
       {voiceErr && <div className="voice-err">{voiceErr}</div>}
-      {dropMsg && <div className="voice-err" data-testid="drop-msg">{dropMsg}</div>}
+      {dropMsg && (
+        <div className="voice-err" data-testid="drop-msg">
+          {dropMsg}
+        </div>
+      )}
       {images.length > 0 && (
         <div className="image-chips" data-testid="image-chips">
           {images.map((img, i) => (
@@ -528,10 +676,26 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
               <img
                 src={`data:${img.mime};base64,${img.base64}`}
                 alt={img.filename ?? `image ${i + 1}`}
-                style={{ maxWidth: 96, maxHeight: 96, objectFit: "cover", borderRadius: 4 }}
+                style={{
+                  maxWidth: 96,
+                  maxHeight: 96,
+                  objectFit: "cover",
+                  borderRadius: 4,
+                }}
               />
-              <div className="image-chip-meta" style={{ fontSize: 11, marginLeft: 6 }}>
-                <div className="image-chip-name" style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <div
+                className="image-chip-meta"
+                style={{ fontSize: 11, marginLeft: 6 }}
+              >
+                <div
+                  className="image-chip-name"
+                  style={{
+                    maxWidth: 140,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
                   {img.filename ?? "image"}
                 </div>
                 <div className="image-chip-size" style={{ opacity: 0.7 }}>
@@ -558,7 +722,9 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
           e.preventDefault();
           setDropping(true);
           if (!visionOK && dragHasImage(e)) {
-            setDropMsg("Selected model doesn't support images. Switch to a vision-capable model.");
+            setDropMsg(
+              "Selected model doesn't support images. Switch to a vision-capable model.",
+            );
           }
         }}
         onDragLeave={() => setDropping(false)}
@@ -592,7 +758,9 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
                 }}
                 onMouseEnter={() => setMenuIndex(i)}
               >
-                <code className="prompt-autocomplete-trigger">/{t.trigger}</code>
+                <code className="prompt-autocomplete-trigger">
+                  /{t.trigger}
+                </code>
                 <span className="prompt-autocomplete-name">{t.name}</span>
                 {t.builtIn === false && (
                   <span className="prompt-autocomplete-tag">custom</span>
@@ -605,20 +773,29 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
           ref={taRef}
           data-testid="chat-input"
           value={text}
-          onChange={(e) => onTextChange(e.target.value, e.target.selectionStart)}
+          onChange={(e) =>
+            onTextChange(e.target.value, e.target.selectionStart)
+          }
           onPaste={onPaste}
           onKeyDown={onKey}
           onKeyUp={(e) => {
             // Arrow-key caret moves don't fire onChange; recompute the slash
             // context from the new selection so the menu stays in sync.
-            if (slashCtx === null && !["/", "Backspace"].includes(e.key)) return;
+            if (slashCtx === null && !["/", "Backspace"].includes(e.key))
+              return;
             const target = e.currentTarget;
-            const ctx = detectSlashContext(target.value, target.selectionStart ?? 0);
+            const ctx = detectSlashContext(
+              target.value,
+              target.selectionStart ?? 0,
+            );
             setSlashCtx(ctx);
           }}
           onClick={(e) => {
             const target = e.currentTarget;
-            const ctx = detectSlashContext(target.value, target.selectionStart ?? 0);
+            const ctx = detectSlashContext(
+              target.value,
+              target.selectionStart ?? 0,
+            );
             setSlashCtx(ctx);
           }}
           onBlur={() => {
@@ -648,26 +825,45 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
           type="button"
           onClick={() => fileInputRef.current?.click()}
           className="attach-btn"
-          title={visionOK ? "Attach image" : "Selected model doesn't support images"}
+          title={
+            visionOK ? "Attach image" : "Selected model doesn't support images"
+          }
           aria-label="Attach image"
           disabled={!visionOK || images.length >= MAX_IMAGES_PER_MESSAGE}
           data-testid="attach-image-btn"
         >
           {/* paperclip glyph */}
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            aria-hidden="true"
+          >
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
           </svg>
         </button>
         <button
           type="button"
-          onClick={() => { setShowLibrary(true); refreshTemplates(); }}
+          onClick={() => {
+            setShowLibrary(true);
+            refreshTemplates();
+          }}
           className="mic-btn"
           title="Prompt library"
           aria-label="Open prompt library"
           data-testid="open-prompt-library"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M4 4h10v2H4zm0 4h10v2H4zm0 4h7v2H4zm12-8h4v16h-4z"/>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M4 4h10v2H4zm0 4h10v2H4zm0 4h7v2H4zm12-8h4v16h-4z" />
           </svg>
         </button>
         <button
@@ -680,9 +876,24 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
           <Mic size={16} />
         </button>
         {streaming ? (
-          <button data-testid="stop-btn" onClick={onAbort} className="send-btn stop" title="Stop"><Square size={16} /></button>
+          <button
+            data-testid="stop-btn"
+            onClick={onAbort}
+            className="send-btn stop"
+            title="Stop"
+          >
+            <Square size={16} />
+          </button>
         ) : (
-          <button data-testid="send-btn" onClick={send} disabled={disabled || (!text.trim() && images.length === 0)} className="send-btn" title="Send"><ArrowUp size={16} /></button>
+          <button
+            data-testid="send-btn"
+            onClick={send}
+            disabled={disabled || (!text.trim() && images.length === 0)}
+            className="send-btn"
+            title="Send"
+          >
+            <ArrowUp size={16} />
+          </button>
         )}
       </div>
       {/*
@@ -695,7 +906,10 @@ export function ChatInput({ disabled, onSend, onAbort, streaming, currentModel, 
         <Suspense fallback={null}>
           <PromptLibrary
             open={showLibrary}
-            onClose={() => { setShowLibrary(false); refreshTemplates(); }}
+            onClose={() => {
+              setShowLibrary(false);
+              refreshTemplates();
+            }}
             onChange={refreshTemplates}
           />
         </Suspense>

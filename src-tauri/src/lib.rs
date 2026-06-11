@@ -9,6 +9,8 @@ mod crash_log;
 mod custom_backend;
 mod data_backup;
 mod diagnostics;
+#[cfg(target_os = "macos")]
+mod dictation;
 mod embedder;
 mod gguf;
 mod history;
@@ -451,6 +453,8 @@ pub fn run() {
             commands::history::model_perf_record,
             commands::history::model_perf_summary,
             commands::misc::ram_pressure,
+            commands::misc::dictation_start,
+            commands::misc::dictation_stop,
             commands::memory::add_memory,
             commands::memory::list_memories,
             commands::memory::delete_memory,

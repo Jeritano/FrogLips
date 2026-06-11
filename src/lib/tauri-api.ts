@@ -211,6 +211,15 @@ export const api = {
     invoke<void>("set_conversation_tags", { id, tags }),
   /** [level (1=ok,2=warn,4=critical), total_ram_gb] */
   ramPressure: () => invoke<[number, number]>("ram_pressure"),
+  /**
+   * Native dictation (2026-06-11). webkitSpeechRecognition is default-denied
+   * inside WKWebView (no wry speech permission delegate), so recognition
+   * runs app-side: AVAudioEngine → SFSpeechRecognizer, transcripts arrive
+   * via "dictation-partial" / "dictation-end" / "dictation-error" events.
+   * The first start blocks on the macOS mic + speech TCC prompts.
+   */
+  dictationStart: () => invoke<void>("dictation_start"),
+  dictationStop: () => invoke<void>("dictation_stop"),
   /** Record one per-reply perf sample into the durable ledger. */
   modelPerfRecord: (sample: {
     model: string;

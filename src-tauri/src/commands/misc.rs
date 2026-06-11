@@ -989,3 +989,38 @@ mod redaction_tests {
         assert!(s.contains("3000"), "port arg over-redacted");
     }
 }
+
+/* ── Native dictation (2026-06-11) ──────────────────────────────────────
+ * webkitSpeechRecognition is default-denied inside WKWebView (wry has no
+ * speech permission delegate), so dictation runs app-side — see
+ * dictation.rs. Spawned on a blocking thread: the first call can block up
+ * to two TCC prompts long. */
+
+#[tauri::command]
+pub async fn dictation_start(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        super::blocking(move || crate::dictation::start(app).map_err(|e| anyhow::anyhow!(e))).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("dictation is macOS-only".into())
+    }
+}
+
+#[tauri::command]
+pub async fn dictation_stop() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        super::blocking(|| {
+            crate::dictation::stop();
+            Ok(())
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
