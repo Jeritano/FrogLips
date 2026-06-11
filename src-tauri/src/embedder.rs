@@ -84,11 +84,28 @@ impl Embedder {
     }
 }
 
-fn blocking_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .context("build blocking http client")
+/// Static clients (perf, 2026-06-11): each blocking::Client spawns a
+/// dedicated runtime thread on build — per-call construction paid that for
+/// every probe and every 64-chunk batch. Two singletons (probe vs embed)
+/// because their timeouts differ.
+fn probe_client() -> &'static reqwest::blocking::Client {
+    static C: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .timeout(PROBE_TIMEOUT)
+            .build()
+            .expect("build probe client")
+    })
+}
+
+fn embed_client() -> &'static reqwest::blocking::Client {
+    static C: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .timeout(EMBED_TIMEOUT)
+            .build()
+            .expect("build embed client")
+    })
 }
 
 /// True when the local Ollama daemon is up AND has nomic-embed-text pulled.
@@ -102,10 +119,7 @@ fn ollama_has_embed_model() -> bool {
     struct TagModel {
         name: String,
     }
-    let Ok(client) = blocking_client(PROBE_TIMEOUT) else {
-        return false;
-    };
-    let Ok(resp) = client.get(format!("{OLLAMA_BASE}/api/tags")).send() else {
+    let Ok(resp) = probe_client().get(format!("{OLLAMA_BASE}/api/tags")).send() else {
         return false;
     };
     if !resp.status().is_success() {
@@ -123,12 +137,16 @@ fn ollama_embed_batch(texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         #[serde(default)]
         embeddings: Vec<Vec<f32>>,
     }
-    let client = blocking_client(EMBED_TIMEOUT)?;
+    // keep_alive: without it the daemon unloads nomic-embed-text after its
+    // 5m default, putting a cold-load in front of the next recall/ingest.
+    let keep_alive = crate::settings::load()
+        .ollama_keep_alive
+        .unwrap_or_else(|| "30m".to_string());
     let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
     for chunk in texts.chunks(BATCH) {
-        let resp = client
+        let resp = embed_client()
             .post(format!("{OLLAMA_BASE}/api/embed"))
-            .json(&serde_json::json!({ "model": OLLAMA_MODEL, "input": chunk }))
+            .json(&serde_json::json!({ "model": OLLAMA_MODEL, "input": chunk, "keep_alive": keep_alive }))
             .send()
             .context("POST /api/embed")?;
         if !resp.status().is_success() {

@@ -1,9 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { CustomBackendsSettings } from "./CustomBackendsSettings";
 import { RoutesSettings } from "./RoutesSettings";
 import { checkForUpdate } from "../lib/updater";
+import { api } from "../lib/tauri-api";
 import pkg from "../../package.json";
 import type { ServerStatus } from "../types";
 
@@ -47,6 +48,13 @@ export function SettingsModal({
 }: Props) {
   const [pane, setPane] = useState<Pane>("general");
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [keepAliveInit, setKeepAliveInit] = useState("30m");
+  useEffect(() => {
+    void api
+      .settingsGet()
+      .then((s) => setKeepAliveInit(s.ollama_keep_alive ?? "30m"))
+      .catch(() => {});
+  }, []);
   const containerRef = useRef<HTMLDivElement | null>(null);
   useModalA11y({ open, onClose, containerRef });
 
@@ -142,6 +150,25 @@ export function SettingsModal({
                   >
                     Re-run setup wizard
                   </button>
+                </div>
+                <div className="settings-row">
+                  <span>Model idle</span>
+                  <select
+                    data-testid="settings-keep-alive"
+                    defaultValue={keepAliveInit}
+                    onChange={(e) => {
+                      void api
+                        .settingsSet({ ollama_keep_alive: e.target.value })
+                        .catch(() => {});
+                    }}
+                  >
+                    <option value="5m">Unload after 5 min idle</option>
+                    <option value="30m">Unload after 30 min idle</option>
+                    <option value="-1">Keep loaded forever</option>
+                  </select>
+                  <span className="settings-hint">
+                    Longer = no reload wait after a break (Ollama models).
+                  </span>
                 </div>
                 <div className="settings-row settings-version">
                   Froglips v{pkg.version}

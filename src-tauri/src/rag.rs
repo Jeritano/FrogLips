@@ -466,6 +466,76 @@ fn walk_files(root: &Path, glob_matcher: Option<&globset::GlobMatcher>, out: &mu
 
 /* ─────────────────────────── Public API ─────────────────────────────── */
 
+/// Cross-file embed batching (inference perf review N1, 2026-06-11): a code
+/// repo is mostly files with 1-5 chunks; per-file embed_batch calls meant one
+/// HTTP round-trip per file. Files buffer here and flush in ~1k-chunk waves —
+/// embed_batch splits into 64-chunk HTTP batches internally, so a flush is a
+/// handful of fully-packed requests.
+struct PendingFile {
+    rel: String,
+    mtime_ms: i64,
+    size: i64,
+    chunks: Vec<(usize, usize, String)>,
+}
+const FLUSH_CHUNKS: usize = 1024;
+
+/// Embed + insert every buffered file: ONE batched embed call over all
+/// pending chunks, then per-file transactions (rows + fingerprint) so a
+/// failure mid-flush still leaves whole-file units committed.
+fn flush_pending(
+    conn: &mut r2d2::PooledConnection<crate::history::SqliteManager>,
+    corpus_id: i64,
+    chosen: &crate::embedder::Embedder,
+    pending: &mut Vec<PendingFile>,
+    pending_chunk_count: &mut usize,
+    chunks_created: &mut usize,
+    files_indexed: &mut usize,
+) -> Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let texts: Vec<&str> = pending
+        .iter()
+        .flat_map(|f| f.chunks.iter().map(|c| c.2.as_str()))
+        .collect();
+    let embs = chosen
+        .embed_batch(&texts)
+        .with_context(|| format!("embedding failed via {}", chosen.id()))?;
+    let mut ei = 0usize;
+    for f in pending.iter() {
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for (start, end, chunk) in &f.chunks {
+                stmt.execute(params![
+                    corpus_id,
+                    f.rel,
+                    *start as i64,
+                    *end as i64,
+                    chunk,
+                    vec_to_blob(&embs[ei]),
+                ])?;
+                ei += 1;
+                *chunks_created += 1;
+            }
+        }
+        tx.execute(
+            "INSERT INTO rag_files (corpus_id, path, mtime_ms, size) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(corpus_id, path) DO UPDATE SET
+               mtime_ms = excluded.mtime_ms, size = excluded.size",
+            params![corpus_id, f.rel, f.mtime_ms, f.size],
+        )?;
+        tx.commit()?;
+        *files_indexed += 1;
+    }
+    pending.clear();
+    *pending_chunk_count = 0;
+    Ok(())
+}
+
 pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     validate_name(&opts.name)?;
     // Acquire the per-name ingest mutex for the full ingest run. Two
@@ -565,6 +635,9 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     let mut files_indexed = 0usize;
     let mut chunks_created = 0usize;
     let mut total_bytes: u64 = 0;
+
+    let mut pending: Vec<PendingFile> = Vec::new();
+    let mut pending_chunk_count: usize = 0;
 
     // Batch insert per file to keep transactions small.
     let mut conn = get_db()?;
@@ -700,11 +773,9 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         }
         // Defense-in-depth filter FIRST (chunks with prompt-injection markers
         // never enter the corpus — search-time scan_and_wrap remains the
-        // second layer), then embed the survivors as ONE batch: the learned
-        // embedder is an HTTP round-trip, and per-chunk calls would make a
-        // 20k-chunk corpus take minutes instead of seconds.
-        let mut kept: Vec<&(usize, usize, String)> = Vec::with_capacity(chunks.len());
-        for c in &chunks {
+        // second layer); survivors join the cross-file pending buffer.
+        let mut kept: Vec<(usize, usize, String)> = Vec::with_capacity(chunks.len());
+        for c in chunks {
             let (_wrapped, hits) = crate::agent::injection_scan::scan_and_wrap(&c.2);
             if hits > 0 {
                 crate::diagnostics::warn_with(
@@ -716,46 +787,42 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
             }
             kept.push(c);
         }
-        let room = MAX_CHUNKS_PER_INGEST - chunks_created;
+        let room = MAX_CHUNKS_PER_INGEST.saturating_sub(chunks_created + pending_chunk_count);
         if kept.len() > room {
             kept.truncate(room);
         }
         if kept.is_empty() {
             continue;
         }
-        let texts: Vec<&str> = kept.iter().map(|c| c.2.as_str()).collect();
-        let embs = chosen
-            .embed_batch(&texts)
-            .with_context(|| format!("embedding failed for {rel} via {}", chosen.id()))?;
-        let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        pending_chunk_count += kept.len();
+        pending.push(PendingFile {
+            rel,
+            mtime_ms,
+            size,
+            chunks: kept,
+        });
+        if pending_chunk_count >= FLUSH_CHUNKS {
+            flush_pending(
+                &mut conn,
+                corpus_id,
+                &chosen,
+                &mut pending,
+                &mut pending_chunk_count,
+                &mut chunks_created,
+                &mut files_indexed,
             )?;
-            for ((s, e, chunk), emb) in kept.iter().map(|c| (&c.0, &c.1, &c.2)).zip(&embs) {
-                stmt.execute(params![
-                    corpus_id,
-                    rel,
-                    *s as i64,
-                    *e as i64,
-                    chunk,
-                    vec_to_blob(emb),
-                ])?;
-                chunks_created += 1;
-            }
         }
-        // Record the file fingerprint so the next ingest can copy-forward
-        // when (mtime, size) still match.
-        tx.execute(
-            "INSERT INTO rag_files (corpus_id, path, mtime_ms, size) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(corpus_id, path) DO UPDATE SET
-               mtime_ms = excluded.mtime_ms, size = excluded.size",
-            params![corpus_id, rel, mtime_ms, size],
-        )?;
-        tx.commit()?;
-        files_indexed += 1;
     }
+    // Embed + insert whatever's left in the buffer.
+    flush_pending(
+        &mut conn,
+        corpus_id,
+        &chosen,
+        &mut pending,
+        &mut pending_chunk_count,
+        &mut chunks_created,
+        &mut files_indexed,
+    )?;
 
     // Atomic swap: drop the old generation (everything at/below the
     // watermark) and publish the new count in ONE transaction. Until this

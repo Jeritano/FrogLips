@@ -170,6 +170,13 @@ export function SetupWizard({ onDone }: Props) {
     },
   ]);
 
+  // Ref mirror of probe state for the re-poll interval (registered with
+  // stable deps; needs latest without re-subscribing).
+  const probesRef = useRef(probes);
+  useEffect(() => {
+    probesRef.current = probes;
+  }, [probes]);
+
   // Track the user-selected starter model and its download lifecycle so the
   // step-2 UI can switch between "pick" and "downloading…" / "done" states
   // without losing context if the wizard re-renders.
@@ -293,7 +300,15 @@ export function SetupWizard({ onDone }: Props) {
   useEffect(() => {
     if (step !== 1) return;
     const ref = { current: false };
-    const t = setInterval(() => void runProbes(ref), 3000);
+    const t = setInterval(() => {
+      // Perf N6 (2026-06-11): each probe round spawns `mlx_lm.server --help`
+      // (a Python interpreter) — don't do that while the window is hidden,
+      // and stop entirely once every backend reads Available (nothing left
+      // to flip).
+      if (document.visibilityState !== "visible") return;
+      if (probesRef.current.every((p) => p.available === true)) return;
+      void runProbes(ref);
+    }, 3000);
     return () => {
       ref.current = true;
       clearInterval(t);

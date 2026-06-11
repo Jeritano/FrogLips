@@ -48,7 +48,9 @@ export async function streamAgentChat(
     try {
       if (backend === "mlx") {
         if (!opts.serverStatus) {
-          throw new Error("MLX backend selected but no server status was provided");
+          throw new Error(
+            "MLX backend selected but no server status was provided",
+          );
         }
         return await streamMlxAgentChat(
           opts.serverStatus,
@@ -60,7 +62,13 @@ export async function streamAgentChat(
         );
       }
       if (backend === "native") {
-        return await streamNativeAgentChat(msgs, tools, signal, onContentChunk, params);
+        return await streamNativeAgentChat(
+          msgs,
+          tools,
+          signal,
+          onContentChunk,
+          params,
+        );
       }
       // Default: Ollama. Base AgentChatConfig resolved once; per-conversation
       // params override individual fields (resolveAgentChatConfig handles the
@@ -73,13 +81,23 @@ export async function streamAgentChat(
       // "Value looks like object, but can't find closing '}' symbol" 400 —
       // even when every value is well-formed. Skip per-request tuning on
       // those routes; local-only Ollama models still honour it.
-      const isCloud = typeof opts.model === "string" && opts.model.endsWith(":cloud");
+      const isCloud =
+        typeof opts.model === "string" && opts.model.endsWith(":cloud");
       const ollamaOptions: Record<string, unknown> = {};
       if (!isCloud) {
-        if (cfg.temperature != null) ollamaOptions.temperature = cfg.temperature;
+        if (cfg.temperature != null)
+          ollamaOptions.temperature = cfg.temperature;
         if (cfg.top_p != null) ollamaOptions.top_p = cfg.top_p;
         if (cfg.max_tokens != null) ollamaOptions.num_predict = cfg.max_tokens;
-        if (cfg.context_size != null) ollamaOptions.num_ctx = cfg.context_size;
+        // Inference perf O1 (2026-06-11): the resolved per-model context
+        // (opts.contextTokens — the SAME number the runner budgets prompts
+        // to) wins over the static config default. Mismatch here was the
+        // silent-truncation bug: budgeting to a 128k window while telling
+        // the daemon num_ctx=8192 head-truncated the system prompt + tool
+        // schemas on long runs. Keep the value stable per model — Ollama
+        // reloads the model whenever num_ctx changes between requests.
+        const numCtx = opts.contextTokens ?? cfg.context_size;
+        if (numCtx != null) ollamaOptions.num_ctx = numCtx;
       }
       // Same trick on the top-level body: a cloud passthrough that sees
       // `tools: []` for a model that doesn't support tools also barfs
@@ -96,7 +114,9 @@ export async function streamAgentChat(
       // fields the same way it rejects `options` (cryptic 400). Gated here, not
       // in streamOllamaChat, so cloud routes never carry it.
       if (!isCloud) {
-        body.keep_alive = "5m";
+        // Settings-driven (default "30m" — the daemon's own 5m default made
+        // idle reloads of 20-60GB models routine).
+        body.keep_alive = opts.keepAlive ?? "30m";
       }
       if (Array.isArray(tools) && tools.length > 0) {
         body.tools = tools;
@@ -117,17 +137,21 @@ export async function streamAgentChat(
       // non-idempotent turn is never silently re-streamed.
       const is5xx = /\b5\d\d:/.test(msg);
       const isAbort =
-        (e instanceof Error && e.name === "AbortError") || /\baborted\b/i.test(msg);
+        (e instanceof Error && e.name === "AbortError") ||
+        /\baborted\b/i.test(msg);
       // A `fetch` connection failure surfaces as a TypeError; the request
       // timeout helper throws "... timed out". Both are transient transport
       // faults, not response errors.
       const isNetwork =
         !isAbort &&
-        ((e instanceof TypeError && !/\b\d{3}:/.test(msg)) || /timed out/i.test(msg));
+        ((e instanceof TypeError && !/\b\d{3}:/.test(msg)) ||
+          /timed out/i.test(msg));
       const isRetriable = is5xx || isNetwork;
       if (isRetriable && attempt < RETRY_MAX) {
         onRetry();
-        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
+        await new Promise((r) =>
+          setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)),
+        );
         continue;
       }
       throw e;

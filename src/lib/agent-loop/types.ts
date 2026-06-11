@@ -159,6 +159,12 @@ export interface AgentRunOptions {
    */
   contextTokens?: number;
   /**
+   * Ollama keep_alive for local requests ("5m" | "30m" | "-1"). Settings-
+   * driven; defaults to "30m" in the chat layer (the daemon's own 5m makes
+   * idle reloads of 20-60GB models painfully common).
+   */
+  keepAlive?: string;
+  /**
    * Per-conversation model parameter overrides. When provided, the agent
    * chat clients thread these into the backend request. Null fields fall
    * back to backend defaults.

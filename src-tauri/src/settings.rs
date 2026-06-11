@@ -34,6 +34,10 @@ pub struct Settings {
     /// formatted into a system-prompt block so every chat and workflow agent
     /// knows who the user is. Absent on legacy installs → `None` → not used.
     pub user_profile: Option<UserProfile>,
+    /// Ollama `keep_alive` sent with every local request ("5m"/"30m"/"-1").
+    /// Default "30m" (the daemon's own 5m default makes idle reloads of
+    /// 20-60GB models painfully common). Absent on legacy installs -> None.
+    pub ollama_keep_alive: Option<String>,
     /// Cached machine profile (RAM / cores / CPU) detected once on first launch
     /// and refreshed weekly, so the model picker and onboarding can size models
     /// to the hardware without re-probing sysctl every render. Absent on legacy

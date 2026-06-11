@@ -1,6 +1,11 @@
 import { useCallback, useRef } from "react";
 import { api } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
+import { streamOllamaPlain } from "../lib/ollama-plain-client";
+import {
+  prefetchContextLength,
+  resolveContextTokens,
+} from "../lib/model-context-lookup";
 import { streamNativeChat } from "../lib/native-client";
 import { streamCustomChat } from "../lib/custom-client";
 // Perf review M29 (2026-06-09): the agent-loop package (runner + dispatch +
@@ -511,6 +516,27 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         max_tokens: convParams.max_tokens,
       };
 
+      // Inference perf O1/O2 (2026-06-11): resolve ONE context number per
+      // local-Ollama model and use it for BOTH the prompt budget and the
+      // request's num_ctx. Before this, the budgeter packed prompts for the
+      // model's full window while the daemon ran at its own (much smaller)
+      // default and silently head-truncated — dropping the system prompt and,
+      // in agent mode, the tool schemas. Clamped: /api/show can report
+      // 256k-1M windows whose KV would eat the machine. Cached per model.
+      const SEND_CTX_CEILING = 65_536;
+      const isLocalOllama =
+        effBackend === "ollama" && !effModel.endsWith(":cloud");
+      let sendCtx: number | undefined;
+      if (isLocalOllama) {
+        const real =
+          (await prefetchContextLength(effModel, status)) ??
+          resolveContextTokens(effModel, status);
+        sendCtx = Math.min(real, SEND_CTX_CEILING);
+      }
+      const keepAlive =
+        (await getCachedSettings().catch(() => null))?.ollama_keep_alive ??
+        "30m";
+
       /* ── Agent mode ── */
       if (agentMode && agentAvailable) {
         if (isStreamConvActive()) setAgentStatus("thinking");
@@ -577,6 +603,8 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             // Gated by `agentAvailable` above, so backend is "ollama" | "mlx".
             backend: status.backend === "mlx" ? "mlx" : "ollama",
             serverStatus: status,
+            contextTokens: sendCtx,
+            keepAlive,
             projectPolicy,
             params: chatParams,
             systemPromptOverride: agent.activePreset?.systemPromptOverride,
@@ -768,7 +796,10 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           stripped[i] = withoutImages;
         }
         if (stripped) plainHistory = stripped;
-        const budgeted = applyContextBudget(plainHistory, { model: effModel });
+        const budgeted = applyContextBudget(plainHistory, {
+          model: effModel,
+          contextTokens: sendCtx,
+        });
         if (budgeted.trimmed) {
           logDiag({
             level: "info",
@@ -819,12 +850,30 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
                     top_p: chatParams.top_p ?? undefined,
                     maxTokens: chatParams.max_tokens ?? undefined,
                   })
-                : streamChat(effStatus, plainHistory, {
-                    signal: ctrl.signal,
-                    temperature: chatParams.temperature ?? undefined,
-                    topP: chatParams.top_p ?? undefined,
-                    maxTokens: chatParams.max_tokens ?? undefined,
-                  });
+                : isLocalOllama
+                  ? // Native /api/chat: the only Ollama endpoint that honors
+                    // num_ctx (O2) — /v1 ignores it and the daemon default
+                    // silently head-truncates long prompts.
+                    streamOllamaPlain(
+                      effStatus.host,
+                      effStatus.port,
+                      effModel,
+                      plainHistory,
+                      {
+                        signal: ctrl.signal,
+                        temperature: chatParams.temperature ?? undefined,
+                        topP: chatParams.top_p ?? undefined,
+                        maxTokens: chatParams.max_tokens ?? undefined,
+                        numCtx: sendCtx,
+                        keepAlive,
+                      },
+                    )
+                  : streamChat(effStatus, plainHistory, {
+                      signal: ctrl.signal,
+                      temperature: chatParams.temperature ?? undefined,
+                      topP: chatParams.top_p ?? undefined,
+                      maxTokens: chatParams.max_tokens ?? undefined,
+                    });
         for await (const chunk of stream) {
           if (chunk.done) break;
           pending.push(chunk.delta);

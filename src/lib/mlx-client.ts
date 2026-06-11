@@ -1,14 +1,33 @@
 import type { Message, ServerStatus, ToolCall } from "../types";
-import { finalizeToolCalls, mergeToolCallChunk } from "./agent-loop/tool-call-merge";
-import type { PartialToolCall, StreamChatResult } from "./agent-loop/stream-types";
+import {
+  finalizeToolCalls,
+  mergeToolCallChunk,
+} from "./agent-loop/tool-call-merge";
+import type {
+  PartialToolCall,
+  StreamChatResult,
+} from "./agent-loop/stream-types";
 import type { ChatParams } from "./agent-loop/types";
 import { resolveAgentChatConfig } from "./agent-loop/types";
 import { withInactivityTimeout } from "./signal-utils";
 import { readLines } from "./stream-lines";
 
+/** Server-reported reply stats, surfaced on the FINAL chunk when available
+ *  (Ollama /api/chat done-frame; /v1 with stream_options.include_usage). */
+export interface ReplyUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  /** Pure decode time (ns→ms on capture) — the honest tok/s denominator. */
+  eval_duration_ms?: number;
+  prompt_eval_duration_ms?: number;
+  /** >0 means the model was cold-loaded for this request. */
+  load_duration_ms?: number;
+}
+
 export interface ChatChunk {
   delta: string;
   done: boolean;
+  usage?: ReplyUsage;
 }
 
 /** Serialise app messages into the OpenAI chat-completions wire format. */
@@ -46,7 +65,11 @@ function toOpenAiMessages(messages: Message[]) {
               : JSON.stringify(tc.function.arguments ?? {}),
         },
       }));
-      return { role: "assistant", content: m.content ?? "", tool_calls: normalized };
+      return {
+        role: "assistant",
+        content: m.content ?? "",
+        tool_calls: normalized,
+      };
     }
     if (m.role === "tool") {
       return { role: "tool", content: m.content, tool_call_id: m.tool_call_id };
@@ -70,7 +93,12 @@ const STREAM_IDLE_TIMEOUT_MS = 120_000;
 export async function* streamChat(
   status: ServerStatus,
   messages: Message[],
-  opts: { temperature?: number; topP?: number; maxTokens?: number; signal?: AbortSignal } = {},
+  opts: {
+    temperature?: number;
+    topP?: number;
+    maxTokens?: number;
+    signal?: AbortSignal;
+  } = {},
 ): AsyncGenerator<ChatChunk> {
   const url = `http://${status.host}:${status.port}/v1/chat/completions`;
   const body: Record<string, unknown> = {
@@ -93,76 +121,81 @@ export async function* streamChat(
   // Inactivity watchdog: a generous first-byte/cold-load window, then a
   // shorter per-token idle cap (re-armed on every chunk). Aborts a stalled
   // server instead of streaming forever.
-  const to = withInactivityTimeout(opts.signal, STREAM_IDLE_TIMEOUT_MS, "MLX stream stalled");
+  const to = withInactivityTimeout(
+    opts.signal,
+    STREAM_IDLE_TIMEOUT_MS,
+    "MLX stream stalled",
+  );
   to.kick(STREAM_CONNECT_TIMEOUT_MS);
   try {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: to.signal,
-  });
-  // Headers arrived — switch from the cold-load window to the idle cadence.
-  to.kick();
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: to.signal,
+    });
+    // Headers arrived — switch from the cold-load window to the idle cadence.
+    to.kick();
 
-  if (!res.ok || !res.body) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`server ${res.status}: ${txt}`);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  const MAX_BUF = 1 << 20; // 1 MB — guard against malformed server output
-  // Reasoning-model fallback: capture `delta.reasoning` / `reasoning_content`
-  // and, if the turn produces NO `content` (e.g. gemma4 and other "thinking"
-  // models that stream only reasoning), surface the reasoning so the reply
-  // isn't dropped as an empty response.
-  let anyContent = false;
-  let reasoningAcc = "";
-  const REASONING_CAP = 1 << 20;
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    to.kick(); // reset the idle timer on each received chunk
-    buf += decoder.decode(value, { stream: true });
-    if (buf.length > MAX_BUF) {
-      // Truncate only at a newline boundary so we don't slice "data:" prefix mid-line
-      const lastNl = buf.lastIndexOf("\n", buf.length - MAX_BUF);
-      buf = lastNl >= 0 ? buf.slice(lastNl + 1) : "";
+    if (!res.ok || !res.body) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`server ${res.status}: ${txt}`);
     }
 
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line || !line.startsWith("data:")) continue;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    const MAX_BUF = 1 << 20; // 1 MB — guard against malformed server output
+    // Reasoning-model fallback: capture `delta.reasoning` / `reasoning_content`
+    // and, if the turn produces NO `content` (e.g. gemma4 and other "thinking"
+    // models that stream only reasoning), surface the reasoning so the reply
+    // isn't dropped as an empty response.
+    let anyContent = false;
+    let reasoningAcc = "";
+    const REASONING_CAP = 1 << 20;
 
-      const payload = line.slice(5).trim();
-      if (payload === "[DONE]") {
-        if (!anyContent && reasoningAcc) yield { delta: reasoningAcc, done: false };
-        yield { delta: "", done: true };
-        return;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      to.kick(); // reset the idle timer on each received chunk
+      buf += decoder.decode(value, { stream: true });
+      if (buf.length > MAX_BUF) {
+        // Truncate only at a newline boundary so we don't slice "data:" prefix mid-line
+        const lastNl = buf.lastIndexOf("\n", buf.length - MAX_BUF);
+        buf = lastNl >= 0 ? buf.slice(lastNl + 1) : "";
       }
-      try {
-        const obj = JSON.parse(payload);
-        const d = obj?.choices?.[0]?.delta ?? {};
-        const content: string = d?.content ?? "";
-        if (content) {
-          anyContent = true;
-          yield { delta: content, done: false };
-        } else if (!anyContent) {
-          const r: string = d?.reasoning ?? d?.reasoning_content ?? "";
-          if (r && reasoningAcc.length < REASONING_CAP) reasoningAcc += r;
+
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line || !line.startsWith("data:")) continue;
+
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") {
+          if (!anyContent && reasoningAcc)
+            yield { delta: reasoningAcc, done: false };
+          yield { delta: "", done: true };
+          return;
         }
-      } catch {
-        // skip keepalives
+        try {
+          const obj = JSON.parse(payload);
+          const d = obj?.choices?.[0]?.delta ?? {};
+          const content: string = d?.content ?? "";
+          if (content) {
+            anyContent = true;
+            yield { delta: content, done: false };
+          } else if (!anyContent) {
+            const r: string = d?.reasoning ?? d?.reasoning_content ?? "";
+            if (r && reasoningAcc.length < REASONING_CAP) reasoningAcc += r;
+          }
+        } catch {
+          // skip keepalives
+        }
       }
     }
-  }
-  if (!anyContent && reasoningAcc) yield { delta: reasoningAcc, done: false };
-  yield { delta: "", done: true };
+    if (!anyContent && reasoningAcc) yield { delta: reasoningAcc, done: false };
+    yield { delta: "", done: true };
   } finally {
     to.clear();
   }
@@ -200,87 +233,95 @@ export async function streamMlxAgentChat(
 
   // Inactivity watchdog (see streamChat): generous cold-load window, then a
   // per-token idle cap so a stalled MLX server can't wedge the agent loop.
-  const to = withInactivityTimeout(signal, STREAM_IDLE_TIMEOUT_MS, "MLX stream stalled");
+  const to = withInactivityTimeout(
+    signal,
+    STREAM_IDLE_TIMEOUT_MS,
+    "MLX stream stalled",
+  );
   to.kick(STREAM_CONNECT_TIMEOUT_MS);
   try {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: to.signal,
-  });
-  to.kick(); // headers arrived → idle cadence
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: to.signal,
+    });
+    to.kick(); // headers arrived → idle cadence
 
-  if (!res.ok || !res.body) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`MLX ${res.status}: ${txt}`);
-  }
-
-  // TODO: best-effort server-side cancel on abort. The native runtime mirrors
-  // this pattern in `native-client.ts` (listens for `signal.abort` and calls
-  // `api.nativeCancelChat(opId)` so the backend stops generating). MLX's
-  // OpenAI-compatible `mlx_lm.server` does NOT currently expose a parallel
-  // cancel endpoint — no `mlx_cancel` / `mlxCancelChat` invocation is wired
-  // in `tauri-api.ts`. Aborting the fetch here closes the HTTP connection
-  // but the MLX process keeps generating until the request completes
-  // upstream. If a cancel command is added later (mirroring native), wire it
-  // here via `signal.addEventListener("abort", …)` the same way.
-
-  let content = "";
-  const toolAcc: PartialToolCall[] = [];
-  let promptTok: number | undefined;
-  let evalTok: number | undefined;
-  let sawDone = false;
-
-  const processPayload = (payload: string) => {
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(payload) as Record<string, unknown>;
-    } catch {
-      return; // skip keepalives / malformed lines
+    if (!res.ok || !res.body) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`MLX ${res.status}: ${txt}`);
     }
-    const choices = obj.choices as Array<Record<string, unknown>> | undefined;
-    const delta = choices?.[0]?.delta as Record<string, unknown> | undefined;
-    if (delta) {
-      const c = delta.content;
-      if (typeof c === "string" && c.length > 0) {
-        content += c;
-        onContentChunk(c);
+
+    // TODO: best-effort server-side cancel on abort. The native runtime mirrors
+    // this pattern in `native-client.ts` (listens for `signal.abort` and calls
+    // `api.nativeCancelChat(opId)` so the backend stops generating). MLX's
+    // OpenAI-compatible `mlx_lm.server` does NOT currently expose a parallel
+    // cancel endpoint — no `mlx_cancel` / `mlxCancelChat` invocation is wired
+    // in `tauri-api.ts`. Aborting the fetch here closes the HTTP connection
+    // but the MLX process keeps generating until the request completes
+    // upstream. If a cancel command is added later (mirroring native), wire it
+    // here via `signal.addEventListener("abort", …)` the same way.
+
+    let content = "";
+    const toolAcc: PartialToolCall[] = [];
+    let promptTok: number | undefined;
+    let evalTok: number | undefined;
+    let sawDone = false;
+
+    const processPayload = (payload: string) => {
+      let obj: Record<string, unknown>;
+      try {
+        obj = JSON.parse(payload) as Record<string, unknown>;
+      } catch {
+        return; // skip keepalives / malformed lines
       }
-      const tcs = delta.tool_calls as Array<Partial<ToolCall> & { index?: number }> | undefined;
-      if (Array.isArray(tcs)) {
-        tcs.forEach((tc, i) => {
-          const idx = typeof tc.index === "number" ? tc.index : i;
-          mergeToolCallChunk(toolAcc, idx, tc);
-        });
+      const choices = obj.choices as Array<Record<string, unknown>> | undefined;
+      const delta = choices?.[0]?.delta as Record<string, unknown> | undefined;
+      if (delta) {
+        const c = delta.content;
+        if (typeof c === "string" && c.length > 0) {
+          content += c;
+          onContentChunk(c);
+        }
+        const tcs = delta.tool_calls as
+          | Array<Partial<ToolCall> & { index?: number }>
+          | undefined;
+        if (Array.isArray(tcs)) {
+          tcs.forEach((tc, i) => {
+            const idx = typeof tc.index === "number" ? tc.index : i;
+            mergeToolCallChunk(toolAcc, idx, tc);
+          });
+        }
       }
-    }
-    const usage = obj.usage as Record<string, unknown> | undefined;
-    if (usage) {
-      if (typeof usage.prompt_tokens === "number") promptTok = usage.prompt_tokens;
-      if (typeof usage.completion_tokens === "number") evalTok = usage.completion_tokens;
-    }
-  };
+      const usage = obj.usage as Record<string, unknown> | undefined;
+      if (usage) {
+        if (typeof usage.prompt_tokens === "number")
+          promptTok = usage.prompt_tokens;
+        if (typeof usage.completion_tokens === "number")
+          evalTok = usage.completion_tokens;
+      }
+    };
 
-  await readLines(res.body.getReader(), (rawLine) => {
-    to.kick(); // reset the idle timer on each received line
-    if (sawDone) return;
-    const line = rawLine.trim();
-    if (!line || !line.startsWith("data:")) return;
-    const payload = line.slice(5).trim();
-    if (payload === "[DONE]") {
-      sawDone = true;
-      return;
-    }
-    processPayload(payload);
-  });
+    await readLines(res.body.getReader(), (rawLine) => {
+      to.kick(); // reset the idle timer on each received line
+      if (sawDone) return;
+      const line = rawLine.trim();
+      if (!line || !line.startsWith("data:")) return;
+      const payload = line.slice(5).trim();
+      if (payload === "[DONE]") {
+        sawDone = true;
+        return;
+      }
+      processPayload(payload);
+    });
 
-  return {
-    content,
-    tool_calls: finalizeToolCalls(toolAcc),
-    prompt_eval_count: promptTok,
-    eval_count: evalTok,
-  };
+    return {
+      content,
+      tool_calls: finalizeToolCalls(toolAcc),
+      prompt_eval_count: promptTok,
+      eval_count: evalTok,
+    };
   } finally {
     to.clear();
   }

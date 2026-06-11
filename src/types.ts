@@ -354,6 +354,8 @@ export interface AppSettings {
   user_profile?: UserProfile | null;
   /** Cached machine profile for hardware-aware model sizing; re-detected weekly. */
   hardware_profile?: HardwareProfile | null;
+  /** Ollama keep_alive sent with every local request ("5m" | "30m" | "-1"). */
+  ollama_keep_alive?: string | null;
 }
 
 /**

@@ -233,7 +233,8 @@ describe("streamAgentChat — keep_alive gating (local vs cloud)", () => {
 
   it("local Ollama model includes keep_alive", async () => {
     const body = await bodyFor("qwen2.5-coder:7b");
-    expect(body.keep_alive).toBe("5m");
+    // Settings-driven since 2026-06-11; "30m" is the layer default.
+    expect(body.keep_alive).toBe("30m");
   });
 
   it("cloud-routed (:cloud) model OMITS keep_alive and options", async () => {
