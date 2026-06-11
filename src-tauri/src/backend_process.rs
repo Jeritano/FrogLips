@@ -217,13 +217,43 @@ impl ServerState {
         // MLX backend — spawn mlx_lm.server with captured stderr
         let binary =
             mlx_server_binary().context("mlx_lm.server not found — install: pip install mlx-lm")?;
-        let mut child = Command::new(&binary)
-            .arg("--model")
+        let mut cmd = Command::new(&binary);
+        cmd.arg("--model")
             .arg(&model)
             .arg("--host")
             .arg(MLX_HOST)
             .arg("--port")
-            .arg(MLX_PORT.to_string())
+            .arg(MLX_PORT.to_string());
+        // Inference perf M2/M5/M8 (2026-06-11): tuning flags, each gated on
+        // the INSTALLED server's --help so an older mlx_lm never exits on an
+        // unknown flag (which would read as "server won't start").
+        //   --prefill-step-size 4096  → ~10-20% lower TTFT on long prompts
+        //   --prompt-cache-size/-bytes → more chat switch-backs hit the KV
+        //     cache AND caps a previously UNBOUNDED cache-growth path
+        //   --draft-model (settings)  → speculative decoding, 1.5-2.5x
+        //     decode on big models, output distribution unchanged
+        let help = mlx_server_help(&binary).await;
+        if help.contains("--prefill-step-size") {
+            cmd.arg("--prefill-step-size").arg("4096");
+        }
+        if help.contains("--prompt-cache-size") {
+            cmd.arg("--prompt-cache-size").arg("20");
+        }
+        if help.contains("--prompt-cache-bytes") {
+            cmd.arg("--prompt-cache-bytes").arg("32G");
+        }
+        if help.contains("--draft-model") {
+            if let Some(draft) = crate::settings::load()
+                .mlx_draft_model
+                .filter(|d| !d.trim().is_empty())
+            {
+                cmd.arg("--draft-model").arg(draft.trim());
+                if help.contains("--num-draft-tokens") {
+                    cmd.arg("--num-draft-tokens").arg("3");
+                }
+            }
+        }
+        let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -601,6 +631,22 @@ async fn kill_child(child: &mut Child) {
             );
         }
     }
+}
+
+/// Cached `mlx_lm.server --help` text — spawning a Python interpreter per
+/// flag check would add ~300ms to every model start; once per app run is
+/// enough (the binary doesn't change underneath a running app).
+async fn mlx_server_help(binary: &std::path::Path) -> String {
+    use tokio::sync::OnceCell;
+    static HELP: OnceCell<String> = OnceCell::const_new();
+    HELP.get_or_init(|| async {
+        match Command::new(binary).arg("--help").output().await {
+            Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+            Err(_) => String::new(),
+        }
+    })
+    .await
+    .clone()
 }
 
 fn mlx_server_binary() -> Result<PathBuf> {

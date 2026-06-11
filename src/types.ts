@@ -356,6 +356,8 @@ export interface AppSettings {
   hardware_profile?: HardwareProfile | null;
   /** Ollama keep_alive sent with every local request ("5m" | "30m" | "-1"). */
   ollama_keep_alive?: string | null;
+  /** Optional MLX speculative-decoding draft model (same tokenizer family). */
+  mlx_draft_model?: string | null;
 }
 
 /**

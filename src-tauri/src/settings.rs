@@ -38,6 +38,11 @@ pub struct Settings {
     /// Default "30m" (the daemon's own 5m default makes idle reloads of
     /// 20-60GB models painfully common). Absent on legacy installs -> None.
     pub ollama_keep_alive: Option<String>,
+    /// Optional MLX speculative-decoding draft model (same tokenizer family
+    /// as the main model, e.g. a 0.6B beside a 32B). When set and the
+    /// installed mlx_lm.server supports --draft-model, the spawn adds it:
+    /// 1.5-2.5x decode on big models, output distribution unchanged.
+    pub mlx_draft_model: Option<String>,
     /// Cached machine profile (RAM / cores / CPU) detected once on first launch
     /// and refreshed weekly, so the model picker and onboarding can size models
     /// to the hardware without re-probing sysctl every render. Absent on legacy
