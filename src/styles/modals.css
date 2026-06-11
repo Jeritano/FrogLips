@@ -1333,3 +1333,30 @@
   background: var(--accent);
   transition: width 0.4s ease;
 }
+
+/* Ollama daemon tuning card (Settings → Backends) */
+.settings-tuning-card {
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-md, 10px);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-tuning-title {
+  font-weight: 600;
+  font-size: var(--fs-sm, 13px);
+}
+.settings-tuning-row {
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.45;
+}
+.settings-tuning-code {
+  background: var(--overlay-softer, rgba(255, 255, 255, 0.04));
+  border-radius: var(--radius-sm, 6px);
+  padding: 8px 10px;
+  font-size: var(--fs-2xs, 11px);
+  overflow-x: auto;
+  user-select: all;
+}

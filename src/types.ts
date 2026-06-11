@@ -10,6 +10,8 @@ export interface SystemInfo {
   physical_cores: number;
   performance_cores: number;
   cpu_brand: string;
+  /** iogpu.wired_limit_mb — 0 = macOS default (~75% RAM Metal cap). */
+  wired_limit_mb?: number;
 }
 
 /** Cached `SystemInfo` + the unix-seconds time it was detected (stored in

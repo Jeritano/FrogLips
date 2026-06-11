@@ -199,6 +199,44 @@ impl ServerState {
                     Err(_) => last_err = Some("connect timed out".to_string()),
                 }
             }
+            let mut spawned_child: Option<Child> = None;
+            if !connected {
+                // Inference perf O5 (2026-06-11): the port is CLOSED, so no
+                // user-managed daemon exists to fight with — spawn our own
+                // `ollama serve` as a tracked child. This is also the only
+                // path where the env-only tuning knobs (flash attention, KV
+                // q8_0, keep_alive) can be applied without user setup. The
+                // child rides the same kill_on_drop + RunningServer lifecycle
+                // as the MLX server; an externally-started daemon (port open)
+                // never reaches this branch and is never touched.
+                match spawn_ollama_daemon().await {
+                    Ok(child) => {
+                        spawned_child = Some(child);
+                        // Give the daemon a moment, then re-probe.
+                        for _ in 0..15 {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            if tokio::time::timeout(
+                                std::time::Duration::from_secs(1),
+                                tokio::net::TcpStream::connect(&addr),
+                            )
+                            .await
+                            .map(|r| r.is_ok())
+                            .unwrap_or(false)
+                            {
+                                connected = true;
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::diagnostics::warn_with(
+                            "backend",
+                            "ollama daemon spawn fallback failed",
+                            serde_json::json!({ "error": e.to_string() }),
+                        );
+                    }
+                }
+            }
             if !connected {
                 return Err(anyhow!(
                     "ollama daemon not reachable at {addr} after 5 attempts: {} — ensure `ollama serve` is running",
@@ -206,7 +244,7 @@ impl ServerState {
                 ));
             }
             *guard = Some(RunningServer {
-                child: None,
+                child: spawned_child,
                 model: model.clone(),
                 backend: backend.clone(),
             });
@@ -631,6 +669,31 @@ async fn kill_child(child: &mut Child) {
             );
         }
     }
+}
+
+/// Spawn `ollama serve` as a tracked child with the tuned env that an
+/// externally-managed daemon can't receive from us:
+///   OLLAMA_FLASH_ATTENTION=1   — +5-20% tok/s on long context (Metal)
+///   OLLAMA_KV_CACHE_TYPE=q8_0  — KV cache RAM −~50%, negligible quality loss
+///   OLLAMA_KEEP_ALIVE          — settings-driven idle retention
+///   OLLAMA_NUM_PARALLEL=1      — single-user app; parallel slots multiply KV
+/// Only called when the port is CLOSED (no daemon to fight). PATH already
+/// extended by ensure_path_for_gui for Finder/Dock launches.
+async fn spawn_ollama_daemon() -> Result<Child> {
+    let keep = crate::settings::load()
+        .ollama_keep_alive
+        .unwrap_or_else(|| "30m".to_string());
+    Command::new("ollama")
+        .arg("serve")
+        .env("OLLAMA_FLASH_ATTENTION", "1")
+        .env("OLLAMA_KV_CACHE_TYPE", "q8_0")
+        .env("OLLAMA_KEEP_ALIVE", keep)
+        .env("OLLAMA_NUM_PARALLEL", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("spawn `ollama serve` (is ollama installed?)")
 }
 
 /// Cached `mlx_lm.server --help` text — spawning a Python interpreter per

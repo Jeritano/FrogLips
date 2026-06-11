@@ -42,6 +42,9 @@ pub struct SystemInfo {
     /// the perflevel key is absent.
     pub performance_cores: u32,
     pub cpu_brand: String,
+    /// `iogpu.wired_limit_mb` — 0 means the macOS default (~75% of RAM is the
+    /// Metal working-set cap). Read-only here; raising it needs sudo.
+    pub wired_limit_mb: u64,
 }
 
 #[tauri::command]
@@ -70,11 +73,15 @@ pub async fn system_info() -> Result<SystemInfo, String> {
             .unwrap_or(physical_cores);
         let cpu_brand =
             sysctl("machdep.cpu.brand_string").unwrap_or_else(|| "Apple Silicon".into());
+        let wired_limit_mb: u64 = sysctl("iogpu.wired_limit_mb")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         Ok(SystemInfo {
             total_ram_gb,
             physical_cores,
             performance_cores,
             cpu_brand,
+            wired_limit_mb,
         })
     })
     .await
