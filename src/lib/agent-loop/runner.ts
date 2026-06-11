@@ -802,6 +802,7 @@ export async function runAgentLoop(
       systemPromptOverride,
       mcpTools,
       opts.modelFitness ?? classifyToolFitness(opts.model),
+      opts.savedApiNames ?? [],
     ),
   };
   msgs.unshift(sysMsg);

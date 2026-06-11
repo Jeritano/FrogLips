@@ -46,6 +46,9 @@ pub struct Settings {
     /// Opt-in automatic update checks (default off pending updater
     /// investigation 2026-06-11; manual check in Settings always works).
     pub auto_update_check: Option<bool>,
+    /// User-registered APIs the agent can call by name via `call_api`. Keys
+    /// live in the Keychain (account "api:{id}"); never in chat.
+    pub saved_apis: Option<Vec<SavedApi>>,
     /// Cached machine profile (RAM / cores / CPU) detected once on first launch
     /// and refreshed weekly, so the model picker and onboarding can size models
     /// to the hardware without re-probing sysctl every render. Absent on legacy
@@ -89,6 +92,35 @@ pub struct UserProfile {
     pub about: Option<String>,
     /// Free-text "how the AI should respond" (tone, format, length).
     pub response_style: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SavedApi {
+    pub id: String,
+    pub name: String,
+    /// Scheme+host(+optional base path), e.g. "https://api.github.com". The
+    /// agent supplies only a relative path, so it can never be steered off
+    /// this host.
+    pub base_url: String,
+    /// Header the key is injected into (default "Authorization").
+    #[serde(default = "default_auth_header")]
+    pub auth_header: String,
+    /// Value template with `{key}` substituted from the Keychain, e.g.
+    /// "Bearer {key}" or "token {key}". If it lacks `{key}` the raw key is
+    /// appended.
+    #[serde(default = "default_auth_template")]
+    pub auth_template: String,
+    pub description: Option<String>,
+    /// Keychain-backed; redacted on disk like custom_backends. Account
+    /// namespace "api:{id}".
+    pub api_key: Option<String>,
+}
+
+fn default_auth_header() -> String {
+    "Authorization".to_string()
+}
+fn default_auth_template() -> String {
+    "Bearer {key}".to_string()
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -373,6 +405,22 @@ pub fn load() -> Settings {
             }
         }
     }
+    if let Some(apis) = s.saved_apis.as_mut() {
+        for a in apis.iter_mut() {
+            let acct = format!("api:{}", a.id);
+            match a.api_key.as_deref() {
+                Some("") | Some(REDACTED_MARKER) | None => {
+                    a.api_key = keychain_get(&acct);
+                }
+                Some(plain) => {
+                    let plain_owned = plain.to_string();
+                    if keychain_set(&acct, &plain_owned) {
+                        migrated = true;
+                    }
+                }
+            }
+        }
+    }
     if migrated {
         // Persist the blanked-on-disk form; in-memory keeps the real keys.
         let _ = save(&s);
@@ -430,6 +478,28 @@ pub fn save(s: &Settings) -> std::io::Result<()> {
                 _ => {
                     keychain_delete(&b.id);
                     b.api_key = Some(String::new());
+                }
+            }
+        }
+    }
+    if let Some(apis) = on_disk.saved_apis.as_mut() {
+        for a in apis.iter_mut() {
+            let acct = format!("api:{}", a.id);
+            match a.api_key.take() {
+                Some(k) if !k.is_empty() && k != REDACTED_MARKER => {
+                    if keychain_set(&acct, &k) {
+                        a.api_key = Some(String::new());
+                    } else {
+                        a.api_key = Some(k);
+                        continue;
+                    }
+                }
+                Some(k) if k == REDACTED_MARKER => {
+                    a.api_key = Some(String::new());
+                }
+                _ => {
+                    keychain_delete(&acct);
+                    a.api_key = Some(String::new());
                 }
             }
         }

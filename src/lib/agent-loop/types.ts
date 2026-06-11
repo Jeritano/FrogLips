@@ -164,6 +164,9 @@ export interface AgentRunOptions {
    * idle reloads of 20-60GB models painfully common).
    */
   keepAlive?: string;
+  /** Names of the user's registered call_api targets, surfaced in the system
+   *  prompt so the model knows which APIs it can call. */
+  savedApiNames?: string[];
   /**
    * Per-conversation model parameter overrides. When provided, the agent
    * chat clients thread these into the backend request. Null fields fall

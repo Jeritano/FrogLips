@@ -10,9 +10,20 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute path or ~/relative path." },
-          offset: { type: "number", description: "Byte offset to start reading (default 0). Only use when continuing a previously-truncated read." },
-          limit: { type: "number", description: "Max bytes to read (default 65536, minimum 8192). Omit unless you specifically need less than the whole file." },
+          path: {
+            type: "string",
+            description: "Absolute path or ~/relative path.",
+          },
+          offset: {
+            type: "number",
+            description:
+              "Byte offset to start reading (default 0). Only use when continuing a previously-truncated read.",
+          },
+          limit: {
+            type: "number",
+            description:
+              "Max bytes to read (default 65536, minimum 8192). Omit unless you specifically need less than the whole file.",
+          },
         },
         required: ["path"],
       },
@@ -27,7 +38,10 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute path or ~/relative path." },
+          path: {
+            type: "string",
+            description: "Absolute path or ~/relative path.",
+          },
         },
         required: ["path"],
       },
@@ -46,9 +60,13 @@ export const TOOLS = [
           pattern: { type: "string", description: "Text or regex to find." },
           glob: {
             type: "string",
-            description: "Optional filename glob, e.g. '*.ts' or '*.py'. Defaults to '*'.",
+            description:
+              "Optional filename glob, e.g. '*.ts' or '*.py'. Defaults to '*'.",
           },
-          regex: { type: "boolean", description: "Treat pattern as a regex (Rust regex syntax)." },
+          regex: {
+            type: "boolean",
+            description: "Treat pattern as a regex (Rust regex syntax).",
+          },
         },
         required: ["path", "pattern"],
       },
@@ -85,10 +103,17 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "git_status",
-      description: "Run `git status --short --branch` in the workspace (or given path). Returns stdout, stderr, exit_code.",
+      description:
+        "Run `git status --short --branch` in the workspace (or given path). Returns stdout, stderr, exit_code.",
       parameters: {
         type: "object",
-        properties: { path: { type: "string", description: "Optional working directory; defaults to workspace root." } },
+        properties: {
+          path: {
+            type: "string",
+            description:
+              "Optional working directory; defaults to workspace root.",
+          },
+        },
       },
     },
   },
@@ -96,7 +121,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "git_diff",
-      description: "Run `git diff` in the workspace (or given path). Set staged=true for `--staged`.",
+      description:
+        "Run `git diff` in the workspace (or given path). Set staged=true for `--staged`.",
       parameters: {
         type: "object",
         properties: {
@@ -127,7 +153,10 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          command: { type: "string", description: "Shell command string passed to sh -c." },
+          command: {
+            type: "string",
+            description: "Shell command string passed to sh -c.",
+          },
           cwd: { type: "string", description: "Optional working directory." },
           timeout_secs: {
             type: "integer",
@@ -158,7 +187,8 @@ export const TOOLS = [
           code: { type: "string", description: "The source code to execute." },
           timeout_secs: {
             type: "integer",
-            description: "Wall-clock budget in seconds. Defaults to 30. Clamped to [1, 600] server-side.",
+            description:
+              "Wall-clock budget in seconds. Defaults to 30. Clamped to [1, 600] server-side.",
             minimum: 1,
             maximum: 600,
           },
@@ -176,7 +206,11 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          expression: { type: "string", description: "e.g. '2 + 3 * 4', 'sqrt(16) + log(1000)', '(1+2)^10'." },
+          expression: {
+            type: "string",
+            description:
+              "e.g. '2 + 3 * 4', 'sqrt(16) + log(1000)', '(1+2)^10'.",
+          },
         },
         required: ["expression"],
       },
@@ -191,9 +225,19 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          content: { type: "string", description: "The fact to remember, as a self-contained sentence." },
-          scope: { type: "string", enum: ["global", "project", "conversation"], description: "Visibility scope. Default global." },
-          tags: { type: "string", description: "Optional comma-separated tags (no newlines)." },
+          content: {
+            type: "string",
+            description: "The fact to remember, as a self-contained sentence.",
+          },
+          scope: {
+            type: "string",
+            enum: ["global", "project", "conversation"],
+            description: "Visibility scope. Default global.",
+          },
+          tags: {
+            type: "string",
+            description: "Optional comma-separated tags (no newlines).",
+          },
         },
         required: ["content"],
       },
@@ -209,7 +253,12 @@ export const TOOLS = [
         type: "object",
         properties: {
           query: { type: "string", description: "What to look up." },
-          k: { type: "integer", description: "Max results (1-20). Default 5.", minimum: 1, maximum: 20 },
+          k: {
+            type: "integer",
+            description: "Max results (1-20). Default 5.",
+            minimum: 1,
+            maximum: 20,
+          },
         },
         required: ["query"],
       },
@@ -253,7 +302,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "git_log",
-      description: "Run `git log --oneline --decorate -n <limit>` (default 20, max 200).",
+      description:
+        "Run `git log --oneline --decorate -n <limit>` (default 20, max 200).",
       parameters: {
         type: "object",
         properties: { path: { type: "string" }, limit: { type: "number" } },
@@ -264,7 +314,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "git_show",
-      description: "Run `git show <ref>` — view commit details + diff. Ref must be alphanumeric + ./_/-/slash.",
+      description:
+        "Run `git show <ref>` — view commit details + diff. Ref must be alphanumeric + ./_/-/slash.",
       parameters: {
         type: "object",
         properties: {
@@ -287,7 +338,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "git_commit",
-      description: "Commit already-staged changes with a message. Requires user approval. Does NOT stage files — use run_shell `git add` first.",
+      description:
+        "Commit already-staged changes with a message. Requires user approval. Does NOT stage files — use run_shell `git add` first.",
       parameters: {
         type: "object",
         properties: { message: { type: "string" }, path: { type: "string" } },
@@ -299,7 +351,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "web_fetch",
-      description: "GET a URL and return its text content (HTML auto-stripped). Blocks loopback/private/link-local hosts (SSRF defense). 15s timeout, 1 MiB response cap.",
+      description:
+        "GET a URL and return its text content (HTML auto-stripped). Blocks loopback/private/link-local hosts (SSRF defense). 15s timeout, 1 MiB response cap.",
       parameters: {
         type: "object",
         properties: { url: { type: "string" } },
@@ -311,7 +364,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "web_search",
-      description: "Search the web via DuckDuckGo. Returns up to 20 hits with title/url/snippet.",
+      description:
+        "Search the web via DuckDuckGo. Returns up to 20 hits with title/url/snippet.",
       parameters: {
         type: "object",
         properties: {
@@ -326,7 +380,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "read_pdf",
-      description: "Extract text from a PDF file at the given path. Optional byte-cap on output.",
+      description:
+        "Extract text from a PDF file at the given path. Optional byte-cap on output.",
       parameters: {
         type: "object",
         properties: { path: { type: "string" }, limit: { type: "number" } },
@@ -338,7 +393,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "screenshot",
-      description: "Capture the screen via macOS `screencapture -x`. Saves to /tmp if no out_path. Returns the file path.",
+      description:
+        "Capture the screen via macOS `screencapture -x`. Saves to /tmp if no out_path. Returns the file path.",
       parameters: {
         type: "object",
         properties: { out_path: { type: "string" } },
@@ -349,7 +405,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "clipboard_get",
-      description: "Read the user's macOS clipboard. Returns text only; large content truncated.",
+      description:
+        "Read the user's macOS clipboard. Returns text only; large content truncated.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -357,7 +414,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "clipboard_set",
-      description: "Write text to the user's macOS clipboard. Requires approval — clipboard may hold sensitive data.",
+      description:
+        "Write text to the user's macOS clipboard. Requires approval — clipboard may hold sensitive data.",
       parameters: {
         type: "object",
         properties: { text: { type: "string" } },
@@ -369,7 +427,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "open_app",
-      description: "Launch a macOS app by name via `open -a` (e.g. \"Safari\", \"Visual Studio Code\"). Requires approval.",
+      description:
+        'Launch a macOS app by name via `open -a` (e.g. "Safari", "Visual Studio Code"). Requires approval.',
       parameters: {
         type: "object",
         properties: { name: { type: "string" } },
@@ -427,8 +486,39 @@ export const TOOLS = [
   {
     type: "function",
     function: {
+      name: "call_api",
+      description:
+        "Call one of the user's REGISTERED APIs by name. The auth key is injected automatically server-side — never include it. `path` is relative to the API's base URL (e.g. \"/repos/owner/name\"). Registered API names are listed in the system prompt; pass one as `api`. SSRF-protected, approval-gated. Prefer this over http_request whenever the user has a saved API for the service.",
+      parameters: {
+        type: "object",
+        properties: {
+          api: { type: "string", description: "Registered API name." },
+          method: {
+            type: "string",
+            description: "GET/POST/PUT/PATCH/DELETE/HEAD.",
+          },
+          path: {
+            type: "string",
+            description: "Path relative to the API base URL.",
+          },
+          query: { type: "object", description: "Optional query params." },
+          headers: {
+            type: "object",
+            description: "Optional extra headers (NOT auth).",
+          },
+          body: { type: "string" },
+          timeout_secs: { type: "number" },
+        },
+        required: ["api", "method", "path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "find_definition",
-      description: "Locate the definition of a symbol (function/class/struct/etc.) via heuristic regex across the workspace. Symbol must be [A-Za-z0-9_]+.",
+      description:
+        "Locate the definition of a symbol (function/class/struct/etc.) via heuristic regex across the workspace. Symbol must be [A-Za-z0-9_]+.",
       parameters: {
         type: "object",
         properties: {
@@ -443,7 +533,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "find_references",
-      description: "Locate all references to a symbol via word-boundary regex across the workspace.",
+      description:
+        "Locate all references to a symbol via word-boundary regex across the workspace.",
       parameters: {
         type: "object",
         properties: {
@@ -458,7 +549,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "format_code",
-      description: "Format a code file via the right formatter for its extension (prettier for ts/js/json/css/md/yaml, rustfmt for .rs, black for .py, gofmt for .go, swift-format for .swift).",
+      description:
+        "Format a code file via the right formatter for its extension (prettier for ts/js/json/css/md/yaml, rustfmt for .rs, black for .py, gofmt for .go, swift-format for .swift).",
       parameters: {
         type: "object",
         properties: { path: { type: "string" } },
@@ -470,7 +562,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "task_create",
-      description: "Start a long-running shell command in the background. Returns a task_id immediately. Use task_status to check progress and read output, task_list to see all tasks, and task_cancel to stop one.",
+      description:
+        "Start a long-running shell command in the background. Returns a task_id immediately. Use task_status to check progress and read output, task_list to see all tasks, and task_cancel to stop one.",
       parameters: {
         type: "object",
         properties: {
@@ -485,7 +578,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "task_status",
-      description: "Get the current status + result (if finished) of a background task.",
+      description:
+        "Get the current status + result (if finished) of a background task.",
       parameters: {
         type: "object",
         properties: { id: { type: "string" } },
@@ -497,7 +591,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "task_list",
-      description: "List all background tasks the agent has started this session.",
+      description:
+        "List all background tasks the agent has started this session.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -505,7 +600,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "task_cancel",
-      description: "Cancel a running background task. Idempotent on terminal-state tasks.",
+      description:
+        "Cancel a running background task. Idempotent on terminal-state tasks.",
       parameters: {
         type: "object",
         properties: { id: { type: "string" } },
@@ -517,12 +613,16 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "ask_user",
-      description: "Pause the agent and prompt the user for an answer. Use when you genuinely need info you can't get from tools (preference, missing parameter, ambiguity). Returns the user's typed text.",
+      description:
+        "Pause the agent and prompt the user for an answer. Use when you genuinely need info you can't get from tools (preference, missing parameter, ambiguity). Returns the user's typed text.",
       parameters: {
         type: "object",
         properties: {
           question: { type: "string" },
-          hint: { type: "string", description: "Optional helper text shown under the question." },
+          hint: {
+            type: "string",
+            description: "Optional helper text shown under the question.",
+          },
         },
         required: ["question"],
       },
@@ -537,9 +637,21 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Absolute or ~/relative path. Directories are watched recursively." },
-          glob: { type: "string", description: "Optional glob to filter events by path, e.g. '**/*.ts' or '**/*.rs'." },
-          debounce_ms: { type: "number", description: "Optional debounce window in ms — collapses same-path same-kind bursts. Useful for editor-save patterns." },
+          path: {
+            type: "string",
+            description:
+              "Absolute or ~/relative path. Directories are watched recursively.",
+          },
+          glob: {
+            type: "string",
+            description:
+              "Optional glob to filter events by path, e.g. '**/*.ts' or '**/*.rs'.",
+          },
+          debounce_ms: {
+            type: "number",
+            description:
+              "Optional debounce window in ms — collapses same-path same-kind bursts. Useful for editor-save patterns.",
+          },
         },
         required: ["path"],
       },
@@ -554,9 +666,20 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          id: { type: "string", description: "watch_id returned by watch_path." },
-          since_ms: { type: "number", description: "Unix-ms cursor — drain only events with ts > since_ms." },
-          max_events: { type: "number", description: "Cap on events returned (default 100). Overflow stays buffered for the next poll." },
+          id: {
+            type: "string",
+            description: "watch_id returned by watch_path.",
+          },
+          since_ms: {
+            type: "number",
+            description:
+              "Unix-ms cursor — drain only events with ts > since_ms.",
+          },
+          max_events: {
+            type: "number",
+            description:
+              "Cap on events returned (default 100). Overflow stays buffered for the next poll.",
+          },
         },
         required: ["id"],
       },
@@ -566,7 +689,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "stop_watch",
-      description: "Stop a filesystem watcher and release its OS-level watch handle.",
+      description:
+        "Stop a filesystem watcher and release its OS-level watch handle.",
       parameters: {
         type: "object",
         properties: {
@@ -580,7 +704,8 @@ export const TOOLS = [
     type: "function",
     function: {
       name: "list_watches",
-      description: "List active filesystem watchers — id, path, glob, started_at, events_seen, buffered, dropped.",
+      description:
+        "List active filesystem watchers — id, path, glob, started_at, events_seen, buffered, dropped.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -593,7 +718,11 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          url: { type: "string", description: "http(s) URL to open. data: URLs are also allowed for offline payloads." },
+          url: {
+            type: "string",
+            description:
+              "http(s) URL to open. data: URLs are also allowed for offline payloads.",
+          },
         },
         required: ["url"],
       },
@@ -623,7 +752,10 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          selector: { type: "string", description: "CSS selector of the input/textarea." },
+          selector: {
+            type: "string",
+            description: "CSS selector of the input/textarea.",
+          },
           value: { type: "string", description: "Text to type." },
         },
         required: ["selector", "value"],
@@ -648,7 +780,10 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          selector: { type: "string", description: "CSS selector; defaults to 'body'." },
+          selector: {
+            type: "string",
+            description: "CSS selector; defaults to 'body'.",
+          },
         },
       },
     },
@@ -671,9 +806,18 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          corpus_name: { type: "string", description: "Name of the indexed corpus to search." },
-          query: { type: "string", description: "Natural-language or keyword query." },
-          top_k: { type: "number", description: "Max number of hits to return (default 5, max 50)." },
+          corpus_name: {
+            type: "string",
+            description: "Name of the indexed corpus to search.",
+          },
+          query: {
+            type: "string",
+            description: "Natural-language or keyword query.",
+          },
+          top_k: {
+            type: "number",
+            description: "Max number of hits to return (default 5, max 50).",
+          },
         },
         required: ["corpus_name", "query"],
       },
@@ -689,11 +833,15 @@ export const TOOLS = [
         type: "object",
         properties: {
           prompt: { type: "string" },
-          preset: { type: "string", description: "Optional: general / coder / researcher / shell." },
+          preset: {
+            type: "string",
+            description: "Optional: general / coder / researcher / shell.",
+          },
           mode: {
             type: "string",
             enum: ["sync", "async"],
-            description: "'sync' (default) blocks until the subagent finishes. 'async' returns immediately with a subagent_id; use await_subagents to join.",
+            description:
+              "'sync' (default) blocks until the subagent finishes. 'async' returns immediately with a subagent_id; use await_subagents to join.",
           },
         },
         required: ["prompt"],
@@ -916,14 +1064,22 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          name: { type: "string", description: "Short Flow name shown in the Flows list (max 80 chars)." },
+          name: {
+            type: "string",
+            description:
+              "Short Flow name shown in the Flows list (max 80 chars).",
+          },
           steps: {
             type: "array",
-            description: "Ordered steps; each becomes one agent card chained linearly. 1–12 steps.",
+            description:
+              "Ordered steps; each becomes one agent card chained linearly. 1–12 steps.",
             items: {
               type: "object",
               properties: {
-                title: { type: "string", description: "Short step label (max 60 chars)." },
+                title: {
+                  type: "string",
+                  description: "Short step label (max 60 chars).",
+                },
                 role: {
                   type: "string",
                   enum: ["coder", "critic", "editor", "summarizer", "shell"],
@@ -932,7 +1088,8 @@ export const TOOLS = [
                 },
                 instructions: {
                   type: "string",
-                  description: "What this step should do — becomes the card's prompt (max 4000 chars).",
+                  description:
+                    "What this step should do — becomes the card's prompt (max 4000 chars).",
                 },
               },
               required: ["title", "role", "instructions"],
@@ -959,10 +1116,12 @@ export const TOOLS = [
         properties: {
           key: {
             type: "string",
-            description: "Identifier within this run's scratchpad. Use snake_case names like 'research_summary' or 'urls_to_visit'.",
+            description:
+              "Identifier within this run's scratchpad. Use snake_case names like 'research_summary' or 'urls_to_visit'.",
           },
           value: {
-            description: "Anything JSON-serializable (string, number, boolean, null, object, array).",
+            description:
+              "Anything JSON-serializable (string, number, boolean, null, object, array).",
           },
         },
         required: ["key", "value"],
@@ -1006,7 +1165,8 @@ export const TOOLS = [
           },
           run_id: {
             type: "number",
-            description: "Optional specific workflow_runs.id. If omitted, returns the most recent successful run that contains this card.",
+            description:
+              "Optional specific workflow_runs.id. If omitted, returns the most recent successful run that contains this card.",
           },
         },
         required: ["card_id"],
@@ -1032,12 +1192,13 @@ export const TOOLS = [
           },
           description: {
             type: "string",
-            description: "Short human-readable description of what the skill does.",
+            description:
+              "Short human-readable description of what the skill does.",
           },
           steps: {
             type: "array",
             description:
-              "Ordered list of tool calls to replay. Each step is `{tool: \"<tool_name>\", args: {<tool args>}}`. Cannot contain workflow_invoke_skill / workflow_save_skill / workflow_delete_skill / spawn_subagent / await_subagents.",
+              'Ordered list of tool calls to replay. Each step is `{tool: "<tool_name>", args: {<tool args>}}`. Cannot contain workflow_invoke_skill / workflow_save_skill / workflow_delete_skill / spawn_subagent / await_subagents.',
             items: {
               type: "object",
               properties: {
@@ -1049,7 +1210,8 @@ export const TOOLS = [
           },
           overwrite: {
             type: "boolean",
-            description: "When true, replace an existing skill with the same name. Default false (refuses to clobber).",
+            description:
+              "When true, replace an existing skill with the same name. Default false (refuses to clobber).",
           },
         },
         required: ["name", "description", "steps"],

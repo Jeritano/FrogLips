@@ -498,6 +498,7 @@ pub fn run() {
             commands::agent::agent_open_path_in_editor,
             commands::agent::agent_applescript_run,
             commands::agent::agent_http_request,
+            commands::agent::agent_call_api,
             commands::agent::agent_find_definition,
             commands::agent::agent_find_references,
             commands::agent::agent_format_code,

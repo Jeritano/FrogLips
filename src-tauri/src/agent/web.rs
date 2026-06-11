@@ -594,6 +594,139 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
     })
 }
 
+/* ── call_api (saved-API registry) ───────────────────────────────────────── */
+
+#[derive(Deserialize)]
+pub struct CallApiInput {
+    /// The SavedApi id (or name) the user registered.
+    pub api: String,
+    pub method: String,
+    /// Path appended to the API's base_url, e.g. "/repos/owner/name/issues".
+    /// Absolute URLs are rejected — the agent stays confined to the base host.
+    pub path: String,
+    pub query: Option<std::collections::HashMap<String, String>>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    pub body: Option<String>,
+    pub timeout_secs: Option<u64>,
+}
+
+/// Call a user-registered API by name. The stored key is injected into the
+/// auth header SERVER-SIDE (the model never sees it), the request is confined
+/// to the registered base host, and it rides the same SSRF-guarded,
+/// DNS-pinned, injection-scanned path as `http_request`. The model picks the
+/// API + relative path; everything secret or security-sensitive (the key, the
+/// host) is fixed by the user's registration.
+pub async fn call_api(input: CallApiInput) -> Result<HttpResp, String> {
+    let apis = crate::settings::load().saved_apis.unwrap_or_default();
+    let api = apis
+        .iter()
+        .find(|a| a.id == input.api || a.name.eq_ignore_ascii_case(&input.api))
+        .ok_or_else(|| {
+            err_string(ToolError::invalid(format!(
+                "no saved API named '{}' — registered: [{}]",
+                input.api,
+                apis.iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )))
+        })?;
+
+    // Resolve the full URL from base_url + path. Reject an absolute path so
+    // the model can't escape the registered host.
+    if input.path.contains("://") {
+        return Err(err_string(ToolError::invalid(
+            "path must be relative to the API base_url, not an absolute URL",
+        )));
+    }
+    let base = api.base_url.trim_end_matches('/');
+    let rel = input.path.trim_start_matches('/');
+    let mut url = url::Url::parse(&format!("{base}/{rel}"))
+        .map_err(|e| err_string(ToolError::invalid(format!("bad url: {e}"))))?;
+    if let Some(q) = &input.query {
+        for (k, v) in q {
+            url.query_pairs_mut().append_pair(k, v);
+        }
+    }
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return Err(err_string(ToolError::invalid("only http(s) urls allowed")));
+    }
+    let host = url.host_str().unwrap_or("").to_string();
+    if !is_safe_public_host(&host) {
+        return Err(err_string(ToolError::Protected {
+            message: format!("host '{host}' is private/loopback — blocked (SSRF)"),
+        }));
+    }
+
+    let method = input.method.to_ascii_uppercase();
+    let method_obj = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|e| err_string(ToolError::invalid(e.to_string())))?;
+    let timeout = std::time::Duration::from_secs(input.timeout_secs.unwrap_or(15).min(60));
+
+    // Model-supplied headers are still deny-filtered (no auth/host spoofing);
+    // the AUTH header is injected by us from the Keychain key.
+    let model_headers = input.headers.unwrap_or_default();
+    for k in model_headers.keys() {
+        if k.eq_ignore_ascii_case(&api.auth_header) {
+            return Err(err_string(ToolError::invalid(
+                "the auth header is set automatically — do not pass it",
+            )));
+        }
+    }
+    let auth_value = api.api_key.as_deref().map(|key| {
+        if api.auth_template.contains("{key}") {
+            api.auth_template.replace("{key}", key)
+        } else {
+            format!("{} {}", api.auth_template, key)
+        }
+    });
+    let auth_header_name = api.auth_header.clone();
+    let body = match input.body {
+        Some(b) if b.len() > 1_048_576 => {
+            return Err(err_string(ToolError::TooLarge {
+                message: "body exceeds 1 MiB".into(),
+            }))
+        }
+        other => other,
+    };
+
+    let resp = send_following_redirects(url.clone(), timeout, |client, u| {
+        let mut req = client.request(method_obj.clone(), u.clone());
+        for (k, v) in &model_headers {
+            req = req.header(k, v);
+        }
+        if let Some(av) = &auth_value {
+            req = req.header(auth_header_name.as_str(), av);
+        }
+        if let Some(b) = &body {
+            req = req.body(b.clone());
+        }
+        req
+    })
+    .await?;
+    let status = resp.status().as_u16();
+    let mut hdrs = std::collections::HashMap::new();
+    for (k, v) in resp.headers() {
+        if let Ok(s) = v.to_str() {
+            hdrs.insert(k.as_str().to_string(), s.to_string());
+        }
+    }
+    let (bytes, total, truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;
+    let raw = String::from_utf8_lossy(&bytes).into_owned();
+    let body = injection_scan::scan_and_wrap(&raw).0;
+    let headers: std::collections::HashMap<String, String> = hdrs
+        .into_iter()
+        .map(|(k, v)| (k, injection_scan::scan_and_wrap(&v).0))
+        .collect();
+    Ok(HttpResp {
+        status,
+        headers,
+        body,
+        bytes: total,
+        truncated,
+    })
+}
+
 /// Risk heuristic for HTTP requests beyond GET/HEAD. Read-only methods are
 /// the floor; writes are flagged as privileged so the confirm modal shows
 /// a louder banner.

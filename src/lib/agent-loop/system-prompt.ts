@@ -41,6 +41,7 @@ export function buildSystemPrompt(
   override?: string,
   mcpTools: OpenAIToolDef[] = [],
   modelFitness?: ToolFitness,
+  savedApiNames: string[] = [],
 ): string {
   // Weak tool-callers (small/abliterated models) tend to narrate or emit
   // near-JSON. A short, explicit format reminder measurably lifts their
@@ -51,15 +52,21 @@ export function buildSystemPrompt(
       : "";
   // Built-in tools the model may call, filtered by the active allowlist.
   const builtIn = allowlist.length
-    ? TOOLS.filter((t) => allowlist.includes(t.function.name)).map((t) => t.function.name)
+    ? TOOLS.filter((t) => allowlist.includes(t.function.name)).map(
+        (t) => t.function.name,
+      )
     : TOOLS.map((t) => t.function.name);
   // MCP tools are subject to the same allowlist; when one is callable the
   // model must be told it exists, with a one-line description so it knows
   // when to reach for it.
-  const mcp = (allowlist.length
-    ? mcpTools.filter((t) => allowlist.includes(t.function.name))
-    : mcpTools
-  ).map((t) => `${t.function.name} — ${sanitizeMcpDescription(t.function.description ?? "")}`);
+  const mcp = (
+    allowlist.length
+      ? mcpTools.filter((t) => allowlist.includes(t.function.name))
+      : mcpTools
+  ).map(
+    (t) =>
+      `${t.function.name} — ${sanitizeMcpDescription(t.function.description ?? "")}`,
+  );
   const ws = workspaceRoot
     ? `Workspace root: ${workspaceRoot} — all file access is confined to this directory.`
     : "No workspace root set — you have full filesystem access (within OS permissions).";
@@ -83,12 +90,36 @@ export function buildSystemPrompt(
   // `~/Desktop/Filename.md`).
   const paths =
     "Path conventions:\n" +
-    "- \"desktop\" / \"on my desktop\" → write to `~/Desktop/`\n" +
-    "- \"documents\" → write to `~/Documents/`\n" +
-    "- \"downloads\" → write to `~/Downloads/`\n" +
+    '- "desktop" / "on my desktop" → write to `~/Desktop/`\n' +
+    '- "documents" → write to `~/Documents/`\n' +
+    '- "downloads" → write to `~/Downloads/`\n' +
     "- Honour an explicit file extension verbatim (`.txt` stays `.txt`, do not silently upgrade to `.md`).\n" +
-    "- When the user gives a filename in quotes, backticks, or as a literal token (e.g. \"DemReport\", `report.txt`, file named X), use that EXACT name as the basename. Do NOT paraphrase, expand, prefix with dates, or rewrite it. Only add the extension if one wasn't supplied AND the format is implied.";
-  const env = `${ws}\n${dateBlock}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\n${paths}\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}`;
+    '- When the user gives a filename in quotes, backticks, or as a literal token (e.g. "DemReport", `report.txt`, file named X), use that EXACT name as the basename. Do NOT paraphrase, expand, prefix with dates, or rewrite it. Only add the extension if one wasn\'t supplied AND the format is implied.';
+  // Capability assertion. Lives in `env` (NOT the rules block) because the
+  // rules block is DROPPED when a preset supplies a systemPromptOverride —
+  // which is exactly when small models, missing rule #2, recite training-
+  // data disclaimers ("I can't browse the web / access APIs / run GUI apps")
+  // that are FALSE: the listed tools are real and callable now. (2026-06-11)
+  const canDo = `These tools are REAL and available to you RIGHT NOW — not hypothetical. If a tool is listed above, you CAN do that thing: ${
+    builtIn.includes("web_fetch") ||
+    builtIn.includes("http_request") ||
+    builtIn.includes("web_search")
+      ? "you DO have web/API access (web_fetch, web_search, http_request, call_api); "
+      : ""
+  }${builtIn.includes("run_shell") ? "you CAN run shell commands; " : ""}${
+    builtIn.includes("open_app") || builtIn.includes("applescript_run")
+      ? "you CAN launch and control macOS apps; "
+      : ""
+  }${builtIn.includes("remember") || builtIn.includes("recall_memory") ? "you CAN persist and recall memory across sessions; " : ""}${
+    builtIn.some((t) => t.startsWith("browser_"))
+      ? "you CAN drive a real browser; "
+      : ""
+  }Never tell the user you lack a capability that a listed tool provides — call the tool instead.`;
+  const apiBlock =
+    savedApiNames.length && builtIn.includes("call_api")
+      ? `\nRegistered APIs for call_api: ${savedApiNames.join(", ")}.`
+      : "";
+  const env = `${ws}\n${dateBlock}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\n${paths}\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}${apiBlock}\n${canDo}`;
   if (override && override.trim()) {
     return `${override.trim()}\n\n${env}${weakBlock}`;
   }

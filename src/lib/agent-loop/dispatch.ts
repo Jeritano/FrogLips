@@ -14,9 +14,20 @@ export { dryRunValidateUrl } from "./url-safety";
 export const DANGEROUS_TOOLS = new Set([
   // task_create backgrounds a `sh -c` command — same RCE surface as run_shell,
   // so it MUST prompt + carry a command-bound approval token (SEC-HIGH).
-  "run_shell", "task_create", "write_file", "edit_file", "multi_edit",
-  "git_commit", "clipboard_set", "open_app",
-  "applescript_run", "http_request",
+  "run_shell",
+  "task_create",
+  "write_file",
+  "edit_file",
+  "multi_edit",
+  "git_commit",
+  "clipboard_set",
+  "open_app",
+  "applescript_run",
+  "http_request",
+  // call_api hits a user-registered external API WITH the user's stored
+  // credentials injected — can read or mutate real accounts, and can exfil.
+  // Always confirm (the modal shows api|method|path).
+  "call_api",
   // Code sandbox runs arbitrary code in a throwaway interpreter — identical
   // RCE surface to run_shell, so it prompts + carries a code-bound token.
   "run_code",
@@ -26,14 +37,22 @@ export const DANGEROUS_TOOLS = new Set([
   // Browser automation — every call can navigate to or interact with arbitrary
   // public sites. SSRF-blocked at the Rust layer, but still gated behind a
   // confirm dialog so the user sees each action.
-  "browser_navigate", "browser_click", "browser_fill",
-  "browser_screenshot", "browser_get_text", "browser_close",
+  "browser_navigate",
+  "browser_click",
+  "browser_fill",
+  "browser_screenshot",
+  "browser_get_text",
+  "browser_close",
   // Image generation — disk + GPU spend, and the model can be told arbitrary
   // prompts (which then become user-visible PNGs in the gallery).
   // Extras: file ops + process control + undo. Each touches the filesystem
   // or sends a signal to a foreign process — gate behind confirmation.
-  "move_path", "copy_path", "delete_path", "make_dir",
-  "kill_process", "agent_undo",
+  "move_path",
+  "copy_path",
+  "delete_path",
+  "make_dir",
+  "kill_process",
+  "agent_undo",
   // Sec audit round 4: these were MISSING from the gate, so a prompt-injected
   // agent ran them with NO confirmation (the Rust side binds a token, but
   // tauri-api mints it inline, so DANGEROUS_TOOLS membership is the only thing
@@ -42,7 +61,9 @@ export const DANGEROUS_TOOLS = new Set([
   //   • screenshot   — captures the screen (bank/password mgr) to a PNG that
   //                    read_file can then exfiltrate
   //   • show_notification — silent phishing toast
-  "format_code", "screenshot", "show_notification",
+  "format_code",
+  "screenshot",
+  "show_notification",
   // create_flow persists a Flow to the user's library — confirm it (the user
   // sees what's being created). The Flow itself is built inert (non-unattended,
   // read-only curated tools) by the builder.
@@ -55,17 +76,27 @@ export const DANGEROUS_TOOLS = new Set([
   //   • watch_path — spawns a persistent OS filesystem watcher on any path.
   //   • stop_watch / task_cancel — destroy OTHER runtime state by id (kill the
   //     user's in-flight background task, disable a watcher they set up).
-  "remember", "watch_path", "stop_watch", "task_cancel",
+  "remember",
+  "watch_path",
+  "stop_watch",
+  "task_cancel",
 ]);
 export const SHELL_TOOL = "run_shell";
 export const WRITE_TOOLS = new Set([
-  "write_file", "edit_file", "multi_edit",
-  "git_commit", "clipboard_set", "applescript_run", "http_request",
+  "write_file",
+  "edit_file",
+  "multi_edit",
+  "git_commit",
+  "clipboard_set",
+  "applescript_run",
+  "http_request",
   // UX-CRIT-1 (2026-05-24 re-review): the safe additions only — anything
   // truly destructive lives in IRREVERSIBLE_TOOLS below and is EXCLUDED
   // from the session-blanket-approve branch in runner.ts. `agent_undo` is
   // ALSO excluded because undo-of-undo is an unrecoverable redo.
-  "move_path", "copy_path", "make_dir",
+  "move_path",
+  "copy_path",
+  "make_dir",
   // format_code rewrites a file's content in place (prettier/rustfmt/black/…),
   // so it's a filesystem write: policy path-rules must apply to its `path`.
   "format_code",
@@ -131,8 +162,15 @@ export function formatToolError(raw: unknown): string {
     const parsed = JSON.parse(s);
     if (parsed && typeof parsed === "object") {
       // Native Froglips shape: top-level {ok:false, kind, message}.
-      if (typeof parsed.kind === "string" && typeof parsed.message === "string") {
-        return JSON.stringify({ ok: false, kind: parsed.kind, message: parsed.message });
+      if (
+        typeof parsed.kind === "string" &&
+        typeof parsed.message === "string"
+      ) {
+        return JSON.stringify({
+          ok: false,
+          kind: parsed.kind,
+          message: parsed.message,
+        });
       }
       // Audit M13 (2026-05-27): also recognise the common upstream shapes
       // so MCP servers / Ollama / MLX errors carry context instead of
@@ -150,16 +188,30 @@ export function formatToolError(raw: unknown): string {
         });
       }
       if (typeof err === "string" && err.length > 0) {
-        return JSON.stringify({ ok: false, kind: "upstream_error", message: err });
+        return JSON.stringify({
+          ok: false,
+          kind: "upstream_error",
+          message: err,
+        });
       }
       if (typeof parsed.detail === "string" && parsed.detail.length > 0) {
-        return JSON.stringify({ ok: false, kind: "upstream_detail", message: parsed.detail });
+        return JSON.stringify({
+          ok: false,
+          kind: "upstream_detail",
+          message: parsed.detail,
+        });
       }
       if (typeof parsed.status === "string" && parsed.status.length > 0) {
-        return JSON.stringify({ ok: false, kind: "upstream_status", message: parsed.status });
+        return JSON.stringify({
+          ok: false,
+          kind: "upstream_status",
+          message: parsed.status,
+        });
       }
     }
-  } catch {/* fallthrough */}
+  } catch {
+    /* fallthrough */
+  }
   return JSON.stringify({ ok: false, kind: "unknown", message: s });
 }
 
@@ -192,35 +244,63 @@ export async function agentRagSearch(
  */
 export function safeCalculate(
   expr: string,
-): { ok: true; expression: string; result: number } | { ok: false; error: string } {
+):
+  | { ok: true; expression: string; result: number }
+  | { ok: false; error: string } {
   const src = expr.trim();
   if (!src) return { ok: false, error: "empty expression" };
   if (src.length > 1024) return { ok: false, error: "expression too long" };
 
   const FUNCS: Record<string, (x: number) => number> = {
-    sqrt: Math.sqrt, abs: Math.abs, sin: Math.sin, cos: Math.cos, tan: Math.tan,
-    asin: Math.asin, acos: Math.acos, atan: Math.atan, ln: Math.log,
-    log: Math.log10, log2: Math.log2, exp: Math.exp, floor: Math.floor,
-    ceil: Math.ceil, round: Math.round, sign: Math.sign,
+    sqrt: Math.sqrt,
+    abs: Math.abs,
+    sin: Math.sin,
+    cos: Math.cos,
+    tan: Math.tan,
+    asin: Math.asin,
+    acos: Math.acos,
+    atan: Math.atan,
+    ln: Math.log,
+    log: Math.log10,
+    log2: Math.log2,
+    exp: Math.exp,
+    floor: Math.floor,
+    ceil: Math.ceil,
+    round: Math.round,
+    sign: Math.sign,
   };
-  const CONSTS: Record<string, number> = { pi: Math.PI, e: Math.E, tau: Math.PI * 2 };
+  const CONSTS: Record<string, number> = {
+    pi: Math.PI,
+    e: Math.E,
+    tau: Math.PI * 2,
+  };
 
   // Tokenize.
-  type Tok = { t: "num"; v: number } | { t: "op"; v: string } | { t: "lp" } | { t: "rp" } | { t: "fn"; v: string };
+  type Tok =
+    | { t: "num"; v: number }
+    | { t: "op"; v: string }
+    | { t: "lp" }
+    | { t: "rp" }
+    | { t: "fn"; v: string };
   const toks: Tok[] = [];
   let i = 0;
   while (i < src.length) {
     const c = src[i];
-    if (c === " " || c === "\t") { i++; continue; }
+    if (c === " " || c === "\t") {
+      i++;
+      continue;
+    }
     if ((c >= "0" && c <= "9") || c === ".") {
       let j = i + 1;
       while (j < src.length && /[0-9.eE+\-]/.test(src[j])) {
         // Allow exponent sign only right after e/E.
-        if ((src[j] === "+" || src[j] === "-") && !/[eE]/.test(src[j - 1])) break;
+        if ((src[j] === "+" || src[j] === "-") && !/[eE]/.test(src[j - 1]))
+          break;
         j++;
       }
       const num = Number(src.slice(i, j));
-      if (!Number.isFinite(num)) return { ok: false, error: `bad number near "${src.slice(i, j)}"` };
+      if (!Number.isFinite(num))
+        return { ok: false, error: `bad number near "${src.slice(i, j)}"` };
       toks.push({ t: "num", v: num });
       i = j;
       continue;
@@ -235,16 +315,36 @@ export function safeCalculate(
       i = j;
       continue;
     }
-    if ("+-*/%^".includes(c)) { toks.push({ t: "op", v: c }); i++; continue; }
-    if (c === "(") { toks.push({ t: "lp" }); i++; continue; }
-    if (c === ")") { toks.push({ t: "rp" }); i++; continue; }
+    if ("+-*/%^".includes(c)) {
+      toks.push({ t: "op", v: c });
+      i++;
+      continue;
+    }
+    if (c === "(") {
+      toks.push({ t: "lp" });
+      i++;
+      continue;
+    }
+    if (c === ")") {
+      toks.push({ t: "rp" });
+      i++;
+      continue;
+    }
     return { ok: false, error: `unexpected character "${c}"` };
   }
 
   // Shunting-yard → RPN, tracking unary minus.
   const out: Tok[] = [];
   const ops: Tok[] = [];
-  const prec: Record<string, number> = { "+": 1, "-": 1, "*": 2, "/": 2, "%": 2, "u-": 3, "^": 4 };
+  const prec: Record<string, number> = {
+    "+": 1,
+    "-": 1,
+    "*": 2,
+    "/": 2,
+    "%": 2,
+    "u-": 3,
+    "^": 4,
+  };
   const rightAssoc = (o: string) => o === "^" || o === "u-";
   let prev: Tok | null = null;
   for (const tk of toks) {
@@ -252,23 +352,27 @@ export function safeCalculate(
     else if (tk.t === "fn") ops.push(tk);
     else if (tk.t === "op") {
       // Unary minus: a "-" at the start or after another op / "(".
-      const unary = tk.v === "-" && (prev === null || prev.t === "op" || prev.t === "lp");
+      const unary =
+        tk.v === "-" && (prev === null || prev.t === "op" || prev.t === "lp");
       const o: Tok = unary ? { t: "op", v: "u-" } : tk;
       while (
         ops.length &&
         ops[ops.length - 1].t === "op" &&
         (prec[(ops[ops.length - 1] as { v: string }).v] > prec[o.v] ||
-          (prec[(ops[ops.length - 1] as { v: string }).v] === prec[o.v] && !rightAssoc(o.v)))
+          (prec[(ops[ops.length - 1] as { v: string }).v] === prec[o.v] &&
+            !rightAssoc(o.v)))
       ) {
         out.push(ops.pop() as Tok);
       }
       ops.push(o);
     } else if (tk.t === "lp") ops.push(tk);
     else if (tk.t === "rp") {
-      while (ops.length && ops[ops.length - 1].t !== "lp") out.push(ops.pop() as Tok);
+      while (ops.length && ops[ops.length - 1].t !== "lp")
+        out.push(ops.pop() as Tok);
       if (!ops.length) return { ok: false, error: "mismatched parentheses" };
       ops.pop(); // discard lp
-      if (ops.length && ops[ops.length - 1].t === "fn") out.push(ops.pop() as Tok);
+      if (ops.length && ops[ops.length - 1].t === "fn")
+        out.push(ops.pop() as Tok);
     }
     prev = tk;
   }
@@ -289,21 +393,36 @@ export function safeCalculate(
     } else if (tk.t === "op") {
       if (tk.v === "u-") {
         const a = st.pop();
-        if (a === undefined) return { ok: false, error: "malformed expression" };
+        if (a === undefined)
+          return { ok: false, error: "malformed expression" };
         st.push(-a);
         continue;
       }
       const b = st.pop();
       const a = st.pop();
-      if (a === undefined || b === undefined) return { ok: false, error: "malformed expression" };
+      if (a === undefined || b === undefined)
+        return { ok: false, error: "malformed expression" };
       switch (tk.v) {
-        case "+": st.push(a + b); break;
-        case "-": st.push(a - b); break;
-        case "*": st.push(a * b); break;
-        case "/": st.push(a / b); break;
-        case "%": st.push(a % b); break;
-        case "^": st.push(Math.pow(a, b)); break;
-        default: return { ok: false, error: `bad operator "${tk.v}"` };
+        case "+":
+          st.push(a + b);
+          break;
+        case "-":
+          st.push(a - b);
+          break;
+        case "*":
+          st.push(a * b);
+          break;
+        case "/":
+          st.push(a / b);
+          break;
+        case "%":
+          st.push(a % b);
+          break;
+        case "^":
+          st.push(Math.pow(a, b));
+          break;
+        default:
+          return { ok: false, error: `bad operator "${tk.v}"` };
       }
     }
   }
@@ -333,9 +452,13 @@ const activeShellByKey = new WeakMap<object, string>();
 // keyspace so a cancel from the same caller still finds the entry. The
 // Map is bounded — `clear` drops the key on shell completion.
 const fallbackKeyMap = new Map<symbol, string>();
-const SYNTHETIC_FALLBACK_KEY: unique symbol = Symbol("dispatch.fallbackShellKey");
+const SYNTHETIC_FALLBACK_KEY: unique symbol = Symbol(
+  "dispatch.fallbackShellKey",
+);
 type FallbackKey = typeof SYNTHETIC_FALLBACK_KEY;
-function fallbackKeyOrSynthetic(key: ShellTrackKey | null | undefined): object | FallbackKey {
+function fallbackKeyOrSynthetic(
+  key: ShellTrackKey | null | undefined,
+): object | FallbackKey {
   return key ?? SYNTHETIC_FALLBACK_KEY;
 }
 
@@ -351,7 +474,10 @@ export function setActiveShell(key: ShellTrackKey | null, opId: string): void {
   }
 }
 
-export function clearActiveShell(key: ShellTrackKey | null, opId: string): void {
+export function clearActiveShell(
+  key: ShellTrackKey | null,
+  opId: string,
+): void {
   const k = fallbackKeyOrSynthetic(key);
   if (k === SYNTHETIC_FALLBACK_KEY) {
     if (fallbackKeyMap.get(SYNTHETIC_FALLBACK_KEY) === opId) {
@@ -359,7 +485,8 @@ export function clearActiveShell(key: ShellTrackKey | null, opId: string): void 
     }
     return;
   }
-  if (activeShellByKey.get(k as object) === opId) activeShellByKey.delete(k as object);
+  if (activeShellByKey.get(k as object) === opId)
+    activeShellByKey.delete(k as object);
 }
 
 /**
@@ -447,7 +574,10 @@ function redactValue(v: unknown, depth = 0): unknown {
   return v;
 }
 
-export function redactArgsForAudit(name: string, args: Record<string, unknown>): string {
+export function redactArgsForAudit(
+  name: string,
+  args: Record<string, unknown>,
+): string {
   // Fast-path (audit M12, 2026-05-27): redactValue recursively walks every
   // nested string and tests it against looksLikeSecret. For 99% of audit
   // rows there's no secret-shaped content at all (read_file with /tmp/x,
@@ -478,8 +608,10 @@ export function redactArgsForAudit(name: string, args: Record<string, unknown>):
   if (name === "multi_edit" && Array.isArray(copy.edits)) {
     copy.edits = (copy.edits as Array<Record<string, unknown>>).map((e) => {
       const out: Record<string, unknown> = { ...e };
-      if (typeof out.old_string === "string") out.old_string = truncateString(out.old_string, 256);
-      if (typeof out.new_string === "string") out.new_string = truncateString(out.new_string, 256);
+      if (typeof out.old_string === "string")
+        out.old_string = truncateString(out.old_string, 256);
+      if (typeof out.new_string === "string")
+        out.new_string = truncateString(out.new_string, 256);
       return out;
     });
   }
@@ -575,12 +707,12 @@ export async function classifyToolRisk(
   // checks: even if the FS write would be allowed, the user still sees a
   // loud-badge modal.
   if (
-    fnName === "write_file"
-    || fnName === "edit_file"
-    || fnName === "multi_edit"
-    || fnName === "move_path"
-    || fnName === "copy_path"
-    || fnName === "make_dir"
+    fnName === "write_file" ||
+    fnName === "edit_file" ||
+    fnName === "multi_edit" ||
+    fnName === "move_path" ||
+    fnName === "copy_path" ||
+    fnName === "make_dir"
   ) {
     // Collect every plausible path argument. write_file/edit_file/
     // multi_edit/make_dir use `path`. move_path/copy_path use `{from, to}`
@@ -635,30 +767,32 @@ export async function classifyToolRisk(
       const lower = normalizePath(raw).toLowerCase();
       return (
         // System dirs
-        lower.startsWith("/etc/")
-        || lower.startsWith("/system/")
-        || lower.startsWith("/usr/")
-        || lower.startsWith("/bin/")
-        || lower.startsWith("/sbin/")
-        || lower.startsWith("/private/etc/")
-        || lower.startsWith("/private/var/")
+        lower.startsWith("/etc/") ||
+        lower.startsWith("/system/") ||
+        lower.startsWith("/usr/") ||
+        lower.startsWith("/bin/") ||
+        lower.startsWith("/sbin/") ||
+        lower.startsWith("/private/etc/") ||
+        lower.startsWith("/private/var/") ||
         // macOS auto-launch locations — writing a plist here is a
         // privilege-escalation pivot.
-        || lower.includes("/library/launchagents/")
-        || lower.includes("/library/launchdaemons/")
-        || lower.includes("/library/startupitems/")
+        lower.includes("/library/launchagents/") ||
+        lower.includes("/library/launchdaemons/") ||
+        lower.includes("/library/startupitems/") ||
         // Dotfiles + shell rc — match `/.foo` style so we don't pick up
         // user files like `notes.zshrc.md`.
-        || /(^|\/)\.(zshrc|bashrc|bash_profile|zprofile|profile|zshenv)$/.test(lower)
-        || /(^|\/)\.ssh\//.test(lower)
-        || /(^|\/)\.aws\//.test(lower)
-        || /(^|\/)\.gnupg\//.test(lower)
+        /(^|\/)\.(zshrc|bashrc|bash_profile|zprofile|profile|zshenv)$/.test(
+          lower,
+        ) ||
+        /(^|\/)\.ssh\//.test(lower) ||
+        /(^|\/)\.aws\//.test(lower) ||
+        /(^|\/)\.gnupg\//.test(lower) ||
         // Executable-bound extensions that the user might double-click.
         // The `(\/|$)` boundary catches both the bundle root (`foo.app`)
         // and writes INSIDE the bundle (`foo.app/Contents/Info.plist`)
         // — modifying internals can break Gatekeeper, hijack the
         // executable, or persist arbitrary code through an app launch.
-        || /\.(command|terminal|workflow|tool|app)(\/|$)/.test(lower)
+        /\.(command|terminal|workflow|tool|app)(\/|$)/.test(lower)
       );
     };
     if (candidates.some(isSensitive)) {
@@ -676,19 +810,23 @@ export async function classifyToolRisk(
       logDiag({
         level: "warn",
         source: "agent-loop",
-        message: "classifyToolRisk: shell classifier failed — failing closed to destructive",
+        message:
+          "classifyToolRisk: shell classifier failed — failing closed to destructive",
         detail: redactDiagDetail(err),
       });
       return "destructive";
     }
   } else if (fnName === "applescript_run") {
     try {
-      return (await api.agentClassifyApplescript(String(args.script ?? ""))) as Risk;
+      return (await api.agentClassifyApplescript(
+        String(args.script ?? ""),
+      )) as Risk;
     } catch (err) {
       logDiag({
         level: "warn",
         source: "agent-loop",
-        message: "classifyToolRisk: applescript classifier failed — failing closed to destructive",
+        message:
+          "classifyToolRisk: applescript classifier failed — failing closed to destructive",
         detail: redactDiagDetail(err),
       });
       return "destructive";
@@ -700,16 +838,23 @@ export async function classifyToolRisk(
     const hasBody = args.body != null && String(args.body).length > 0;
     if (hasBody) return "privileged";
     try {
-      const headers = (args.headers && typeof args.headers === "object")
-        ? args.headers as Record<string, unknown>
-        : {};
-      const hasAuth = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
-      return (await api.agentClassifyHttp(String(args.method ?? "GET"), hasAuth)) as Risk;
+      const headers =
+        args.headers && typeof args.headers === "object"
+          ? (args.headers as Record<string, unknown>)
+          : {};
+      const hasAuth = Object.keys(headers).some(
+        (k) => k.toLowerCase() === "authorization",
+      );
+      return (await api.agentClassifyHttp(
+        String(args.method ?? "GET"),
+        hasAuth,
+      )) as Risk;
     } catch (err) {
       logDiag({
         level: "warn",
         source: "agent-loop",
-        message: "classifyToolRisk: http classifier failed — failing closed to destructive",
+        message:
+          "classifyToolRisk: http classifier failed — failing closed to destructive",
         detail: redactDiagDetail(err),
       });
       return "destructive";
@@ -796,7 +941,12 @@ export async function executeTool(
       return dryRunExecute(name, args);
     }
     if (!DRY_RUN_READ_ONLY.has(name)) {
-      return JSON.stringify({ ok: true, dry_run: true, would_call: name, suppressed: true });
+      return JSON.stringify({
+        ok: true,
+        dry_run: true,
+        would_call: name,
+        suppressed: true,
+      });
     }
     // read-only → continue to the normal dispatch below.
   }
@@ -834,12 +984,20 @@ export async function executeTool(
       return JSON.stringify(r);
     }
     case "multi_edit": {
-      const edits = Array.isArray(args.edits) ? (args.edits as Array<{ old_string: string; new_string: string; replace_all?: boolean }>) : [];
+      const edits = Array.isArray(args.edits)
+        ? (args.edits as Array<{
+            old_string: string;
+            new_string: string;
+            replace_all?: boolean;
+          }>)
+        : [];
       const r = await api.agentMultiEdit(String(args.path ?? ""), edits);
       return JSON.stringify(r);
     }
     case "git_status": {
-      const r = await api.agentGitStatus(args.path ? String(args.path) : undefined);
+      const r = await api.agentGitStatus(
+        args.path ? String(args.path) : undefined,
+      );
       return JSON.stringify(r);
     }
     case "git_diff": {
@@ -864,7 +1022,9 @@ export async function executeTool(
       return JSON.stringify(r);
     }
     case "git_branches": {
-      const r = await api.agentGitBranches(args.path ? String(args.path) : undefined);
+      const r = await api.agentGitBranches(
+        args.path ? String(args.path) : undefined,
+      );
       return JSON.stringify(r);
     }
     case "git_commit": {
@@ -893,7 +1053,9 @@ export async function executeTool(
       return JSON.stringify(r);
     }
     case "screenshot": {
-      const r = await api.agentScreenshot(args.out_path ? String(args.out_path) : undefined);
+      const r = await api.agentScreenshot(
+        args.out_path ? String(args.out_path) : undefined,
+      );
       return JSON.stringify(r);
     }
     case "clipboard_get": {
@@ -909,7 +1071,10 @@ export async function executeTool(
       return JSON.stringify({ ok: true, app: args.name });
     }
     case "show_notification": {
-      await api.agentShowNotification(String(args.title ?? ""), String(args.body ?? ""));
+      await api.agentShowNotification(
+        String(args.title ?? ""),
+        String(args.body ?? ""),
+      );
       return JSON.stringify({ ok: true });
     }
     case "applescript_run": {
@@ -918,16 +1083,44 @@ export async function executeTool(
     }
     case "http_request": {
       const method = String(args.method ?? "GET").toUpperCase() as
-        | "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
-      const headers = args.headers && typeof args.headers === "object"
-        ? (args.headers as Record<string, string>)
-        : undefined;
+        | "GET"
+        | "POST"
+        | "PUT"
+        | "PATCH"
+        | "DELETE"
+        | "HEAD";
+      const headers =
+        args.headers && typeof args.headers === "object"
+          ? (args.headers as Record<string, string>)
+          : undefined;
       const r = await api.agentHttpRequest({
         method,
         url: String(args.url ?? ""),
         headers,
         body: args.body != null ? String(args.body) : undefined,
-        timeout_secs: typeof args.timeout_secs === "number" ? args.timeout_secs : undefined,
+        timeout_secs:
+          typeof args.timeout_secs === "number" ? args.timeout_secs : undefined,
+      });
+      return JSON.stringify(r);
+    }
+    case "call_api": {
+      const headers =
+        args.headers && typeof args.headers === "object"
+          ? (args.headers as Record<string, string>)
+          : undefined;
+      const query =
+        args.query && typeof args.query === "object"
+          ? (args.query as Record<string, string>)
+          : undefined;
+      const r = await api.agentCallApi({
+        api: String(args.api ?? ""),
+        method: String(args.method ?? "GET").toUpperCase(),
+        path: String(args.path ?? ""),
+        query,
+        headers,
+        body: args.body != null ? String(args.body) : undefined,
+        timeout_secs:
+          typeof args.timeout_secs === "number" ? args.timeout_secs : undefined,
       });
       return JSON.stringify(r);
     }
@@ -1017,7 +1210,9 @@ export async function executeTool(
       // `timeout_secs: "30"` (string) or `null` doesn't poison the opts.
       const rawTimeout = args.timeout_secs;
       const timeoutSecs =
-        typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
+        typeof rawTimeout === "number" &&
+        Number.isFinite(rawTimeout) &&
+        rawTimeout > 0
           ? Math.floor(rawTimeout)
           : undefined;
       const shellOpts =
@@ -1043,7 +1238,9 @@ export async function executeTool(
       const code = String(args.code ?? "");
       const rawTimeout = args.timeout_secs;
       const timeoutSecs =
-        typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
+        typeof rawTimeout === "number" &&
+        Number.isFinite(rawTimeout) &&
+        rawTimeout > 0
           ? Math.floor(rawTimeout)
           : undefined;
       const opId = `code-${crypto.randomUUID()}`;
@@ -1060,26 +1257,46 @@ export async function executeTool(
       return JSON.stringify(safeCalculate(String(args.expression ?? "")));
     case "remember": {
       const content = String(args.content ?? "").trim();
-      if (!content) return JSON.stringify({ ok: false, kind: "empty", message: "content required" });
+      if (!content)
+        return JSON.stringify({
+          ok: false,
+          kind: "empty",
+          message: "content required",
+        });
       const scope =
-        args.scope === "project" || args.scope === "conversation" ? args.scope : "global";
+        args.scope === "project" || args.scope === "conversation"
+          ? args.scope
+          : "global";
       const r = await saveMemory({
         content,
         tags: typeof args.tags === "string" ? args.tags : undefined,
         scope,
-        conversationId: scope === "conversation" ? options.conversationId ?? null : null,
-        projectRoot: scope === "project" ? options.workspaceRoot ?? null : null,
+        conversationId:
+          scope === "conversation" ? (options.conversationId ?? null) : null,
+        projectRoot:
+          scope === "project" ? (options.workspaceRoot ?? null) : null,
       });
       return JSON.stringify({ ok: true, id: r.id, deduped: r.deduped, scope });
     }
     case "recall_memory": {
       const query = String(args.query ?? "").trim();
-      if (!query) return JSON.stringify({ ok: false, kind: "empty", message: "query required" });
-      const k = typeof args.k === "number" && args.k > 0 ? Math.min(20, Math.floor(args.k)) : 5;
+      if (!query)
+        return JSON.stringify({
+          ok: false,
+          kind: "empty",
+          message: "query required",
+        });
+      const k =
+        typeof args.k === "number" && args.k > 0
+          ? Math.min(20, Math.floor(args.k))
+          : 5;
       const hits = await recall(
         query,
         k,
-        { cwd: options.workspaceRoot ?? undefined, convId: options.conversationId ?? undefined },
+        {
+          cwd: options.workspaceRoot ?? undefined,
+          convId: options.conversationId ?? undefined,
+        },
         options.signal ?? undefined,
       );
       return JSON.stringify({
@@ -1094,7 +1311,10 @@ export async function executeTool(
       });
     }
     case "write_file":
-      await api.agentWriteFile(String(args.path ?? ""), String(args.content ?? ""));
+      await api.agentWriteFile(
+        String(args.path ?? ""),
+        String(args.content ?? ""),
+      );
       return JSON.stringify({ ok: true, path: args.path });
     case "edit_file": {
       const r = await api.agentEditFile(
@@ -1186,7 +1406,11 @@ export async function executeTool(
     case "kill_process": {
       const pid = typeof args.pid === "number" ? Math.floor(args.pid) : -1;
       if (pid < 2) {
-        return JSON.stringify({ ok: false, kind: "invalid_argument", message: "pid must be >= 2" });
+        return JSON.stringify({
+          ok: false,
+          kind: "invalid_argument",
+          message: "pid must be >= 2",
+        });
       }
       const r = await api.agentKillProcess(
         pid,
@@ -1215,15 +1439,27 @@ export async function executeTool(
       // titles/roles/instructions. create_flow SAVES — it never runs the Flow.
       const build = buildLinearFlow(args.name, args.steps);
       if (!build.ok) {
-        return JSON.stringify({ ok: false, kind: build.kind, message: build.message });
+        return JSON.stringify({
+          ok: false,
+          kind: build.kind,
+          message: build.message,
+        });
       }
       const violation = assertFlowSafe(build.graph);
       if (violation) {
-        return JSON.stringify({ ok: false, kind: "invariant_violation", message: violation });
+        return JSON.stringify({
+          ok: false,
+          kind: "invariant_violation",
+          message: violation,
+        });
       }
       const json = serializeWorkflowGraph(build.graph);
       if (new TextEncoder().encode(json).length >= 1_048_576) {
-        return JSON.stringify({ ok: false, kind: "too_large", message: "Flow exceeds the 1 MiB limit." });
+        return JSON.stringify({
+          ok: false,
+          kind: "too_large",
+          message: "Flow exceeds the 1 MiB limit.",
+        });
       }
       const flow_id = await api.workflowSave(null, build.name, json);
       return JSON.stringify({
@@ -1257,7 +1493,11 @@ export async function executeTool(
       try {
         const cardId = String(args.card_id ?? "");
         if (!cardId) {
-          return JSON.stringify({ ok: false, kind: "bad_args", message: "card_id required" });
+          return JSON.stringify({
+            ok: false,
+            kind: "bad_args",
+            message: "card_id required",
+          });
         }
         // Walk back through workflow_runs to find one containing this card.
         // The workflow_id must be the *current* run's workflow_id — we
@@ -1270,15 +1510,22 @@ export async function executeTool(
         }
         const runs = await api.workflowRunsList(snap.workflowId);
         const explicit = args.run_id != null ? Number(args.run_id) : null;
-        const candidates = explicit != null
-          ? runs.filter((r) => r.id === explicit)
-          : runs.filter((r) => r.status === "ok");
+        const candidates =
+          explicit != null
+            ? runs.filter((r) => r.id === explicit)
+            : runs.filter((r) => r.status === "ok");
         for (const r of candidates) {
           try {
             const parsed = JSON.parse(r.results_json) as {
-              cards?: Array<{ cardId: string; output?: string; status?: string }>;
+              cards?: Array<{
+                cardId: string;
+                output?: string;
+                status?: string;
+              }>;
             };
-            const hit = parsed.cards?.find((c) => c.cardId === cardId && c.status === "ok");
+            const hit = parsed.cards?.find(
+              (c) => c.cardId === cardId && c.status === "ok",
+            );
             if (hit) {
               return JSON.stringify({
                 ok: true,
@@ -1291,7 +1538,11 @@ export async function executeTool(
             /* skip malformed row */
           }
         }
-        return JSON.stringify({ ok: false, kind: "no_prior_output", message: `No prior run found containing card "${cardId}".` });
+        return JSON.stringify({
+          ok: false,
+          kind: "no_prior_output",
+          message: `No prior run found containing card "${cardId}".`,
+        });
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         return JSON.stringify({ ok: false, kind: "io_error", message });
@@ -1310,10 +1561,18 @@ export async function executeTool(
       const description = String(args.description ?? "");
       const stepsRaw = args.steps;
       if (!skillName) {
-        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message: "name is required",
+        });
       }
       if (!Array.isArray(stepsRaw)) {
-        return JSON.stringify({ ok: false, kind: "bad_args", message: "steps must be an array" });
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message: "steps must be an array",
+        });
       }
       // Client-side filter for tools that would invite recursion or escape
       // the workflow-scoped intent. The Rust side enforces the same list at
@@ -1329,7 +1588,11 @@ export async function executeTool(
       ]);
       for (let i = 0; i < stepsRaw.length; i++) {
         const step = stepsRaw[i] as { tool?: unknown };
-        if (!step || typeof step !== "object" || typeof step.tool !== "string") {
+        if (
+          !step ||
+          typeof step !== "object" ||
+          typeof step.tool !== "string"
+        ) {
           return JSON.stringify({
             ok: false,
             kind: "bad_step",
@@ -1381,12 +1644,20 @@ export async function executeTool(
       }
       const skillName = String(args.name ?? "");
       if (!skillName) {
-        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message: "name is required",
+        });
       }
       try {
         const skill = await api.workflowSkillGet(snap.workflowId, skillName);
         if (!skill) {
-          return JSON.stringify({ ok: false, kind: "not_found", name: skillName });
+          return JSON.stringify({
+            ok: false,
+            kind: "not_found",
+            name: skillName,
+          });
         }
         return JSON.stringify({ ok: true, skill });
       } catch (e) {
@@ -1402,7 +1673,11 @@ export async function executeTool(
       }
       const skillName = String(args.name ?? "");
       if (!skillName) {
-        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message: "name is required",
+        });
       }
       try {
         await api.workflowSkillDelete(snap.workflowId, skillName);
@@ -1420,9 +1695,14 @@ export async function executeTool(
       }
       const skillName = String(args.name ?? "");
       if (!skillName) {
-        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message: "name is required",
+        });
       }
-      const { recordSkillInvocation } = await import("../workflow/skill-invocations");
+      const { recordSkillInvocation } =
+        await import("../workflow/skill-invocations");
       const limit = recordSkillInvocation(skillName);
       if (!limit.ok) {
         return JSON.stringify({
@@ -1441,21 +1721,34 @@ export async function executeTool(
         return JSON.stringify({ ok: false, kind: "get_failed", message });
       }
       if (!skill) {
-        return JSON.stringify({ ok: false, kind: "not_found", name: skillName });
+        return JSON.stringify({
+          ok: false,
+          kind: "not_found",
+          name: skillName,
+        });
       }
       let steps: Array<{ tool: string; args: Record<string, unknown> }>;
       try {
         const parsed = JSON.parse(skill.steps_json);
         if (!Array.isArray(parsed)) {
-          return JSON.stringify({ ok: false, kind: "corrupt_steps", message: "steps_json is not an array" });
+          return JSON.stringify({
+            ok: false,
+            kind: "corrupt_steps",
+            message: "steps_json is not an array",
+          });
         }
-        steps = parsed as Array<{ tool: string; args: Record<string, unknown> }>;
+        steps = parsed as Array<{
+          tool: string;
+          args: Record<string, unknown>;
+        }>;
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         return JSON.stringify({ ok: false, kind: "corrupt_steps", message });
       }
       const argsOverride =
-        args.args_override && typeof args.args_override === "object" && !Array.isArray(args.args_override)
+        args.args_override &&
+        typeof args.args_override === "object" &&
+        !Array.isArray(args.args_override)
           ? (args.args_override as Record<string, unknown>)
           : {};
 
@@ -1481,13 +1774,13 @@ export async function executeTool(
       for (let i = 0; i < steps.length; i++) {
         const step = steps[i];
         if (
-          !step
-          || typeof step !== "object"
-          || typeof step.tool !== "string"
-          || step.tool.length === 0
-          || typeof step.args !== "object"
-          || step.args === null
-          || Array.isArray(step.args)
+          !step ||
+          typeof step !== "object" ||
+          typeof step.tool !== "string" ||
+          step.tool.length === 0 ||
+          typeof step.args !== "object" ||
+          step.args === null ||
+          Array.isArray(step.args)
         ) {
           stepResults.push({ step_index: i, ok: false, kind: "bad_step" });
           break;
@@ -1505,13 +1798,16 @@ export async function executeTool(
         // fail closed. (Richer follow-up: thread the runner's real gate through
         // ExecuteToolOptions so dangerous steps can prompt instead of refuse.)
         const REPLAY_RECURSION_TOOLS = new Set([
-          "workflow_invoke_skill", "workflow_save_skill", "workflow_delete_skill",
-          "spawn_subagent", "await_subagents",
+          "workflow_invoke_skill",
+          "workflow_save_skill",
+          "workflow_delete_skill",
+          "spawn_subagent",
+          "await_subagents",
         ]);
         if (
-          REPLAY_RECURSION_TOOLS.has(step.tool)
-          || DANGEROUS_TOOLS.has(step.tool)
-          || isMcpToolName(step.tool)
+          REPLAY_RECURSION_TOOLS.has(step.tool) ||
+          DANGEROUS_TOOLS.has(step.tool) ||
+          isMcpToolName(step.tool)
         ) {
           stepResults.push({
             step_index: i,
@@ -1522,7 +1818,10 @@ export async function executeTool(
           });
           break;
         }
-        const mergedArgs: Record<string, unknown> = { ...step.args, ...argsOverride };
+        const mergedArgs: Record<string, unknown> = {
+          ...step.args,
+          ...argsOverride,
+        };
         let parsed: Record<string, unknown>;
         try {
           // Dispatch the (now confirmed-safe, non-dangerous) step through the
@@ -1531,9 +1830,10 @@ export async function executeTool(
           const result = await executeTool(step.tool, mergedArgs, options);
           try {
             const decoded = JSON.parse(result);
-            parsed = (decoded && typeof decoded === "object" && !Array.isArray(decoded))
-              ? (decoded as Record<string, unknown>)
-              : { ok: false, raw: result };
+            parsed =
+              decoded && typeof decoded === "object" && !Array.isArray(decoded)
+                ? (decoded as Record<string, unknown>)
+                : { ok: false, raw: result };
           } catch {
             parsed = { ok: false, raw: result };
           }
@@ -1571,7 +1871,11 @@ export async function executeTool(
 
       const lastStep = stepResults[stepResults.length - 1];
       const overall_ok = !!(lastStep && lastStep.ok !== false);
-      return JSON.stringify({ ok: overall_ok, skill: skillName, steps: stepResults });
+      return JSON.stringify({
+        ok: overall_ok,
+        skill: skillName,
+        steps: stepResults,
+      });
     }
     // ── Claude Skills (imported Anthropic SKILL.md packages) ────────────
     // Read-only, no-approval. `list_claude_skills` enumerates ENABLED
@@ -1589,14 +1893,26 @@ export async function executeTool(
     case "load_claude_skill": {
       const skillName = String(args.name ?? "");
       if (!skillName) {
-        return JSON.stringify({ ok: false, kind: "bad_args", message: "name is required" });
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message: "name is required",
+        });
       }
       const row = await api.claudeSkillGet(skillName);
       if (!row) {
-        return JSON.stringify({ ok: false, kind: "not_found", message: `Skill '${skillName}' not found.` });
+        return JSON.stringify({
+          ok: false,
+          kind: "not_found",
+          message: `Skill '${skillName}' not found.`,
+        });
       }
       if (!row.enabled) {
-        return JSON.stringify({ ok: false, kind: "disabled", message: `Skill '${skillName}' is disabled.` });
+        return JSON.stringify({
+          ok: false,
+          kind: "disabled",
+          message: `Skill '${skillName}' is disabled.`,
+        });
       }
       // The skill's frontmatter `allowed_tools` is stored as a JSON string.
       // Surface it as a parsed array to the model when it parses cleanly;
@@ -1606,7 +1922,10 @@ export async function executeTool(
       if (row.allowed_tools_json) {
         try {
           const parsed = JSON.parse(row.allowed_tools_json);
-          if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) {
+          if (
+            Array.isArray(parsed) &&
+            parsed.every((x) => typeof x === "string")
+          ) {
             allowedTools = parsed as string[];
           }
         } catch {
@@ -1623,7 +1942,11 @@ export async function executeTool(
       });
     }
     default:
-      return JSON.stringify({ ok: false, kind: "unknown_tool", message: `Unknown tool: ${name}` });
+      return JSON.stringify({
+        ok: false,
+        kind: "unknown_tool",
+        message: `Unknown tool: ${name}`,
+      });
   }
 }
 

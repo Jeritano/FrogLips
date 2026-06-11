@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { CustomBackendsSettings } from "./CustomBackendsSettings";
 import { RoutesSettings } from "./RoutesSettings";
+import { ApiRegistrySettings } from "./ApiRegistrySettings";
 import { checkForUpdate } from "../lib/updater";
 import { api } from "../lib/tauri-api";
 import pkg from "../../package.json";
@@ -18,7 +19,7 @@ import type { ServerStatus } from "../types";
  * per-conversation context, not app config.
  */
 
-type Pane = "general" | "backends" | "routes";
+type Pane = "general" | "backends" | "routes" | "apis";
 
 interface Props {
   open: boolean;
@@ -93,6 +94,7 @@ const PANES: { id: Pane; label: string }[] = [
   { id: "general", label: "General" },
   { id: "backends", label: "Backends" },
   { id: "routes", label: "Routes" },
+  { id: "apis", label: "APIs" },
 ];
 
 export function SettingsModal({
@@ -242,6 +244,7 @@ export function SettingsModal({
             {pane === "routes" && (
               <RoutesSettings status={status} onClose={onClose} />
             )}
+            {pane === "apis" && <ApiRegistrySettings />}
           </div>
         </div>
       </div>

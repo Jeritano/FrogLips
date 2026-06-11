@@ -1360,3 +1360,23 @@
   overflow-x: auto;
   user-select: all;
 }
+
+/* Saved-API registry (Settings → APIs) */
+.api-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.api-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: var(--radius-md, 8px);
+}
+.api-row-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.api-row-name { font-weight: 600; font-size: var(--fs-sm, 13px); }
+.api-row-url { font-size: var(--fs-2xs, 11px); color: var(--fg-dim, #9aa0a6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.api-link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: var(--fs-2xs, 11px); }
+.api-del { background: none; border: none; color: var(--fg-dim, #9aa0a6); cursor: pointer; }
+.api-del:hover { color: var(--danger, #f87171); }
+.api-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 12px; border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: var(--radius-md, 8px); }
+.api-field { display: flex; flex-direction: column; gap: 3px; font-size: var(--fs-2xs, 11px); color: var(--fg-dim, #9aa0a6); }
+.api-field input { background: var(--overlay-softer, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(255,255,255,0.12)); border-radius: var(--radius-sm, 6px); padding: 6px 8px; color: var(--fg, inherit); font-size: var(--fs-sm, 13px); }
+.api-form-actions { display: flex; gap: 8px; margin-top: 4px; }
+.api-add { margin-top: 8px; align-self: flex-start; padding: 6px 12px; }

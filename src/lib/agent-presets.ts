@@ -20,7 +20,8 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
   {
     id: "coder",
     name: "Coder",
-    description: "Code reading, search, editing + shell + full git. Prefers edit_file / multi_edit over write_file.",
+    description:
+      "Code reading, search, editing + shell + full git. Prefers edit_file / multi_edit over write_file.",
     allowedTools: [
       "read_file",
       "list_dir",
@@ -36,6 +37,13 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
       "git_show",
       "git_branches",
       "git_commit",
+      // A coding agent that can't read API docs, hit a localhost endpoint,
+      // or look up an error is half-crippled (2026-06-11). All approval-
+      // gated + SSRF-guarded; call_api injects saved keys server-side.
+      "http_request",
+      "web_fetch",
+      "web_search",
+      "call_api",
     ],
     systemPromptOverride:
       "You are a coding agent on the user's local machine. " +
@@ -50,16 +58,27 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
     description:
       "Exploration of FS + web + PDFs with the ability to write findings to files. No shell.",
     allowedTools: [
-      "read_file", "list_dir", "search_files", "file_exists",
-      "read_pdf", "web_fetch", "web_search",
-      "git_status", "git_diff", "git_log", "git_show", "git_branches",
+      "read_file",
+      "list_dir",
+      "search_files",
+      "file_exists",
+      "read_pdf",
+      "web_fetch",
+      "web_search",
+      "git_status",
+      "git_diff",
+      "git_log",
+      "git_show",
+      "git_branches",
       // Write capability — researchers can save summaries, reports, and
       // working notes to disk. `delete_path` and `run_shell` remain off
       // the list so this preset cannot remove user files or execute
       // arbitrary commands. Every write still hits the approval gate
       // (WRITE_TOOLS in agent-loop/dispatch.ts) unless the user has
       // explicitly granted session-wide write approval.
-      "write_file", "edit_file", "multi_edit",
+      "write_file",
+      "edit_file",
+      "multi_edit",
     ],
     systemPromptOverride:
       "You are a research agent. " +
@@ -77,7 +96,8 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
   {
     id: "shell",
     name: "Shell",
-    description: "Command-line focused. Useful for sysadmin / build / git tasks.",
+    description:
+      "Command-line focused. Useful for sysadmin / build / git tasks.",
     allowedTools: ["run_shell", "list_dir", "file_exists", "read_file"],
     systemPromptOverride:
       "You are a shell agent on macOS. " +
@@ -96,8 +116,13 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
     description:
       "Reviews a peer card's output. Scores 0–10 with reasons + a list of specific issues. Read-only access to files; does not write.",
     allowedTools: [
-      "read_file", "list_dir", "search_files", "file_exists",
-      "workflow_get", "workflow_keys", "workflow_get_prior_run",
+      "read_file",
+      "list_dir",
+      "search_files",
+      "file_exists",
+      "workflow_get",
+      "workflow_keys",
+      "workflow_get_prior_run",
       // Critic writes its verdict to the scratchpad so the next card
       // (Editor / Refiner) reads structured findings, not just prose.
       "workflow_set",
@@ -120,9 +145,16 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
     description:
       "Rewrites upstream content for clarity, tone, and structure. Reads the Critic's scratchpad notes when present. Writes a file deliverable.",
     allowedTools: [
-      "read_file", "list_dir", "file_exists",
-      "write_file", "edit_file", "multi_edit",
-      "workflow_get", "workflow_keys", "workflow_get_prior_run", "workflow_set",
+      "read_file",
+      "list_dir",
+      "file_exists",
+      "write_file",
+      "edit_file",
+      "multi_edit",
+      "workflow_get",
+      "workflow_keys",
+      "workflow_get_prior_run",
+      "workflow_set",
     ],
     builtIn: true,
     systemPromptOverride:
@@ -143,9 +175,16 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
     description:
       "Surfaces assumptions, gaps, and counter-arguments in upstream content. Doesn't conclude; produces a structured list of doubts.",
     allowedTools: [
-      "read_file", "list_dir", "search_files", "file_exists",
-      "web_fetch", "web_search",
-      "workflow_get", "workflow_keys", "workflow_get_prior_run", "workflow_set",
+      "read_file",
+      "list_dir",
+      "search_files",
+      "file_exists",
+      "web_fetch",
+      "web_search",
+      "workflow_get",
+      "workflow_keys",
+      "workflow_get_prior_run",
+      "workflow_set",
     ],
     builtIn: true,
     systemPromptOverride:
@@ -164,9 +203,15 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
     description:
       "Condenses upstream content + scratchpad state into a tight summary. Writes a file deliverable.",
     allowedTools: [
-      "read_file", "list_dir", "file_exists",
-      "write_file", "edit_file",
-      "workflow_get", "workflow_keys", "workflow_get_prior_run", "workflow_set",
+      "read_file",
+      "list_dir",
+      "file_exists",
+      "write_file",
+      "edit_file",
+      "workflow_get",
+      "workflow_keys",
+      "workflow_get_prior_run",
+      "workflow_set",
     ],
     builtIn: true,
     systemPromptOverride:
@@ -192,10 +237,15 @@ function loadCustom(): AgentPreset[] {
     if (!Array.isArray(arr)) return [];
     return arr.filter(
       (p): p is AgentPreset =>
-        p && typeof p === "object" && typeof p.id === "string" && typeof p.name === "string" &&
+        p &&
+        typeof p === "object" &&
+        typeof p.id === "string" &&
+        typeof p.name === "string" &&
         Array.isArray(p.allowedTools),
     );
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 function saveCustom(list: AgentPreset[]) {

@@ -604,6 +604,22 @@ export const api = {
       // Sec re-review H-1: payload-bind the script body.
       approval: await mintApproval("agent_applescript_run", { script }),
     }),
+  agentCallApi: async (input: {
+    api: string;
+    method: string;
+    path: string;
+    query?: Record<string, string>;
+    headers?: Record<string, string>;
+    body?: string;
+    timeout_secs?: number;
+  }) =>
+    invoke<HttpResp>("agent_call_api", {
+      input,
+      // Bound to api|method|path — matches the Rust verify_bound payload.
+      approval: await mintApproval("agent_call_api", {
+        url: `${input.api}|${input.method}|${input.path}`,
+      }),
+    }),
   agentHttpRequest: async (input: HttpReqInput) =>
     invoke<HttpResp>("agent_http_request", {
       input,

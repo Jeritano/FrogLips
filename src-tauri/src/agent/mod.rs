@@ -34,8 +34,8 @@ pub use fs::{
 pub use shell::{cancel_shell, classify_shell_risk, run_code, run_shell, ShellOpts, ShellResult};
 
 pub use web::{
-    classify_http_risk, http_request, web_fetch, web_search, HttpReqInput, HttpResp,
-    WebFetchResult, WebSearchHit, WebSearchResult,
+    call_api, classify_http_risk, http_request, web_fetch, web_search, CallApiInput, HttpReqInput,
+    HttpResp, WebFetchResult, WebSearchHit, WebSearchResult,
 };
 
 pub use git::{git_branches, git_commit, git_diff, git_log, git_show, git_status, GitResult};

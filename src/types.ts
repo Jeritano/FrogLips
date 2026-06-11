@@ -338,6 +338,17 @@ export interface CustomBackend {
   api_key?: string | null;
 }
 
+export interface SavedApi {
+  id: string;
+  name: string;
+  base_url: string;
+  auth_header?: string;
+  auth_template?: string;
+  description?: string | null;
+  /** Redacted on disk ("__keychain__"); real value lives in the Keychain. */
+  api_key?: string | null;
+}
+
 export interface AppSettings {
   workspace_root?: string | null;
   last_model?: string | null;
@@ -362,6 +373,8 @@ export interface AppSettings {
   mlx_draft_model?: string | null;
   /** Opt-in automatic update checks (default off — see useUpdateCheck). */
   auto_update_check?: boolean | null;
+  /** User-registered APIs the agent can call by name. Keys live in Keychain. */
+  saved_apis?: SavedApi[] | null;
 }
 
 /**

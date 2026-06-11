@@ -408,6 +408,14 @@ const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     "setup_complete",
     "user_profile",
     "hardware_profile",
+    // 2026-06-11 — these new keys were missing from the allowlist, so every
+    // settings_set carrying them was silently rejected (the keep_alive
+    // select, the draft-model field, the auto-update gate, the API registry
+    // all failed to persist).
+    "ollama_keep_alive",
+    "mlx_draft_model",
+    "auto_update_check",
+    "saved_apis",
 ];
 
 /// Per-field byte caps for the "About You" profile. Keeps a hostile or
@@ -563,6 +571,30 @@ fn validate_settings_patch(
                 let base = o.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
                 if !(base.starts_with("http://") || base.starts_with("https://")) {
                     return Err(format!("custom_backends[{i}] base_url must be http(s)"));
+                }
+            }
+        }
+    }
+
+    if let Some(sa) = patch.get("saved_apis") {
+        if !sa.is_null() {
+            let arr = sa.as_array().ok_or("saved_apis must be an array")?;
+            if arr.len() > 64 {
+                return Err("too many saved_apis (max 64)".into());
+            }
+            for (i, a) in arr.iter().enumerate() {
+                let o = a
+                    .as_object()
+                    .ok_or_else(|| format!("saved_apis[{i}] must be an object"))?;
+                for key in ["id", "name", "base_url"] {
+                    match o.get(key).and_then(|v| v.as_str()) {
+                        Some(s) if !s.trim().is_empty() && s.len() <= 2048 => {}
+                        _ => return Err(format!("saved_apis[{i}] '{key}' invalid")),
+                    }
+                }
+                let base = o.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
+                if !(base.starts_with("http://") || base.starts_with("https://")) {
+                    return Err(format!("saved_apis[{i}] base_url must be http(s)"));
                 }
             }
         }

@@ -180,6 +180,9 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
         "agent_http_request" | "agent_web_fetch" | "agent_browser_navigate" => {
             Some(sha256_hex(&kv(&[("url", p.url.as_deref().unwrap_or(""))])))
         }
+        // call_api: bind to api id + method + path (the url field carries
+        // "<api>|<method>|<path>" from the dispatcher).
+        "agent_call_api" => Some(sha256_hex(&kv(&[("call", p.url.as_deref().unwrap_or(""))]))),
         // Browser per-action — sec re-review H-NEW-2: after navigate the
         // CDP session was driven without further approval. Each
         // click/fill/screenshot/get_text/close is now bound to its target
@@ -650,6 +653,24 @@ pub async fn agent_http_request(
         },
     )?;
     agent::http_request(input).await
+}
+
+#[tauri::command]
+pub async fn agent_call_api(
+    input: agent::CallApiInput,
+    approval: String,
+) -> Result<agent::HttpResp, String> {
+    // Bound to api|method|path — an approval for a GET can't be replayed as a
+    // DELETE, nor reused against a different endpoint within the 60s TTL.
+    verify_bound(
+        "agent_call_api",
+        &approval,
+        ApprovalPayload {
+            url: Some(format!("{}|{}|{}", input.api, input.method, input.path)),
+            ..Default::default()
+        },
+    )?;
+    agent::call_api(input).await
 }
 
 #[tauri::command]
