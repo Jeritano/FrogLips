@@ -15,7 +15,12 @@
 -->
 <plist version="1.0">
 <dict>
-    <key>com.apple.security.device.microphone</key>
+    <!-- Hardened-runtime mic key. NOT com.apple.security.device.microphone:
+         that is the App Sandbox key and we don't sandbox — under hardened
+         runtime alone it does nothing, and macOS AUTO-DENIES audio input
+         with no TCC prompt (mic-fix 2026-06-11). audio-input is the key the
+         hardened runtime actually checks. -->
+    <key>com.apple.security.device.audio-input</key>
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
