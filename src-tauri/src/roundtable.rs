@@ -93,7 +93,7 @@ pub fn save_run(
         );
     }
     let mut conn = get_db()?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO roundtable_runs (table_id, name, topic, turns, transcript_json, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

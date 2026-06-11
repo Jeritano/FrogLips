@@ -279,7 +279,9 @@ pub fn parse_export(text: &str) -> Result<ExportDoc> {
 /// memory references are remapped onto the new conversation ids. On any error
 /// the transaction rolls back, leaving the DB unchanged.
 pub fn apply_import(conn: &mut Connection, doc: &ExportDoc) -> Result<ImportSummary> {
-    let tx = conn.transaction().context("begin import transaction")?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .context("begin import transaction")?;
     let mut n_conv = 0usize;
     let mut n_msg = 0usize;
     let mut n_mem = 0usize;

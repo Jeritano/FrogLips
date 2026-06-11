@@ -503,7 +503,7 @@ fn flush_pending(
         .with_context(|| format!("embedding failed via {}", chosen.id()))?;
     let mut ei = 0usize;
     for f in pending.iter() {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
@@ -587,7 +587,7 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     let mut conn = get_db()?;
     let now = now_unix();
     let (corpus_id, watermark, force_reembed): (i64, i64, bool) = {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute(
             "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
              VALUES (?1, ?2, 0, ?3, ?3)
@@ -829,7 +829,7 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     // commits, search still sees the old corpus; after, it sees only the new
     // chunks. An interruption before this point leaves the old corpus whole.
     {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute(
             "DELETE FROM rag_chunks WHERE corpus_id = ?1 AND id <= ?2",
             params![corpus_id, watermark],

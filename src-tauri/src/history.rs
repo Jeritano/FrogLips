@@ -1049,7 +1049,7 @@ pub fn delete_conversation(id: i64) -> Result<()> {
     // fork-tree query (get_fork_tree / list_branches) surfaces "parent
     // conversation not found" errors. Run both updates + the final delete
     // in a single transaction so a crash can never leave dangling refs.
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute(
         "UPDATE conversations SET parent_conv_id = NULL, parent_message_id = NULL
          WHERE parent_conv_id = ?1",
@@ -1318,6 +1318,15 @@ fn title_is_placeholder(title: &str) -> bool {
     t.is_empty() || t == DEFAULT_CONVERSATION_TITLE
 }
 
+// NOTE on transaction behavior (2026-06-11, user-hit bug): every write tx in
+// this crate uses IMMEDIATE. The default DEFERRED tx begins as a READER and
+// only takes the write lock at the first write statement — under WAL, if any
+// other pooled connection wrote in between, that promotion fails INSTANTLY
+// with SQLITE_BUSY_SNAPSHOT (error 517, "cannot promote read transaction"),
+// and busy_timeout does not apply to it. The perf ledger added a concurrent
+// writer on the send path and add_message started losing replies. IMMEDIATE
+// takes the write lock at BEGIN, where busy_timeout (5000ms) queues us
+// properly behind the other writer.
 pub fn add_message(
     conv_id: i64,
     role: &str,
@@ -1326,7 +1335,7 @@ pub fn add_message(
     images_json: Option<&str>,
 ) -> Result<i64> {
     let mut conn = get_db()?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO messages (conversation_id, role, content, created_at, model, images)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1426,7 +1435,7 @@ pub(crate) fn fork_conversation_in(
     source_id: i64,
     at_message_id: i64,
 ) -> Result<i64> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     // Look up the source row. Bail loudly if it doesn't exist — silently
     // creating an orphan fork would just hide caller bugs.

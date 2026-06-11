@@ -253,7 +253,7 @@ pub fn save(
 
     let mut conn = get_db()?;
     let now = now_unix();
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
     // Look up the existing row, if any. The UNIQUE(workflow_id, name) index
     // backs the lookup.
@@ -451,7 +451,7 @@ mod tests {
         validate_name(name)?;
         validate_description(description)?;
         validate_steps_json(steps_json)?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let existing: Option<(i64, String, String, String)> = tx
             .query_row(
                 "SELECT id, name, description, steps_json

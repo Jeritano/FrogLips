@@ -448,7 +448,7 @@ pub fn delete_workflow(id: i64) -> Result<()> {
     // equality — the prior `card_key LIKE '<id>:%'` approach was fragile
     // against any future prefix-collision and over-matched once GLOB-style
     // patterns were considered.
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute(
         "DELETE FROM workflow_runs WHERE workflow_id = ?1",
         params![id],

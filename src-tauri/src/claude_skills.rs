@@ -352,7 +352,7 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
     let now = now_unix();
 
     let mut conn = get_db()?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let existing: Option<(i64, bool, bool)> = tx
         .query_row(
             "SELECT id, enabled, pinned FROM claude_skills WHERE name = ?1",
@@ -566,7 +566,7 @@ mod tests {
             None => None,
         };
         let source_path = canon.to_string_lossy().to_string();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let existing: Option<(i64, bool, bool)> = tx
             .query_row(
                 "SELECT id, enabled, pinned FROM claude_skills WHERE name = ?1",
