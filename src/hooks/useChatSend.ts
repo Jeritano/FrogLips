@@ -37,6 +37,7 @@ import {
   saveMemory,
 } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
+import { buildReplyStat, setReplyStat } from "../lib/reply-stats";
 import { formatUserProfile } from "../lib/user-profile";
 import {
   loadRoutes,
@@ -754,6 +755,9 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       // string once per animation frame on flush — avoids growing/flattening a
       // string on every token at 100+ tok/s. `acc` holds the flushed-so-far text.
       let acc = "";
+      const streamT0 = performance.now();
+      let firstDeltaAt: number | null = null;
+      let finalUsage: import("../lib/mlx-client").ReplyUsage | undefined;
       const pending: string[] = [];
       let accLen = 0;
       let aborted = false;
@@ -875,7 +879,18 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
                       maxTokens: chatParams.max_tokens ?? undefined,
                     });
         for await (const chunk of stream) {
-          if (chunk.done) break;
+          if (chunk.done) {
+            // /api/chat's done-frame carries exact token counts + decode
+            // timings — the honest numbers for the perf footer + ledger.
+            finalUsage =
+              "usage" in chunk
+                ? (chunk as import("../lib/mlx-client").ChatChunk).usage
+                : undefined;
+            break;
+          }
+          if (firstDeltaAt == null && chunk.delta) {
+            firstDeltaAt = performance.now();
+          }
           pending.push(chunk.delta);
           accLen += chunk.delta.length;
           if (accLen > ACC_MAX) {
@@ -971,6 +986,29 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
               effModel,
             );
             asst.id = id;
+            // Per-reply perf stat (wave D): footer renders from the volatile
+            // store; the durable per-model ledger row is fire-and-forget.
+            const stat = buildReplyStat(
+              effModel,
+              streamT0,
+              firstDeltaAt,
+              performance.now(),
+              finalUsage,
+              acc.length,
+            );
+            setReplyStat(id, stat);
+            if (stat.tokPerSec != null) {
+              void api
+                .modelPerfRecord({
+                  model: effModel,
+                  backend: effBackend,
+                  ttft_ms: stat.ttftMs,
+                  tok_per_sec: stat.tokPerSec,
+                  completion_tokens: stat.completionTokens ?? 0,
+                  cold_load: stat.coldLoad,
+                })
+                .catch(() => {});
+            }
           } catch (e) {
             if (sameConv()) setErr(`Failed to save response: ${e}`);
           }

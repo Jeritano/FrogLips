@@ -84,9 +84,11 @@ impl NativeRuntime {
             //   bit-width) skip ISQ — re-quantizing quantized weights only
             //   loses quality.
             let lower = id_for_load.to_lowercase();
-            let already_quantized = ["4bit", "8bit", "6bit", "3bit", "2bit", "fp8", "-q4", "-q8", "gguf", "awq", "gptq"]
-                .iter()
-                .any(|m| lower.contains(m));
+            let already_quantized = [
+                "4bit", "8bit", "6bit", "3bit", "2bit", "fp8", "-q4", "-q8", "gguf", "awq", "gptq",
+            ]
+            .iter()
+            .any(|m| lower.contains(m));
             let isq = if already_quantized {
                 None
             } else {

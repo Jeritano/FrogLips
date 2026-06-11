@@ -209,6 +209,29 @@ export const api = {
     invoke<void>("set_conversation_pinned", { id, pinned }),
   setConversationTags: (id: number, tags: string | null) =>
     invoke<void>("set_conversation_tags", { id, tags }),
+  /** [level (1=ok,2=warn,4=critical), total_ram_gb] */
+  ramPressure: () => invoke<[number, number]>("ram_pressure"),
+  /** Record one per-reply perf sample into the durable ledger. */
+  modelPerfRecord: (sample: {
+    model: string;
+    backend: string;
+    ttft_ms: number;
+    tok_per_sec: number;
+    completion_tokens: number;
+    cold_load: boolean;
+  }) => invoke<void>("model_perf_record", { sample }),
+  /** Per-model perf aggregates (warm-only TTFT; pure-decode tok/s). */
+  modelPerfSummary: () =>
+    invoke<
+      Array<{
+        model: string;
+        backend: string;
+        samples: number;
+        avg_tok_per_sec: number;
+        avg_ttft_ms: number;
+        last_ts: number;
+      }>
+    >("model_perf_summary"),
   /** Message-level FTS5 search (BM25-ranked, snippeted). */
   searchMessagesFts: (query: string, limit: number) =>
     invoke<import("../types").FtsMessageHit[]>("search_messages_fts", {

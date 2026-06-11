@@ -770,3 +770,19 @@
 .routes-tester-result.none { color: var(--text-3, #888); }
 .routes-tester-result code { color: var(--accent); }
 .routes-tester-reason { color: var(--text-3, #888); }
+
+/* Per-reply perf footer (inference wave D) */
+.reply-stat {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: var(--fs-2xs, 10px);
+  color: var(--fg-dim, #9aa0a6);
+  opacity: 0.8;
+}
+.reply-stat-cold {
+  border: 1px solid var(--warn-border, rgba(251, 191, 36, 0.5));
+  color: var(--warn-fg, #fbbf24);
+  border-radius: var(--radius-full, 999px);
+  padding: 0 6px;
+}

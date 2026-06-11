@@ -24,8 +24,22 @@ const populatedSummary: DashboardSummary = {
     { tool_name: "run_shell", count: 4 },
   ],
   tool_latency: [
-    { tool_name: "read_file", count: 12, avg_ms: 23.5, p50_ms: 21, p95_ms: 60, max_ms: 90 },
-    { tool_name: "run_shell", count: 4, avg_ms: 410, p50_ms: 300, p95_ms: 900, max_ms: 1200 },
+    {
+      tool_name: "read_file",
+      count: 12,
+      avg_ms: 23.5,
+      p50_ms: 21,
+      p95_ms: 60,
+      max_ms: 90,
+    },
+    {
+      tool_name: "run_shell",
+      count: 4,
+      avg_ms: 410,
+      p50_ms: 300,
+      p95_ms: 900,
+      max_ms: 1200,
+    },
   ],
   approval_counts: [
     { approval: "auto", count: 10 },
@@ -66,11 +80,14 @@ vi.mock("../../lib/tauri-api", () => {
   return {
     api: {
       agentDashboardSummary: vi.fn(async () => summaryToReturn),
+      modelPerfSummary: vi.fn(async () => []),
     },
   };
 });
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { Dashboard } from "../Dashboard";
 
@@ -91,7 +108,9 @@ describe("Dashboard", () => {
     });
     // No dashboard root present.
     expect(container.querySelector('[data-testid="dashboard"]')).toBeNull();
-    act(() => { root.unmount(); });
+    act(() => {
+      root.unmount();
+    });
     container.remove();
   });
 
@@ -108,16 +127,28 @@ describe("Dashboard", () => {
     // Dashboard root is mounted.
     expect(container.querySelector('[data-testid="dashboard"]')).not.toBeNull();
     // Each of the 5 sections is present.
-    expect(container.querySelector('[data-testid="dashboard-tool-counts"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="dashboard-latency"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="dashboard-iterations"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="dashboard-throughput"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="dashboard-approvals"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="dashboard-tool-counts"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="dashboard-latency"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="dashboard-iterations"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="dashboard-throughput"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="dashboard-approvals"]'),
+    ).not.toBeNull();
     // No-data sentinel appears in each empty section.
     const emptyMsgs = container.querySelectorAll(".dashboard-empty");
     expect(emptyMsgs.length).toBeGreaterThan(0);
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 
@@ -143,7 +174,9 @@ describe("Dashboard", () => {
     const pieItems = container.querySelectorAll(".dashboard-pie-legend li");
     expect(pieItems.length).toBe(3);
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 });

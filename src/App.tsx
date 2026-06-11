@@ -243,6 +243,28 @@ function App() {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // RAM-pressure chip (inference wave D): macOS memorystatus level, polled
+  // every 5s while visible. Renders ONLY at warn/critical — the early
+  // warning before swap turns decode speed to sludge, invisible otherwise.
+  const [ramPressure, setRamPressure] = useState<number>(1);
+  useEffect(() => {
+    let alive = true;
+    const tick = () => {
+      if (document.visibilityState !== "visible") return;
+      void api
+        .ramPressure()
+        .then(([level]) => {
+          if (alive) setRamPressure(level);
+        })
+        .catch(() => {});
+    };
+    tick();
+    const t = setInterval(tick, 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Silent background update check → a tasteful, dismissable toast.
   const availableUpdate = useUpdateCheck();
@@ -1516,6 +1538,19 @@ function App() {
               className="topbar-slot"
               data-testid="roundtable-topbar-slot"
             />
+          )}
+          {ramPressure >= 2 && (
+            <span
+              className={`ram-chip${ramPressure >= 4 ? " critical" : ""}`}
+              title={
+                ramPressure >= 4
+                  ? "Memory pressure CRITICAL — macOS is swapping; unload a model or close apps before decode speed collapses."
+                  : "Memory pressure elevated — consider unloading an idle model."
+              }
+              data-testid="ram-chip"
+            >
+              RAM {ramPressure >= 4 ? "critical" : "high"}
+            </span>
           )}
           <button
             className="theme-toggle topbar-theme"

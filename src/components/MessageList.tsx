@@ -1,9 +1,18 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useSyncExternalStore,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Check, RotateCw, GitBranch } from "lucide-react";
 import type { Message, MemoryScope } from "../types";
 import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
+import { getReplyStat, subscribeReplyStats } from "../lib/reply-stats";
 import { renderMarkdown } from "../lib/markdown";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 // Syntax-highlight colors live in styles/syntax.css as theme-aware CSS
@@ -85,11 +94,16 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-
 function MessageActions({
-  msg, isLast, isLastUser, onRegenerate, onEditUser,
+  msg,
+  isLast,
+  isLastUser,
+  onRegenerate,
+  onEditUser,
 }: {
-  msg: Message; isLast: boolean; isLastUser: boolean;
+  msg: Message;
+  isLast: boolean;
+  isLastUser: boolean;
   onRegenerate?: () => void;
   onEditUser?: (m: Message) => void;
 }) {
@@ -102,18 +116,35 @@ function MessageActions({
         title="Copy message text"
         onClick={async () => {
           const ok = await copyText(msg.content);
-          if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1200); }
+          if (ok) {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          }
         }}
       >
-        {copied ? <><Check size={16} /> Copied</> : "Copy"}
+        {copied ? (
+          <>
+            <Check size={16} /> Copied
+          </>
+        ) : (
+          "Copy"
+        )}
       </button>
       {msg.role === "assistant" && isLast && onRegenerate && (
-        <button className="msg-action" title="Regenerate response" onClick={onRegenerate}>
+        <button
+          className="msg-action"
+          title="Regenerate response"
+          onClick={onRegenerate}
+        >
           <RotateCw size={16} /> Regenerate
         </button>
       )}
       {msg.role === "user" && isLastUser && onEditUser && (
-        <button className="msg-action" title="Edit and retry" onClick={() => onEditUser(msg)}>
+        <button
+          className="msg-action"
+          title="Edit and retry"
+          onClick={() => onEditUser(msg)}
+        >
           Edit
         </button>
       )}
@@ -142,7 +173,22 @@ interface RowProps {
   onFork?: (m: Message) => void;
 }
 
-function MessageRowImpl({ msg, divider, isLast, isLastUser, isPinned, isPinning, onPin, rowKey, canPinProject, canPinConversation, onRegenerate, onEditUser, canFork, onFork }: RowProps) {
+function MessageRowImpl({
+  msg,
+  divider,
+  isLast,
+  isLastUser,
+  isPinned,
+  isPinning,
+  onPin,
+  rowKey,
+  canPinProject,
+  canPinConversation,
+  onRegenerate,
+  onEditUser,
+  canFork,
+  onFork,
+}: RowProps) {
   // Tool results are hidden from the stream (see the Tool History panel); rows
   // are pre-filtered, so this guard is belt-and-suspenders.
   if (msg.role === "tool") return null;
@@ -154,7 +200,10 @@ function MessageRowImpl({ msg, divider, isLast, isLastUser, isPinned, isPinning,
     if (!html) return null;
     return (
       <div className="message assistant">
-        <div className="content markdown" dangerouslySetInnerHTML={{ __html: html }} />
+        <div
+          className="content markdown"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
       </div>
     );
   }
@@ -176,13 +225,26 @@ function MessageRowImpl({ msg, divider, isLast, isLastUser, isPinned, isPinning,
           <span className="model-divider-line" />
         </div>
       )}
-      <div className={`message ${msg.role}`} data-testid={`message-${msg.role}`}>
+      <div
+        className={`message ${msg.role}`}
+        data-testid={`message-${msg.role}`}
+      >
         {isUser ? (
           <div className="content">{msg.content}</div>
         ) : (
-          <div className="content markdown" dangerouslySetInnerHTML={{ __html: cachedMarkdown(msg.content) }} />
+          <div
+            className="content markdown"
+            dangerouslySetInnerHTML={{ __html: cachedMarkdown(msg.content) }}
+          />
         )}
-        <MessageActions msg={msg} isLast={isLast} isLastUser={isLastUser} onRegenerate={onRegenerate} onEditUser={onEditUser} />
+        {!isUser && <ReplyStatFooter msg={msg} />}
+        <MessageActions
+          msg={msg}
+          isLast={isLast}
+          isLastUser={isLastUser}
+          onRegenerate={onRegenerate}
+          onEditUser={onEditUser}
+        />
         <PinControl
           msg={msg}
           rowKey={rowKey}
@@ -206,7 +268,13 @@ function MessageRowImpl({ msg, divider, isLast, isLastUser, isPinned, isPinning,
  * don't spawn stray forks — Tauri 2's webview disables `window.confirm()`,
  * which would otherwise silently no-op.
  */
-function ForkButton({ msg, onFork }: { msg: Message; onFork: (m: Message) => void }) {
+function ForkButton({
+  msg,
+  onFork,
+}: {
+  msg: Message;
+  onFork: (m: Message) => void;
+}) {
   const confirmer = useTwoClickConfirm();
   const id = String(msg.id);
   const armed = confirmer.armed === id;
@@ -226,7 +294,13 @@ function ForkButton({ msg, onFork }: { msg: Message; onFork: (m: Message) => voi
       }
       aria-label={armed ? "Click again to confirm fork" : "Fork from here"}
     >
-      {armed ? "Click again to confirm" : <><GitBranch size={16} /> Fork from here</>}
+      {armed ? (
+        "Click again to confirm"
+      ) : (
+        <>
+          <GitBranch size={16} /> Fork from here
+        </>
+      )}
     </button>
   );
 }
@@ -247,7 +321,15 @@ interface PinControlProps {
  * highest-available scope if conversation isn't pinnable yet (rare —
  * happens before the first message is persisted).
  */
-function PinControl({ msg, rowKey, isPinned, isPinning, onPin, canPinProject, canPinConversation }: PinControlProps) {
+function PinControl({
+  msg,
+  rowKey,
+  isPinned,
+  isPinning,
+  onPin,
+  canPinProject,
+  canPinConversation,
+}: PinControlProps) {
   const defaultScope: MemoryScope = canPinConversation
     ? "conversation"
     : canPinProject
@@ -272,8 +354,12 @@ function PinControl({ msg, rowKey, isPinned, isPinning, onPin, canPinProject, ca
         title="Pin scope"
       >
         <option value="global">G</option>
-        <option value="project" disabled={!canPinProject}>P</option>
-        <option value="conversation" disabled={!canPinConversation}>C</option>
+        <option value="project" disabled={!canPinProject}>
+          P
+        </option>
+        <option value="conversation" disabled={!canPinConversation}>
+          C
+        </option>
       </select>
       <button
         data-testid="pin-btn"
@@ -284,11 +370,26 @@ function PinControl({ msg, rowKey, isPinned, isPinning, onPin, canPinProject, ca
         aria-label="Pin to memory"
       >
         {isPinning ? (
-          <span className="mb-spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />
+          <span
+            className="mb-spinner"
+            style={{ width: 10, height: 10, borderWidth: 1.5 }}
+          />
         ) : isPinned ? (
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+          </svg>
         ) : (
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><polygon points="12 2 15.09 8.63 22 9.24 16.54 13.97 18.18 21 12 17.27 5.82 21 7.46 13.97 2 9.24 8.91 8.63 12 2"/></svg>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          >
+            <polygon points="12 2 15.09 8.63 22 9.24 16.54 13.97 18.18 21 12 17.27 5.82 21 7.46 13.97 2 9.24 8.91 8.63 12 2" />
+          </svg>
         )}
       </button>
     </span>
@@ -298,9 +399,46 @@ function PinControl({ msg, rowKey, isPinned, isPinning, onPin, canPinProject, ca
 // memo on shallow-equal props — handlers are stabilized via useCallback in
 // the parent. Without this, a single streaming chunk re-renders every prior
 // message (cached markdown helps but DOM diff still runs).
+/** Per-reply perf footer (wave D): "42.3 tok/s · TTFT 180ms · 512 tok" with
+ *  a cold-load badge when the server reported a >1s model load. Subscribes
+ *  to the volatile stat store so the footer appears the moment the stat
+ *  lands (stats key on persisted message id, which arrives post-stream). */
+function ReplyStatFooter({ msg }: { msg: Message }) {
+  const stat = useSyncExternalStore(subscribeReplyStats, () =>
+    getReplyStat(msg.id),
+  );
+  if (!stat || msg.role !== "assistant") return null;
+  return (
+    <div className="reply-stat" data-testid="reply-stat">
+      {stat.tokPerSec != null && <span>{stat.tokPerSec} tok/s</span>}
+      <span>
+        TTFT{" "}
+        {stat.ttftMs >= 1000
+          ? `${(stat.ttftMs / 1000).toFixed(1)}s`
+          : `${stat.ttftMs}ms`}
+      </span>
+      {stat.completionTokens != null && (
+        <span>{stat.completionTokens} tok</span>
+      )}
+      {stat.coldLoad && (
+        <span
+          className="reply-stat-cold"
+          title="The model was loaded from disk for this reply — TTFT reflects the reload, not the model's speed."
+        >
+          cold load
+        </span>
+      )}
+    </div>
+  );
+}
+
 const MessageRow = memo(MessageRowImpl);
 
-const StreamingMessage = memo(function StreamingMessage({ text }: { text: string }) {
+const StreamingMessage = memo(function StreamingMessage({
+  text,
+}: {
+  text: string;
+}) {
   // Maturity dim 10 (a11y): announce streaming text to assistive
   // tech. `aria-live="polite"` instructs the screen reader to
   // queue updates rather than interrupting other speech;
@@ -316,7 +454,12 @@ const StreamingMessage = memo(function StreamingMessage({ text }: { text: string
   // cachedMarkdown, one cached parse). `{text}` is a JSX text child → React
   // auto-escapes it, so this also removes the per-frame sanitize entirely.
   return (
-    <div className="message assistant" data-testid="streaming-bubble" aria-live="polite" aria-atomic="false">
+    <div
+      className="message assistant"
+      data-testid="streaming-bubble"
+      aria-live="polite"
+      aria-atomic="false"
+    >
       <div className="content markdown streaming-plain">
         {text}
         <span className="cursor">▍</span>
@@ -375,7 +518,8 @@ const MessageHistory = memo(function MessageHistory({
       // Drop tool results and assistant turns that ONLY made tool calls (no
       // prose to render). Mixed turns (text + tool_calls) keep their text.
       if (m.role === "tool") return;
-      if (m.role === "assistant" && m.tool_calls?.length && !m.content?.trim()) return;
+      if (m.role === "assistant" && m.tool_calls?.length && !m.content?.trim())
+        return;
       let divider: Row["divider"] = null;
       if (m.role === "assistant" && m.model && !m.tool_calls?.length) {
         if (prev === null) divider = { label: m.model, tone: "start" };
@@ -392,7 +536,10 @@ const MessageHistory = memo(function MessageHistory({
   // shrinking history (e.g. after a regenerate trims trailing turns) can't
   // leave a stale offset that hides the whole list.
   const maxHidden = Math.max(0, rows.length - WINDOW_SIZE);
-  const effectiveHidden = Math.min(hiddenCount === 0 ? maxHidden : hiddenCount, maxHidden);
+  const effectiveHidden = Math.min(
+    hiddenCount === 0 ? maxHidden : hiddenCount,
+    maxHidden,
+  );
   const visibleRows = useMemo(
     () => (effectiveHidden > 0 ? rows.slice(effectiveHidden) : rows),
     [rows, effectiveHidden],
@@ -415,30 +562,33 @@ const MessageHistory = memo(function MessageHistory({
     });
   }, [maxHidden, scrollContainerRef]);
 
-  const pin = useCallback(async (m: Message, key: string, scope: MemoryScope) => {
-    if (!m.content.trim()) return;
-    setPinning(key);
-    try {
-      await saveMemory({
-        content: m.content,
-        conversationId: conversationId ?? null,
-        sourceMsgId: m.id ?? null,
-        tags: m.role,
-        scope,
-        projectRoot: scope === "project" ? (workspaceRoot ?? null) : null,
-      });
-      setPinned((s) => new Set([...s, key]));
-    } catch (err) {
-      logDiag({
-        level: "warn",
-        source: "message-list",
-        message: "pin-message: saveMemory failed",
-        detail: err,
-      });
-    } finally {
-      setPinning(null);
-    }
-  }, [conversationId, workspaceRoot]);
+  const pin = useCallback(
+    async (m: Message, key: string, scope: MemoryScope) => {
+      if (!m.content.trim()) return;
+      setPinning(key);
+      try {
+        await saveMemory({
+          content: m.content,
+          conversationId: conversationId ?? null,
+          sourceMsgId: m.id ?? null,
+          tags: m.role,
+          scope,
+          projectRoot: scope === "project" ? (workspaceRoot ?? null) : null,
+        });
+        setPinned((s) => new Set([...s, key]));
+      } catch (err) {
+        logDiag({
+          level: "warn",
+          source: "message-list",
+          message: "pin-message: saveMemory failed",
+          detail: err,
+        });
+      } finally {
+        setPinning(null);
+      }
+    },
+    [conversationId, workspaceRoot],
+  );
 
   const canPinProject = !!workspaceRoot;
   const canPinConversation = conversationId != null;
@@ -446,7 +596,10 @@ const MessageHistory = memo(function MessageHistory({
 
   let lastUserIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") { lastUserIdx = i; break; }
+    if (messages[i].role === "user") {
+      lastUserIdx = i;
+      break;
+    }
   }
 
   return (
@@ -488,7 +641,17 @@ const MessageHistory = memo(function MessageHistory({
   );
 });
 
-export function MessageList({ messages, streaming, conversationId, workspaceRoot, currentModel, agentStatus, onRegenerate, onEditUser, onFork }: Props) {
+export function MessageList({
+  messages,
+  streaming,
+  conversationId,
+  workspaceRoot,
+  currentModel,
+  agentStatus,
+  onRegenerate,
+  onEditUser,
+  onFork,
+}: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef<number | null>(null);
   // Autoscroll "sticks" to the bottom only while the user is already there.
@@ -547,7 +710,8 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
     if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
     const isStreamingTick = streaming !== undefined;
     if (isStreamingTick) {
-      scrollTickRef.current = (scrollTickRef.current + 1) % SCROLL_THROTTLE_FRAMES;
+      scrollTickRef.current =
+        (scrollTickRef.current + 1) % SCROLL_THROTTLE_FRAMES;
       if (scrollTickRef.current !== 0) return;
     }
     const behavior: ScrollBehavior =
@@ -581,8 +745,12 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
   }, [messages]);
 
   const showEndFooter =
-    messages.length > 0 && streaming === undefined && agentStatus === "idle" && lastAsstModel;
-  const modelMatches = currentModel && lastAsstModel && currentModel === lastAsstModel;
+    messages.length > 0 &&
+    streaming === undefined &&
+    agentStatus === "idle" &&
+    lastAsstModel;
+  const modelMatches =
+    currentModel && lastAsstModel && currentModel === lastAsstModel;
 
   return (
     <div className="message-list" ref={listRef}>
@@ -599,10 +767,13 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
       {streaming !== undefined && (
         <>
           {currentModel && lastAsstModel !== currentModel && (
-            <div className={`model-divider ${lastAsstModel === null ? "start" : "change"}`}>
+            <div
+              className={`model-divider ${lastAsstModel === null ? "start" : "change"}`}
+            >
               <span className="model-divider-line" />
               <span className="model-divider-label">
-                {lastAsstModel === null ? "Started with" : "Switched to"} <code>{currentModel}</code>
+                {lastAsstModel === null ? "Started with" : "Switched to"}{" "}
+                <code>{currentModel}</code>
               </span>
               <span className="model-divider-line" />
             </div>
@@ -613,18 +784,30 @@ export function MessageList({ messages, streaming, conversationId, workspaceRoot
 
       {(agentStatus === "thinking" || agentStatus === "tool") && (
         <div className="agent-thinking-row">
-          <span className="mb-spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
+          <span
+            className="mb-spinner"
+            style={{ width: 12, height: 12, borderWidth: 1.5 }}
+          />
           <span>{agentStatus === "tool" ? "Running tools…" : "Thinking…"}</span>
         </div>
       )}
 
       {showEndFooter && (
         <div className="model-end-footer">
-          {modelMatches
-            ? <>Still on <code>{lastAsstModel}</code></>
-            : currentModel
-              ? <>Last response from <code>{lastAsstModel}</code> · now on <code>{currentModel}</code></>
-              : <>Last response from <code>{lastAsstModel}</code></>}
+          {modelMatches ? (
+            <>
+              Still on <code>{lastAsstModel}</code>
+            </>
+          ) : currentModel ? (
+            <>
+              Last response from <code>{lastAsstModel}</code> · now on{" "}
+              <code>{currentModel}</code>
+            </>
+          ) : (
+            <>
+              Last response from <code>{lastAsstModel}</code>
+            </>
+          )}
         </div>
       )}
     </div>

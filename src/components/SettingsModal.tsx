@@ -66,23 +66,22 @@ function OllamaTuningCard() {
         {version && " — for the fastest Apple-Silicon engine keep it ≥ 0.19"}
       </div>
       <div className="settings-tuning-row">
-        These are daemon environment variables — when Froglips starts the
-        daemon itself they're applied automatically; for a daemon you manage
-        (menubar app / brew services), run once and restart it:
+        These are daemon environment variables — when Froglips starts the daemon
+        itself they're applied automatically; for a daemon you manage (menubar
+        app / brew services), run once and restart it:
       </div>
       <pre className="settings-tuning-code">
-{`launchctl setenv OLLAMA_FLASH_ATTENTION 1
+        {`launchctl setenv OLLAMA_FLASH_ATTENTION 1
 launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0`}
       </pre>
       <div className="settings-tuning-row settings-hint">
-        Flash attention: +5-20% tok/s at long context. KV q8_0: halves
-        KV-cache RAM (gigabytes back per loaded model) with negligible
-        quality loss.
+        Flash attention: +5-20% tok/s at long context. KV q8_0: halves KV-cache
+        RAM (gigabytes back per loaded model) with negligible quality loss.
       </div>
       {bigRam && wiredDefault && (
         <div className="settings-tuning-row settings-hint">
-          Metal wired limit is at the macOS default (~75% of RAM). For
-          90GB+ models on this machine, raising it avoids eviction stalls:
+          Metal wired limit is at the macOS default (~75% of RAM). For 90GB+
+          models on this machine, raising it avoids eviction stalls:
           <code> sudo sysctl iogpu.wired_limit_mb=118784</code>
         </div>
       )}

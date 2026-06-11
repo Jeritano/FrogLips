@@ -156,6 +156,16 @@ pub async fn search_messages_fts(
     blocking(move || history::search_messages_fts(&query, limit)).await
 }
 
+#[tauri::command]
+pub async fn model_perf_record(sample: history::PerfSample) -> Result<(), String> {
+    blocking(move || history::model_perf_record(&sample)).await
+}
+
+#[tauri::command]
+pub async fn model_perf_summary() -> Result<Vec<history::PerfSummaryRow>, String> {
+    blocking(history::model_perf_summary).await
+}
+
 /* ── Conversation branching ── */
 
 #[tauri::command]

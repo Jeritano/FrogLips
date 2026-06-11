@@ -885,3 +885,18 @@ header {
 :root.chrome-hidden .window-drag-strip {
   visibility: hidden;
 }
+
+/* RAM-pressure chip (header) — renders only at warn/critical */
+.ram-chip {
+  font-size: var(--fs-2xs, 10px);
+  border: 1px solid var(--warn-border, rgba(251, 191, 36, 0.6));
+  color: var(--warn-fg, #fbbf24);
+  border-radius: var(--radius-full, 999px);
+  padding: 2px 8px;
+  margin-right: 8px;
+  align-self: center;
+}
+.ram-chip.critical {
+  border-color: var(--danger, #f87171);
+  color: var(--danger, #f87171);
+}

@@ -47,6 +47,29 @@ pub struct SystemInfo {
     pub wired_limit_mb: u64,
 }
 
+/// Memory-pressure snapshot for the header chip (inference wave D). ONE
+/// sysctl spawn for both keys; level: 1=normal 2=warn 4=critical.
+#[tauri::command]
+pub async fn ram_pressure() -> Result<(u32, f64), String> {
+    crate::commands::blocking(|| -> anyhow::Result<(u32, f64)> {
+        let out = std::process::Command::new("/usr/sbin/sysctl")
+            .args(["-n", "kern.memorystatus_vm_pressure_level", "hw.memsize"])
+            .output()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut lines = text.lines();
+        let level: u32 = lines
+            .next()
+            .and_then(|l| l.trim().parse().ok())
+            .unwrap_or(1);
+        let memsize: f64 = lines
+            .next()
+            .and_then(|l| l.trim().parse().ok())
+            .unwrap_or(0.0);
+        Ok((level, memsize / 1024.0 / 1024.0 / 1024.0))
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn system_info() -> Result<SystemInfo, String> {
     crate::commands::blocking(|| -> anyhow::Result<SystemInfo> {

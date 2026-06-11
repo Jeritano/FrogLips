@@ -49,7 +49,13 @@ function fmtInt(n: number): string {
 }
 
 /* Sortable table key for the tool-latency table. */
-type LatencyKey = "tool_name" | "count" | "avg_ms" | "p50_ms" | "p95_ms" | "max_ms";
+type LatencyKey =
+  | "tool_name"
+  | "count"
+  | "avg_ms"
+  | "p50_ms"
+  | "p95_ms"
+  | "max_ms";
 
 function bucketSessions(
   rows: AgentSessionMetricsRow[],
@@ -78,7 +84,10 @@ function bucketSessions(
   }));
 }
 
-function histogramIterations(rows: AgentSessionMetricsRow[], maxBucket = 40): number[] {
+function histogramIterations(
+  rows: AgentSessionMetricsRow[],
+  maxBucket = 40,
+): number[] {
   const buckets = new Array(maxBucket + 1).fill(0);
   for (const r of rows) {
     const i = Math.max(0, Math.min(maxBucket, r.iterations));
@@ -106,7 +115,25 @@ export function Dashboard({ open, onClose }: Props) {
   // paint stale data. Drop any result that isn't the latest request.
   const refreshSeqRef = useRef(0);
 
+  const [perfRows, setPerfRows] = useState<
+    Array<{
+      model: string;
+      backend: string;
+      samples: number;
+      avg_tok_per_sec: number;
+      avg_ttft_ms: number;
+      last_ts: number;
+    }>
+  >([]);
   const refresh = useCallback(async () => {
+    // Per-model perf ledger (wave D). Replaces the old derivation from
+    // agent_session_metrics, whose tok/s folded prefill + every loop
+    // iteration into the denominator — a model decoding at 15 tok/s could
+    // display 3.
+    void api
+      .modelPerfSummary()
+      .then(setPerfRows)
+      .catch(() => {});
     const seq = ++refreshSeqRef.current;
     setBusy(true);
     setErr(null);
@@ -115,7 +142,9 @@ export function Dashboard({ open, onClose }: Props) {
       // default-fallback. If a future window key is added without
       // landing it in WINDOW_OPTIONS, the user sees the all-time
       // window instead of a null deref. Default = full history.
-      const opt = WINDOW_OPTIONS.find((w) => w.key === windowKey) ?? WINDOW_OPTIONS[WINDOW_OPTIONS.length - 1];
+      const opt =
+        WINDOW_OPTIONS.find((w) => w.key === windowKey) ??
+        WINDOW_OPTIONS[WINDOW_OPTIONS.length - 1];
       const since = opt.ms == null ? null : Date.now() - opt.ms;
       const s = await api.agentDashboardSummary({
         since_ts: since,
@@ -196,7 +225,11 @@ export function Dashboard({ open, onClose }: Props) {
         <header className="dashboard-header">
           <h2>Usage dashboard</h2>
           <div className="dashboard-controls">
-            <div className="dashboard-windows" role="radiogroup" aria-label="Time window">
+            <div
+              className="dashboard-windows"
+              role="radiogroup"
+              aria-label="Time window"
+            >
               {WINDOW_OPTIONS.map((w) => (
                 <label
                   key={w.key}
@@ -221,7 +254,11 @@ export function Dashboard({ open, onClose }: Props) {
             >
               {busy ? "…" : <RotateCw size={16} />}
             </button>
-            <button className="dashboard-close" onClick={onClose} aria-label="Close dashboard">
+            <button
+              className="dashboard-close"
+              onClick={onClose}
+              aria-label="Close dashboard"
+            >
               <X size={16} />
             </button>
           </div>
@@ -230,15 +267,56 @@ export function Dashboard({ open, onClose }: Props) {
         {err && <div className="dashboard-error">{err}</div>}
 
         <div className="dashboard-grid">
+          {/* 0. Per-model performance leaderboard (pure-decode tok/s; warm-only TTFT) */}
+          <section
+            className="dashboard-card"
+            data-testid="dashboard-model-perf"
+          >
+            <h3>Model performance</h3>
+            {perfRows.length === 0 ? (
+              <div className="dashboard-empty">
+                No samples yet — send a few messages on a local Ollama model.
+              </div>
+            ) : (
+              <table className="dashboard-table">
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>tok/s</th>
+                    <th>TTFT</th>
+                    <th>n</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perfRows.slice(0, 8).map((r) => (
+                    <tr key={`${r.backend}:${r.model}`}>
+                      <td title={`${r.model} (${r.backend})`}>{r.model}</td>
+                      <td>{r.avg_tok_per_sec.toFixed(1)}</td>
+                      <td>
+                        {r.avg_ttft_ms >= 1000
+                          ? `${(r.avg_ttft_ms / 1000).toFixed(1)}s`
+                          : `${Math.round(r.avg_ttft_ms)}ms`}
+                      </td>
+                      <td>{r.samples}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
           {/* 1. Tool call frequency */}
-          <section className="dashboard-card" data-testid="dashboard-tool-counts">
+          <section
+            className="dashboard-card"
+            data-testid="dashboard-tool-counts"
+          >
             <h3>Top tools ({toolCounts.length})</h3>
             {toolCounts.length === 0 ? (
               <div className="dashboard-empty">No tool calls in window.</div>
             ) : (
               <div className="dashboard-bars">
                 {toolCounts.map((t) => {
-                  const w = maxToolCount > 0 ? (t.count / maxToolCount) * 100 : 0;
+                  const w =
+                    maxToolCount > 0 ? (t.count / maxToolCount) * 100 : 0;
                   return (
                     <div key={t.tool_name} className="dashboard-bar-row">
                       <div className="dashboard-bar-label" title={t.tool_name}>
@@ -250,7 +328,9 @@ export function Dashboard({ open, onClose }: Props) {
                           style={{ width: `${w}%` }}
                         />
                       </div>
-                      <div className="dashboard-bar-count">{fmtInt(t.count)}</div>
+                      <div className="dashboard-bar-count">
+                        {fmtInt(t.count)}
+                      </div>
                     </div>
                   );
                 })}
@@ -307,10 +387,15 @@ export function Dashboard({ open, onClose }: Props) {
           </section>
 
           {/* 3. Agent iterations histogram */}
-          <section className="dashboard-card" data-testid="dashboard-iterations">
+          <section
+            className="dashboard-card"
+            data-testid="dashboard-iterations"
+          >
             <h3>Iterations / session</h3>
             {sessions.length === 0 ? (
-              <div className="dashboard-empty">No completed agent sessions yet.</div>
+              <div className="dashboard-empty">
+                No completed agent sessions yet.
+              </div>
             ) : (
               <IterationHistogram buckets={iterHist} max={maxIter} />
             )}
@@ -320,7 +405,10 @@ export function Dashboard({ open, onClose }: Props) {
           </section>
 
           {/* 4. Token throughput */}
-          <section className="dashboard-card" data-testid="dashboard-throughput">
+          <section
+            className="dashboard-card"
+            data-testid="dashboard-throughput"
+          >
             <h3>Token throughput (tok/s)</h3>
             {throughput.length === 0 || maxTokps === 0 ? (
               <div className="dashboard-empty">No throughput data yet.</div>
@@ -412,7 +500,13 @@ function DashboardOverlay({
 
 /* ── Sub-charts (inline SVG, no deps) ── */
 
-function IterationHistogram({ buckets, max }: { buckets: number[]; max: number }) {
+function IterationHistogram({
+  buckets,
+  max,
+}: {
+  buckets: number[];
+  max: number;
+}) {
   const W = 360;
   const H = 120;
   const PAD_L = 22;
@@ -421,7 +515,11 @@ function IterationHistogram({ buckets, max }: { buckets: number[]; max: number }
   const innerH = H - PAD_B - 4;
   const bw = buckets.length > 0 ? innerW / buckets.length : 0;
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="dashboard-svg" preserveAspectRatio="none">
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="dashboard-svg"
+      preserveAspectRatio="none"
+    >
       {buckets.map((c, i) => {
         const h = max > 0 ? (c / max) * innerH : 0;
         return (
@@ -442,7 +540,12 @@ function IterationHistogram({ buckets, max }: { buckets: number[]; max: number }
       <text x={PAD_L} y={H - 4} className="dashboard-svg-tick">
         0
       </text>
-      <text x={PAD_L + innerW / 2} y={H - 4} className="dashboard-svg-tick" textAnchor="middle">
+      <text
+        x={PAD_L + innerW / 2}
+        y={H - 4}
+        className="dashboard-svg-tick"
+        textAnchor="middle"
+      >
         {Math.floor((buckets.length - 1) / 2)}
       </text>
       <text x={W - 4} y={H - 4} className="dashboard-svg-tick" textAnchor="end">
@@ -479,7 +582,11 @@ function ThroughputLine({
     })
     .join(" ");
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="dashboard-svg" preserveAspectRatio="none">
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="dashboard-svg"
+      preserveAspectRatio="none"
+    >
       <path d={path} fill="none" stroke="var(--accent)" strokeWidth={1.5} />
       {points.map((p, i) => {
         const x = PAD_L + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
@@ -551,10 +658,14 @@ function ApprovalPie({
       <ul className="dashboard-pie-legend">
         {slices.map((s) => (
           <li key={s.approval}>
-            <span className="dashboard-pie-swatch" style={{ background: s.color }} />
+            <span
+              className="dashboard-pie-swatch"
+              style={{ background: s.color }}
+            />
             <span className="dashboard-pie-label">{s.approval}</span>
             <span className="dashboard-pie-count">
-              {fmtInt(s.count)} ({total > 0 ? ((s.count / total) * 100).toFixed(0) : 0}%)
+              {fmtInt(s.count)} (
+              {total > 0 ? ((s.count / total) * 100).toFixed(0) : 0}%)
             </span>
           </li>
         ))}

@@ -529,6 +529,23 @@ fn setup_schema(conn: &Connection) -> Result<()> {
     crate::agent_audit::ensure_schema(conn)?;
     // Install RAG tables (idempotent).
     crate::rag::ensure_schema(conn)?;
+    // Per-model perf ledger (inference perf wave D, 2026-06-11). Deliberately
+    // NOT agent_session_metrics: that table has no model/backend column and
+    // conflates prefill+iterations in total_llm_ms — the misleading tok/s the
+    // Dashboard used to derive. One row per reply with PURE decode numbers.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS model_perf_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            backend TEXT NOT NULL,
+            ttft_ms INTEGER NOT NULL,
+            tok_per_sec REAL NOT NULL,
+            completion_tokens INTEGER NOT NULL,
+            cold_load INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE INDEX IF NOT EXISTS idx_perf_model ON model_perf_samples(model, ts);",
+    )?;
     Ok(())
 }
 
@@ -612,6 +629,75 @@ pub fn search_messages_fts(query: &str, limit: u32) -> Result<Vec<FtsMessageHit>
             role: r.get(3)?,
             created_at: r.get(4)?,
             snippet: r.get(5)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct PerfSample {
+    pub model: String,
+    pub backend: String,
+    pub ttft_ms: i64,
+    pub tok_per_sec: f64,
+    pub completion_tokens: i64,
+    pub cold_load: bool,
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct PerfSummaryRow {
+    pub model: String,
+    pub backend: String,
+    pub samples: i64,
+    pub avg_tok_per_sec: f64,
+    /// Warm-only average — cold loads excluded so a reload doesn't read as a
+    /// slow model.
+    pub avg_ttft_ms: f64,
+    pub last_ts: i64,
+}
+
+pub fn model_perf_record(s: &PerfSample) -> Result<()> {
+    let conn = get_db()?;
+    conn.execute(
+        "INSERT INTO model_perf_samples (ts, model, backend, ttft_ms, tok_per_sec, completion_tokens, cold_load)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![now_unix(), s.model, s.backend, s.ttft_ms, s.tok_per_sec, s.completion_tokens, s.cold_load as i64],
+    )?;
+    // Bound the ledger: keep the most recent ~5000 samples.
+    conn.execute(
+        "DELETE FROM model_perf_samples WHERE id < (
+            SELECT COALESCE(MIN(id), 0) FROM (
+                SELECT id FROM model_perf_samples ORDER BY id DESC LIMIT 5000
+            )
+         )",
+        [],
+    )?;
+    Ok(())
+}
+
+pub fn model_perf_summary() -> Result<Vec<PerfSummaryRow>> {
+    let conn = get_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT model, backend, COUNT(*),
+                AVG(tok_per_sec),
+                AVG(CASE WHEN cold_load = 0 THEN ttft_ms END),
+                MAX(ts)
+         FROM model_perf_samples
+         GROUP BY model, backend
+         ORDER BY MAX(ts) DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(PerfSummaryRow {
+            model: r.get(0)?,
+            backend: r.get(1)?,
+            samples: r.get(2)?,
+            avg_tok_per_sec: r.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+            avg_ttft_ms: r.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+            last_ts: r.get(5)?,
         })
     })?;
     let mut out = Vec::new();
