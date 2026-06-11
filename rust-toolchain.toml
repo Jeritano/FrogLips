@@ -1,0 +1,6 @@
+# Pin the Rust toolchain so local builds, CI, and release all use the same
+# compiler regardless of `rustup default` drift or a brew/system upgrade.
+# Bumped to 1.96 alongside the 2026-06 toolchain upgrade.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]

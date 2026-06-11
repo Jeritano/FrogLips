@@ -199,21 +199,17 @@ impl ServerState {
                     Err(_) => last_err = Some("connect timed out".to_string()),
                 }
             }
-            let mut spawned_child: Option<Child> = None;
             if !connected {
                 // Inference perf O5 (2026-06-11): the port is CLOSED, so no
-                // user-managed daemon exists to fight with — spawn our own
-                // `ollama serve` as a tracked child. This is also the only
-                // path where the env-only tuning knobs (flash attention, KV
-                // q8_0, keep_alive) can be applied without user setup. The
-                // child rides the same kill_on_drop + RunningServer lifecycle
-                // as the MLX server; an externally-started daemon (port open)
-                // never reaches this branch and is never touched.
-                match spawn_ollama_daemon().await {
-                    Ok(child) => {
-                        spawned_child = Some(child);
-                        // Give the daemon a moment, then re-probe.
-                        for _ in 0..15 {
+                // user-managed daemon exists to fight with — start our own
+                // `ollama serve` (DETACHED, not tracked — see
+                // spawn_ollama_daemon) so the env-only tuning knobs (flash
+                // attention, KV q8_0, keep_alive) apply without user setup.
+                // An externally-started daemon (port open) never reaches here.
+                match spawn_ollama_daemon() {
+                    Ok(()) => {
+                        // Wait for the daemon to bind (cold start is slow).
+                        for _ in 0..30 {
                             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                             if tokio::time::timeout(
                                 std::time::Duration::from_secs(1),
@@ -243,8 +239,10 @@ impl ServerState {
                     last_err.unwrap_or_else(|| "unknown".into()),
                 ));
             }
+            // Ollama is externally managed — never tracked as our child
+            // (the spawned daemon, if any, runs detached).
             *guard = Some(RunningServer {
-                child: spawned_child,
+                child: None,
                 model: model.clone(),
                 backend: backend.clone(),
             });
@@ -679,11 +677,22 @@ async fn kill_child(child: &mut Child) {
 ///   OLLAMA_NUM_PARALLEL=1      — single-user app; parallel slots multiply KV
 /// Only called when the port is CLOSED (no daemon to fight). PATH already
 /// extended by ensure_path_for_gui for Finder/Dock launches.
-async fn spawn_ollama_daemon() -> Result<Child> {
+/// Start `ollama serve` DETACHED, exactly as if the user ran it themselves
+/// (post-bump review 2026-06-11). We do NOT track it as our child, for three
+/// reasons. (1) kill_on_drop would SIGKILL `ollama serve`, orphaning the
+/// `llama-server` runner it forks (leaked GPU/RAM + held port). (2) We only
+/// reach here when port 11434 is CLOSED, and ollama's own bind exclusivity
+/// makes a second `serve` from a concurrent launch just exit — no
+/// single-instance guard needed. (3) Not killing it means a slow cold start
+/// can't be torn down mid-load. The daemon outliving the app is identical to
+/// user-launched ollama, and the lesser evil vs an orphaned runner holding
+/// gigabytes of VRAM.
+fn spawn_ollama_daemon() -> Result<()> {
     let keep = crate::settings::load()
         .ollama_keep_alive
         .unwrap_or_else(|| "30m".to_string());
-    Command::new("ollama")
+    // kill_on_drop(false): dropping the handle leaves the OS process running.
+    let _child = Command::new("ollama")
         .arg("serve")
         .env("OLLAMA_FLASH_ATTENTION", "1")
         .env("OLLAMA_KV_CACHE_TYPE", "q8_0")
@@ -691,9 +700,10 @@ async fn spawn_ollama_daemon() -> Result<Child> {
         .env("OLLAMA_NUM_PARALLEL", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
+        .kill_on_drop(false)
         .spawn()
-        .context("spawn `ollama serve` (is ollama installed?)")
+        .context("spawn `ollama serve` (is ollama installed?)")?;
+    Ok(())
 }
 
 /// Cached `mlx_lm.server --help` text — spawning a Python interpreter per
@@ -702,14 +712,20 @@ async fn spawn_ollama_daemon() -> Result<Child> {
 async fn mlx_server_help(binary: &std::path::Path) -> String {
     use tokio::sync::OnceCell;
     static HELP: OnceCell<String> = OnceCell::const_new();
-    HELP.get_or_init(|| async {
-        match Command::new(binary).arg("--help").output().await {
-            Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
-            Err(_) => String::new(),
-        }
+    // get_or_try_init caches ONLY on Ok — a transient `--help` spawn failure
+    // (e.g. mlx not yet installed) is NOT cached, so a later start retries
+    // and picks up the tuning flags once mlx is present (post-bump review
+    // 2026-06-11). A successful-but-empty help (unlikely) still caches.
+    HELP.get_or_try_init(|| async {
+        Command::new(binary)
+            .arg("--help")
+            .output()
+            .await
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
     })
     .await
-    .clone()
+    .cloned()
+    .unwrap_or_default()
 }
 
 fn mlx_server_binary() -> Result<PathBuf> {

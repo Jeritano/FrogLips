@@ -72,28 +72,22 @@ impl NativeRuntime {
             .build(None)
             .with_context(|| format!("failed to build loader for {id_for_load}"))?;
 
-            // Inference perf M3/M6 (2026-06-11):
-            // - Device-map planning at REAL context lengths. default_text()
-            //   budgets activations/KV for max_seq_len=4096 — chats past 4k
-            //   on big models then blow Metal memory mid-generation because
-            //   the planner reserved for 4k. Plan for 32k.
-            // - In-situ quantization for full-precision repos: an fp16/bf16
-            //   8B is ~16GB resident and memory-bandwidth-bound; AFQ6 (the
-            //   Metal/MLX-format quant) cuts that to ~7GB and speeds decode
-            //   ~1.5-2x. Repos that are ALREADY quantized (id mentions a
-            //   bit-width) skip ISQ — re-quantizing quantized weights only
-            //   loses quality.
-            let lower = id_for_load.to_lowercase();
-            let already_quantized = [
-                "4bit", "8bit", "6bit", "3bit", "2bit", "fp8", "-q4", "-q8", "gguf", "awq", "gptq",
-            ]
-            .iter()
-            .any(|m| lower.contains(m));
-            let isq = if already_quantized {
-                None
-            } else {
-                Some(mistralrs_core::IsqType::AFQ6)
-            };
+            // Inference perf M6 (2026-06-11): device-map planning at REAL
+            // context lengths. default_text() budgets activations/KV for
+            // max_seq_len=4096 — chats past 4k on big models then blow Metal
+            // memory mid-generation because the planner reserved for 4k.
+            // Plan for 32k.
+            //
+            // ISQ AFQ6 REVERTED (post-bump review 2026-06-11): the
+            // already-quantized gate was a repo-NAME substring guess, which
+            // can't see name-less pre-quantization (compressed-tensors /
+            // W4A16 / MXFP4 configs whose repo id carries no bit-width
+            // marker). Forcing AFQ6 onto an already-quantized layer panics
+            // (mistralrs `todo!()`), which crashes the whole app on load.
+            // An app-crash on the rarely-used native backend is far worse
+            // than a missed fp16 compression win, and name-based detection
+            // fundamentally can't be made safe. Re-add only when gated on
+            // the resolved config's quantization_config, not the id string.
             let devmap = mistralrs_core::AutoDeviceMapParams::Text {
                 max_seq_len: 32 * 1024,
                 max_batch_size: 1,
@@ -107,7 +101,7 @@ impl NativeRuntime {
                     &device,
                     true, // silent
                     DeviceMapSetting::Auto(devmap),
-                    isq,
+                    None, // no in-situ quant (see note above)
                     None, // no paged-attn (Metal scheduler change is a follow-up)
                 )
                 .with_context(|| format!("failed to load {id_for_load} from HF"))

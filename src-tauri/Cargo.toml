@@ -4,6 +4,7 @@ version = "0.12.0"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["Joseph D Eritano"]
 edition = "2021"
+rust-version = "1.96"
 license = "MIT"
 
 [lib]

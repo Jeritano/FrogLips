@@ -579,14 +579,17 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     // an atomic old→new swap. If the ingest is interrupted before that final
     // tx, the OLD corpus is still fully intact; the orphaned new chunks are
     // reclaimed by the next successful ingest's watermark.
-    // Pick the embedder for THIS generation up front. If it differs from the
-    // one that produced the existing corpus, every carry-forward is invalid
-    // (different vector space/dimension) — force a full re-embed.
-    let chosen = crate::embedder::Embedder::detect();
+    // Probe the best available embedder. The FINAL choice is resolved inside
+    // the tx below once we know the corpus's stored embedder (post-bump
+    // review 2026-06-11): a re-ingest must NOT silently downgrade an existing
+    // Ollama (768-dim) corpus to the inferior hashed (512-dim) space just
+    // because a 2s probe timed out on a busy daemon. We stick with the
+    // corpus's existing learned embedder unless it's genuinely gone.
+    let detected = crate::embedder::Embedder::detect();
 
     let mut conn = get_db()?;
     let now = now_unix();
-    let (corpus_id, watermark, force_reembed): (i64, i64, bool) = {
+    let (corpus_id, watermark, force_reembed, chosen): (i64, i64, bool, crate::embedder::Embedder) = {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute(
             "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
@@ -614,6 +617,18 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
                 |r| r.get(0),
             )
             .unwrap_or_else(|_| crate::embedder::HASHED_ID.to_string());
+        // Sticky embedder: if this corpus was built with the LEARNED embedder
+        // (Ollama) but the probe currently reads Hashed (daemon busy/slow),
+        // keep the learned one — embed_batch will succeed on a transient blip
+        // or fail loudly if the daemon is truly down, instead of silently
+        // re-embedding a good corpus into the weaker hashed space.
+        let chosen = if stored == crate::embedder::OLLAMA_MODEL
+            && detected == crate::embedder::Embedder::Hashed
+        {
+            crate::embedder::Embedder::Ollama
+        } else {
+            detected.clone()
+        };
         let force = stored != chosen.id();
         if force {
             // Stale fingerprints would let the copy-forward resurrect vectors
@@ -628,7 +643,7 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
             );
         }
         tx.commit()?;
-        (id, wm, force)
+        (id, wm, force, chosen)
     };
     drop(conn);
 
@@ -889,7 +904,7 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
         .embed_one(trimmed)
         .with_context(|| {
             format!(
-                "corpus '{corpus_name}' uses '{embedder_id}' embeddings but that embedder is                  unavailable — start Ollama (or re-ingest the corpus) and retry"
+                "corpus '{corpus_name}' uses '{embedder_id}' embeddings but that embedder is unavailable — start Ollama (or re-ingest the corpus) and retry"
             )
         })?;
 

@@ -483,12 +483,15 @@ pub fn record_run(workflow_id: i64, status: &str, results_json: &str) -> Result<
             results_json.len()
         );
     }
-    let conn = get_db()?;
+    let mut conn = get_db()?;
     // Insert + retention-prune in ONE transaction so the table can't be left
     // in a half-pruned state if the second statement fails (matches
     // delete_workflow's transactional cleanup). last_insert_rowid is read off
-    // the same transaction's connection before commit.
-    let tx = conn.unchecked_transaction()?;
+    // the same transaction's connection before commit. IMMEDIATE (post-bump
+    // review 2026-06-11) — was the one write tx the 517-fix sweep missed
+    // (unchecked_transaction is DEFERRED, fails on write-promotion under the
+    // concurrent per-reply perf-ledger writer).
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO workflow_runs (workflow_id, started_at, status, results_json)
          VALUES (?1, ?2, ?3, ?4)",

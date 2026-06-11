@@ -130,6 +130,50 @@ pub async fn resolve_to_safe_addrs(
 /// Max redirect hops we follow manually. Matches the old `Policy::limited(5)`.
 const MAX_REDIRECT_HOPS: usize = 5;
 
+/// Headers an agent must never set on an outbound request:
+///   1. Auth/cookies — the model smuggling its own credentials.
+///   2. Forwarded-for/host overrides — CDNs/proxies trust these for routing
+///      and origin decisions; spoofing them impersonates clients or escapes
+///      the SSRF guard at the next hop.
+///   3. Origin/Referer/User-Agent + Sec-Fetch-* — browser-session spoofing
+///      (naive CSRF bypass, GoogleBot impersonation, provenance lies).
+const DENY_HEADERS: &[&str] = &[
+    "host",
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-real-ip",
+    "referer",
+    "origin",
+    "user-agent",
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
+    "sec-fetch-user",
+];
+
+/// Reject model-supplied headers that are oversized or on the deny list.
+/// Shared by `http_request` and `call_api` so the two paths can't drift.
+fn validate_outbound_headers(
+    headers: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    for (k, v) in headers {
+        if k.is_empty() || k.len() > 256 || v.len() > 4096 {
+            return Err(err_string(ToolError::invalid(
+                "header key/value out of range",
+            )));
+        }
+        if DENY_HEADERS.iter().any(|d| k.eq_ignore_ascii_case(d)) {
+            return Err(err_string(ToolError::invalid(format!(
+                "header '{k}' is not allowed"
+            ))));
+        }
+    }
+    Ok(())
+}
+
 /// Build a reqwest client that follows NO redirects and pins DNS for `host`
 /// to exactly the pre-validated `safe_addrs`. Each redirect hop gets its own
 /// freshly-built client so the connection can only ever land on an address
@@ -481,49 +525,7 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
 
     // Validate headers up front so a bad header fails before any network I/O.
     let headers = input.headers.unwrap_or_default();
-    // Headers we refuse to let an agent set. Two categories:
-    //   1. Authentication/cookies — the model should never be smuggling
-    //      credentials of its own into outbound requests on the user's
-    //      behalf, and any value here came from somewhere the agent
-    //      shouldn't be reaching (the user, prior tool output, prompt).
-    //   2. Forwarded-for/host overrides — front-end CDNs and reverse
-    //      proxies trust these for routing/origin decisions; allowing the
-    //      agent to set them lets it impersonate other clients or escape
-    //      our SSRF guard at the next hop.
-    const DENY_HEADERS: &[&str] = &[
-        "host",
-        "authorization",
-        "cookie",
-        "proxy-authorization",
-        "x-forwarded-for",
-        "x-forwarded-host",
-        "x-real-ip",
-        // Sec review H6 — origin/referer/user-agent let the model spoof a
-        // browser session: bypassing naive CSRF checks ("we only accept
-        // requests with Origin: ourdomain.com"), impersonating GoogleBot
-        // to scrape gated content, or evading rate-limit detection. The
-        // Fetch metadata family (Sec-Fetch-*) tells the receiver this is
-        // a browser-initiated request; forging them lies about provenance.
-        "referer",
-        "origin",
-        "user-agent",
-        "sec-fetch-dest",
-        "sec-fetch-mode",
-        "sec-fetch-site",
-        "sec-fetch-user",
-    ];
-    for (k, v) in &headers {
-        if k.is_empty() || k.len() > 256 || v.len() > 4096 {
-            return Err(err_string(ToolError::invalid(
-                "header key/value out of range",
-            )));
-        }
-        if DENY_HEADERS.iter().any(|d| k.eq_ignore_ascii_case(d)) {
-            return Err(err_string(ToolError::invalid(format!(
-                "header '{k}' is not allowed"
-            ))));
-        }
-    }
+    validate_outbound_headers(&headers)?;
     let body = match input.body {
         Some(b) if b.len() > 1_048_576 => {
             return Err(err_string(ToolError::TooLarge {
@@ -663,15 +665,19 @@ pub async fn call_api(input: CallApiInput) -> Result<HttpResp, String> {
         .map_err(|e| err_string(ToolError::invalid(e.to_string())))?;
     let timeout = std::time::Duration::from_secs(input.timeout_secs.unwrap_or(15).min(60));
 
-    // Model-supplied headers are still deny-filtered (no auth/host spoofing);
-    // the AUTH header is injected by us from the Keychain key.
+    // Model-supplied headers get the SAME deny-list + length bounds as
+    // http_request (sec review 2026-06-11 #2 — the old code only blocked the
+    // auth header name, letting the model spoof Host / X-Forwarded-For /
+    // Cookie / Origin onto a CREDENTIALED request).
     let model_headers = input.headers.unwrap_or_default();
-    for k in model_headers.keys() {
-        if k.eq_ignore_ascii_case(&api.auth_header) {
-            return Err(err_string(ToolError::invalid(
-                "the auth header is set automatically — do not pass it",
-            )));
-        }
+    validate_outbound_headers(&model_headers)?;
+    if model_headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case(&api.auth_header))
+    {
+        return Err(err_string(ToolError::invalid(
+            "the auth header is set automatically — do not pass it",
+        )));
     }
     let auth_value = api.api_key.as_deref().map(|key| {
         if api.auth_template.contains("{key}") {
@@ -681,6 +687,13 @@ pub async fn call_api(input: CallApiInput) -> Result<HttpResp, String> {
         }
     });
     let auth_header_name = api.auth_header.clone();
+    // The registered host — auth is attached ONLY when a (redirect) hop stays
+    // on it (sec review 2026-06-11 #1 — the manual redirect follower re-ran
+    // the closure per hop and re-attached the key even cross-host, so an
+    // open-redirect on the registered API could bounce the user's real key to
+    // an attacker host; reqwest's own follower strips Authorization
+    // cross-origin for exactly this reason).
+    let registered_host = host.to_ascii_lowercase();
     let body = match input.body {
         Some(b) if b.len() > 1_048_576 => {
             return Err(err_string(ToolError::TooLarge {
@@ -695,8 +708,14 @@ pub async fn call_api(input: CallApiInput) -> Result<HttpResp, String> {
         for (k, v) in &model_headers {
             req = req.header(k, v);
         }
-        if let Some(av) = &auth_value {
-            req = req.header(auth_header_name.as_str(), av);
+        let same_host = u
+            .host_str()
+            .map(|h| h.eq_ignore_ascii_case(&registered_host))
+            .unwrap_or(false);
+        if same_host {
+            if let Some(av) = &auth_value {
+                req = req.header(auth_header_name.as_str(), av);
+            }
         }
         if let Some(b) = &body {
             req = req.body(b.clone());
@@ -713,10 +732,25 @@ pub async fn call_api(input: CallApiInput) -> Result<HttpResp, String> {
     }
     let (bytes, total, truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;
     let raw = String::from_utf8_lossy(&bytes).into_owned();
-    let body = injection_scan::scan_and_wrap(&raw).0;
+    // Redact the injected secret if the API reflects it back (sec review
+    // 2026-06-11 #3 — header-echo endpoints like httpbin /headers would
+    // otherwise hand the key straight to the model).
+    let redact = |s: String| -> String {
+        let mut out = s;
+        if let Some(av) = &auth_value {
+            out = out.replace(av.as_str(), "<redacted>");
+        }
+        if let Some(key) = api.api_key.as_deref() {
+            if !key.is_empty() {
+                out = out.replace(key, "<redacted>");
+            }
+        }
+        out
+    };
+    let body = redact(injection_scan::scan_and_wrap(&raw).0);
     let headers: std::collections::HashMap<String, String> = hdrs
         .into_iter()
-        .map(|(k, v)| (k, injection_scan::scan_and_wrap(&v).0))
+        .map(|(k, v)| (k, redact(injection_scan::scan_and_wrap(&v).0)))
         .collect();
     Ok(HttpResp {
         status,
@@ -744,6 +778,36 @@ pub fn classify_http_risk(method: &str, has_auth: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outbound_header_validator_blocks_spoofable_headers() {
+        // Post-bump review #2 (2026-06-11): call_api must enforce the same
+        // deny list as http_request so the model can't spoof Host /
+        // X-Forwarded-For / Cookie / Origin onto a credentialed request.
+        let mut h = std::collections::HashMap::new();
+        h.insert("X-Custom".into(), "ok".into());
+        assert!(validate_outbound_headers(&h).is_ok());
+        for bad in [
+            "Host",
+            "host",
+            "X-Forwarded-For",
+            "Cookie",
+            "Authorization",
+            "Origin",
+            "User-Agent",
+        ] {
+            let mut h = std::collections::HashMap::new();
+            h.insert(bad.to_string(), "x".into());
+            assert!(
+                validate_outbound_headers(&h).is_err(),
+                "expected '{bad}' to be rejected"
+            );
+        }
+        // Oversized value rejected.
+        let mut big = std::collections::HashMap::new();
+        big.insert("X-Big".into(), "a".repeat(4097));
+        assert!(validate_outbound_headers(&big).is_err());
+    }
 
     #[test]
     fn ipv4_mapped_v6_loopback_rejected() {
