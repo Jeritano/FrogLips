@@ -43,6 +43,9 @@ pub struct Settings {
     /// installed mlx_lm.server supports --draft-model, the spawn adds it:
     /// 1.5-2.5x decode on big models, output distribution unchanged.
     pub mlx_draft_model: Option<String>,
+    /// Opt-in automatic update checks (default off pending updater
+    /// investigation 2026-06-11; manual check in Settings always works).
+    pub auto_update_check: Option<bool>,
     /// Cached machine profile (RAM / cores / CPU) detected once on first launch
     /// and refreshed weekly, so the model picker and onboarding can size models
     /// to the hardware without re-probing sysctl every render. Absent on legacy

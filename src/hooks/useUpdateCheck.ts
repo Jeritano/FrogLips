@@ -19,6 +19,18 @@ export function useUpdateCheck(): UpdateInfo | null {
   useEffect(() => {
     let alive = true;
     const run = async () => {
+      // 2026-06-11: auto-check is OPT-IN (settings.auto_update_check) while
+      // we investigate repeated /Applications bundle corruption+deletion
+      // that correlates exactly with this check's 90s post-launch window on
+      // freshly-installed builds. Manual "Check for updates" in Settings is
+      // unaffected. Re-enable by default once the updater is exonerated.
+      try {
+        const { api } = await import("../lib/tauri-api");
+        const settings = await api.settingsGet();
+        if (settings.auto_update_check !== true) return;
+      } catch {
+        return; // can't read settings — stay safe, skip auto-check
+      }
       try {
         const last = Number(localStorage.getItem(LAST_KEY) ?? "0");
         if (Date.now() - last < MIN_GAP_MS) return;

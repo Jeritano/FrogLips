@@ -360,6 +360,8 @@ export interface AppSettings {
   ollama_keep_alive?: string | null;
   /** Optional MLX speculative-decoding draft model (same tokenizer family). */
   mlx_draft_model?: string | null;
+  /** Opt-in automatic update checks (default off — see useUpdateCheck). */
+  auto_update_check?: boolean | null;
 }
 
 /**
