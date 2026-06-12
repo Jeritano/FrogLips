@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Zap, Clock, ShieldCheck, Shuffle } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import type { ConfirmDecision } from "../lib/agent-loop";
@@ -63,6 +63,33 @@ interface ConfirmState {
   risk: string;
 }
 
+/**
+ * Owns the per-frame streaming TEXT so ChatWindow doesn't have to (perf
+ * 2026-06-12). It registers its own `setStreaming` into the parent's ref on
+ * mount, then re-renders 60×/sec on its OWN state during a stream — the parent
+ * ChatWindow (and its toolbar/composer/meter siblings) stay put. Memoized so a
+ * parent re-render with unchanged list props doesn't touch it; the list props
+ * are all stable during a stream, so MessageList's internal history memo bails
+ * and only the streaming bubble repaints.
+ */
+type StreamingMessageListProps = Omit<
+  Parameters<typeof MessageList>[0],
+  "streaming"
+> & {
+  registerStreamSetter: (fn: ((v: string | undefined) => void) | null) => void;
+};
+const StreamingMessageList = memo(function StreamingMessageList({
+  registerStreamSetter,
+  ...listProps
+}: StreamingMessageListProps) {
+  const [streaming, setStreaming] = useState<string | undefined>();
+  useEffect(() => {
+    registerStreamSetter(setStreaming);
+    return () => registerStreamSetter(null);
+  }, [registerStreamSetter]);
+  return <MessageList {...listProps} streaming={streaming} />;
+});
+
 export function ChatWindow({
   status,
   conversation,
@@ -72,7 +99,28 @@ export function ChatWindow({
   ensureModel,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [streaming, setStreaming] = useState<string | undefined>();
+  // Streaming text isolation (perf 2026-06-12). The per-token reply text used
+  // to live in ChatWindow state, so every rAF flush (~60×/sec) re-rendered the
+  // WHOLE window — toolbar, composer, context meter, rollover banner — even
+  // though only the streaming bubble changes. Now the per-frame TEXT lives in
+  // a memoized <StreamingMessageList> child that registers its setter here;
+  // ChatWindow only holds an `isStreaming` BOOLEAN (flips twice per reply, not
+  // per frame), so the heavy siblings re-render on start/stop, never per token.
+  const streamTextRef = useRef<((v: string | undefined) => void) | null>(null);
+  const registerStreamSetter = useCallback(
+    (fn: ((v: string | undefined) => void) | null) => {
+      streamTextRef.current = fn;
+    },
+    [],
+  );
+  const [isStreaming, setIsStreaming] = useState(false);
+  const setStreaming = useCallback((v: string | undefined) => {
+    streamTextRef.current?.(v);
+    // setIsStreaming(true) every frame is a no-op after the first (React bails
+    // on an unchanged primitive), so this does NOT re-render ChatWindow per
+    // token — only on the start→stop transition.
+    setIsStreaming(v !== undefined);
+  }, []);
   const [err, setErr] = useState<string | null>(null);
   const [recalled, setRecalled] = useState<Memory[]>([]);
   const [agentMode, setAgentMode] = useState(false);
@@ -342,9 +390,7 @@ export function ChatWindow({
   });
 
   const isWorking =
-    streaming !== undefined ||
-    agentStatus === "thinking" ||
-    agentStatus === "tool";
+    isStreaming || agentStatus === "thinking" || agentStatus === "tool";
   // Agent mode (tool-calling loop) runs on Ollama and MLX. The native
   // (mistralrs) backend has no tool-call support — agent mode is disabled.
   const agentAvailable =
@@ -578,9 +624,9 @@ export function ChatWindow({
       {showLanding ? (
         <EmptyChatLanding modelReady={!!status?.running} />
       ) : (
-        <MessageList
+        <StreamingMessageList
+          registerStreamSetter={registerStreamSetter}
           messages={messages}
-          streaming={streaming}
           conversationId={conversation?.id ?? null}
           workspaceRoot={workspaceRoot}
           currentModel={status?.running ? status.model : null}

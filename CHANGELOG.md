@@ -4,6 +4,19 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.6] — 2026-06-12
+
+### Performance — Chat
+- **A streaming reply no longer re-renders the whole chat window.** The
+  per-token reply text used to live in the chat window's state, so every frame
+  (~60×/sec) re-rendered the composer, toolbar, context meter, and rollover
+  banner — even though only the streaming bubble changes. The text now lives in
+  an isolated child; the window holds just an "is streaming" flag (flips twice
+  per reply, not per token), so the heavy controls stay put and frames go to
+  the text you're reading. (A focused review confirmed the rest of the chat
+  hot path — token coalescing, no per-token markdown, windowed history,
+  cached highlighting — was already optimized.)
+
 ## [0.13.5] — 2026-06-12
 
 ### Agent — tool-calling
