@@ -104,7 +104,6 @@ pub fn warn_with(source: &str, message: &str, detail: Value) {
 }
 
 /// Emit an `error` with optional structured detail.
-#[allow(dead_code)]
 pub fn error_with(source: &str, message: &str, detail: Value) {
     emit(DiagLevel::Error, source, message, Some(detail));
 }

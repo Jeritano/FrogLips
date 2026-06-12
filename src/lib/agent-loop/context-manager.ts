@@ -104,16 +104,10 @@ export function estimateTokens(text: string): number {
  *
  * Note: correctness rests on messages never being mutated in place once
  * estimated (the runner replaces, never mutates, since the streaming
- * placeholder was removed in the 2026-06-09 perf pass). Callers that DO
- * mutate a Message in place must call `invalidateMessageTokens` below.
+ * placeholder was removed in the 2026-06-09 perf pass), so the cache never
+ * needs explicit invalidation — a mutated message is a different object.
  */
 const MESSAGE_TOKEN_CACHE = new WeakMap<Message, number>();
-
-/** Drop a Message's cached token estimate. Call after mutating
- *  `content` or `tool_calls` in place. */
-export function invalidateMessageTokens(m: Message): void {
-  MESSAGE_TOKEN_CACHE.delete(m);
-}
 
 function estimateOneMessage(m: Message): number {
   const cached = MESSAGE_TOKEN_CACHE.get(m);

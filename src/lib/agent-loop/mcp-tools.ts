@@ -325,7 +325,7 @@ function validateMcpArgs(
 const MCP_TOOL_SCHEMAS: Map<string, Record<string, unknown>> = new Map();
 
 /** Internal: called by discoverMcpTools to keep the schema cache fresh. */
-export function rememberMcpToolSchema(
+function rememberMcpToolSchema(
   fullName: string,
   schema: Record<string, unknown>,
 ): void {

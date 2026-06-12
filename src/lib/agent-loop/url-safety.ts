@@ -12,7 +12,7 @@
  * Returns the dotted-quad string, or null when the host is not an
  * integer-encoded IPv4 address.
  */
-export function normalizeIntegerHost(host: string): string | null {
+function normalizeIntegerHost(host: string): string | null {
   // IPv4-mapped IPv6: ::ffff:a.b.c.d  → extract the trailing dotted-quad.
   const mapped = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(host);
   if (mapped) return mapped[1];

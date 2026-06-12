@@ -420,15 +420,12 @@ const MIGRATIONS: &[Migration] = &[
         version: 15,
         apply: crate::claude_skills::ensure_claude_skills_tables,
     },
-    // v16 — LoRA pre-merge pipeline. `lora_merges`
-    // tracks every merged-variant safetensors directory the merger has
-    // produced. `sha` is content-addressed
-    // (`sha256(base_repo|lora_sha|weight)`) and used by the dispatcher to
-    // route `<base>+lora:<sha>` model ids to `merged_path`. `last_used_at`
-    // drives LRU eviction when the 200 GiB disk cap is hit.
+    // v16 — was the LoRA pre-merge pipeline (`lora_merges`). That feature
+    // was removed as dead code; this rung is now a no-op so fresh DBs never
+    // create the table, and v19 drops it from any DB that already has it.
     Migration {
         version: 16,
-        apply: ensure_lora_merges_table,
+        apply: |_| Ok(()),
     },
     // v17 — Roundtable OUTCOMES: the `roundtable_runs` table persists completed
     // roundtable transcripts (config + turns + totals) so an outcome survives
@@ -444,6 +441,19 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 18,
         apply: ensure_messages_fts,
+    },
+    // v19 — drop the vestigial `lora_merges` table (the LoRA pre-merge
+    // feature was removed). DBs created before this rung carry an empty,
+    // never-read table; this removes it so nothing remains on disk.
+    Migration {
+        version: 19,
+        apply: |conn| {
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS idx_lora_merges_lru;
+                 DROP TABLE IF EXISTS lora_merges;",
+            )?;
+            Ok(())
+        },
     },
 ];
 
@@ -866,28 +876,6 @@ pub(crate) fn ensure_images_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Idempotently create the `lora_merges` table + LRU index (migration v16).
-/// Every column is non-null except `last_used_at` so an LRU pick can sort
-/// "never used" rows ahead of "used long ago" rows via `nulls first`.
-pub(crate) fn ensure_lora_merges_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS lora_merges (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            sha           TEXT NOT NULL UNIQUE,
-            base_repo     TEXT NOT NULL,
-            lora_path     TEXT NOT NULL,
-            lora_sha      TEXT NOT NULL,
-            weight        REAL NOT NULL,
-            merged_path   TEXT NOT NULL,
-            created_at    INTEGER NOT NULL,
-            last_used_at  INTEGER,
-            bytes         INTEGER NOT NULL
-         );
-         CREATE INDEX IF NOT EXISTS idx_lora_merges_lru ON lora_merges(last_used_at);",
-    )?;
-    Ok(())
-}
-
 fn build_pool() -> Result<Pool<SqliteManager>> {
     let path = db_path()?;
     // Corruption recovery: probe the existing DB before any pooled connection
@@ -921,8 +909,8 @@ pub(crate) fn get_db() -> Result<PooledConnection<SqliteManager>> {
 }
 
 /// Test-only DB accessor — pulls a pooled connection through the same code
-/// path as `get_db` so the lora module's tests can run raw SQL against the
-/// real DB. Not part of the IPC surface.
+/// path as `get_db` so tests can run raw SQL against the real DB. Not part
+/// of the IPC surface.
 #[cfg(test)]
 pub fn __test_get_db() -> Result<PooledConnection<SqliteManager>> {
     get_db()
