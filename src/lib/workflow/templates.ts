@@ -99,6 +99,47 @@ const REPO_READ_TOOLS = [
 ];
 const REPO_EDIT_TOOLS = ["edit_file", "multi_edit", "write_file", "run_shell"];
 
+/* ── Security-workflow tool sets (defensive / authorized use only) ───────────
+ * Scanning cards lean on run_shell — the scanner (semgrep / trufflehog /
+ * npm|cargo|osv audit) is ground truth, exactly like verifyCmd in the
+ * dev-workforce critics. Exposure cards lean on call_api so a breach-API key
+ * lives in the Keychain and is injected server-side: the model never sees the
+ * secret, can't exfiltrate it, and the request is confined to the registered
+ * host. */
+/** Read-only security code review — auditors must never mutate the target. */
+const SEC_NAV_TOOLS = [
+  "read_file",
+  "list_dir",
+  "search_files",
+  "file_exists",
+  "find_definition",
+  "find_references",
+  "git_log",
+  "git_show",
+  "git_diff",
+  ...PAD_TOOLS,
+];
+/** Scanner runners: drive semgrep / trufflehog / npm|cargo|osv audit. */
+const SEC_SHELL_TOOLS = [
+  "run_shell",
+  "read_file",
+  "list_dir",
+  "search_files",
+  "file_exists",
+  "find_references",
+  ...PAD_TOOLS,
+];
+/** Exposure self-monitoring: call_api (Keychain-injected breach key) + web. */
+const EXPOSURE_TOOLS = [
+  "call_api",
+  "http_request",
+  "web_search",
+  "web_fetch",
+  "read_file",
+  "ask_user",
+  ...PAD_TOOLS,
+];
+
 export const FLOW_TEMPLATES: FlowTemplate[] = [
   {
     id: "deep-research",
@@ -417,6 +458,299 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
         }),
       ],
       edges: chain(["bh1", "bh2", "bh3", "bh4"]),
+    },
+  },
+
+  /* ── Security templates (defensive / authorized only) ──────────────────────
+   *
+   * Built from the 2026-06 security-workflow research: high-recall scan →
+   * LLM verifier filter (GPTLens propose-then-refute), self-consistency vote
+   * on contested findings, execution-grounded critics whose verifyCmd RUNS
+   * the real scanner, and a flat-rate :cloud cascade only for the hardest
+   * inter-procedural reasoning. Every template that touches a live target or
+   * personal data opens with an AUTHORIZATION gate (haltWhen authorized=no)
+   * so the flow refuses to run against assets the user hasn't asserted they
+   * own or are cleared to test. Scanners (semgrep, trufflehog, gitleaks,
+   * osv-scanner) must be on PATH — the cards say so and degrade gracefully.
+   */
+  {
+    id: "security-auditor",
+    name: "Security Auditor",
+    category: "Security",
+    summary:
+      "High-recall multi-lens SAST of YOUR OWN code → an adversarial verifier refutes false positives → severity-ranked report. Read-only; all local.",
+    graph: {
+      cards: [
+        card("sec1", 0, {
+          name: "Scope & Surface",
+          preset: "researcher",
+          prompt:
+            "You are the Scope Mapper for a defensive security audit of the user's OWN codebase. Identify what to audit: enumerate entrypoints (HTTP handlers, IPC/command boundaries, CLI args, deserializers, file/SQL/shell sinks) and the untrusted inputs that reach them, citing real file paths via search_files and read_file. Produce a trust-boundary sketch — where data crosses from untrusted to trusted. Call workflow_set('audit_scope', '<markdown: entrypoints, sinks, trust boundaries, each with file:line>'). Do NOT analyze vulnerabilities yet and never edit code — this card only frames the hunt so the downstream lenses don't waste passes rediscovering the surface.",
+          tools: SEC_NAV_TOOLS,
+          nodeConfig: { maxMs: 900_000 },
+        }),
+        card("sec2", 320, {
+          name: "Vulnerability Auditor",
+          preset: "coder",
+          prompt:
+            "You are a high-recall security auditor. Using workflow_get('audit_scope'), hunt EVERY plausible vulnerability across all lenses: injection (SQL/command/path/template), SSRF + unvalidated outbound requests, broken authn/authz + missing access checks, secrets in code/logs, unsafe deserialization, weak crypto/randomness, and unvalidated input reaching a dangerous sink. Bias toward recall — a downstream verifier will refute the weak ones, so report anything that could be real, but each finding MUST cite the exact data path: source → transformation → sink, with file:line for each hop. Call workflow_set('candidate_findings', ['<id | severity-guess | file:line sink | the source→sink path | why exploitable>']). You are read-only — never edit code.",
+          tools: SEC_NAV_TOOLS,
+          nodeConfig: { maxMs: 1_200_000 },
+        }),
+        card("sec3", 640, {
+          name: "Adversarial Verifier",
+          preset: "skeptic",
+          prompt:
+            "You are an adversarial vulnerability verifier — your default stance is that each candidate is a FALSE POSITIVE until the code proves otherwise. For every item in workflow_get('candidate_findings'), trace the real path with read_file + find_references and try to REFUTE it: is the input actually attacker-controlled, is there sanitization/parameterization in between, is the sink really reachable, is the dangerous arg actually tainted? If a semgrep ruleset is available the critic re-runs it (see this card's verify command) to corroborate. Keep only findings you cannot refute. Call workflow_set('confirmed_findings', ['<file:line | vuln class | CWE | proven exploit path | confidence>']) and workflow_set('refuted', ['<id — why it's safe>']). Concede in writing when a finding is bogus — a confident false positive is worse than a miss.",
+          tools: SEC_NAV_TOOLS,
+          nodeType: "critic",
+          nodeConfig: {
+            maxIters: 3,
+            passThreshold: 85,
+            // Optional corroboration: if semgrep is installed it grounds the
+            // refutation in a second engine; if absent the command no-ops and
+            // the critic falls back to pure code reasoning. Edit per project.
+            verifyCmd:
+              "command -v semgrep >/dev/null && semgrep --config auto --quiet . || echo 'semgrep not installed — reasoning only'",
+            criticSystemPrompt:
+              "You are a security verification critic who has seen a thousand scanner false positives. You owe the auditor's findings no loyalty; a finding survives only with a concrete, reachable, attacker-controlled source→sink path. Reward refutations as much as confirmations.",
+            criticPrompt:
+              "Score 0-100 how rigorously each candidate was either confirmed with a real exploit path or refuted with a concrete safety reason. Penalize hand-waving, unreachable sinks accepted as real, and untainted inputs treated as attacker-controlled. Begin your reply with exactly 'SCORE: <number>'.",
+            maxMs: 1_800_000,
+          },
+        }),
+        card("sec4", 960, {
+          name: "Report Writer",
+          preset: "summarizer",
+          prompt:
+            "You are the Security Report Writer. Read workflow_get('confirmed_findings') and write SECURITY_AUDIT.md: an executive summary (counts by severity), then one section per confirmed finding with — title + CWE, severity (Critical/High/Medium/Low with a one-line CVSS-style rationale), the file:line and the proven source→sink path, concrete impact, and a specific remediation (the exact code change or control to add). Order by severity, then by exploitability. Add a short 'Refuted / out of scope' appendix from workflow_get('refuted') so the reader trusts the signal. End with a one-line confirmation in chat, not the file body.",
+          tools: ["read_file", "write_file", "workflow_get", "workflow_keys"],
+          nodeConfig: { maxMs: 600_000 },
+        }),
+      ],
+      edges: chain(["sec1", "sec2", "sec3", "sec4"]),
+    },
+  },
+
+  {
+    id: "vuln-hunter",
+    name: "Vuln Bug Hunter",
+    category: "Security",
+    summary:
+      "AUTHORIZED targets only. Scope gate → attack-surface map → scanner-grounded vuln hunt → 3-way reproducibility vote → defensive exploit-path + fix writeup (hardest cases escalate to a flat-rate :cloud tier).",
+    graph: {
+      cards: [
+        card("vh1", 0, {
+          name: "Authorization Gate",
+          preset: "general",
+          prompt:
+            "You are the Authorization Gate for an active vulnerability hunt. This flow may ONLY run against code or systems the user owns or is explicitly authorized to test (their own repo, a CTF target, a pentest engagement with a signed scope). State plainly what is about to be hunted and ask the user to confirm ownership/authorization and the scope boundaries. If the user confirms, call workflow_set('authorized', 'yes') and workflow_set('scope', '<the agreed targets + explicit out-of-bounds>'). If they do not, cannot, or the target is third-party with no authorization, call workflow_set('authorized', 'no') — that halts the flow. Never rationalize past a missing authorization; the gate is the whole point.",
+          tools: ["ask_user", ...PAD_TOOLS],
+          nodeConfig: {
+            maxMs: 600_000,
+            haltWhen: { key: "authorized", equals: "no" },
+          },
+        }),
+        card("vh2", 320, {
+          name: "Attack-Surface Map",
+          preset: "coder",
+          prompt:
+            "You are the Attack-Surface Mapper, bounded strictly by workflow_get('scope'). Enumerate the reachable attack surface: untrusted entrypoints, the data each accepts, authentication/authorization checks (or their absence), trust boundaries, and the dangerous sinks downstream (exec, SQL, file, network, deserialize). For each, note the source→sink reachability you'll want to prove. Call workflow_set('surface', '<ranked list, most-exposed first, each with file:line and why it's reachable>'). Read-only — you map, you don't exploit.",
+          tools: SEC_NAV_TOOLS,
+          nodeConfig: { maxMs: 900_000 },
+        }),
+        card("vh3", 640, {
+          name: "Vuln Hunter",
+          preset: "coder",
+          prompt:
+            "You are the Vuln Hunter, working only within workflow_get('scope') and prioritizing workflow_get('surface'). Hunt exploitable defects with concrete, reachable source→sink paths — not theoretical smells. A scanner critic re-runs this card's verify command (semgrep by default — edit to match the project) after each pass and scores you against what's actually provable. For each candidate call workflow_set so downstream cards see it: workflow_set('vulns', ['<id | class+CWE | file:line | the tainted path | preconditions to trigger>']). Stay defensive: you are finding bugs to fix them, never weaponizing — no live exploitation against anything outside the local code.",
+          tools: SEC_SHELL_TOOLS,
+          nodeType: "critic",
+          nodeConfig: {
+            maxIters: 4,
+            passThreshold: 88,
+            verifyCmd:
+              "command -v semgrep >/dev/null && semgrep --config auto --quiet . || echo 'semgrep not installed — reasoning only'",
+            criticSystemPrompt:
+              "You are a skeptical exploit-development critic. Judge only whether each claimed vulnerability has a real, reachable, attacker-controlled trigger path proven from the code and scanner output — not the hunter's confidence. Theoretical or unreachable findings score low.",
+            criticPrompt:
+              "Score 0-100 on how many findings have a concrete reachable exploit path versus speculative smells, and whether the scanner output was actually used. List each weak finding and what proof it lacks. Begin with exactly 'SCORE: <number>'.",
+            maxMs: 2_400_000,
+          },
+        }),
+        card("vh4", 960, {
+          name: "Reproducibility Vote",
+          preset: "skeptic",
+          prompt:
+            "You are a reproducibility analyst; sibling analysts judge the same candidates independently and your verdicts are voted, so end in the exact agreed format. For the candidates in workflow_get('vulns'), determine which ones genuinely trigger: trace the path once more, check guards and preconditions, and decide reproducible vs not. Your final line must be exactly: VERDICT: <id> | reproducible=<yes|no> | <one-sentence justification with file:line>. Commit to one verdict per candidate — no hedging.",
+          tools: SEC_NAV_TOOLS,
+          nodeType: "consistency",
+          nodeConfig: { members: 3, voteMode: "vote", maxMs: 1_200_000 },
+        }),
+        card("vh5", 1280, {
+          name: "Exploit-Path & Fix",
+          preset: "coder",
+          prompt:
+            "You are the Defensive Writeup author. For each vulnerability the vote marked reproducible, write — in workflow_set('report', '<markdown>') and a VULN_REPORT.md file — the proof-of-severity exploit PATH (the precise sequence that reaches the sink, as evidence for prioritization, NOT a weaponized payload against a live third party), the CWE/severity, and the concrete fix (exact code change + the control that prevents the class). The single hardest inter-procedural case may exceed the local model; this card escalates such reasoning to a flat-rate hosted tier. Stay strictly defensive: the deliverable is a fix and a justification, never a working attack tool.",
+          tools: [...SEC_NAV_TOOLS, "write_file"],
+          nodeType: "cascade",
+          nodeConfig: {
+            passThreshold: 80,
+            escalateModel: CLOUD_ESCALATION_MODEL,
+            escalateBackend: "ollama",
+            criticPrompt:
+              "Score 0-100 whether the writeup proves severity with a reachable path AND gives a concrete, correct fix for the vulnerability class (not just the one instance). Reply 'SCORE: <number>' then one reason.",
+            maxMs: 1_800_000,
+          },
+        }),
+      ],
+      edges: chain(["vh1", "vh2", "vh3", "vh4", "vh5"]),
+    },
+  },
+
+  {
+    id: "supply-chain-sentinel",
+    name: "Supply-Chain Sentinel",
+    category: "Security",
+    summary:
+      "Run real dependency + secret scanners (npm/cargo/osv audit, trufflehog --only-verified) → triage CVEs by whether the vulnerable code is actually reachable → prioritized remediation plan. All local.",
+    graph: {
+      cards: [
+        card("scs1", 0, {
+          name: "Scan Runner",
+          preset: "shell",
+          prompt:
+            "You are the Supply-Chain Scan Runner. Detect the project's ecosystem and run whichever auditors are installed, capturing JSON where possible: `npm audit --json` (Node), `cargo audit --json` (Rust), `osv-scanner --format json -r .` (cross-ecosystem), and for leaked secrets `trufflehog filesystem . --only-verified --json` or `gitleaks detect --report-format json` if present. For each tool that isn't installed, note it and continue — never fail the card on a missing scanner. Persist the raw findings: workflow_set('cve_findings', '<dependency advisories: package, version, advisory id, severity>') and workflow_set('secret_findings', '<verified secrets: file:line, type — REDACT the secret value itself>'). Do not edit anything.",
+          tools: SEC_SHELL_TOOLS,
+          nodeConfig: { maxMs: 1_200_000 },
+        }),
+        card("scs2", 320, {
+          name: "Reachability Triage",
+          preset: "coder",
+          prompt:
+            "You are the Reachability Triage analyst. A CVE in an installed package matters far more when the vulnerable function is actually called. For each advisory in workflow_get('cve_findings'), use find_references and read_file to determine whether the project reaches the vulnerable API/path: mark each REACHABLE (with the call site file:line), UNREACHABLE (dependency present but vulnerable code never invoked), or UNKNOWN (transitive/dynamic — can't prove). Re-rank by reachability × advisory severity. For workflow_get('secret_findings'), confirm each is a live secret in current code (not a rotated/test value) and whether it's committed history vs working tree. Call workflow_set('triaged', '<re-ranked list with reachability + call sites>').",
+          tools: SEC_NAV_TOOLS,
+          nodeConfig: { maxMs: 1_200_000 },
+        }),
+        card("scs3", 640, {
+          name: "Remediation Plan",
+          preset: "summarizer",
+          prompt:
+            "You are the Remediation Planner. From workflow_get('triaged'), write DEPENDENCY_REMEDIATION.md: a prioritized action list where each item is — the package/secret, the risk and whether it's reachable, and the EXACT fix (safe version to bump to and whether it's a breaking major, the patch, or for secrets: rotate + purge-from-history steps). Group as: Fix now (reachable + high severity, or verified live secret), Schedule (unreachable-but-known / low severity), and Monitor (unknown/transitive). Add the precise commands (e.g. `npm install pkg@x.y.z`) where they're safe. End with one confirmation line in chat.",
+          tools: ["read_file", "write_file", "workflow_get", "workflow_keys"],
+          nodeConfig: { maxMs: 600_000 },
+        }),
+      ],
+      edges: chain(["scs1", "scs2", "scs3"]),
+    },
+  },
+
+  {
+    id: "exposure-monitor",
+    name: "Exposure Monitor",
+    category: "Security",
+    summary:
+      "DEFENSIVE self-check of YOUR OWN exposure: breach lookups (HIBP via call_api, key stays in the Keychain) + k-anonymity password check + email-spoofability (SPF/DKIM/DMARC) → what to rotate, where to enable 2FA. Refuses assets you don't own.",
+    graph: {
+      cards: [
+        card("exp1", 0, {
+          name: "Ownership & Scope",
+          preset: "general",
+          prompt:
+            "You are the Ownership Gate for a personal exposure self-check. This flow is ONLY for the user's OWN identity assets — their own email addresses, domains they control, and their own credentials. Ask the user to list the emails and domains to check and to confirm each is theirs (or their organization's). If confirmed, call workflow_set('authorized', 'yes'), workflow_set('emails', ['<own emails>']), and workflow_set('domains', ['<owned domains>']). If they list an asset they don't own, or decline, call workflow_set('authorized', 'no') to halt. Never check a third party's email or domain — exposure monitoring is a defensive self-audit, not surveillance of others.",
+          tools: ["ask_user", ...PAD_TOOLS],
+          nodeConfig: {
+            maxMs: 600_000,
+            haltWhen: { key: "authorized", equals: "no" },
+          },
+        }),
+        card("exp2", 320, {
+          name: "Breach Sweep",
+          preset: "researcher",
+          prompt:
+            "You are the Breach Sweep analyst. For each address in workflow_get('emails'), query Have I Been Pwned via call_api using a registered API named 'HIBP' (register it in Settings → APIs with your hibp-api-key as the auth header 'hibp-api-key' and a template of just '{key}'; the key stays in the Keychain and is injected server-side — you never see it). Call the breach account and paste account endpoints (path like '/api/v3/breachedaccount/<email>?truncateResponse=false' and '/api/v3/pasteaccount/<email>'). Respect rate limits — space requests. If the 'HIBP' API isn't registered, say so clearly and write workflow_set('breaches', 'HIBP not configured — register it in Settings → APIs to enable breach lookups') instead of guessing. Otherwise call workflow_set('breaches', '<per email: breach names, dates, the data classes exposed (passwords? tokens?)>'). Report only — never attempt any login anywhere.",
+          tools: EXPOSURE_TOOLS,
+          nodeConfig: { maxMs: 1_200_000 },
+        }),
+        card("exp3", 640, {
+          name: "Password k-Anonymity Check",
+          preset: "shell",
+          prompt:
+            "You are the Pwned-Passwords checker, and you protect the user's secrets while checking them. ONLY if the user explicitly provides a password to test (ask first; never read one from a file or env): compute its SHA-1, then send ONLY the first 5 hex chars of the hash to the Pwned Passwords range API via run_shell (`curl -s https://api.pwnedpasswords.com/range/<first5>`) — this is k-anonymity, the full hash and the password NEVER leave the machine. Match the returned suffixes locally to get the breach count. Report how many times each tested password has appeared in breaches (0 = not seen). Call workflow_set('password_exposure', '<per password label: seen N times — rotate if N>0>'). Never log, store, or transmit the password or its full hash.",
+          tools: ["run_shell", "ask_user", ...PAD_TOOLS],
+          nodeConfig: { maxMs: 900_000 },
+        }),
+        card("exp4", 960, {
+          name: "Email Spoofability",
+          preset: "shell",
+          prompt:
+            "You are the Email-Spoofability auditor. For each domain in workflow_get('domains'), resolve its email-authentication posture via run_shell + dig: SPF (`dig +short TXT <domain>` → the v=spf1 record), DMARC (`dig +short TXT _dmarc.<domain>` → policy p=none|quarantine|reject), and note whether DKIM selectors are discoverable. Flag weaknesses: missing SPF, SPF with +all/no -all, missing DMARC, or DMARC p=none (monitors but doesn't block spoofing). Call workflow_set('email_auth', '<per domain: SPF/DKIM/DMARC status + each gap that lets someone spoof mail as this domain>'). Read-only DNS lookups against the user's own domains.",
+          tools: ["run_shell", ...PAD_TOOLS],
+          nodeConfig: { maxMs: 600_000 },
+        }),
+        card("exp5", 1280, {
+          name: "Exposure Report",
+          preset: "summarizer",
+          prompt:
+            "You are the Exposure Report writer. Consolidate workflow_get('breaches'), workflow_get('password_exposure'), and workflow_get('email_auth') into EXPOSURE_REPORT.md — a prioritized, plain-language action plan for the user: which exact credentials to ROTATE NOW (any breach exposing passwords/tokens, or any password seen in Pwned Passwords), where to ENABLE 2FA (accounts tied to breached emails), and which DMARC/SPF records to harden (with the exact record to publish, e.g. a DMARC p=reject). Lead with the highest-risk items. Be calm and concrete — this is a defensive checklist, not an alarm. End with one confirmation line in chat.",
+          tools: ["read_file", "write_file", "workflow_get", "workflow_keys"],
+          nodeConfig: { maxMs: 600_000 },
+        }),
+      ],
+      edges: chain(["exp1", "exp2", "exp3", "exp4", "exp5"]),
+    },
+  },
+
+  {
+    id: "threat-model-crew",
+    name: "Threat Model Crew",
+    category: "Security",
+    summary:
+      "STRIDE threat model of your own system: map the architecture → 6 parallel STRIDE analysts → ranked attack trees → mitigations mapped to real code. Pure design analysis, no live target.",
+    graph: {
+      cards: [
+        card("tm1", 0, {
+          name: "System Mapper",
+          preset: "researcher",
+          prompt:
+            "You are the System Mapper for a STRIDE threat model. Build the data-flow picture from whatever's available — read the code (read_file/search_files), any architecture docs or PDFs (read_pdf), and the indexed knowledge base (search_project_knowledge). Identify: external actors, processes/services, data stores, and the data flows between them, plus every trust boundary a flow crosses and the assets worth protecting (secrets, PII, integrity-critical state). Call workflow_set('architecture', '<actors, processes, stores, data flows, trust boundaries, assets — each grounded in a file or doc>'). Be concrete; a vague model produces vague threats.",
+          tools: [
+            "read_file",
+            "list_dir",
+            "search_files",
+            "read_pdf",
+            "search_project_knowledge",
+            ...PAD_TOOLS,
+          ],
+          nodeConfig: { maxMs: 900_000 },
+        }),
+        card("tm2", 320, {
+          name: "STRIDE Analysts",
+          preset: "skeptic",
+          prompt:
+            "You are a STRIDE threat analyst examining workflow_get('architecture'); several analysts run in parallel and a synthesis pass merges you, so be thorough and specific rather than worrying about overlap. Walk EVERY trust boundary and data flow and enumerate threats in all six STRIDE categories: Spoofing (identity), Tampering (data/code integrity), Repudiation (unloggable actions), Information disclosure (confidentiality), Denial of service (availability), and Elevation of privilege. For each threat give: the STRIDE category, the boundary/flow it attacks, the asset at risk, and a rough likelihood×impact. Tie each to a concrete element of the architecture — no generic checklist items. Output a clear threat list; the synthesizer will dedupe and rank across all analysts.",
+          tools: ["read_file", "search_files", "workflow_get", "workflow_keys"],
+          nodeType: "moa",
+          nodeConfig: { members: 6, maxMs: 1_500_000 },
+        }),
+        card("tm3", 640, {
+          name: "Attack-Tree Ranker",
+          preset: "coder",
+          prompt:
+            "You are the Attack-Tree Ranker. Take the synthesized STRIDE threats from the handoff and, for the most serious, build short attack trees: the attacker's goal at the root, the steps/branches to reach it, and the existing control (if any) on each branch. Rank the threats by realistic likelihood × impact given the actual controls you can see in the code. Call workflow_set('ranked_threats', '<top threats, each: STRIDE category, attack path, current control gaps, risk rating>'). Be honest about which threats are already mitigated by existing controls — those rank lower.",
+          tools: SEC_NAV_TOOLS,
+          nodeConfig: { maxMs: 1_200_000 },
+        }),
+        card("tm4", 960, {
+          name: "Mitigation Mapper",
+          preset: "coder",
+          prompt:
+            "You are the Mitigation Mapper. For each threat in workflow_get('ranked_threats'), specify the concrete defense mapped to the real code: the control to add or strengthen (input validation, authz check, output encoding, rate limit, audit log, crypto fix), WHERE it goes (file:line or module), and the residual risk after. Write THREAT_MODEL.md: the system overview, the ranked threats with their attack trees, and the mitigation plan as an actionable checklist ordered by risk. Distinguish 'must fix' from 'defense in depth'. End with one confirmation line in chat, not the document body.",
+          tools: [...SEC_NAV_TOOLS, "write_file"],
+          nodeConfig: { maxMs: 1_200_000 },
+        }),
+      ],
+      edges: chain(["tm1", "tm2", "tm3", "tm4"]),
     },
   },
 ];
