@@ -700,8 +700,17 @@ pub(crate) fn write_nofollow_sync(
     Ok(())
 }
 
-pub async fn write_file(path: String, content: String) -> Result<(), String> {
-    let resolved = validate_for_write(&path).map_err(err_string)?;
+/// Write one file through the confined path: validate → size cap → parent
+/// `create_dir_all` → per-file undo snapshot → no-follow write. Shared by
+/// `write_file` (single) and `write_files` (multi) so both go through the
+/// identical confinement + snapshot discipline. `snapshot_label` tags the undo
+/// entry ("write_file" vs "write_files") for the undo UI.
+async fn write_one_confined(
+    path: &str,
+    content: String,
+    snapshot_label: &'static str,
+) -> Result<(), String> {
+    let resolved = validate_for_write(path).map_err(err_string)?;
     if content.len() > MAX_WRITE_BYTES {
         return Err(err_string(ToolError::TooLarge {
             message: format!("content exceeds {MAX_WRITE_BYTES} bytes"),
@@ -716,8 +725,9 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
     // off the tokio runtime via spawn_blocking. Only captured after path
     // validation so a rejected write can't pollute the undo stack.
     let snap_path = resolved.clone();
-    let _ = tokio::task::spawn_blocking(move || super::snapshot::capture(&snap_path, "write_file"))
-        .await;
+    let _ =
+        tokio::task::spawn_blocking(move || super::snapshot::capture(&snap_path, snapshot_label))
+            .await;
     let bytes = content.into_bytes();
     let target = resolved.clone();
     tokio::task::spawn_blocking(move || write_nofollow_sync(&target, &bytes, false))
@@ -725,6 +735,53 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
         .map_err(|e| err_string(ToolError::io(e.to_string())))?
         .map_err(|e| err_string(classify_io(&e)))?;
     Ok(())
+}
+
+pub async fn write_file(path: String, content: String) -> Result<(), String> {
+    write_one_confined(&path, content, "write_file").await
+}
+
+/// One file in a `write_files` multi-write request.
+#[derive(Debug, serde::Deserialize)]
+pub struct WriteFileSpec {
+    pub path: String,
+    pub content: String,
+}
+
+/// Maximum number of files a single `write_files` call may create. Caps blast
+/// radius of one approval — the user confirms a bounded set, not an unbounded
+/// scaffold.
+pub(super) const MAX_WRITE_FILES: usize = 64;
+
+/// Multi-file write: create up to `MAX_WRITE_FILES` files in one
+/// approval-gated call. Each file goes through the SAME confined path as
+/// `write_file` (workspace confinement, no-follow write, parent dir creation,
+/// per-file undo snapshot, per-file `MAX_WRITE_BYTES` cap).
+///
+/// Best-effort, like a shell heredoc loop would be: files are written
+/// sequentially and any file written before a failure STAYS written. On the
+/// first error we stop and return a message naming the offending path; the
+/// per-file undo snapshots let the user roll back what landed.
+pub async fn write_files(files: Vec<WriteFileSpec>) -> Result<serde_json::Value, String> {
+    if files.is_empty() {
+        return Err(err_string(ToolError::invalid(
+            "write_files requires at least one file",
+        )));
+    }
+    if files.len() > MAX_WRITE_FILES {
+        return Err(err_string(ToolError::invalid(format!(
+            "write_files accepts at most {MAX_WRITE_FILES} files per call (got {})",
+            files.len()
+        ))));
+    }
+    let mut written = 0usize;
+    for spec in files {
+        write_one_confined(&spec.path, spec.content, "write_files")
+            .await
+            .map_err(|e| format!("write_files failed at {}: {e}", spec.path))?;
+        written += 1;
+    }
+    Ok(serde_json::json!({ "written": written }))
 }
 
 /* ── Edit file (patch-style replace) ──────────────────────────────────────── */

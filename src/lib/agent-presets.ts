@@ -30,6 +30,7 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
       "edit_file",
       "multi_edit",
       "write_file",
+      "write_files",
       "run_shell",
       "git_status",
       "git_diff",
@@ -50,7 +51,11 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
       "When asked to fix bugs, implement features, or modify code: search the codebase, read relevant files, then prefer edit_file over write_file. " +
       "Always read existing code before editing. Use run_shell for builds/tests/linting. " +
       "After changes, run the project's test or typecheck command if discoverable. " +
-      "Don't add comments unless they explain a non-obvious WHY. Don't over-engineer.",
+      "Don't add comments unless they explain a non-obvious WHY. Don't over-engineer. " +
+      "Create files with write_file (one file) or write_files (several at once). " +
+      "NEVER write files through the shell — no cat/heredocs, echo>, tee, or generated scripts; " +
+      "that hits length limits, escapes the workspace, and costs an approval per file. " +
+      "Prefer edit_file/multi_edit for changes to existing files.",
   },
   {
     id: "researcher",

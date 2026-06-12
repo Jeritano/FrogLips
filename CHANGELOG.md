@@ -4,6 +4,25 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.5] — 2026-06-12
+
+### Agent — tool-calling
+- **The agent stops writing files through the shell.** It now uses `write_file`
+  for source files instead of `run_shell` with `cat`/heredocs/`tee` (which hit
+  the shell command-length limit, scattered files outside the workspace, and
+  cost a separate approval per file). The tool descriptions + Coder preset say
+  so explicitly, and a `run_shell` command that looks like a file write gets a
+  one-line steer toward `write_file`.
+- **New `write_files` tool** — create several files in ONE approval-gated call
+  instead of N. Scaffolding a multi-file app is now one tool turn (and one
+  approval) instead of ten. Confined to the workspace + bound to the exact set
+  of paths, like every other write.
+- **Configurable agent turn limit.** The default rose 40 → 80, and you can set
+  it (5–400) in Settings → General for long multi-file builds. The turn-limit
+  message now tells you the work is saved and you can reply "continue."
+- **Fewer approval prompts** — `write_files` rides the "approve all writes this
+  run" blanket, so a vetted run no longer prompts per file.
+
 ## [0.13.4] — 2026-06-12
 
 ### Performance — Flows

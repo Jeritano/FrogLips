@@ -438,6 +438,23 @@ export const api = {
       content,
       approval: await mintApproval("agent_write_file", { path }),
     }),
+  // Multi-file write in a single call + single approval. The approval token is
+  // bound to the sorted file paths joined by newline — the SAME string the
+  // Rust `agent_write_files` binding recomputes and hashes (carried as the
+  // `path` field of the approval payload). Sorting client-side makes the
+  // binding order-independent so {a.ts, b.ts} and {b.ts, a.ts} mint/consume
+  // the same token.
+  agentWriteFiles: async (files: { path: string; content: string }[]) => {
+    const joinedPaths = files
+      .map((f) => f.path)
+      .slice()
+      .sort()
+      .join("\n");
+    return invoke<void>("agent_write_files", {
+      files,
+      approval: await mintApproval("agent_write_files", { path: joinedPaths }),
+    });
+  },
   agentEditFile: async (
     path: string,
     oldString: string,

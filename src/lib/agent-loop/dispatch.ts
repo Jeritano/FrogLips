@@ -22,6 +22,7 @@ export const DANGEROUS_TOOLS = new Set([
   "run_shell",
   "task_create",
   "write_file",
+  "write_files",
   "edit_file",
   "multi_edit",
   "git_commit",
@@ -225,6 +226,41 @@ export function toolCallSig(tc: ToolCall): string {
   const args = tc.function?.arguments;
   const argStr = typeof args === "string" ? args : JSON.stringify(args ?? {});
   return `${name}::${argStr}`;
+}
+
+/**
+ * Cheap heuristic: does a shell command look like it's writing a file via the
+ * shell rather than using write_file/write_files/edit_file? Matches three
+ * shapes:
+ *   • a heredoc whose body is redirected to a file  (`cat > f << EOF`)
+ *   • plain output redirection to a path            (`echo x > f`, `… >> f`)
+ *   • `tee` writing to a file                       (`… | tee f`)
+ *
+ * Deliberately tolerant of the common NON-write redirections so we don't nag:
+ *   • fd-dup like `2>&1`, `1>&2`, `&>`              (no real file target)
+ *   • discards to `/dev/null` / `/dev/stdout` / etc.
+ * Used only to APPEND a steering note — never to block the command.
+ */
+export function looksLikeShellFileWrite(command: string): boolean {
+  const cmd = String(command ?? "");
+  if (!cmd.trim()) return false;
+  // `tee` (with or without -a) writing somewhere.
+  if (/(^|[|;&]|\s)tee\b/.test(cmd)) return true;
+  // Heredoc feeding a redirect: `<<EOF` / `<<-'EOF'` / `<< "EOF"` paired with
+  // a `>`/`>>` somewhere on the command. The heredoc body itself is what blows
+  // past the shell length cap, so this is the canonical pattern to catch.
+  if (/<<-?\s*['"]?\w+/.test(cmd) && />>?/.test(cmd)) return true;
+  // Strip the redirections we explicitly DON'T care about, then see whether a
+  // real `>`/`>>` to a path survives. Removing `2>&1`, `&>`, `1>&2`, and any
+  // `>`/`>>` aimed at /dev/null|stdout|stderr|fd avoids the false positives.
+  const cleaned = cmd
+    .replace(/\d*>&\d*/g, " ") // fd-dup: 2>&1, 1>&2, >&2
+    .replace(/&>>?/g, " ") // bash &> / &>>
+    .replace(/\d*>>?\s*\/dev\/\S+/g, " ") // > /dev/null, 2>> /dev/stderr
+    .replace(/\d*>>?\s*&\d+/g, " "); // > &1 style
+  // A surviving `>` or `>>` (optionally fd-prefixed) followed by a token that
+  // isn't another redirection means an actual file target.
+  return /\d*>>?\s*[^|;&<>\s]/.test(cleaned);
 }
 
 /**
@@ -1227,12 +1263,22 @@ export async function executeTool(
       const opId = `shell-${crypto.randomUUID()}`;
       const key = options.shellTrackKey ?? null;
       setActiveShell(key, opId);
+      const command = String(args.command ?? "");
       try {
-        const r = await api.agentRunShell(
-          String(args.command ?? ""),
-          shellOpts,
-          opId,
-        );
+        const r = await api.agentRunShell(command, shellOpts, opId);
+        // Steering nudge (no block): if the command looks like it's writing a
+        // file via the shell (heredoc-to-redirect, `>`/`>>` to a file, or
+        // `tee`), append a one-line hint so the model prefers write_file /
+        // write_files next time — those have no length cap and stay confined
+        // to the workspace. Cheap regex; tolerant of the false-positive traps
+        // `2>&1` and `>/dev/null` (and friends).
+        if (looksLikeShellFileWrite(command)) {
+          return JSON.stringify({
+            ...(r as unknown as Record<string, unknown>),
+            steering:
+              "Note: this looks like a file write via shell. Prefer write_file/write_files — no length limit, stays in the workspace.",
+          });
+        }
         return JSON.stringify(r);
       } finally {
         clearActiveShell(key, opId);
@@ -1321,6 +1367,30 @@ export async function executeTool(
         String(args.content ?? ""),
       );
       return JSON.stringify({ ok: true, path: args.path });
+    case "write_files": {
+      // Coerce the model's `files` array into a clean {path, content}[] —
+      // drop entries missing a path so a malformed item can't write to "".
+      const rawFiles = Array.isArray(args.files) ? args.files : [];
+      const files = rawFiles
+        .map((f) => {
+          if (!f || typeof f !== "object" || Array.isArray(f)) return null;
+          const rec = f as Record<string, unknown>;
+          const path = String(rec.path ?? "");
+          if (!path) return null;
+          return { path, content: String(rec.content ?? "") };
+        })
+        .filter((f): f is { path: string; content: string } => f !== null);
+      if (files.length === 0) {
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message:
+            "write_files requires a non-empty files array of {path, content}.",
+        });
+      }
+      await api.agentWriteFiles(files);
+      return JSON.stringify({ ok: true, paths: files.map((f) => f.path) });
+    }
     case "edit_file": {
       const r = await api.agentEditFile(
         String(args.path ?? ""),

@@ -601,6 +601,11 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             messages: historyForApi,
             conversationId: conv.id,
             workspaceRoot,
+            // Agent turn-budget override from settings (raise for long
+            // multi-file builds); undefined → runner default.
+            maxIterations:
+              (await getCachedSettings().catch(() => null))
+                ?.agent_max_iterations ?? undefined,
             // Gated by `agentAvailable` above, so backend is "ollama" | "mlx".
             backend: status.backend === "mlx" ? "mlx" : "ollama",
             serverStatus: status,

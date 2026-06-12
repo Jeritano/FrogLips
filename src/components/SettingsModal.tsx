@@ -109,10 +109,14 @@ export function SettingsModal({
   const [pane, setPane] = useState<Pane>("general");
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [keepAliveInit, setKeepAliveInit] = useState("30m");
+  const [maxIterInit, setMaxIterInit] = useState("80");
   useEffect(() => {
     void api
       .settingsGet()
-      .then((s) => setKeepAliveInit(s.ollama_keep_alive ?? "30m"))
+      .then((s) => {
+        setKeepAliveInit(s.ollama_keep_alive ?? "30m");
+        setMaxIterInit(String(s.agent_max_iterations ?? 80));
+      })
       .catch(() => {});
   }, []);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -228,6 +232,30 @@ export function SettingsModal({
                   </select>
                   <span className="settings-hint">
                     Longer = no reload wait after a break (Ollama models).
+                  </span>
+                </div>
+                <div className="settings-row">
+                  <span>Agent turn limit</span>
+                  <input
+                    data-testid="settings-agent-max-iter"
+                    type="number"
+                    min={5}
+                    max={400}
+                    defaultValue={maxIterInit}
+                    style={{ width: 80 }}
+                    onChange={(e) => {
+                      const n = Math.min(
+                        400,
+                        Math.max(5, Math.floor(Number(e.target.value) || 80)),
+                      );
+                      void api
+                        .settingsSet({ agent_max_iterations: n })
+                        .catch(() => {});
+                    }}
+                  />
+                  <span className="settings-hint">
+                    Max tool-turns per agent run (default 80). Raise for long
+                    multi-file builds; lower to cap runaway loops.
                   </span>
                 </div>
                 <div className="settings-row settings-version">

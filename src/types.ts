@@ -375,6 +375,9 @@ export interface AppSettings {
   auto_update_check?: boolean | null;
   /** User-registered APIs the agent can call by name. Keys live in Keychain. */
   saved_apis?: SavedApi[] | null;
+  /** Max agent tool-turns per run (default 80, clamped [5,400]). Raise for
+   *  long multi-file builds that need more steps to finish. */
+  agent_max_iterations?: number | null;
 }
 
 /**

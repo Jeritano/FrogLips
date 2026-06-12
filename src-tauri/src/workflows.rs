@@ -432,8 +432,7 @@ pub(crate) struct WorkflowScheduleRow {
 /// + logged, never blanks the whole scan.
 pub(crate) fn list_workflow_schedule_rows() -> Result<Vec<WorkflowScheduleRow>> {
     let conn = get_db()?;
-    let mut stmt =
-        conn.prepare("SELECT id, updated_at FROM workflows ORDER BY updated_at DESC")?;
+    let mut stmt = conn.prepare("SELECT id, updated_at FROM workflows ORDER BY updated_at DESC")?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();
     while let Some(r) = rows.next()? {
@@ -972,7 +971,9 @@ fn scheduler_scan(
                 },
             );
         }
-        let entry = cache.get(&row.id).expect("inserted on miss / present on hit");
+        let entry = cache
+            .get(&row.id)
+            .expect("inserted on miss / present on hit");
 
         for (card_id, sched) in &entry.cards {
             let sched = *sched;

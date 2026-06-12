@@ -149,7 +149,7 @@ export const TOOLS = [
     function: {
       name: "run_shell",
       description:
-        "Execute a shell command via sh -c. Optional cwd + per-call timeout. Default timeout 30s; pass timeout_secs (clamped 1-600) for slow builds, test suites, or downloads. ALWAYS requires user approval. Returns stdout, stderr, exit_code, duration_ms, timed_out.",
+        "Execute a shell command via sh -c. Optional cwd + per-call timeout. Default timeout 30s; pass timeout_secs (clamped 1-600) for slow builds, test suites, or downloads. ALWAYS requires user approval. Returns stdout, stderr, exit_code, duration_ms, timed_out. Do NOT use run_shell to write or create files — use write_file / write_files / edit_file. run_shell is for builds, tests, git, and other CLI tasks only.",
       parameters: {
         type: "object",
         properties: {
@@ -269,7 +269,7 @@ export const TOOLS = [
     function: {
       name: "write_file",
       description:
-        "Write text content to a file, creating parents. ALWAYS requires user approval. Prefer edit_file for changes to existing files.",
+        "PREFERRED tool for creating or overwriting a file. Pass the full content directly. Do NOT write files with run_shell (no `cat`/heredocs/`echo >`/`tee`/redirection, no generated scripts) — that hits the shell command-length limit, scatters files OUTSIDE the workspace (shell isn't confined), and forces a separate approval per file. Write text content to a file, creating parents. ALWAYS requires user approval. Prefer edit_file for changes to existing files.",
       parameters: {
         type: "object",
         properties: {
@@ -277,6 +277,31 @@ export const TOOLS = [
           content: { type: "string" },
         },
         required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_files",
+      description:
+        "Create or overwrite MULTIPLE files in ONE call (one approval). Strongly preferred over many write_file calls when scaffolding several files — saves approvals and iterations.",
+      parameters: {
+        type: "object",
+        properties: {
+          files: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                content: { type: "string" },
+              },
+              required: ["path", "content"],
+            },
+          },
+        },
+        required: ["files"],
       },
     },
   },

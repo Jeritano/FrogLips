@@ -49,6 +49,9 @@ pub struct Settings {
     /// User-registered APIs the agent can call by name via `call_api`. Keys
     /// live in the Keychain (account "api:{id}"); never in chat.
     pub saved_apis: Option<Vec<SavedApi>>,
+    /// Max agent tool-turns per run. `None` → the runner default (80). The
+    /// frontend clamps to [5, 400]. Raise for long multi-file builds.
+    pub agent_max_iterations: Option<i64>,
     /// Cached machine profile (RAM / cores / CPU) detected once on first launch
     /// and refreshed weekly, so the model picker and onboarding can size models
     /// to the hardware without re-probing sysctl every render. Absent on legacy

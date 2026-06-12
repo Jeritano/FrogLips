@@ -350,7 +350,14 @@ export function policyDecisionFor(
   return "needs-confirm";
 }
 
-const MAX_ITERATIONS = 40;
+// Default agent turn budget. Raised 40 → 80 (2026-06-12): a whole-app build
+// (e.g. scaffolding a multi-file frontend) routinely needs more than 40 tool
+// turns and was stalling mid-task. Overridable per-run via
+// `AgentRunOptions.maxIterations` (wired from the agent setting), clamped to a
+// sane range so a typo can't spin forever.
+const DEFAULT_MAX_ITERATIONS = 80;
+const MIN_MAX_ITERATIONS = 5;
+const MAX_MAX_ITERATIONS = 400;
 
 /**
  * `approveAllWrite` is a UX shortcut for "I trust this run to produce
@@ -362,6 +369,9 @@ const MAX_ITERATIONS = 40;
  */
 const APPROVE_ALL_WRITE_FS = new Set([
   "write_file",
+  // write_files is a multi-file write — same nature as write_file, so the
+  // "auto-approve file writes this run" blanket covers it too (2026-06-12).
+  "write_files",
   "edit_file",
   "multi_edit",
   "make_dir",
@@ -884,6 +894,16 @@ export async function runAgentLoop(
   let researchCallCount = 0;
   let writeCallCount = 0;
   let researchNudgeFired = false;
+
+  // Per-run turn budget: the setting (opts.maxIterations) overrides the
+  // default, clamped so a bad value can't spin forever or stall instantly.
+  const MAX_ITERATIONS =
+    opts.maxIterations != null
+      ? Math.min(
+          MAX_MAX_ITERATIONS,
+          Math.max(MIN_MAX_ITERATIONS, Math.floor(opts.maxIterations)),
+        )
+      : DEFAULT_MAX_ITERATIONS;
 
   try {
     for (let i = 0; i < MAX_ITERATIONS; i++) {
@@ -1615,7 +1635,9 @@ export async function runAgentLoop(
       conversation_id: opts.conversationId,
       role: "assistant",
       content:
-        "[Agent reached the maximum iteration limit without completing the task.]",
+        `[Agent reached its turn limit (${MAX_ITERATIONS}) without finishing. ` +
+        `Its work so far is saved — reply "continue" to resume, or raise the ` +
+        `turn limit in Agent settings for long multi-file builds.]`,
     };
     msgs.push(limitMsg);
     onUpdate([...msgs]);

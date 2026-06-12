@@ -496,6 +496,7 @@ pub fn run() {
             commands::agent::agent_run_shell,
             commands::agent::agent_run_code,
             commands::agent::agent_write_file,
+            commands::agent::agent_write_files,
             commands::agent::agent_edit_file,
             commands::agent::agent_file_exists,
             commands::agent::agent_search_files,

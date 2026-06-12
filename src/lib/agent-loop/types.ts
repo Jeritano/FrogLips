@@ -168,6 +168,12 @@ export interface AgentRunOptions {
    *  prompt so the model knows which APIs it can call. */
   savedApiNames?: string[];
   /**
+   * Max agent tool-turns for this run. Overrides the runner default (80),
+   * clamped to [5, 400]. Wired from the `agent_max_iterations` setting so long
+   * multi-file builds can raise the ceiling. Absent = default.
+   */
+  maxIterations?: number;
+  /**
    * Per-conversation model parameter overrides. When provided, the agent
    * chat clients thread these into the backend request. Null fields fall
    * back to backend defaults.

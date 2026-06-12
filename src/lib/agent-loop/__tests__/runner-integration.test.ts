@@ -228,17 +228,22 @@ describe("runAgentLoop integration", () => {
 
     const collected: Message[][] = [];
     const metrics = { last: null as AgentMetrics | null };
-    const result = await runAgentLoop(baseOpts(collected, metrics));
+    const result = await runAgentLoop({
+      ...baseOpts(collected, metrics),
+      // Small budget so the cap path is fast + deterministic (also exercises
+      // the new per-run maxIterations override).
+      maxIterations: 8,
+    });
 
     // The cap path returns null and appends the explanatory cap message.
     expect(result).toBeNull();
     const lastSnapshot = collected[collected.length - 1] ?? [];
     const capMsg = lastSnapshot[lastSnapshot.length - 1];
     expect(capMsg?.role).toBe("assistant");
-    expect(capMsg?.content).toContain("maximum iteration limit");
+    expect(capMsg?.content).toContain("turn limit");
 
-    // The loop ran the full budget of iterations.
-    expect(metrics.last?.iterations).toBe(40);
+    // The loop ran the full (overridden) budget of iterations.
+    expect(metrics.last?.iterations).toBe(8);
     // Session metrics still recorded exactly once on the cap exit.
     expect(metricsMock).toHaveBeenCalledTimes(1);
   });

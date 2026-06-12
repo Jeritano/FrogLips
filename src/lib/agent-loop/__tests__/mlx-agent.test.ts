@@ -249,6 +249,8 @@ describe("runAgentLoop — backend:'mlx'", () => {
       model: "mlx-test-model",
       messages: [{ conversation_id: 1, role: "user", content: "loop forever" }],
       conversationId: 1,
+      // Small turn budget so the cap-path test stays fast + deterministic.
+      maxIterations: 8,
       workspaceRoot: null,
       backend: "mlx",
       serverStatus: STATUS,
@@ -265,8 +267,7 @@ describe("runAgentLoop — backend:'mlx'", () => {
     // The final transcript carries the iteration-limit assistant message.
     const last = collected[collected.length - 1] ?? [];
     const capMsg = last.find(
-      (m) =>
-        m.role === "assistant" && /maximum iteration limit/i.test(m.content),
+      (m) => m.role === "assistant" && /turn limit/i.test(m.content),
     );
     expect(capMsg).toBeDefined();
   });

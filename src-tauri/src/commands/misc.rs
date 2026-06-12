@@ -416,6 +416,7 @@ const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     "mlx_draft_model",
     "auto_update_check",
     "saved_apis",
+    "agent_max_iterations",
 ];
 
 /// Per-field byte caps for the "About You" profile. Keeps a hostile or

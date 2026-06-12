@@ -123,6 +123,17 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
             "path",
             p.path.as_deref().unwrap_or(""),
         )]))),
+        // Multi-file write: bound to the EXACT set of paths the user confirmed.
+        // The `paths` value is the file paths joined by '\n', sorted — so a
+        // token approved for one scaffold can't be reused for a different set
+        // of files within the TTL, and caller-side ordering is irrelevant.
+        // Reuses the existing `path` payload field to carry that joined string
+        // (lowest-churn — no new ApprovalPayload field); the consume side in
+        // `agent_write_files` rebuilds the same joined-sorted string.
+        "agent_write_files" => Some(sha256_hex(&kv(&[(
+            "paths",
+            p.path.as_deref().unwrap_or(""),
+        )]))),
         // Two-path family: move + copy.
         "agent_move_path" | "agent_copy_path" => Some(sha256_hex(&kv(&[
             ("from", p.from.as_deref().unwrap_or("")),
@@ -386,6 +397,38 @@ pub async fn agent_write_file(
         },
     )?;
     agent::write_file(path, content).await
+}
+
+/// Canonical join of a multi-write request's paths: sorted, '\n'-separated.
+/// This is the EXACT string both sides of the binding agree on — the frontend
+/// mints `mint_tool_approval("agent_write_files", payload.path = join_paths(...))`
+/// and this command rebuilds it from the actual `files` argument. Sorting makes
+/// the binding independent of the order the model emitted the files in.
+fn join_write_files_paths(files: &[agent::WriteFileSpec]) -> String {
+    let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    paths.sort_unstable();
+    paths.join("\n")
+}
+
+#[tauri::command]
+pub async fn agent_write_files(
+    files: Vec<agent::WriteFileSpec>,
+    approval: String,
+) -> Result<serde_json::Value, String> {
+    // Bound to the EXACT set of paths (sorted, '\n'-joined): a token approved
+    // for one scaffold cannot be silently reused to write a different set of
+    // files within the 60s TTL. Fail closed — recomputed here from the files
+    // we are about to write so the frontend can't approve one set and write
+    // another. DANGEROUS: this creates many files in one approval.
+    verify_bound(
+        "agent_write_files",
+        &approval,
+        ApprovalPayload {
+            path: Some(join_write_files_paths(&files)),
+            ..Default::default()
+        },
+    )?;
+    agent::write_files(files).await
 }
 
 #[tauri::command]
@@ -1280,6 +1323,7 @@ mod binding_tests {
         for t in [
             "agent_run_shell",
             "agent_write_file",
+            "agent_write_files",
             "agent_edit_file",
             "agent_multi_edit",
             "agent_make_dir",
@@ -1340,6 +1384,39 @@ mod binding_tests {
         assert_ne!(
             binding_for("agent_write_file", &p1).unwrap(),
             binding_for("agent_write_file", &p2).unwrap()
+        );
+    }
+
+    /// `agent_write_files` binds to the SET of paths, sorted, '\n'-joined.
+    /// The join helper must make the binding independent of the order the
+    /// files were emitted in, and any change to the set must change the hash.
+    #[test]
+    fn write_files_binding_is_set_based_and_order_invariant() {
+        let spec = |p: &str| agent::WriteFileSpec {
+            path: p.into(),
+            content: String::new(),
+        };
+        // join_write_files_paths sorts, so order of input is irrelevant.
+        assert_eq!(
+            join_write_files_paths(&[spec("src/b.rs"), spec("src/a.rs")]),
+            join_write_files_paths(&[spec("src/a.rs"), spec("src/b.rs")]),
+            "join must be order-invariant",
+        );
+        // A token approved for {a} must not verify for {a, b}.
+        let one = ApprovalPayload {
+            path: Some(join_write_files_paths(&[spec("src/a.rs")])),
+            ..Default::default()
+        };
+        let two = ApprovalPayload {
+            path: Some(join_write_files_paths(&[
+                spec("src/a.rs"),
+                spec("src/b.rs"),
+            ])),
+            ..Default::default()
+        };
+        assert_ne!(
+            binding_for("agent_write_files", &one).unwrap(),
+            binding_for("agent_write_files", &two).unwrap()
         );
     }
 
