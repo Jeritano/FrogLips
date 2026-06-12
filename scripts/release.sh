@@ -270,13 +270,20 @@ if [[ -d "$BUILT_APP" ]]; then
   echo "✓ Smoke test passed (proc_alive=$final_alive, ready_marker=$saw_ready)"
 fi
 
-# Install fresh copy
+# Install fresh copy — ATOMICALLY (2026-06-11). Direct ditto into
+# /Applications left a window where the bundle existed half-flushed:
+# spctl read "unsealed contents present in the bundle root", the launch
+# proceeded anyway, and macOS later treated the running app as damaged —
+# the repeated "vanishing Froglips.app" incidents all followed exactly
+# this dirty-install state. Staging + rename makes the appearance of the
+# bundle a single atomic filesystem event; there is no observable
+# half-copied state.
+STAGE=$(mktemp -d /Applications/.froglips-stage.XXXXXX)
+ditto src-tauri/target/release/bundle/macos/Froglips.app "$STAGE/Froglips.app"
+sync
 rm -rf /Applications/Froglips.app
-# ditto preserves signatures/xattrs/structure faithfully (cp -R is close but
-# not identical for bundles), and the sync guarantees the post-install spctl
-# below verifies fully-flushed bytes — a mid-flush check once passed in-script
-# and then read as "unsealed contents" seconds later (2026-06-10).
-ditto src-tauri/target/release/bundle/macos/Froglips.app /Applications/Froglips.app
+mv "$STAGE/Froglips.app" /Applications/Froglips.app
+rmdir "$STAGE"
 sync
 
 # Per-machine trust for UNSIGNED builds only. When a Developer ID identity
@@ -291,8 +298,16 @@ else
   # passed once and the build still shipped broken (the smoke-prep ad-hoc
   # sign above, before it was guarded). Never print success unless the app
   # the user will actually launch is Gatekeeper-clean.
-  if ! spctl -a -vv /Applications/Froglips.app 2>&1 | grep -q "Notarized Developer ID"; then
-    echo "✗ Installed copy is NOT Notarized Developer ID — install corrupted." >&2
+  ok=0
+  for _ in 1 2 3 4 5; do
+    if spctl -a -vv /Applications/Froglips.app 2>&1 | grep -q "Notarized Developer ID"; then
+      ok=1; break
+    fi
+    sleep 2
+  done
+  if [[ "$ok" -ne 1 ]]; then
+    echo "✗ Installed copy is NOT Notarized Developer ID — removing the bad install." >&2
+    rm -rf /Applications/Froglips.app
     exit 1
   fi
   echo "✓ Installed copy verified (Notarized Developer ID)"
