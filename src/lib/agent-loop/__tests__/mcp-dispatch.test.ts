@@ -3,22 +3,33 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../../tauri-api", () => {
   return {
     api: {
-      mcpCallTool: vi.fn(async (server: string, tool: string, args: unknown) => {
-        return `called ${server}/${tool} with ${JSON.stringify(args)}`;
-      }),
+      mcpCallTool: vi.fn(
+        async (server: string, tool: string, args: unknown) => {
+          return `called ${server}/${tool} with ${JSON.stringify(args)}`;
+        },
+      ),
       mcpListServers: vi.fn(async () => [{ name: "demo" }]),
       mcpListTools: vi.fn(async () => [
         {
           name: "echo",
           description: "Echo back the input",
-          inputSchema: { type: "object", properties: { msg: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: { msg: { type: "string" } },
+          },
         },
       ]),
     },
   };
 });
 
-import { dispatchMcpTool, fetchMcpTools, isMcpToolName, parseMcpToolName, mcpToolName } from "../mcp-tools";
+import {
+  dispatchMcpTool,
+  fetchMcpTools,
+  isMcpToolName,
+  parseMcpToolName,
+  mcpToolName,
+} from "../mcp-tools";
 import { executeTool } from "../dispatch";
 import { api } from "../../tauri-api";
 
@@ -78,7 +89,9 @@ describe("dispatchMcpTool", () => {
 
 describe("executeTool MCP routing", () => {
   it("routes mcp-prefixed tool names through the MCP path", async () => {
-    const out = await executeTool("mcp__demo__echo", { msg: "from-executeTool" });
+    const out = await executeTool("mcp__demo__echo", {
+      msg: "from-executeTool",
+    });
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(true);
     expect(parsed.server).toBe("demo");

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { classifyToolFitness, modelSupportsVision } from "../model-capabilities";
+import {
+  classifyToolFitness,
+  modelSupportsVision,
+} from "../model-capabilities";
 
 describe("modelSupportsVision", () => {
   it("recognises known vision-capable families", () => {

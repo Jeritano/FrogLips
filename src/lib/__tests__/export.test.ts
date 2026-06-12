@@ -45,7 +45,7 @@ function fixtureMessages(): Message[] {
     {
       conversation_id: 42,
       role: "tool",
-      content: "fn main() { println!(\"hi\"); }",
+      content: 'fn main() { println!("hi"); }',
       tool_call_id: "call_1",
       tool_name: "read_file",
       created_at: 1_700_000_002,
@@ -176,6 +176,8 @@ describe("conversationToMarkdown — detailed mode", () => {
 describe("safeFilename", () => {
   it("appends suffix when provided", () => {
     expect(safeFilename("My chat", "md")).toBe("My_chat.md");
-    expect(safeFilename("My chat", "md", "detailed")).toBe("My_chat-detailed.md");
+    expect(safeFilename("My chat", "md", "detailed")).toBe(
+      "My_chat-detailed.md",
+    );
   });
 });

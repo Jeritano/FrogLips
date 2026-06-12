@@ -10,7 +10,7 @@ describe("attemptRepairArgs", () => {
   });
 
   it("straightens smart quotes", () => {
-    const r = attemptRepairArgs('{“path”:“a.txt”}');
+    const r = attemptRepairArgs("{“path”:“a.txt”}");
     expect(r?.repaired).toEqual({ path: "a.txt" });
   });
 

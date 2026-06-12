@@ -22,7 +22,9 @@ const BYTES_PER_GB = 1024 * 1024 * 1024;
  * (cloud `:cloud` tags, or a backend that didn't report a size) so the caller
  * can treat it as "no estimate" rather than "fits everything".
  */
-export function estimateModelRamGb(model: Pick<ModelEntry, "size_bytes">): number {
+export function estimateModelRamGb(
+  model: Pick<ModelEntry, "size_bytes">,
+): number {
   if (!model.size_bytes || model.size_bytes <= 0) return 0;
   return (model.size_bytes / BYTES_PER_GB) * RUNTIME_OVERHEAD;
 }
@@ -106,7 +108,10 @@ export function fmtGb(gb: number): string {
 }
 
 /** True when a hardware profile is stale enough to re-detect (>7 days old). */
-export function isProfileStale(detectedAtUnixSec: number, nowUnixSec: number): boolean {
+export function isProfileStale(
+  detectedAtUnixSec: number,
+  nowUnixSec: number,
+): boolean {
   if (!detectedAtUnixSec) return true;
   const WEEK = 7 * 24 * 60 * 60;
   return nowUnixSec - detectedAtUnixSec > WEEK;

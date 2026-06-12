@@ -89,13 +89,17 @@ function normalizeRoute(r: unknown): ChatRoute | null {
   if (typeof o.id !== "string" || typeof o.label !== "string") return null;
   if (typeof o.model !== "string" || typeof o.backend !== "string") return null;
   const backend = o.backend as ChatRoute["backend"];
-  if (!["ollama", "mlx", "native", "custom", "openrouter"].includes(backend)) return null;
+  if (!["ollama", "mlx", "native", "custom", "openrouter"].includes(backend))
+    return null;
   const strList = (v: unknown, cap: number) =>
-    Array.isArray(v) ? v.filter((k): k is string => typeof k === "string").slice(0, cap) : undefined;
+    Array.isArray(v)
+      ? v.filter((k): k is string => typeof k === "string").slice(0, cap)
+      : undefined;
   return {
     id: o.id,
     label: o.label.slice(0, 60),
-    whenToUse: typeof o.whenToUse === "string" ? o.whenToUse.slice(0, 2000) : "",
+    whenToUse:
+      typeof o.whenToUse === "string" ? o.whenToUse.slice(0, 2000) : "",
     keywords: strList(o.keywords, 32),
     utterances: strList(o.utterances, 16),
     model: o.model,
@@ -110,7 +114,10 @@ function normalizeConfig(c: unknown): RouterConfig | null {
   const o = c as Record<string, unknown>;
   if (typeof o.id !== "string" || typeof o.label !== "string") return null;
   const routes = Array.isArray(o.routes)
-    ? o.routes.map(normalizeRoute).filter((r): r is ChatRoute => r !== null).slice(0, MAX_ROUTES)
+    ? o.routes
+        .map(normalizeRoute)
+        .filter((r): r is ChatRoute => r !== null)
+        .slice(0, MAX_ROUTES)
     : [];
   return {
     id: o.id,
@@ -130,7 +137,10 @@ export function loadConfigs(): RouterConfig[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return parsed.map(normalizeConfig).filter((c): c is RouterConfig => c !== null).slice(0, MAX_CONFIGS);
+        return parsed
+          .map(normalizeConfig)
+          .filter((c): c is RouterConfig => c !== null)
+          .slice(0, MAX_CONFIGS);
       }
     }
     // Migration: wrap a legacy flat route list into one Default config.
@@ -154,16 +164,29 @@ export function loadConfigs(): RouterConfig[] {
     }
     return [];
   } catch (e) {
-    logDiag({ level: "warn", source: "chat-router", message: "loadConfigs failed", detail: e });
+    logDiag({
+      level: "warn",
+      source: "chat-router",
+      message: "loadConfigs failed",
+      detail: e,
+    });
     return [];
   }
 }
 
 export function saveConfigs(configs: RouterConfig[]): void {
   try {
-    localStorage.setItem(CONFIGS_LS, JSON.stringify(configs.slice(0, MAX_CONFIGS)));
+    localStorage.setItem(
+      CONFIGS_LS,
+      JSON.stringify(configs.slice(0, MAX_CONFIGS)),
+    );
   } catch (e) {
-    logDiag({ level: "warn", source: "chat-router", message: "saveConfigs failed", detail: e });
+    logDiag({
+      level: "warn",
+      source: "chat-router",
+      message: "saveConfigs failed",
+      detail: e,
+    });
   }
 }
 
@@ -190,7 +213,11 @@ export function activeConfig(): RouterConfig | null {
 }
 
 /** Create a config (and make it active). */
-export function createConfig(label: string, routes: ChatRoute[] = [], notes?: string): RouterConfig {
+export function createConfig(
+  label: string,
+  routes: ChatRoute[] = [],
+  notes?: string,
+): RouterConfig {
   const cfg: RouterConfig = {
     id: `cfg-${crypto.randomUUID().slice(0, 8)}`,
     label: label.slice(0, 80) || "Untitled",
@@ -206,7 +233,10 @@ export function createConfig(label: string, routes: ChatRoute[] = [], notes?: st
   return cfg;
 }
 
-export function updateConfig(id: string, patch: Partial<Omit<RouterConfig, "id" | "createdAt">>): void {
+export function updateConfig(
+  id: string,
+  patch: Partial<Omit<RouterConfig, "id" | "createdAt">>,
+): void {
   const configs = loadConfigs();
   const i = configs.findIndex((c) => c.id === id);
   if (i < 0) return;
@@ -259,7 +289,9 @@ function parseIndex(text: string, n: number): number | null {
  *  (possibly network-bound) prototype build before Stage 1 even runs. */
 function hasKeywordMatch(text: string, routes: ChatRoute[]): boolean {
   const lc = text.trim().toLowerCase();
-  return routes.some((r) => r.keywords?.some((k) => k.trim() && lc.includes(k.trim().toLowerCase())));
+  return routes.some((r) =>
+    r.keywords?.some((k) => k.trim() && lc.includes(k.trim().toLowerCase())),
+  );
 }
 
 function decisionFrom(
@@ -285,7 +317,9 @@ function decisionFrom(
 /** Cosine similarity of two equal-ish-length vectors. 0 when either is zero. */
 export function cosineSim(a: number[], b: number[]): number {
   const n = Math.min(a.length, b.length);
-  let dot = 0, na = 0, nb = 0;
+  let dot = 0,
+    na = 0,
+    nb = 0;
   for (let i = 0; i < n; i++) {
     dot += a[i] * b[i];
     na += a[i] * a[i];
@@ -330,7 +364,8 @@ function loadProtoDisk(): void {
     const raw = localStorage.getItem(PROTO_LS);
     if (!raw) return;
     const obj = JSON.parse(raw) as Record<string, number[]>;
-    for (const [k, v] of Object.entries(obj)) if (Array.isArray(v)) protoMem.set(k, v);
+    for (const [k, v] of Object.entries(obj))
+      if (Array.isArray(v)) protoMem.set(k, v);
   } catch {
     /* ignore corrupt cache */
   }
@@ -360,7 +395,9 @@ async function buildPrototypes(
   const map = new Map<string, number[]>();
   let dirty = false;
   for (const r of routes) {
-    const utterances = (r.utterances ?? []).map((u) => u.trim()).filter(Boolean);
+    const utterances = (r.utterances ?? [])
+      .map((u) => u.trim())
+      .filter(Boolean);
     if (utterances.length === 0) continue;
     const key = protoKey(r);
     const cached = protoMem.get(key);
@@ -370,7 +407,9 @@ async function buildPrototypes(
     }
     try {
       const vecs = await Promise.all(utterances.map((u) => embedFn(u)));
-      const proto = meanVec(vecs.filter((v): v is number[] => Array.isArray(v) && v.length > 0));
+      const proto = meanVec(
+        vecs.filter((v): v is number[] => Array.isArray(v) && v.length > 0),
+      );
       if (proto) {
         protoMem.set(key, proto);
         map.set(r.id, proto);
@@ -414,12 +453,16 @@ export async function routeMessage(
   const trimmed = text.trim();
   if (!trimmed) return null;
 
-  const sticky = opts.stickyRouteId ? routes.find((r) => r.id === opts.stickyRouteId) ?? null : null;
+  const sticky = opts.stickyRouteId
+    ? (routes.find((r) => r.id === opts.stickyRouteId) ?? null)
+    : null;
 
   // Stage 1 — keyword/substring fast-path.
   const lc = trimmed.toLowerCase();
   for (const r of routes) {
-    if (r.keywords?.some((k) => k.trim() && lc.includes(k.trim().toLowerCase()))) {
+    if (
+      r.keywords?.some((k) => k.trim() && lc.includes(k.trim().toLowerCase()))
+    ) {
       return decisionFrom(r, "keyword");
     }
   }
@@ -435,12 +478,19 @@ export async function routeMessage(
     try {
       q = await opts.embedQuery();
     } catch (e) {
-      logDiag({ level: "warn", source: "chat-router", message: "semantic embed failed; trying classifier", detail: e });
+      logDiag({
+        level: "warn",
+        source: "chat-router",
+        message: "semantic embed failed; trying classifier",
+        detail: e,
+      });
     }
     if (q && q.length) {
       const scored = routes
         .map((r) => ({ r, proto: protos.get(r.id) }))
-        .filter((x): x is { r: ChatRoute; proto: number[] } => Array.isArray(x.proto))
+        .filter((x): x is { r: ChatRoute; proto: number[] } =>
+          Array.isArray(x.proto),
+        )
         .map((x) => ({ r: x.r, score: cosineSim(q, x.proto) }))
         .sort((a, b) => b.score - a.score);
       if (scored.length > 0) {
@@ -451,14 +501,21 @@ export async function routeMessage(
         if (top.score >= threshold && top.score - second >= margin) {
           const method: RouteDecision["method"] =
             sticky && top.r.id === sticky.id ? "sticky" : "semantic";
-          return decisionFrom(top.r, method, `cosine ${top.score.toFixed(2)}`, top.score);
+          return decisionFrom(
+            top.r,
+            method,
+            `cosine ${top.score.toFixed(2)}`,
+            top.score,
+          );
         }
       }
     }
   }
 
   // Stage 3 — LLM classifier (on the active/hot model).
-  const list = routes.map((r, i) => `${i + 1}. [${r.label}] ${r.whenToUse}`).join("\n");
+  const list = routes
+    .map((r, i) => `${i + 1}. [${r.label}] ${r.whenToUse}`)
+    .join("\n");
   const stickyHint = sticky
     ? `\nThe conversation is currently using route [${sticky.label}]. Keep using it UNLESS another route clearly fits this message better (avoid needless model switches).`
     : "";
@@ -471,12 +528,23 @@ export async function routeMessage(
     const idx = parseIndex(out, routes.length);
     if (idx != null) {
       const r = routes[idx];
-      const method: RouteDecision["method"] = sticky && r.id === sticky.id ? "sticky" : "classifier";
-      const reason = stripThinking(out).trim().replace(/^\d+[).\s-]*/, "").trim().slice(0, 200) || undefined;
+      const method: RouteDecision["method"] =
+        sticky && r.id === sticky.id ? "sticky" : "classifier";
+      const reason =
+        stripThinking(out)
+          .trim()
+          .replace(/^\d+[).\s-]*/, "")
+          .trim()
+          .slice(0, 200) || undefined;
       return decisionFrom(r, method, reason);
     }
   } catch (e) {
-    logDiag({ level: "warn", source: "chat-router", message: "classifier failed, using default", detail: e });
+    logDiag({
+      level: "warn",
+      source: "chat-router",
+      message: "classifier failed, using default",
+      detail: e,
+    });
   }
 
   // Stage 4 — default (bias to the explicit default route, else sticky, else first).
@@ -532,16 +600,31 @@ export function makeClassifier(
     }
     // Cloud / custom / native / mlx → stream-client accumulation, generous cap.
     const CLASSIFY_MAX_TOKENS = 512;
-    const msgs: Message[] = [{ conversation_id: 0, role: "user", content: prompt }];
+    const msgs: Message[] = [
+      { conversation_id: 0, role: "user", content: prompt },
+    ];
     let stream: AsyncGenerator<{ delta: string; done: boolean }>;
     if (status.backend === "openrouter") {
-      stream = streamCustomChat("openrouter", msgs, { model: status.model ?? undefined, maxTokens: CLASSIFY_MAX_TOKENS, signal });
+      stream = streamCustomChat("openrouter", msgs, {
+        model: status.model ?? undefined,
+        maxTokens: CLASSIFY_MAX_TOKENS,
+        signal,
+      });
     } else if (status.backend === "custom") {
-      stream = streamCustomChat(status.model ?? "", msgs, { maxTokens: CLASSIFY_MAX_TOKENS, signal });
+      stream = streamCustomChat(status.model ?? "", msgs, {
+        maxTokens: CLASSIFY_MAX_TOKENS,
+        signal,
+      });
     } else if (status.backend === "native") {
-      stream = streamNativeChat(msgs, { maxTokens: CLASSIFY_MAX_TOKENS, signal });
+      stream = streamNativeChat(msgs, {
+        maxTokens: CLASSIFY_MAX_TOKENS,
+        signal,
+      });
     } else {
-      stream = streamChat(status, msgs, { maxTokens: CLASSIFY_MAX_TOKENS, signal });
+      stream = streamChat(status, msgs, {
+        maxTokens: CLASSIFY_MAX_TOKENS,
+        signal,
+      });
     }
     let acc = "";
     for await (const chunk of stream) {
@@ -563,7 +646,11 @@ export function makeClassifier(
 export async function routeChatMessage(
   text: string,
   routes: ChatRoute[],
-  opts: { status: ServerStatus; stickyRouteId?: string | null; signal?: AbortSignal },
+  opts: {
+    status: ServerStatus;
+    stickyRouteId?: string | null;
+    signal?: AbortSignal;
+  },
 ): Promise<RouteDecision | null> {
   if (routes.length === 0) return null;
   const embedFn = (t: string) => embed(t, opts.signal);

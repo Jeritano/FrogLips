@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/tauri-api";
-import { classify, isProfileStale, type Headroom } from "../lib/hardware-profile";
+import {
+  classify,
+  isProfileStale,
+  type Headroom,
+} from "../lib/hardware-profile";
 import type { HardwareProfile, ModelEntry } from "../types";
 
 /* ── useHardwareProfile ──────────────────────────────────────────────────────

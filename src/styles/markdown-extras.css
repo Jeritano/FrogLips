@@ -1,0 +1,75 @@
+/* Markdown extras — code-block chrome (header row + copy button) and KaTeX
+   math spacing. The markup is produced by the post-sanitize passes in
+   src/lib/markdown.ts (wrapCodeBlocks / renderMathPlaceholders); copy-button
+   clicks are handled by a delegated listener in MessageList. Tokens only —
+   see styles/tokens.css. */
+
+/* ── Code block wrapper ─────────────────────────────────────────────────── */
+.markdown .code-block {
+  margin: var(--space-2) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+/* The wrapper owns the frame now — strip the standalone <pre> chrome from
+   chat.css so wrapped blocks don't double-border. */
+.markdown .code-block pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+.markdown .code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.markdown .code-lang {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  text-transform: lowercase;
+  user-select: none;
+}
+.markdown .code-copy-btn {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  padding: 2px var(--space-2);
+  cursor: pointer;
+  /* Hidden until the block is hovered (or the button is keyboard-focused)
+     so dense code-heavy replies stay quiet. */
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard);
+}
+.markdown .code-block:hover .code-copy-btn,
+.markdown .code-copy-btn:focus-visible {
+  opacity: 1;
+}
+.markdown .code-copy-btn:hover {
+  color: var(--text);
+  background: var(--overlay-soft);
+}
+.markdown .code-copy-btn.copied {
+  opacity: 1;
+  color: var(--green-fg);
+}
+
+/* ── KaTeX ──────────────────────────────────────────────────────────────── */
+/* Display math gets breathing room plus horizontal scroll so a wide
+   equation scrolls instead of blowing out the bubble. Inline math inherits
+   the surrounding text flow — no overrides needed. */
+.markdown .katex-display {
+  margin: var(--space-3) 0;
+  padding: var(--space-1) 0;
+  overflow: auto hidden;
+}

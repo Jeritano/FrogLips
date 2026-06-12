@@ -12,7 +12,9 @@ import { logDiag } from "../diagnostics";
  * uses. Empty answer → a plain marker (nothing to fence). Sec audit follow-up.
  */
 function fenceSubagentAnswer(answer: string | null | undefined): string {
-  return answer ? fenceUntrustedData(answer, "subagent") : "(subagent returned nothing)";
+  return answer
+    ? fenceUntrustedData(answer, "subagent")
+    : "(subagent returned nothing)";
 }
 
 export const MAX_SUBAGENT_DEPTH = 3;
@@ -90,7 +92,10 @@ function buildSubOpts(
   // spawn_subagent(preset:"general") and the child got EVERY tool. Intersect
   // instead. Empty list = "no ceiling" on that side (matches the runner's
   // empty=all semantics). No preset → inherit the parent's allowlist verbatim.
-  const intersectAllow = (parentList: string[], presetList: string[]): string[] => {
+  const intersectAllow = (
+    parentList: string[],
+    presetList: string[],
+  ): string[] => {
     if (presetList.length === 0) return parentList; // preset = all → bounded by parent
     if (parentList.length === 0) return presetList; // parent = all → preset is the ceiling
     const parentSet = new Set(parentList);
@@ -108,7 +113,8 @@ function buildSubOpts(
     workspaceRoot: parent.workspaceRoot,
     backend: parent.backend,
     serverStatus: parent.serverStatus,
-    systemPromptOverride: presetSystemPromptOverride ?? parent.systemPromptOverride,
+    systemPromptOverride:
+      presetSystemPromptOverride ?? parent.systemPromptOverride,
     toolAllowlist,
     // Do NOT propagate blanket session approvals into subagents: a subagent's
     // prompt can be attacker-influenced, so dangerous tool calls inside it must
@@ -136,7 +142,10 @@ function buildSubOpts(
  * AbortSignal accumulates a stale listener for every spawn, leaking memory
  * across a long-lived session.
  */
-function makeChildAbort(parent: AgentRunOptions): { controller: AbortController; release: () => void } {
+function makeChildAbort(parent: AgentRunOptions): {
+  controller: AbortController;
+  release: () => void;
+} {
   const child = new AbortController();
   if (parent.signal.aborted) {
     child.abort();
@@ -148,7 +157,11 @@ function makeChildAbort(parent: AgentRunOptions): { controller: AbortController;
   // timeout fires), cancel any run_shell in flight under the child's signal
   // key. The top-level Stop only cancels the PARENT loop's shell; without
   // this the subagent's shell process orphans until its own 30-600s timeout.
-  child.signal.addEventListener("abort", () => cancelActiveShell(child.signal), { once: true });
+  child.signal.addEventListener(
+    "abort",
+    () => cancelActiveShell(child.signal),
+    { once: true },
+  );
   return {
     controller: child,
     release: () => {
@@ -178,7 +191,11 @@ export async function runSubagent(
   }
   const prompt = String(args.prompt ?? "");
   if (!prompt.trim()) {
-    return JSON.stringify({ ok: false, kind: "invalid_argument", message: "prompt is empty" });
+    return JSON.stringify({
+      ok: false,
+      kind: "invalid_argument",
+      message: "prompt is empty",
+    });
   }
   const presetId = args.preset ? String(args.preset) : null;
 
@@ -229,7 +246,11 @@ export async function spawnSubagentAsync(
   }
   const prompt = String(args.prompt ?? "");
   if (!prompt.trim()) {
-    return JSON.stringify({ ok: false, kind: "invalid_argument", message: "prompt is empty" });
+    return JSON.stringify({
+      ok: false,
+      kind: "invalid_argument",
+      message: "prompt is empty",
+    });
   }
   const presetId = args.preset ? String(args.preset) : null;
 
@@ -358,19 +379,36 @@ export async function awaitSubagents(
 
   const results: AwaitResultEntry[] = handles.map(({ id, handle }) => {
     if (!handle) {
-      return { id, status: "unknown", result: JSON.stringify({ ok: false, kind: "unknown_subagent", message: `no subagent with id ${id}` }) };
+      return {
+        id,
+        status: "unknown",
+        result: JSON.stringify({
+          ok: false,
+          kind: "unknown_subagent",
+          message: `no subagent with id ${id}`,
+        }),
+      };
     }
     if (handle.status === "running") {
       // Only possible if we hit the timeout path.
       return {
         id,
         status: "timeout",
-        result: JSON.stringify({ ok: false, kind: "timeout", message: `subagent still running after ${timeoutMs}ms` }),
+        result: JSON.stringify({
+          ok: false,
+          kind: "timeout",
+          message: `subagent still running after ${timeoutMs}ms`,
+        }),
       };
     }
     return {
       id,
-      status: handle.status === "done" ? "done" : handle.status === "cancelled" ? "cancelled" : "error",
+      status:
+        handle.status === "done"
+          ? "done"
+          : handle.status === "cancelled"
+            ? "cancelled"
+            : "error",
       result: handle.result ?? "",
     };
   });

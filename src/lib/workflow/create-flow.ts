@@ -42,7 +42,12 @@ const READ_ONLY_LOCAL = [
   "git_show",
   "git_branches",
 ];
-const SCRATCHPAD = ["workflow_get", "workflow_keys", "workflow_get_prior_run", "workflow_set"];
+const SCRATCHPAD = [
+  "workflow_get",
+  "workflow_keys",
+  "workflow_get_prior_run",
+  "workflow_set",
+];
 
 /**
  * Curated, exfil-safe per-role allowlists. NEVER includes web_fetch /
@@ -85,12 +90,23 @@ function clamp(s: string, max: number): string {
  * Validate + build a linear Flow graph from the model's high-level input.
  * Fail-closed: returns `{ok:false, kind, message}` rather than throwing.
  */
-export function buildLinearFlow(rawName: unknown, rawSteps: unknown): BuildResult {
+export function buildLinearFlow(
+  rawName: unknown,
+  rawSteps: unknown,
+): BuildResult {
   if (typeof rawName !== "string" || !rawName.trim()) {
-    return { ok: false, kind: "bad_args", message: "name must be a non-empty string." };
+    return {
+      ok: false,
+      kind: "bad_args",
+      message: "name must be a non-empty string.",
+    };
   }
   if (!Array.isArray(rawSteps) || rawSteps.length === 0) {
-    return { ok: false, kind: "bad_args", message: "steps must be a non-empty array." };
+    return {
+      ok: false,
+      kind: "bad_args",
+      message: "steps must be a non-empty array.",
+    };
   }
   if (rawSteps.length > MAX_FLOW_STEPS) {
     return {
@@ -106,7 +122,11 @@ export function buildLinearFlow(rawName: unknown, rawSteps: unknown): BuildResul
   for (let i = 0; i < rawSteps.length; i++) {
     const step = rawSteps[i] as Partial<FlowStepInput> | null;
     if (!step || typeof step !== "object") {
-      return { ok: false, kind: "bad_args", message: `step ${i} is not an object.` };
+      return {
+        ok: false,
+        kind: "bad_args",
+        message: `step ${i} is not an object.`,
+      };
     }
     const role = typeof step.role === "string" ? step.role : "";
     // Role must be in the closed allowlist (a fixed set of built-in preset ids).
@@ -120,9 +140,14 @@ export function buildLinearFlow(rawName: unknown, rawSteps: unknown): BuildResul
         message: `step ${i}: role "${role}" not allowed. Use one of: ${[...ALLOWED_FLOW_ROLES].join(", ")}.`,
       };
     }
-    const instructions = typeof step.instructions === "string" ? step.instructions.trim() : "";
+    const instructions =
+      typeof step.instructions === "string" ? step.instructions.trim() : "";
     if (!instructions) {
-      return { ok: false, kind: "bad_args", message: `step ${i}: instructions must be non-empty.` };
+      return {
+        ok: false,
+        kind: "bad_args",
+        message: `step ${i}: instructions must be non-empty.`,
+      };
     }
     const title =
       typeof step.title === "string" && step.title.trim()
@@ -152,7 +177,11 @@ export function buildLinearFlow(rawName: unknown, rawSteps: unknown): BuildResul
     if (i > 0) edges.push({ from: cards[i - 1].id, to: id });
   }
 
-  return { ok: true, name: clamp(rawName.trim(), MAX_FLOW_NAME), graph: { cards, edges } };
+  return {
+    ok: true,
+    name: clamp(rawName.trim(), MAX_FLOW_NAME),
+    graph: { cards, edges },
+  };
 }
 
 /**
@@ -165,11 +194,14 @@ export function assertFlowSafe(graph: WorkflowGraph): string | null {
   for (const c of graph.cards) {
     if (c.unattended === true) return `card "${c.name}" is unattended`;
     if (c.schedule != null) return `card "${c.name}" has a schedule`;
-    if (c.nodeType && c.nodeType !== "agent") return `card "${c.name}" is not a plain agent`;
+    if (c.nodeType && c.nodeType !== "agent")
+      return `card "${c.name}" is not a plain agent`;
     if (c.nodeConfig != null) return `card "${c.name}" carries nodeConfig`;
-    if (!Array.isArray(c.tools) || c.tools.length === 0) return `card "${c.name}" has no curated tools`;
+    if (!Array.isArray(c.tools) || c.tools.length === 0)
+      return `card "${c.name}" has no curated tools`;
     for (const t of c.tools) {
-      if (!ALL_CURATED_TOOLS.has(t)) return `card "${c.name}" carries non-curated tool "${t}"`;
+      if (!ALL_CURATED_TOOLS.has(t))
+        return `card "${c.name}" carries non-curated tool "${t}"`;
     }
   }
   return null;

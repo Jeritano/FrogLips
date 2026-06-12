@@ -59,5 +59,11 @@ export function useAskUserModal(onError: (msg: string) => void): AskUserModal {
     }
   }, [askUserReq]);
 
-  return { askUserReq, askUserAnswer, setAskUserAnswer, submitAskUser, cancelAskUser };
+  return {
+    askUserReq,
+    askUserAnswer,
+    setAskUserAnswer,
+    submitAskUser,
+    cancelAskUser,
+  };
 }

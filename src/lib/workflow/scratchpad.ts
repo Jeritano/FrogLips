@@ -28,7 +28,13 @@ export const SCRATCHPAD_MAX_BYTES = 64 * 1024;
 export const SCRATCHPAD_MAX_KEYS = 256;
 
 /** Internal shape — kept narrow so the keys/values remain JSON-roundtrip-safe. */
-type ScratchValue = string | number | boolean | null | ScratchObj | ScratchValue[];
+type ScratchValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ScratchObj
+  | ScratchValue[];
 interface ScratchObj {
   [k: string]: ScratchValue;
 }
@@ -60,7 +66,10 @@ export function beginRun(workflowId: number): boolean {
       level: "warn",
       source: "workflow-scratchpad",
       message: "beginRun refused: a workflow run is already active",
-      detail: { existingWorkflowId: active.workflowId, requestedWorkflowId: workflowId },
+      detail: {
+        existingWorkflowId: active.workflowId,
+        requestedWorkflowId: workflowId,
+      },
     });
     return false;
   }
@@ -97,25 +106,36 @@ export function clearAll(): boolean {
 function pairBytes(key: string, value: ScratchValue, isFirst: boolean): number {
   // `"key":<value>` plus the comma separator if not first.
   return (
-    JSON.stringify(key).length
-    + 1 // ':'
-    + JSON.stringify(value).length
-    + (isFirst ? 0 : 1) // ','
+    JSON.stringify(key).length +
+    1 + // ':'
+    JSON.stringify(value).length +
+    (isFirst ? 0 : 1) // ','
   );
 }
 
 /** Set a scratchpad entry. Returns ok:false when no run is active OR
  *  when the new size would exceed the cap. */
-export function setEntry(key: string, value: ScratchValue): {
+export function setEntry(
+  key: string,
+  value: ScratchValue,
+): {
   ok: boolean;
   kind?: string;
   message?: string;
 } {
   if (!active) {
-    return { ok: false, kind: "not_in_workflow", message: "workflow_set is only callable during a workflow run." };
+    return {
+      ok: false,
+      kind: "not_in_workflow",
+      message: "workflow_set is only callable during a workflow run.",
+    };
   }
   if (!key || typeof key !== "string") {
-    return { ok: false, kind: "bad_key", message: "key must be a non-empty string." };
+    return {
+      ok: false,
+      kind: "bad_key",
+      message: "key must be a non-empty string.",
+    };
   }
   // Cheap structural validation — reject Date / RegExp / Symbol / function
   // by round-tripping through JSON. Any value that survives this is a
@@ -124,12 +144,19 @@ export function setEntry(key: string, value: ScratchValue): {
   try {
     normalized = JSON.parse(JSON.stringify(value));
   } catch {
-    return { ok: false, kind: "bad_value", message: "value must be JSON-serializable." };
+    return {
+      ok: false,
+      kind: "bad_value",
+      message: "value must be JSON-serializable.",
+    };
   }
   // Key-count cap (audit M10) — defends against runaway cards that fill
   // the pad with tiny entries even when byte count stays under the
   // overall cap.
-  const replacingExisting = Object.prototype.hasOwnProperty.call(active.data, key);
+  const replacingExisting = Object.prototype.hasOwnProperty.call(
+    active.data,
+    key,
+  );
   const nextKeyCount = active.data
     ? Object.keys(active.data).length + (replacingExisting ? 0 : 1)
     : 1;
@@ -184,7 +211,11 @@ export function getEntry(key: string): {
     return { ok: false, kind: "not_in_workflow" };
   }
   if (!(key in active.data)) {
-    return { ok: false, kind: "missing_key", message: `no entry for "${key}".` };
+    return {
+      ok: false,
+      kind: "missing_key",
+      message: `no entry for "${key}".`,
+    };
   }
   return { ok: true, value: active.data[key] };
 }
@@ -206,7 +237,10 @@ export function __resetForTests(): void {
 /** Debug snapshot. NOT exposed via tools — internal use (e.g. UI panel
  *  showing the live scratchpad). Returns a structural clone so a caller
  *  can't mutate live state. */
-export function snapshot(): { workflowId: number; entries: Record<string, ScratchValue> } | null {
+export function snapshot(): {
+  workflowId: number;
+  entries: Record<string, ScratchValue>;
+} | null {
   if (!active) return null;
   try {
     return {

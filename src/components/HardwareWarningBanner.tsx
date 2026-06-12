@@ -7,7 +7,11 @@ import type { Headroom } from "../lib/hardware-profile";
  * the inline headroom badge) — only the cases worth interrupting for. Not a
  * blocker: the user can still Start; this just tells the truth before they do.
  */
-export function HardwareWarningBanner({ headroom }: { headroom: Headroom | null }) {
+export function HardwareWarningBanner({
+  headroom,
+}: {
+  headroom: Headroom | null;
+}) {
   if (!headroom || !headroom.label) return null;
   if (headroom.tier === "comfortable" || headroom.tier === "tight") return null;
 

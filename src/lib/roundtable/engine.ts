@@ -11,7 +11,12 @@
 
 import { buildMessages, sanitizeTurn } from "./framing";
 import { streamSeatTurn } from "./stream";
-import { estimateTokens, turnUsd, projectTurnUsd, type PriceTable } from "./cost";
+import {
+  estimateTokens,
+  turnUsd,
+  projectTurnUsd,
+  type PriceTable,
+} from "./cost";
 import type {
   RoundtableConfig,
   RoundtableEndReason,
@@ -80,7 +85,11 @@ export async function runRoundtable(
   };
   let counter = 0;
 
-  const finishReason = (reason: RoundtableEndReason): RoundtableResult => ({ turns, reason, totals });
+  const finishReason = (reason: RoundtableEndReason): RoundtableResult => ({
+    turns,
+    reason,
+    totals,
+  });
 
   for (let round = 0; round < config.stop.maxRounds; round++) {
     if (signal.aborted) return finishReason("stopped");
@@ -108,11 +117,14 @@ export async function runRoundtable(
 
       // Budget gate — refuse to START a turn that would cross a cap.
       if (config.stop.maxTokens != null) {
-        const projected = totals.tokensIn + totals.tokensOut + promptTokens + capTokens;
-        if (projected > config.stop.maxTokens) return finishReason("token_budget");
+        const projected =
+          totals.tokensIn + totals.tokensOut + promptTokens + capTokens;
+        if (projected > config.stop.maxTokens)
+          return finishReason("token_budget");
       }
       if (config.stop.maxUsd != null) {
-        const projected = totals.usd + projectTurnUsd(promptTokens, capTokens, price);
+        const projected =
+          totals.usd + projectTurnUsd(promptTokens, capTokens, price);
         if (projected > config.stop.maxUsd) return finishReason("usd_budget");
       }
 
@@ -147,7 +159,10 @@ export async function runRoundtable(
       // Per-turn timeout layered on the run-level abort signal. Backend-aware:
       // local seats get a far longer window for cold-load/reload.
       const seatTimeoutMs =
-        optTimeout ?? (seat.backend === "ollama" ? LOCAL_PER_TURN_TIMEOUT_MS : DEFAULT_PER_TURN_TIMEOUT_MS);
+        optTimeout ??
+        (seat.backend === "ollama"
+          ? LOCAL_PER_TURN_TIMEOUT_MS
+          : DEFAULT_PER_TURN_TIMEOUT_MS);
       const ac = new AbortController();
       const onAbort = () => ac.abort();
       signal.addEventListener("abort", onAbort);

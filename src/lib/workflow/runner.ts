@@ -7,8 +7,12 @@ import { loadAllPresets } from "../agent-presets";
 import { logDiag } from "../diagnostics";
 import { api } from "../tauri-api";
 import { resolveLinearOrder } from "./graph";
-import { isOrchestratorNode, runWorkflowNode } from "./nodes";
-import { beginRun as beginScratchpadRun, endRun as endScratchpadRun } from "./scratchpad";
+import { hasCardBudget, isOrchestratorNode, runWorkflowNode } from "./nodes";
+import {
+  beginRun as beginScratchpadRun,
+  endRun as endScratchpadRun,
+  getEntry as scratchpadGet,
+} from "./scratchpad";
 import { beginSkillRun, endSkillRun } from "./skill-invocations";
 
 /**
@@ -37,6 +41,19 @@ export interface CardResult {
 export interface WorkflowRunResult {
   status: "ok" | "failed";
   cards: CardResult[];
+  /**
+   * Set when a card's `haltWhen` gate matched and stopped the chain early.
+   * A halt is a CLEAN stop — `status` stays `"ok"` and the downstream cards
+   * are recorded as `skipped`. The visible "halted by <card>: <key>=<value>"
+   * line is emitted through the halting card's `onCardOutput` stream, so the
+   * RunPanel surfaces it without any new UI plumbing.
+   */
+  halted?: {
+    cardId: string;
+    cardName: string;
+    key: string;
+    value: string;
+  } | null;
 }
 
 /**
@@ -311,8 +328,9 @@ function buildCardOptions(
     content: substituteDatePlaceholders(card.prompt),
   });
 
-  const backend = (card.backend ?? opts.defaultBackend ?? "ollama") as
-    AgentRunOptions["backend"];
+  const backend = (card.backend ??
+    opts.defaultBackend ??
+    "ollama") as AgentRunOptions["backend"];
 
   // Approval gate. Per the workflow UX contract, the per-card `unattended`
   // checkbox in the CardForm is the SOLE approval surface. When checked, the
@@ -415,7 +433,8 @@ export async function runWorkflow(
       logDiag({
         level: "warn",
         source: "workflow",
-        message: "scratchpad busy (another run active) — proceeding without a workflow-scoped scratchpad",
+        message:
+          "scratchpad busy (another run active) — proceeding without a workflow-scoped scratchpad",
       });
     }
   }
@@ -432,222 +451,287 @@ export async function runWorkflow(
   // a later chat-mode `workflow_*` tool call resolve against a stale run
   // instead of returning `not_in_workflow`.
   try {
-  // Optional start-card offset (scheduler triggers a workflow from one card).
-  let cards = order;
-  if (opts.startCardId) {
-    const idx = order.findIndex((c) => c.id === opts.startCardId);
-    if (idx < 0) {
-      throw new Error(`Start card "${opts.startCardId}" is not in the workflow graph.`);
-    }
-    cards = order.slice(idx);
-  }
-
-  // Hoist preset load once for the whole run (audit M8). Loaded inside
-  // buildCardOptions previously — 10-card chain = 10 redundant loads.
-  const presets = loadAllPresets();
-
-  const results: CardResult[] = [];
-  let previousOutput: string | null = null;
-  let failed = false;
-
-  for (const card of cards) {
-    if (failed || signal.aborted) {
-      const result: CardResult = {
-        cardId: card.id,
-        name: card.name,
-        status: "skipped",
-        output: "",
-      };
-      results.push(result);
-      safeHook("onCardDone(skipped)", () => hooks.onCardDone?.(card.id, result));
-      continue;
+    // Optional start-card offset (scheduler triggers a workflow from one card).
+    let cards = order;
+    if (opts.startCardId) {
+      const idx = order.findIndex((c) => c.id === opts.startCardId);
+      if (idx < 0) {
+        throw new Error(
+          `Start card "${opts.startCardId}" is not in the workflow graph.`,
+        );
+      }
+      cards = order.slice(idx);
     }
 
-    safeHook("onCardStart", () => hooks.onCardStart?.(card.id));
-    try {
-      const cardOpts = buildCardOptions(card, previousOutput, opts, hooks, signal, presets);
-      // Phase 1.6: per-card retry. `card.retry.max` extra attempts on
-      // a thrown error; on each attempt the abort signal is re-checked
-      // so a Stop click during backoff exits cleanly. NOT retried:
-      // signal.aborted (user wanted out) and any non-thrown error
-      // path (agent loop's own retry inside runAgentLoop already
-      // handles transient stream failures).
-      const retryMax = card.retry?.max ?? 0;
-      const retryBase = card.retry?.backoff_ms ?? 1000;
-      let final: string | null = null;
-      let lastErr: unknown = null;
-      for (let attempt = 0; attempt <= retryMax; attempt++) {
-        if (signal.aborted) break;
-        try {
-          // Orchestration nodes (MoA, critic, cascade, router, …) fan out /
-          // loop their own sub-runs through runAgentLoop. A plain "agent" card
-          // takes the single-pass path unchanged.
-          if (isOrchestratorNode(card)) {
-            final = await runWorkflowNode({
-              card,
-              base: cardOpts,
-              presets,
-              signal,
-              emit: (text) =>
-                safeHook("onCardOutput", () => hooks.onCardOutput?.(card.id, text)),
-            });
-          } else {
-            final = await runAgentLoop(cardOpts);
-          }
-          lastErr = null;
-          break;
-        } catch (e) {
-          lastErr = e;
-          if (attempt < retryMax && !signal.aborted) {
-            // Audit M11 (2026-05-27): fixed backoff caused two scheduled
-            // workflows triggered by the same cron to retry against the
-            // same upstream (Ollama / MLX) in lock-step. Exponential
-            // backoff with ±25% jitter de-correlates concurrent retries
-            // and gives a temporarily-overloaded backend room to recover.
-            //   backoff = retryBase * 2**attempt * (0.75..1.25)
-            const expo = retryBase * Math.pow(2, attempt);
-            const jitter = 1 + (Math.random() - 0.5) * 0.5;
-            const backoffMs = Math.max(50, Math.round(expo * jitter));
-            logDiag({
-              level: "warn",
-              source: "workflow-retry",
-              message: `card "${card.name}" attempt ${attempt + 1}/${retryMax + 1} failed, retrying in ${backoffMs}ms`,
-              detail: e instanceof Error ? e.message : String(e),
-            });
-            await new Promise<void>((resolve) => {
-              // Audit M-A1 (2026-05-27): previous impl spawned a SECOND
-              // setTimeout for `backoffMs + 1ms` to clean up the abort
-              // listener on the timeout-wins path. That orphan timer
-              // held the event loop alive past run completion + the
-              // listener cleanup was effectively duplicated with the
-              // direct removeEventListener inside the timeout callback.
-              // Single timer + a `resolved` guard cleanly handles both
-              // races: whichever wins removes the listener and resolves
-              // exactly once.
-              let resolved = false;
-              const onAbort = () => {
-                if (resolved) return;
-                resolved = true;
-                clearTimeout(t);
-                signal.removeEventListener("abort", onAbort);
-                resolve();
-              };
-              const t = setTimeout(() => {
-                if (resolved) return;
-                resolved = true;
-                signal.removeEventListener("abort", onAbort);
-                resolve();
-              }, backoffMs);
-              signal.addEventListener("abort", onAbort, { once: true });
-            });
-          }
-        }
-      }
-      if (lastErr) {
-        // Exhausted retries; rethrow into the existing catch arm
-        // so error reporting + onCardError stays in one place.
-        throw lastErr;
-      }
+    // Hoist preset load once for the whole run (audit M8). Loaded inside
+    // buildCardOptions previously — 10-card chain = 10 redundant loads.
+    const presets = loadAllPresets();
 
-      if (signal.aborted) {
-        // User stopped the run while THIS card was active. Distinguish abort
-        // from a real failure: the recorded run still rolls up as `failed`
-        // at the workflow level (downstream cards are skipped) but this card
-        // is tagged `aborted` rather than `error` so the run history reads
-        // cleanly. No `onCardError` — abort isn't an error condition.
+    const results: CardResult[] = [];
+    let previousOutput: string | null = null;
+    let failed = false;
+    // Gate/halt: set when a completed card's `haltWhen` matched the scratchpad.
+    // Distinct from `failed` — downstream cards are skipped the same way, but
+    // the run still rolls up as `ok`.
+    let haltInfo: WorkflowRunResult["halted"] = null;
+
+    for (const card of cards) {
+      if (failed || haltInfo != null || signal.aborted) {
         const result: CardResult = {
           cardId: card.id,
           name: card.name,
-          status: "aborted",
+          status: "skipped",
           output: "",
         };
         results.push(result);
-        failed = true;
-        safeHook("onCardDone(aborted)", () => hooks.onCardDone?.(card.id, result));
+        safeHook("onCardDone(skipped)", () =>
+          hooks.onCardDone?.(card.id, result),
+        );
         continue;
       }
 
-      const rawOutput = final ?? "";
-      // Cap the in-memory chain output before forwarding. A card that
-      // legitimately produces a 10 MB string would otherwise either blow
-      // the next card's context window or balloon RAM. The persist-cap
-      // (RECORD_OUTPUT_CAP) is separate and stricter.
-      const output =
-        rawOutput.length > HANDOFF_OUTPUT_CAP
-          ? `${safeTruncate(rawOutput, HANDOFF_OUTPUT_CAP)}… [truncated for handoff]`
-          : rawOutput;
-      previousOutput = output;
-      const result: CardResult = {
-        cardId: card.id,
-        name: card.name,
-        status: "ok",
-        output,
-      };
-      results.push(result);
-      // Output was already streamed incrementally via `onAssistantDelta →
-      // onCardOutput`; do NOT re-emit the full text here or it shows twice.
-      safeHook("onCardDone(ok)", () => hooks.onCardDone?.(card.id, result));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const result: CardResult = {
-        cardId: card.id,
-        name: card.name,
-        status: "error",
-        output: "",
-        error: message,
-      };
-      results.push(result);
-      failed = true;
-      safeHook("onCardError", () => hooks.onCardError?.(card.id, message));
-      safeHook("onCardDone(error)", () => hooks.onCardDone?.(card.id, result));
+      safeHook("onCardStart", () => hooks.onCardStart?.(card.id));
+      try {
+        const cardOpts = buildCardOptions(
+          card,
+          previousOutput,
+          opts,
+          hooks,
+          signal,
+          presets,
+        );
+        // Phase 1.6: per-card retry. `card.retry.max` extra attempts on
+        // a thrown error; on each attempt the abort signal is re-checked
+        // so a Stop click during backoff exits cleanly. NOT retried:
+        // signal.aborted (user wanted out) and any non-thrown error
+        // path (agent loop's own retry inside runAgentLoop already
+        // handles transient stream failures).
+        const retryMax = card.retry?.max ?? 0;
+        const retryBase = card.retry?.backoff_ms ?? 1000;
+        let final: string | null = null;
+        let lastErr: unknown = null;
+        for (let attempt = 0; attempt <= retryMax; attempt++) {
+          if (signal.aborted) break;
+          try {
+            // Orchestration nodes (MoA, critic, cascade, router, …) fan out /
+            // loop their own sub-runs through runAgentLoop. A plain "agent" card
+            // takes the single-pass path unchanged — UNLESS it carries budget
+            // ceilings (nodeConfig.maxTokens/maxMs): those route through the
+            // node dispatch so the universal `runUnderBudget` wrapper applies
+            // (the default branch is one streamed pass, equivalent to
+            // runAgentLoop here).
+            if (isOrchestratorNode(card) || hasCardBudget(card)) {
+              final = await runWorkflowNode({
+                card,
+                base: cardOpts,
+                presets,
+                signal,
+                emit: (text) =>
+                  safeHook("onCardOutput", () =>
+                    hooks.onCardOutput?.(card.id, text),
+                  ),
+              });
+            } else {
+              final = await runAgentLoop(cardOpts);
+            }
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e;
+            if (attempt < retryMax && !signal.aborted) {
+              // Audit M11 (2026-05-27): fixed backoff caused two scheduled
+              // workflows triggered by the same cron to retry against the
+              // same upstream (Ollama / MLX) in lock-step. Exponential
+              // backoff with ±25% jitter de-correlates concurrent retries
+              // and gives a temporarily-overloaded backend room to recover.
+              //   backoff = retryBase * 2**attempt * (0.75..1.25)
+              const expo = retryBase * Math.pow(2, attempt);
+              const jitter = 1 + (Math.random() - 0.5) * 0.5;
+              const backoffMs = Math.max(50, Math.round(expo * jitter));
+              logDiag({
+                level: "warn",
+                source: "workflow-retry",
+                message: `card "${card.name}" attempt ${attempt + 1}/${retryMax + 1} failed, retrying in ${backoffMs}ms`,
+                detail: e instanceof Error ? e.message : String(e),
+              });
+              await new Promise<void>((resolve) => {
+                // Audit M-A1 (2026-05-27): previous impl spawned a SECOND
+                // setTimeout for `backoffMs + 1ms` to clean up the abort
+                // listener on the timeout-wins path. That orphan timer
+                // held the event loop alive past run completion + the
+                // listener cleanup was effectively duplicated with the
+                // direct removeEventListener inside the timeout callback.
+                // Single timer + a `resolved` guard cleanly handles both
+                // races: whichever wins removes the listener and resolves
+                // exactly once.
+                let resolved = false;
+                const onAbort = () => {
+                  if (resolved) return;
+                  resolved = true;
+                  clearTimeout(t);
+                  signal.removeEventListener("abort", onAbort);
+                  resolve();
+                };
+                const t = setTimeout(() => {
+                  if (resolved) return;
+                  resolved = true;
+                  signal.removeEventListener("abort", onAbort);
+                  resolve();
+                }, backoffMs);
+                signal.addEventListener("abort", onAbort, { once: true });
+              });
+            }
+          }
+        }
+        if (lastErr) {
+          // Exhausted retries; rethrow into the existing catch arm
+          // so error reporting + onCardError stays in one place.
+          throw lastErr;
+        }
+
+        if (signal.aborted) {
+          // User stopped the run while THIS card was active. Distinguish abort
+          // from a real failure: the recorded run still rolls up as `failed`
+          // at the workflow level (downstream cards are skipped) but this card
+          // is tagged `aborted` rather than `error` so the run history reads
+          // cleanly. No `onCardError` — abort isn't an error condition.
+          const result: CardResult = {
+            cardId: card.id,
+            name: card.name,
+            status: "aborted",
+            output: "",
+          };
+          results.push(result);
+          failed = true;
+          safeHook("onCardDone(aborted)", () =>
+            hooks.onCardDone?.(card.id, result),
+          );
+          continue;
+        }
+
+        const rawOutput = final ?? "";
+        // Cap the in-memory chain output before forwarding. A card that
+        // legitimately produces a 10 MB string would otherwise either blow
+        // the next card's context window or balloon RAM. The persist-cap
+        // (RECORD_OUTPUT_CAP) is separate and stricter.
+        const output =
+          rawOutput.length > HANDOFF_OUTPUT_CAP
+            ? `${safeTruncate(rawOutput, HANDOFF_OUTPUT_CAP)}… [truncated for handoff]`
+            : rawOutput;
+        previousOutput = output;
+        const result: CardResult = {
+          cardId: card.id,
+          name: card.name,
+          status: "ok",
+          output,
+        };
+        results.push(result);
+        // Output was already streamed incrementally via `onAssistantDelta →
+        // onCardOutput`; do NOT re-emit the full text here or it shows twice.
+        safeHook("onCardDone(ok)", () => hooks.onCardDone?.(card.id, result));
+
+        // Gate/halt: after the card completes cleanly, an optional
+        // `haltWhen: {key, equals}` stops the chain when the shared scratchpad
+        // entry matches. Clean stop, NOT a failure — remaining cards are
+        // skipped and the run records `ok` with a `halted` marker. Guarded on
+        // scratchpadOwned so a re-entrant run that found the pad busy can
+        // never read (and halt on) ANOTHER run's state.
+        const haltWhen = card.nodeConfig?.haltWhen;
+        if (haltWhen && scratchpadOwned) {
+          const entry = scratchpadGet(haltWhen.key);
+          if (entry.ok) {
+            // String-compare: pad values are JSON scalars/objects, the gate
+            // value is a string. `true`/`5` stringify to "true"/"5" either way.
+            const actual =
+              typeof entry.value === "string"
+                ? entry.value
+                : JSON.stringify(entry.value);
+            if (actual === haltWhen.equals) {
+              haltInfo = {
+                cardId: card.id,
+                cardName: card.name,
+                key: haltWhen.key,
+                value: actual,
+              };
+              // Surface through the same per-card output channel the RunPanel
+              // already renders — no new status plumbing.
+              safeHook("onCardOutput(halt)", () =>
+                hooks.onCardOutput?.(
+                  card.id,
+                  `\nhalted by ${card.name}: ${haltWhen.key}=${actual}\n`,
+                ),
+              );
+            }
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const result: CardResult = {
+          cardId: card.id,
+          name: card.name,
+          status: "error",
+          output: "",
+          error: message,
+        };
+        results.push(result);
+        failed = true;
+        safeHook("onCardError", () => hooks.onCardError?.(card.id, message));
+        safeHook("onCardDone(error)", () =>
+          hooks.onCardDone?.(card.id, result),
+        );
+      }
     }
-  }
 
-  const runResult: WorkflowRunResult = {
-    status: failed || signal.aborted ? "failed" : "ok",
-    cards: results,
-  };
+    const runResult: WorkflowRunResult = {
+      status: failed || signal.aborted ? "failed" : "ok",
+      cards: results,
+      ...(haltInfo != null ? { halted: haltInfo } : {}),
+    };
 
-  // Persist the run summary. Best-effort: a recording failure must not mask a
-  // successful (or already-failed) workflow result.
-  if (opts.workflowId != null) {
-    try {
-      // Cap each card's output before persisting — full agent transcripts
-      // would bloat the run-record table.
-      const recorded: WorkflowRunResult = {
-        status: runResult.status,
-        cards: runResult.cards.map((c) =>
-          // Maturity review P1 #16: explicit marker disambiguates the
-          // record-cap (6 KiB) from the in-memory handoff cap (64 KiB).
-          // A reviewer replaying from the audit row knows the persisted
-          // text is a SHORTER SUMMARY of what the next card actually
-          // received — not the whole thing.
-          c.output.length > RECORD_OUTPUT_CAP
-            ? { ...c, output: `${safeTruncate(c.output, RECORD_OUTPUT_CAP)}… [truncated for storage; full output was passed to next card]` }
-            : c,
-        ),
-      };
-      await api.workflowRunRecord(
-        opts.workflowId,
-        runResult.status,
-        JSON.stringify(recorded),
-      );
-    } catch (e) {
-      // Best-effort, but silent swallow makes gaps in the run history
-      // invisible to debugging. Log to the diagnostic ring buffer so the
-      // failure shows up in the DiagnosticsPanel without surfacing a
-      // user-facing error for a non-critical write.
-      logDiag({
-        level: "warn",
-        source: "workflows",
-        message: `Workflow run record failed for workflow ${opts.workflowId}`,
-        detail: e,
-      });
+    // Persist the run summary. Best-effort: a recording failure must not mask a
+    // successful (or already-failed) workflow result.
+    if (opts.workflowId != null) {
+      try {
+        // Cap each card's output before persisting — full agent transcripts
+        // would bloat the run-record table.
+        const recorded: WorkflowRunResult = {
+          status: runResult.status,
+          ...(runResult.halted != null ? { halted: runResult.halted } : {}),
+          cards: runResult.cards.map((c) =>
+            // Maturity review P1 #16: explicit marker disambiguates the
+            // record-cap (6 KiB) from the in-memory handoff cap (64 KiB).
+            // A reviewer replaying from the audit row knows the persisted
+            // text is a SHORTER SUMMARY of what the next card actually
+            // received — not the whole thing.
+            c.output.length > RECORD_OUTPUT_CAP
+              ? {
+                  ...c,
+                  output: `${safeTruncate(c.output, RECORD_OUTPUT_CAP)}… [truncated for storage; full output was passed to next card]`,
+                }
+              : c,
+          ),
+        };
+        await api.workflowRunRecord(
+          opts.workflowId,
+          runResult.status,
+          JSON.stringify(recorded),
+        );
+      } catch (e) {
+        // Best-effort, but silent swallow makes gaps in the run history
+        // invisible to debugging. Log to the diagnostic ring buffer so the
+        // failure shows up in the DiagnosticsPanel without surfacing a
+        // user-facing error for a non-critical write.
+        logDiag({
+          level: "warn",
+          source: "workflows",
+          message: `Workflow run record failed for workflow ${opts.workflowId}`,
+          detail: e,
+        });
+      }
     }
-  }
 
-  safeHook("onWorkflowDone", () => hooks.onWorkflowDone?.(runResult));
-  return runResult;
+    safeHook("onWorkflowDone", () => hooks.onWorkflowDone?.(runResult));
+    return runResult;
   } finally {
     // Phase 1.1: release the scratchpad + skill-run gate. The workflow_*
     // tools now return {ok:false, kind:"not_in_workflow"} for any subsequent

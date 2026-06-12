@@ -41,13 +41,18 @@ export function RunPanel({ cards }: Props) {
         {cards.map((c) => (
           <div key={c.id} className="wf-run-item" data-state={c.state}>
             <div className="wf-run-item-head">
-              <span className={`wf-run-icon wf-run-icon-${c.state}`} aria-hidden="true">
+              <span
+                className={`wf-run-icon wf-run-icon-${c.state}`}
+                aria-hidden="true"
+              >
                 {STATE_ICON[c.state]}
               </span>
               <span className="wf-run-item-name">{c.name}</span>
             </div>
             {c.output && <pre className="wf-run-output">{c.output}</pre>}
-            {c.error && <pre className="wf-run-output wf-run-error">{c.error}</pre>}
+            {c.error && (
+              <pre className="wf-run-output wf-run-error">{c.error}</pre>
+            )}
           </div>
         ))}
       </div>

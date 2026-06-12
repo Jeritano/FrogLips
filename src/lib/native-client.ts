@@ -25,24 +25,43 @@ interface NativeToolCall {
  */
 export async function* streamNativeChat(
   messages: Message[],
-  opts: { temperature?: number; top_p?: number; maxTokens?: number; signal?: AbortSignal } = {},
+  opts: {
+    temperature?: number;
+    top_p?: number;
+    maxTokens?: number;
+    signal?: AbortSignal;
+  } = {},
 ): AsyncGenerator<NativeChunk> {
   const opId = `native-${crypto.randomUUID()}`;
   const queue: string[] = [];
   let done = false;
   let resolver: (() => void) | null = null;
 
-  const wake = () => { if (resolver) { resolver(); resolver = null; } };
-  const wait = () => new Promise<void>((r) => { resolver = r; });
+  const wake = () => {
+    if (resolver) {
+      resolver();
+      resolver = null;
+    }
+  };
+  const wait = () =>
+    new Promise<void>((r) => {
+      resolver = r;
+    });
 
-  const offChunk: UnlistenFn = await listen<string>(`native-chunk:${opId}`, (e) => {
-    queue.push(e.payload);
-    wake();
-  });
-  const offDone: UnlistenFn = await listen<string>(`native-done:${opId}`, () => {
-    done = true;
-    wake();
-  });
+  const offChunk: UnlistenFn = await listen<string>(
+    `native-chunk:${opId}`,
+    (e) => {
+      queue.push(e.payload);
+      wake();
+    },
+  );
+  const offDone: UnlistenFn = await listen<string>(
+    `native-done:${opId}`,
+    () => {
+      done = true;
+      wake();
+    },
+  );
 
   // Abort → tell the native runtime to stop decoding (otherwise it runs to
   // max_tokens after Stop), and wake the loop so it observes signal.aborted
@@ -72,8 +91,14 @@ export async function* streamNativeChat(
   // then re-throws the real error so the UI surfaces it.
   let reqSettled = false;
   reqPromise.then(
-    () => { reqSettled = true; wake(); },
-    () => { reqSettled = true; wake(); },
+    () => {
+      reqSettled = true;
+      wake();
+    },
+    () => {
+      reqSettled = true;
+      wake();
+    },
   );
 
   try {
@@ -92,7 +117,9 @@ export async function* streamNativeChat(
     offChunk();
     offDone();
     // Surface server-side error if any.
-    try { await reqPromise; } catch (e) {
+    try {
+      await reqPromise;
+    } catch (e) {
       throw e;
     }
   }
@@ -140,11 +167,16 @@ function toToolCall(tc: NativeToolCall): ToolCall {
   let args: Record<string, unknown> | string = tc.arguments;
   try {
     const parsed = JSON.parse(tc.arguments);
-    if (parsed && typeof parsed === "object") args = parsed as Record<string, unknown>;
+    if (parsed && typeof parsed === "object")
+      args = parsed as Record<string, unknown>;
   } catch {
     // Leave as the raw string — dispatch.parseArgs tolerates both forms.
   }
-  return { id: tc.id, type: "function", function: { name: tc.name, arguments: args } };
+  return {
+    id: tc.id,
+    type: "function",
+    function: { name: tc.name, arguments: args },
+  };
 }
 
 /**
@@ -171,14 +203,19 @@ export async function streamNativeAgentChat(
   let content = "";
   let toolCalls: ToolCall[] = [];
 
-  const offChunk: UnlistenFn = await listen<string>(`native-chunk:${opId}`, (e) => {
-    if (signal.aborted) return;
-    content += e.payload;
-    onContentChunk(e.payload);
-  });
+  const offChunk: UnlistenFn = await listen<string>(
+    `native-chunk:${opId}`,
+    (e) => {
+      if (signal.aborted) return;
+      content += e.payload;
+      onContentChunk(e.payload);
+    },
+  );
   const offTools: UnlistenFn = await listen<NativeToolCall[]>(
     `native-toolcalls:${opId}`,
-    (e) => { toolCalls = e.payload.map(toToolCall); },
+    (e) => {
+      toolCalls = e.payload.map(toToolCall);
+    },
   );
 
   // Wire the caller's abort signal to a best-effort native cancel. The native
@@ -187,7 +224,9 @@ export async function streamNativeAgentChat(
   // call if it isn't there — the abort still stops further chunk forwarding
   // via the `signal.aborted` guard in the listener above.
   const onAbort = () => {
-    const cancelFn = (api as unknown as Record<string, unknown>)["nativeCancelChat"];
+    const cancelFn = (api as unknown as Record<string, unknown>)[
+      "nativeCancelChat"
+    ];
     if (typeof cancelFn === "function") {
       try {
         void (cancelFn as (id: string) => Promise<unknown>)(opId);

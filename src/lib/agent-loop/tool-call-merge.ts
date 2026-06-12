@@ -144,7 +144,10 @@ export function finalizeToolCalls(acc: PartialToolCall[]): ToolCall[] {
         const repaired = attemptRepairArgs(s);
         args = repaired ? repaired.repaired : s;
       }
-    } else if (slot.function.arguments && typeof slot.function.arguments === "object") {
+    } else if (
+      slot.function.arguments &&
+      typeof slot.function.arguments === "object"
+    ) {
       args = slot.function.arguments as Record<string, unknown>;
     }
     // Mint a stable, schema-safe id. Two failure modes drove this:

@@ -22,7 +22,6 @@ interface Props {
   onCorporaChanged?: () => void;
 }
 
-
 function fmtAge(unix: number): string {
   if (!unix) return "—";
   const now = Math.floor(Date.now() / 1000);
@@ -149,7 +148,9 @@ export function RagPanel({ onCorporaChanged }: Props) {
         </div>
       )}
       {info && (
-        <div className="rag-msg rag-msg-info" role="status">{info}</div>
+        <div className="rag-msg rag-msg-info" role="status">
+          {info}
+        </div>
       )}
 
       {/* Ingest form */}
@@ -243,7 +244,9 @@ export function RagPanel({ onCorporaChanged }: Props) {
                   <td className="rag-col-r">
                     <button
                       onClick={() =>
-                        deleteConfirm.request(c.name, (n) => { void handleDelete(n); })
+                        deleteConfirm.request(c.name, (n) => {
+                          void handleDelete(n);
+                        })
                       }
                       title={
                         deleteConfirm.armed === c.name
@@ -256,9 +259,11 @@ export function RagPanel({ onCorporaChanged }: Props) {
                           : `Delete ${c.name}`
                       }
                     >
-                      {deleteConfirm.armed === c.name
-                        ? "Click again to confirm"
-                        : <X size={14} />}
+                      {deleteConfirm.armed === c.name ? (
+                        "Click again to confirm"
+                      ) : (
+                        <X size={14} />
+                      )}
                     </button>
                   </td>
                 </tr>
@@ -271,9 +276,7 @@ export function RagPanel({ onCorporaChanged }: Props) {
       {/* Debug search */}
       {corpora.length > 0 && (
         <div className="rag-search">
-          <div className="rag-search-label">
-            Test search (debug):
-          </div>
+          <div className="rag-search-label">Test search (debug):</div>
           <div className="rag-search-row">
             <select
               value={searchCorpus}
@@ -314,9 +317,7 @@ export function RagPanel({ onCorporaChanged }: Props) {
                       ({h.score.toFixed(3)})
                     </span>
                   </div>
-                  <div className="rag-hit-snippet">
-                    {h.snippet}
-                  </div>
+                  <div className="rag-hit-snippet">{h.snippet}</div>
                 </li>
               ))}
             </ol>

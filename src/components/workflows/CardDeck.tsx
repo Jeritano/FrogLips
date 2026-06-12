@@ -36,7 +36,9 @@ export function CardDeck({ onCreate }: Props) {
         }}
         title="Click to add a new agent"
       >
-        <span className="wf-deck-plus" aria-hidden="true">+</span>
+        <span className="wf-deck-plus" aria-hidden="true">
+          +
+        </span>
         <span className="wf-deck-label">New agent</span>
       </div>
     </div>

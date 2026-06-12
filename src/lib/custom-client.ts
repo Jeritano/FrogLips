@@ -41,8 +41,16 @@ export async function* streamCustomChat(
   let errMsg: string | null = null;
   let resolver: (() => void) | null = null;
 
-  const wake = () => { if (resolver) { resolver(); resolver = null; } };
-  const wait = () => new Promise<void>((r) => { resolver = r; });
+  const wake = () => {
+    if (resolver) {
+      resolver();
+      resolver = null;
+    }
+  };
+  const wait = () =>
+    new Promise<void>((r) => {
+      resolver = r;
+    });
 
   const offChunk: UnlistenFn = await listen<{ delta: string }>(
     `custom-chunk:${opId}`,
@@ -51,15 +59,22 @@ export async function* streamCustomChat(
       wake();
     },
   );
-  const offDone: UnlistenFn = await listen<unknown>(`custom-done:${opId}`, () => {
-    done = true;
-    wake();
-  });
-  const offErr: UnlistenFn = await listen<string>(`custom-error:${opId}`, (e) => {
-    errMsg = typeof e.payload === "string" ? e.payload : "custom backend error";
-    done = true;
-    wake();
-  });
+  const offDone: UnlistenFn = await listen<unknown>(
+    `custom-done:${opId}`,
+    () => {
+      done = true;
+      wake();
+    },
+  );
+  const offErr: UnlistenFn = await listen<string>(
+    `custom-error:${opId}`,
+    (e) => {
+      errMsg =
+        typeof e.payload === "string" ? e.payload : "custom backend error";
+      done = true;
+      wake();
+    },
+  );
 
   // Abort → tell Rust to stop the stream, and wake the loop so it observes
   // `signal.aborted` immediately rather than waiting for the next delta.
@@ -104,7 +119,9 @@ export async function* streamCustomChat(
     offErr();
     // Surface a command-level rejection (HTTP error, bad backend id) that
     // didn't already arrive via the custom-error event.
-    try { await reqPromise; } catch (e) {
+    try {
+      await reqPromise;
+    } catch (e) {
       if (!errMsg) throw e;
     }
   }

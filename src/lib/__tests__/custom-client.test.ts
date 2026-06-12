@@ -25,7 +25,10 @@ let resolveReq: (() => void) | null = null;
 vi.mock("../tauri-api", () => ({
   api: {
     customChatStream: vi.fn(
-      () => new Promise<void>((r) => { resolveReq = r; }),
+      () =>
+        new Promise<void>((r) => {
+          resolveReq = r;
+        }),
     ),
   },
 }));
@@ -53,7 +56,9 @@ const MSGS: Message[] = [{ conversation_id: 1, role: "user", content: "hi" }];
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-async function drainWith(driver: () => void): Promise<{ text: string; err: string | null }> {
+async function drainWith(
+  driver: () => void,
+): Promise<{ text: string; err: string | null }> {
   // The async-generator body only runs once consumption starts, so kick the
   // drain in the background, wait for its three listeners to register, then
   // fire the scripted events.

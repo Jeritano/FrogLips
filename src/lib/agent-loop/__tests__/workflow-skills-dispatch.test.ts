@@ -20,15 +20,32 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // flow into both the api mock and the assertions.
 const mocks = vi.hoisted(() => ({
   workflowSkillSave: vi.fn<
-    (id: number, name: string, desc: string, stepsJson: string, overwrite?: boolean) => Promise<number>
+    (
+      id: number,
+      name: string,
+      desc: string,
+      stepsJson: string,
+      overwrite?: boolean,
+    ) => Promise<number>
   >(async () => 42),
   workflowSkillList: vi.fn(async () => [] as Array<Record<string, unknown>>),
-  workflowSkillGet: vi.fn(async (_id: number, _name: string) => null as Record<string, unknown> | null),
+  workflowSkillGet: vi.fn(
+    async (_id: number, _name: string) =>
+      null as Record<string, unknown> | null,
+  ),
   workflowSkillDelete: vi.fn(async () => undefined),
   workflowSkillRecordInvocation: vi.fn(async () => undefined),
-  agentAuditRecord: vi.fn<(entry: { tool_name: string }) => Promise<void>>(async () => undefined),
+  agentAuditRecord: vi.fn<(entry: { tool_name: string }) => Promise<void>>(
+    async () => undefined,
+  ),
   // Snapshot mock — flipped between null and an active workflow per test.
-  scratchpadSnapshot: vi.fn(() => ({ workflowId: 7, entries: {} }) as { workflowId: number; entries: Record<string, unknown> } | null),
+  scratchpadSnapshot: vi.fn(
+    () =>
+      ({ workflowId: 7, entries: {} }) as {
+        workflowId: number;
+        entries: Record<string, unknown>;
+      } | null,
+  ),
 }));
 
 vi.mock("../../tauri-api", () => ({
@@ -43,11 +60,26 @@ vi.mock("../../tauri-api", () => ({
     // We use `read_file` as the canonical replayed step in tests because
     // it's a no-approval read path and its arm routes to a single api
     // method we can spy on.
-    agentReadFile: vi.fn(async (path: string) => ({ path, content: "x", bytes_read: 1, total_bytes: 1, truncated: false, binary: false })),
-    agentListDir: vi.fn(async (path: string) => ({ path, entries: [], truncated: false })),
+    agentReadFile: vi.fn(async (path: string) => ({
+      path,
+      content: "x",
+      bytes_read: 1,
+      total_bytes: 1,
+      truncated: false,
+      binary: false,
+    })),
+    agentListDir: vi.fn(async (path: string) => ({
+      path,
+      entries: [],
+      truncated: false,
+    })),
     // Dangerous arm — must NEVER be reached when it appears as a replay step:
     // the invoke loop fails the step closed before dispatching it (SECURITY).
-    agentRunShell: vi.fn(async () => ({ stdout: "", stderr: "", exit_code: 0 })),
+    agentRunShell: vi.fn(async () => ({
+      stdout: "",
+      stderr: "",
+      exit_code: 0,
+    })),
   },
 }));
 
@@ -111,13 +143,21 @@ describe("workflow_save_skill", () => {
       steps: [{ tool: "read_file", args: { path: "/x" } }],
       overwrite: true,
     });
-    expect(api.workflowSkillSave).toHaveBeenCalledWith(7, "s", "d", expect.any(String), true);
+    expect(api.workflowSkillSave).toHaveBeenCalledWith(
+      7,
+      "s",
+      "d",
+      expect.any(String),
+      true,
+    );
   });
 
   it("returns not_in_workflow when no scratchpad snapshot", async () => {
     mocks.scratchpadSnapshot.mockReturnValue(null);
     const out = await executeTool("workflow_save_skill", {
-      name: "s", description: "d", steps: [],
+      name: "s",
+      description: "d",
+      steps: [],
     });
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(false);
@@ -131,20 +171,27 @@ describe("workflow_save_skill", () => {
     "workflow_delete_skill",
     "spawn_subagent",
     "await_subagents",
-  ])("client-side rejects forbidden step tool %s before round-tripping", async (forbidden) => {
-    const out = await executeTool("workflow_save_skill", {
-      name: "s",
-      description: "d",
-      steps: [{ tool: forbidden, args: {} }],
-    });
-    const parsed = JSON.parse(out);
-    expect(parsed.ok).toBe(false);
-    expect(parsed.kind).toBe("forbidden_step_tool");
-    expect(api.workflowSkillSave).not.toHaveBeenCalled();
-  });
+  ])(
+    "client-side rejects forbidden step tool %s before round-tripping",
+    async (forbidden) => {
+      const out = await executeTool("workflow_save_skill", {
+        name: "s",
+        description: "d",
+        steps: [{ tool: forbidden, args: {} }],
+      });
+      const parsed = JSON.parse(out);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.kind).toBe("forbidden_step_tool");
+      expect(api.workflowSkillSave).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects empty name without round-tripping", async () => {
-    const out = await executeTool("workflow_save_skill", { name: "", description: "d", steps: [] });
+    const out = await executeTool("workflow_save_skill", {
+      name: "",
+      description: "d",
+      steps: [],
+    });
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(false);
     expect(parsed.kind).toBe("bad_args");
@@ -166,7 +213,13 @@ describe("workflow_save_skill", () => {
 describe("workflow_list_skills", () => {
   it("routes to api.workflowSkillList with the snapshot's workflow_id", async () => {
     mocks.workflowSkillList.mockResolvedValue([
-      { id: 1, name: "a", description: "", last_used_at: null, invocation_count: 0 },
+      {
+        id: 1,
+        name: "a",
+        description: "",
+        last_used_at: null,
+        invocation_count: 0,
+      },
     ]);
     const out = await executeTool("workflow_list_skills", {});
     expect(api.workflowSkillList).toHaveBeenCalledWith(7);
@@ -186,8 +239,14 @@ describe("workflow_list_skills", () => {
 describe("workflow_get_skill", () => {
   it("routes to api.workflowSkillGet and returns the skill", async () => {
     mocks.workflowSkillGet.mockResolvedValue({
-      id: 1, name: "s", description: "d", last_used_at: null, invocation_count: 0,
-      workflow_id: 7, steps_json: "[]", created_at: 1,
+      id: 1,
+      name: "s",
+      description: "d",
+      last_used_at: null,
+      invocation_count: 0,
+      workflow_id: 7,
+      steps_json: "[]",
+      created_at: 1,
     });
     const out = await executeTool("workflow_get_skill", { name: "s" });
     expect(api.workflowSkillGet).toHaveBeenCalledWith(7, "s");
@@ -238,15 +297,27 @@ describe("workflow_invoke_skill", () => {
 
   it("fetches skill, replays each step via executeTool, records invocation", async () => {
     mocks.workflowSkillGet.mockResolvedValue(
-      skillWith(JSON.stringify([
-        { tool: "read_file", args: { path: "/a" } },
-        { tool: "read_file", args: { path: "/b" } },
-      ])),
+      skillWith(
+        JSON.stringify([
+          { tool: "read_file", args: { path: "/a" } },
+          { tool: "read_file", args: { path: "/b" } },
+        ]),
+      ),
     );
     const out = await executeTool("workflow_invoke_skill", { name: "s" });
     expect(api.workflowSkillGet).toHaveBeenCalledWith(7, "s");
-    expect(api.agentReadFile).toHaveBeenNthCalledWith(1, "/a", undefined, undefined);
-    expect(api.agentReadFile).toHaveBeenNthCalledWith(2, "/b", undefined, undefined);
+    expect(api.agentReadFile).toHaveBeenNthCalledWith(
+      1,
+      "/a",
+      undefined,
+      undefined,
+    );
+    expect(api.agentReadFile).toHaveBeenNthCalledWith(
+      2,
+      "/b",
+      undefined,
+      undefined,
+    );
     expect(api.workflowSkillRecordInvocation).toHaveBeenCalledWith(7, "s");
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(true);
@@ -257,9 +328,11 @@ describe("workflow_invoke_skill", () => {
 
   it("shallow-merges args_override into each step's args", async () => {
     mocks.workflowSkillGet.mockResolvedValue(
-      skillWith(JSON.stringify([
-        { tool: "read_file", args: { path: "/orig", offset: 0 } },
-      ])),
+      skillWith(
+        JSON.stringify([
+          { tool: "read_file", args: { path: "/orig", offset: 0 } },
+        ]),
+      ),
     );
     await executeTool("workflow_invoke_skill", {
       name: "s",
@@ -274,10 +347,12 @@ describe("workflow_invoke_skill", () => {
     // Simpler approach: use a step whose result the dispatch arm wraps in
     // an ok:false because the tool itself is unknown.
     mocks.workflowSkillGet.mockResolvedValue(
-      skillWith(JSON.stringify([
-        { tool: "definitely_not_a_real_tool", args: {} },
-        { tool: "read_file", args: { path: "/should-not-run" } },
-      ])),
+      skillWith(
+        JSON.stringify([
+          { tool: "definitely_not_a_real_tool", args: {} },
+          { tool: "read_file", args: { path: "/should-not-run" } },
+        ]),
+      ),
     );
     const out = await executeTool("workflow_invoke_skill", { name: "s" });
     const parsed = JSON.parse(out);
@@ -294,10 +369,12 @@ describe("workflow_invoke_skill", () => {
   // save time (save-time forbids recursion only; it never forbade run_shell).
   it("refuses a dangerous step (run_shell) at replay without executing it", async () => {
     mocks.workflowSkillGet.mockResolvedValue(
-      skillWith(JSON.stringify([
-        { tool: "run_shell", args: { command: "rm -rf ~" } },
-        { tool: "read_file", args: { path: "/should-not-run" } },
-      ])),
+      skillWith(
+        JSON.stringify([
+          { tool: "run_shell", args: { command: "rm -rf ~" } },
+          { tool: "read_file", args: { path: "/should-not-run" } },
+        ]),
+      ),
     );
     const out = await executeTool("workflow_invoke_skill", { name: "s" });
     const parsed = JSON.parse(out);
@@ -311,7 +388,11 @@ describe("workflow_invoke_skill", () => {
   });
 
   it.each([
-    "delete_path", "write_file", "http_request", "spawn_subagent", "workflow_invoke_skill",
+    "delete_path",
+    "write_file",
+    "http_request",
+    "spawn_subagent",
+    "workflow_invoke_skill",
   ])("refuses dangerous/recursive replay step %s", async (tool) => {
     mocks.workflowSkillGet.mockResolvedValue(
       skillWith(JSON.stringify([{ tool, args: {} }])),

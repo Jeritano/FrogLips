@@ -9,7 +9,11 @@ export interface SpinnerProps {
 
 /** Token-styled indeterminate spinner. Respects prefers-reduced-motion via
  *  the global guard in tokens.css. */
-export function Spinner({ size = "sm", className, label = "Loading" }: SpinnerProps) {
+export function Spinner({
+  size = "sm",
+  className,
+  label = "Loading",
+}: SpinnerProps) {
   return (
     <span
       role="status"

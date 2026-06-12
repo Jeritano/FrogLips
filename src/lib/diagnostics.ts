@@ -61,14 +61,17 @@ function hydrate(): void {
     for (const item of window) {
       if (!item || typeof item !== "object") continue;
       const ts = typeof item.ts === "number" ? item.ts : Date.now();
-      const level = item.level === "error" || item.level === "warn" || item.level === "info"
-        ? item.level
-        : "info";
+      const level =
+        item.level === "error" || item.level === "warn" || item.level === "info"
+          ? item.level
+          : "info";
       const source = typeof item.source === "string" ? item.source : "unknown";
       const message = typeof item.message === "string" ? item.message : "";
       entries.push({ ts, level, source, message, detail: item.detail });
     }
-  } catch {/* hydration failure is non-fatal — start with empty buffer */}
+  } catch {
+    /* hydration failure is non-fatal — start with empty buffer */
+  }
 }
 
 /**
@@ -86,14 +89,22 @@ function normaliseDetail(detail: unknown): unknown {
       stack: detail.stack,
     };
   }
-  if (typeof detail === "string" || typeof detail === "number" || typeof detail === "boolean") {
+  if (
+    typeof detail === "string" ||
+    typeof detail === "number" ||
+    typeof detail === "boolean"
+  ) {
     return detail;
   }
   // Cheap circular-ref check via JSON.stringify try/catch.
   try {
     return JSON.parse(JSON.stringify(detail));
   } catch {
-    try { return String(detail); } catch { return "[unserialisable detail]"; }
+    try {
+      return String(detail);
+    } catch {
+      return "[unserialisable detail]";
+    }
   }
 }
 
@@ -102,7 +113,9 @@ function persist(): void {
     if (typeof localStorage === "undefined") return;
     const slice = entries.slice(-PERSIST_ENTRIES);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(slice));
-  } catch {/* quota / serialization issues are non-fatal */}
+  } catch {
+    /* quota / serialization issues are non-fatal */
+  }
 }
 
 function notify(): void {
@@ -111,7 +124,9 @@ function notify(): void {
   for (const fn of subscribers) {
     try {
       fn(snap);
-    } catch {/* a misbehaving subscriber must not crash logDiag */}
+    } catch {
+      /* a misbehaving subscriber must not crash logDiag */
+    }
   }
 }
 
@@ -130,7 +145,9 @@ export function logDiag(entry: Omit<DiagEntry, "ts">): void {
     while (entries.length > CAP_ENTRIES) entries.shift();
     persist();
     notify();
-  } catch {/* logDiag is best-effort */}
+  } catch {
+    /* logDiag is best-effort */
+  }
 }
 
 /** Snapshot of the current ring buffer (most-recent at the end). */
@@ -147,7 +164,9 @@ export function clearDiag(): void {
     if (typeof localStorage !== "undefined") {
       localStorage.removeItem(STORAGE_KEY);
     }
-  } catch {/* non-fatal */}
+  } catch {
+    /* non-fatal */
+  }
   notify();
 }
 
@@ -161,7 +180,9 @@ export function subscribeDiag(fn: (entries: DiagEntry[]) => void): () => void {
   subscribers.add(fn);
   try {
     fn(entries.slice());
-  } catch {/* mirror notify()'s tolerance */}
+  } catch {
+    /* mirror notify()'s tolerance */
+  }
   return () => {
     subscribers.delete(fn);
   };

@@ -23,14 +23,22 @@ describe("recommendStarter", () => {
   it("falls back to the smallest when nothing is comfortable", () => {
     // 4 GB: even small (2×1.3=2.6, ratio 0.65 → tight). prefers a 'tight' over
     // nothing; with only oversized options it returns the smallest.
-    const r = recommendStarter([{ id: "a", approxGb: 8 }, { id: "b", approxGb: 16 }], 4);
+    const r = recommendStarter(
+      [
+        { id: "a", approxGb: 8 },
+        { id: "b", approxGb: 16 },
+      ],
+      4,
+    );
     expect(r.recommended?.id).toBe("a");
   });
 
   it("classifies every candidate", () => {
     const r = recommendStarter(CANDIDATES, 18);
     expect(r.fit.size).toBe(3);
-    expect(["comfortable", "tight", "thrash", "impossible"]).toContain(r.fit.get("small"));
+    expect(["comfortable", "tight", "thrash", "impossible"]).toContain(
+      r.fit.get("small"),
+    );
   });
 
   it("handles an empty list", () => {

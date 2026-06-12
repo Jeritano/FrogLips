@@ -42,15 +42,26 @@ export function AboutYouModal({ onClose }: Props) {
   // Load the saved profile once. A missing/legacy profile falls back to EMPTY.
   useEffect(() => {
     let cancelled = false;
-    api.settingsGet()
+    api
+      .settingsGet()
       .then((s) => {
-        if (!cancelled && s.user_profile) setProfile({ ...EMPTY, ...s.user_profile });
+        if (!cancelled && s.user_profile)
+          setProfile({ ...EMPTY, ...s.user_profile });
       })
       .catch((e) =>
-        logDiag({ level: "warn", source: "user-profile", message: "settingsGet failed", detail: e }),
+        logDiag({
+          level: "warn",
+          source: "user-profile",
+          message: "settingsGet failed",
+          detail: e,
+        }),
       )
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function set<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
@@ -71,7 +82,13 @@ export function AboutYouModal({ onClose }: Props) {
       const location = norm(profile.location);
       const about = norm(profile.about);
       const responseStyle = norm(profile.response_style);
-      const hasAnyContent = !!(name || occupation || location || about || responseStyle);
+      const hasAnyContent = !!(
+        name ||
+        occupation ||
+        location ||
+        about ||
+        responseStyle
+      );
       // Foot-gun fix: if the user typed anything at all, treat saving as an
       // intent to use the profile. They can still uncheck the box later.
       // An entirely blank save leaves enabled at whatever it was so an
@@ -97,7 +114,9 @@ export function AboutYouModal({ onClose }: Props) {
   return (
     <div
       className="memories-overlay"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
       role="dialog"
       aria-modal="true"
       aria-label="About You"
@@ -105,7 +124,13 @@ export function AboutYouModal({ onClose }: Props) {
       <div className="memories-modal profile-modal" ref={modalRef}>
         <div className="memories-modal-header">
           <span>About You</span>
-          <button onClick={onClose} aria-label="Close" className="memories-close"><X size={16} /></button>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="memories-close"
+          >
+            <X size={16} />
+          </button>
         </div>
 
         <p className="profile-intro">
@@ -186,7 +211,11 @@ export function AboutYouModal({ onClose }: Props) {
             <ErrorBar message={err} onDismiss={() => setErr(null)} />
 
             <div className="profile-actions">
-              <button className="agent-settings-btn" onClick={onClose} disabled={saving}>
+              <button
+                className="agent-settings-btn"
+                onClick={onClose}
+                disabled={saving}
+              >
                 Cancel
               </button>
               <button

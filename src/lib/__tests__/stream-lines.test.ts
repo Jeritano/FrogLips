@@ -25,11 +25,18 @@ describe("readLines", () => {
   });
 
   it("delivers multiple lines from a single chunk", async () => {
-    expect(await collect(["one\ntwo\nthree\n"])).toEqual(["one", "two", "three"]);
+    expect(await collect(["one\ntwo\nthree\n"])).toEqual([
+      "one",
+      "two",
+      "three",
+    ]);
   });
 
   it("reassembles a line split across chunk boundaries", async () => {
-    expect(await collect(["hel", "lo\nwor", "ld\n"])).toEqual(["hello", "world"]);
+    expect(await collect(["hel", "lo\nwor", "ld\n"])).toEqual([
+      "hello",
+      "world",
+    ]);
   });
 
   it("delivers an unterminated trailing tail when the stream ends", async () => {
@@ -41,7 +48,12 @@ describe("readLines", () => {
   });
 
   it("emits empty strings for blank lines / keepalives", async () => {
-    expect(await collect(["data\n\n\nmore\n"])).toEqual(["data", "", "", "more"]);
+    expect(await collect(["data\n\n\nmore\n"])).toEqual([
+      "data",
+      "",
+      "",
+      "more",
+    ]);
   });
 
   it("handles a chunk that is exactly a newline", async () => {

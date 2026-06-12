@@ -88,7 +88,11 @@ export function setCodeFont(name: string): void {
 export function applyCodeFont(): void {
   if (typeof document === "undefined") return;
   const v = getCodeFont().replace(/["\\;{}]/g, ""); // sanitize before CSS injection
-  if (v) document.documentElement.style.setProperty("--mono", `"${v}", ${DEFAULT_MONO}`);
+  if (v)
+    document.documentElement.style.setProperty(
+      "--mono",
+      `"${v}", ${DEFAULT_MONO}`,
+    );
   else document.documentElement.style.removeProperty("--mono");
 }
 
@@ -96,7 +100,8 @@ export function applyCodeFont(): void {
 
 export type UiFont = "froglips" | "system";
 const UI_FONT_STACK: Record<UiFont, string> = {
-  froglips: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  froglips:
+    '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   system: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
 };
 
@@ -111,7 +116,10 @@ export function setUiFont(v: UiFont): void {
 
 export function applyUiFont(): void {
   if (typeof document === "undefined") return;
-  document.documentElement.style.setProperty("--ui-font", UI_FONT_STACK[getUiFont()]);
+  document.documentElement.style.setProperty(
+    "--ui-font",
+    UI_FONT_STACK[getUiFont()],
+  );
 }
 
 /* ── Transcript text size ──────────────────────────────────────────────── */

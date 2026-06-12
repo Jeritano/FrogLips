@@ -143,7 +143,8 @@ export function PromptLibrary({ open, onClose, onChange }: Props) {
           <div className="prompt-library-section-head">
             <strong>Built-ins</strong>
             <span className="agent-settings-hint">
-              Can be hidden, not deleted. A custom trigger of the same name overrides.
+              Can be hidden, not deleted. A custom trigger of the same name
+              overrides.
             </span>
           </div>
           <ul className="prompt-library-list">
@@ -221,7 +222,10 @@ export function PromptLibrary({ open, onClose, onChange }: Props) {
         </div>
 
         {draft && (
-          <div className="prompt-library-editor" data-testid="prompt-library-editor">
+          <div
+            className="prompt-library-editor"
+            data-testid="prompt-library-editor"
+          >
             <div className="prompt-library-section-head">
               <strong>{draft.id ? "Edit template" : "New template"}</strong>
             </div>
@@ -238,7 +242,9 @@ export function PromptLibrary({ open, onClose, onChange }: Props) {
               <span>Trigger</span>
               <input
                 value={draft.trigger}
-                onChange={(e) => setDraft({ ...draft, trigger: e.target.value })}
+                onChange={(e) =>
+                  setDraft({ ...draft, trigger: e.target.value })
+                }
                 placeholder="refactor"
               />
             </label>
@@ -252,7 +258,10 @@ export function PromptLibrary({ open, onClose, onChange }: Props) {
               />
             </label>
             <div className="prompt-library-editor-actions">
-              <button className="agent-settings-btn" onClick={() => setDraft(null)}>
+              <button
+                className="agent-settings-btn"
+                onClick={() => setDraft(null)}
+              >
                 Cancel
               </button>
               <button

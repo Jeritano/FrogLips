@@ -72,7 +72,9 @@ export function resolveLinearOrder(graph: WorkflowGraph): WorkflowCard[] {
 
   const starts = cards.filter((c) => (inDeg.get(c.id) ?? 0) === 0);
   if (starts.length === 0) {
-    throw new WorkflowGraphError("Workflow has no start card — graph contains a cycle.");
+    throw new WorkflowGraphError(
+      "Workflow has no start card — graph contains a cycle.",
+    );
   }
   if (starts.length > 1) {
     throw new WorkflowGraphError(
@@ -111,6 +113,9 @@ export function validateGraph(
   try {
     return { ok: true, order: resolveLinearOrder(graph) };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }

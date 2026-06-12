@@ -26,7 +26,11 @@ export function estimateTokens(text: string): number {
 
 /** USD for a single turn given estimated tokens + the seat's price (0 if
  *  pricing unknown). */
-export function turnUsd(tokensIn: number, tokensOut: number, price?: SeatPrice | null): number {
+export function turnUsd(
+  tokensIn: number,
+  tokensOut: number,
+  price?: SeatPrice | null,
+): number {
   if (!price) return 0;
   return tokensIn * price.inPerToken + tokensOut * price.outPerToken;
 }

@@ -22,14 +22,25 @@ interface Props {
  * theme tokens so light + dark both render. Caller decides when to mount —
  * the component itself never reads any state.
  */
-export function EmptyState({ icon, heading, sub, cta, className, ...rest }: Props) {
+export function EmptyState({
+  icon,
+  heading,
+  sub,
+  cta,
+  className,
+  ...rest
+}: Props) {
   return (
     <div
       className={`empty-state${className ? ` ${className}` : ""}`}
       role="status"
       data-testid={rest["data-testid"]}
     >
-      {icon != null && <div className="empty-state-icon" aria-hidden="true">{icon}</div>}
+      {icon != null && (
+        <div className="empty-state-icon" aria-hidden="true">
+          {icon}
+        </div>
+      )}
       <div className="empty-state-heading">{heading}</div>
       {sub && <div className="empty-state-sub">{sub}</div>}
       {cta && <div className="empty-state-cta">{cta}</div>}

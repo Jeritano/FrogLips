@@ -47,14 +47,11 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
 
   // Two confirm-dialog flows: name-collision overwrite during import,
   // and destructive delete. Each stores the data it needs to act on.
-  const [pendingOverwrite, setPendingOverwrite] = useState<
-    | {
-        folder: string;
-        existingPath: string;
-        skillName: string;
-      }
-    | null
-  >(null);
+  const [pendingOverwrite, setPendingOverwrite] = useState<{
+    folder: string;
+    existingPath: string;
+    skillName: string;
+  } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ClaudeSkillSummary | null>(
     null,
   );
@@ -155,7 +152,9 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
         return;
       }
       const msg =
-        e && typeof e === "object" && "message" in (e as Record<string, unknown>)
+        e &&
+        typeof e === "object" &&
+        "message" in (e as Record<string, unknown>)
           ? String((e as { message: unknown }).message)
           : String(e);
       setErr(`Import failed: ${msg}`);
@@ -182,7 +181,9 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
       });
       folder = Array.isArray(res) ? (res[0] ?? null) : res;
     } catch (e) {
-      setErr(`Folder picker failed: ${e instanceof Error ? e.message : String(e)}`);
+      setErr(
+        `Folder picker failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
       return;
     }
     if (!folder) return; // user canceled — no-op per spec
@@ -363,8 +364,9 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
             title={
               <>
                 A skill named <code>{pendingOverwrite.skillName}</code> already
-                exists at <code>{pendingOverwrite.existingPath}</code>. Overwrite
-                with the new version from <code>{pendingOverwrite.folder}</code>?
+                exists at <code>{pendingOverwrite.existingPath}</code>.
+                Overwrite with the new version from{" "}
+                <code>{pendingOverwrite.folder}</code>?
               </>
             }
             onDismiss={() => {
@@ -502,7 +504,9 @@ function SkillsTable({
               <td className="cs-cell-status">
                 <span
                   className={
-                    s.enabled ? "cs-chip cs-chip-enabled" : "cs-chip cs-chip-disabled"
+                    s.enabled
+                      ? "cs-chip cs-chip-enabled"
+                      : "cs-chip cs-chip-disabled"
                   }
                   data-testid={`claude-skills-chip-enabled-${s.name}`}
                 >

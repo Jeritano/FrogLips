@@ -26,7 +26,12 @@ interface Props {
  * the empty state with a hint that the feature isn't available yet instead
  * of crashing on an invoke that resolves to a missing handler.
  */
-export function SkillsPanel({ workflowId, workflowName, open, onClose }: Props) {
+export function SkillsPanel({
+  workflowId,
+  workflowName,
+  open,
+  onClose,
+}: Props) {
   const supported = "workflowSkillList" in api;
 
   const [list, setList] = useState<SkillSummary[]>([]);
@@ -35,7 +40,9 @@ export function SkillsPanel({ workflowId, workflowName, open, onClose }: Props) 
 
   // Sub-panel state: the currently-inspected skill's pretty-printed JSON.
   // We hold both the name (for the header) and the formatted body string.
-  const [viewing, setViewing] = useState<{ name: string; body: string } | null>(null);
+  const [viewing, setViewing] = useState<{ name: string; body: string } | null>(
+    null,
+  );
 
   // Deletion confirm flow. `pendingDelete` is the skill the user has armed
   // for deletion; the ConfirmDialog renders only when it's non-null.
@@ -150,7 +157,7 @@ export function SkillsPanel({ workflowId, workflowName, open, onClose }: Props) 
             aria-label="Close skills panel"
             data-testid="skills-panel-close"
           >
-            <X size={16}/>
+            <X size={16} />
           </button>
         </header>
 
@@ -159,14 +166,14 @@ export function SkillsPanel({ workflowId, workflowName, open, onClose }: Props) 
         <div className="skills-panel-body">
           {!supported ? (
             <EmptyState
-              icon={<Wrench size={24}/>}
+              icon={<Wrench size={24} />}
               heading="Skills not yet available"
               sub="(skills feature not yet available)"
               data-testid="skills-panel-unsupported"
             />
           ) : list.length === 0 && !loading ? (
             <EmptyState
-              icon={<Wrench size={24}/>}
+              icon={<Wrench size={24} />}
               heading="No skills saved"
               sub="Skills are saved by your agents when they call `workflow_save_skill`. They survive across runs of this workflow."
               data-testid="skills-panel-empty"
@@ -194,7 +201,11 @@ export function SkillsPanel({ workflowId, workflowName, open, onClose }: Props) 
             ariaLabel={`Delete skill ${pendingDelete.name}`}
             data-testid="skills-delete-confirm"
             boxClassName="risk-destructive"
-            title={<>Delete skill <code>{pendingDelete.name}</code>?</>}
+            title={
+              <>
+                Delete skill <code>{pendingDelete.name}</code>?
+              </>
+            }
             onDismiss={() => {
               if (!deleting) setPendingDelete(null);
             }}
@@ -220,9 +231,7 @@ export function SkillsPanel({ workflowId, workflowName, open, onClose }: Props) 
               </>
             }
           >
-            <div className="skills-confirm-body">
-              This cannot be undone.
-            </div>
+            <div className="skills-confirm-body">This cannot be undone.</div>
           </ConfirmDialog>
         )}
       </div>
@@ -262,12 +271,16 @@ function SkillsTable({ skills, onViewSteps, onDelete, loading }: TableProps) {
           )}
           {skills.map((s) => (
             <tr key={s.id} data-testid={`skills-row-${s.name}`}>
-              <td className="skills-cell-name" title={s.name}>{s.name}</td>
+              <td className="skills-cell-name" title={s.name}>
+                {s.name}
+              </td>
               <td className="skills-cell-desc">
                 <span className="skills-cell-desc-clamp">{s.description}</span>
               </td>
               <td className="skills-cell-num">{s.invocation_count}</td>
-              <td className="skills-cell-time">{formatRelativeTime(s.last_used_at)}</td>
+              <td className="skills-cell-time">
+                {formatRelativeTime(s.last_used_at)}
+              </td>
               <td className="skills-cell-actions">
                 <button
                   type="button"
@@ -332,7 +345,7 @@ function StepsViewer({
             onClick={onClose}
             aria-label="Close steps viewer"
           >
-            <X size={16}/>
+            <X size={16} />
           </button>
         </header>
         <pre className="skills-steps-pre" data-testid="skills-steps-body">

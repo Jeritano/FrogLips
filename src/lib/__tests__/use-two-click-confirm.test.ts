@@ -2,9 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createElement, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { useTwoClickConfirm, type TwoClickConfirm } from "../use-two-click-confirm";
+import {
+  useTwoClickConfirm,
+  type TwoClickConfirm,
+} from "../use-two-click-confirm";
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 /* ── Test harness ──────────────────────────────────────────────────────────
  * The codebase doesn't depend on @testing-library/react. Instead we mount a
@@ -76,7 +81,9 @@ describe("useTwoClickConfirm", () => {
     });
 
     expect(probe.current.armed).toBe("a");
-    expect(probe.current.labelFor("a", "Delete")).toBe("Click again to confirm");
+    expect(probe.current.labelFor("a", "Delete")).toBe(
+      "Click again to confirm",
+    );
     expect(probe.current.labelFor("b", "Delete")).toBe("Delete");
     expect(onConfirm).not.toHaveBeenCalled();
 
@@ -149,7 +156,9 @@ describe("useTwoClickConfirm", () => {
     expect(probe.current.armed).toBe("b");
     expect(onConfirm).not.toHaveBeenCalled();
     expect(probe.current.labelFor("a", "Delete")).toBe("Delete");
-    expect(probe.current.labelFor("b", "Delete")).toBe("Click again to confirm");
+    expect(probe.current.labelFor("b", "Delete")).toBe(
+      "Click again to confirm",
+    );
 
     unmountProbe(probe);
   });

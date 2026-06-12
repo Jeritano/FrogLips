@@ -48,7 +48,11 @@ vi.mock("../../agent-presets", () => ({
   ],
 }));
 
-import { resolveLinearOrder, validateGraph, WorkflowGraphError } from "../graph";
+import {
+  resolveLinearOrder,
+  validateGraph,
+  WorkflowGraphError,
+} from "../graph";
 import { runWorkflow } from "../runner";
 
 function card(id: string, name = `Card ${id}`): WorkflowCard {
@@ -274,7 +278,9 @@ describe("runner — concurrent runs do not cross-talk", () => {
         // saw stays consistent within one run by recording prefix counts.
         runBCalls++;
         const handoff = opts.messages.find(
-          (m) => m.role === "system" && m.content.includes("Output from previous step:"),
+          (m) =>
+            m.role === "system" &&
+            m.content.includes("Output from previous step:"),
         );
         return `card-b-final::${handoff?.content ?? "MISSING"}`;
       }
@@ -299,7 +305,9 @@ describe("runner — concurrent runs do not cross-talk", () => {
 
     // workflowRunRecord was called exactly once per run.
     expect(workflowRunRecordMock).toHaveBeenCalledTimes(2);
-    const recordedIds = workflowRunRecordMock.mock.calls.map((c) => c[0]).sort();
+    const recordedIds = workflowRunRecordMock.mock.calls
+      .map((c) => c[0])
+      .sort();
     expect(recordedIds).toEqual([1, 2]);
   });
 });
@@ -321,10 +329,14 @@ describe("runner — abort timing", () => {
     const controller = new AbortController();
     controller.abort();
     runAgentLoopMock.mockResolvedValue("never");
-    const res = await runWorkflow(threeCardGraph, {}, {
-      model: "m",
-      signal: controller.signal,
-    });
+    const res = await runWorkflow(
+      threeCardGraph,
+      {},
+      {
+        model: "m",
+        signal: controller.signal,
+      },
+    );
     expect(res.status).toBe("failed");
     expect(res.cards.map((c) => c.status)).toEqual([
       "skipped",
@@ -352,10 +364,14 @@ describe("runner — abort timing", () => {
       }
       return "b-out";
     });
-    const res = await runWorkflow(threeCardGraph, {}, {
-      model: "m",
-      signal: controller.signal,
-    });
+    const res = await runWorkflow(
+      threeCardGraph,
+      {},
+      {
+        model: "m",
+        signal: controller.signal,
+      },
+    );
     expect(res.status).toBe("failed");
     expect(res.cards[0].status).toBe("aborted");
     expect(res.cards[1].status).toBe("skipped");
@@ -373,10 +389,14 @@ describe("runner — abort timing", () => {
       }
       return "a-final";
     });
-    const res = await runWorkflow(threeCardGraph, {}, {
-      model: "m",
-      signal: controller.signal,
-    });
+    const res = await runWorkflow(
+      threeCardGraph,
+      {},
+      {
+        model: "m",
+        signal: controller.signal,
+      },
+    );
     expect(res.cards[0].status).toBe("ok");
     expect(res.cards[1].status).toBe("aborted");
     expect(res.cards[2].status).toBe("skipped");
@@ -386,10 +406,14 @@ describe("runner — abort timing", () => {
   it("aborting after all cards finish does not flip the result to failed", async () => {
     const controller = new AbortController();
     runAgentLoopMock.mockResolvedValue("ok");
-    const res = await runWorkflow(twoCardGraph, {}, {
-      model: "m",
-      signal: controller.signal,
-    });
+    const res = await runWorkflow(
+      twoCardGraph,
+      {},
+      {
+        model: "m",
+        signal: controller.signal,
+      },
+    );
     // Abort AFTER the workflow's loop has already returned: must not affect
     // anything (no race here — runWorkflow already resolved).
     controller.abort();
@@ -401,13 +425,17 @@ describe("runner — abort timing", () => {
     const controller = new AbortController();
     runAgentLoopMock.mockResolvedValue("ok");
     let postResolveCalls = 0;
-    const done = await runWorkflow(twoCardGraph, {
-      onCardStart: () => {},
-      onCardOutput: () => {},
-      onCardDone: () => {},
-      onCardError: () => {},
-      onWorkflowDone: () => {},
-    }, { model: "m", signal: controller.signal });
+    const done = await runWorkflow(
+      twoCardGraph,
+      {
+        onCardStart: () => {},
+        onCardOutput: () => {},
+        onCardDone: () => {},
+        onCardError: () => {},
+        onWorkflowDone: () => {},
+      },
+      { model: "m", signal: controller.signal },
+    );
 
     // Replace hooks AFTER the run resolved — if anything still fired we'd
     // observe it via a global counter, but the runner never holds a reference
@@ -437,9 +465,7 @@ describe("runner — 50 sequential runs hold steady", () => {
       listenerCount++;
       return origAdd(...args);
     }) as typeof signal.addEventListener;
-    signal.removeEventListener = ((
-      ...args: Parameters<typeof origRemove>
-    ) => {
+    signal.removeEventListener = ((...args: Parameters<typeof origRemove>) => {
       listenerCount--;
       return origRemove(...args);
     }) as typeof signal.removeEventListener;

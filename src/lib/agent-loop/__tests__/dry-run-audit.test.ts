@@ -63,7 +63,10 @@ describe("dry-run audit integration", () => {
 
   it("dryRun=true: write_file is suppressed and audit row has outcome=dry_run", async () => {
     const responses: object[] = [
-      ollamaToolCallResponse("tc-1", "write_file", { path: "/tmp/a", content: "hello" }),
+      ollamaToolCallResponse("tc-1", "write_file", {
+        path: "/tmp/a",
+        content: "hello",
+      }),
       ollamaFinalResponse("done"),
     ];
     let callIdx = 0;
@@ -106,7 +109,9 @@ describe("dry-run audit integration", () => {
 
     // The tool message in the conversation should also carry dry_run:true.
     const last = collected[collected.length - 1] ?? [];
-    const writeToolMsgs = last.filter((m) => m.role === "tool" && m.tool_name === "write_file");
+    const writeToolMsgs = last.filter(
+      (m) => m.role === "tool" && m.tool_name === "write_file",
+    );
     expect(writeToolMsgs.length).toBeGreaterThanOrEqual(1);
     const parsed = JSON.parse(writeToolMsgs[0]!.content);
     expect(parsed.dry_run).toBe(true);
@@ -117,17 +122,23 @@ describe("dry-run audit integration", () => {
 
   it("dryRun=false: write_file does invoke Tauri", async () => {
     const responses: object[] = [
-      ollamaToolCallResponse("tc-1", "write_file", { path: "/tmp/b", content: "hi" }),
+      ollamaToolCallResponse("tc-1", "write_file", {
+        path: "/tmp/b",
+        content: "hi",
+      }),
       ollamaFinalResponse("done"),
     ];
     let callIdx = 0;
-    vi.stubGlobal("fetch", vi.fn(async () => {
-      const payload = responses[callIdx++] ?? ollamaFinalResponse("done");
-      return new Response(JSON.stringify(payload), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const payload = responses[callIdx++] ?? ollamaFinalResponse("done");
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
 
     const opts: AgentRunOptions = {
       model: "test",

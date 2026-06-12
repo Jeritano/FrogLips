@@ -16,23 +16,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../../types";
 import type { AgentMetrics } from "../types";
 
-const {
-  claudeSkillListMock,
-  claudeSkillGetMock,
-  auditMock,
-  metricsMock,
-} = vi.hoisted(() => ({
-  claudeSkillListMock: vi.fn(async (_enabledOnly?: boolean) =>
-    [] as Array<Record<string, unknown>>),
-  claudeSkillGetMock: vi.fn(async (_name: string) =>
-    null as Record<string, unknown> | null),
-  auditMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
-    async () => undefined,
-  ),
-  metricsMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
-    async () => undefined,
-  ),
-}));
+const { claudeSkillListMock, claudeSkillGetMock, auditMock, metricsMock } =
+  vi.hoisted(() => ({
+    claudeSkillListMock: vi.fn(
+      async (_enabledOnly?: boolean) => [] as Array<Record<string, unknown>>,
+    ),
+    claudeSkillGetMock: vi.fn(
+      async (_name: string) => null as Record<string, unknown> | null,
+    ),
+    auditMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
+      async () => undefined,
+    ),
+    metricsMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
+      async () => undefined,
+    ),
+  }));
 
 vi.mock("../../tauri-api", () => ({
   api: {
@@ -56,15 +54,19 @@ function ollamaFinal(text: string) {
 
 /** A single-turn fetch mock — returns final text, no tool calls. */
 function singleTurnFetch() {
-  return vi.fn(async () =>
-    new Response(JSON.stringify(ollamaFinal("done")), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }),
+  return vi.fn(
+    async () =>
+      new Response(JSON.stringify(ollamaFinal("done")), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
   );
 }
 
-function baseOpts(collected: Message[][], metrics: { last: AgentMetrics | null }): AgentRunOptions {
+function baseOpts(
+  collected: Message[][],
+  metrics: { last: AgentMetrics | null },
+): AgentRunOptions {
   return {
     model: "test",
     messages: [{ conversation_id: 1, role: "user", content: "hi" }],
@@ -72,7 +74,9 @@ function baseOpts(collected: Message[][], metrics: { last: AgentMetrics | null }
     workspaceRoot: null,
     onUpdate: (m) => collected.push([...m]),
     onStatusChange: () => {},
-    onMetrics: (m) => { metrics.last = { ...m }; },
+    onMetrics: (m) => {
+      metrics.last = { ...m };
+    },
     requestConfirmation: async () => ({ approve: true }),
     signal: new AbortController().signal,
   };
@@ -114,9 +118,30 @@ describe("runAgentLoop — Claude Skills injection", () => {
 
   it("injects a single stub mentioning every enabled non-pinned skill", async () => {
     claudeSkillListMock.mockResolvedValue([
-      { id: 1, name: "pdf-extractor", description: "Extract PDF tables", source_path: "/sk/pdf", enabled: true, pinned: false },
-      { id: 2, name: "react-helper", description: "React patterns reference", source_path: "/sk/react", enabled: true, pinned: false },
-      { id: 3, name: "yaml-linter", description: "Lint YAML configs", source_path: "/sk/yaml", enabled: true, pinned: false },
+      {
+        id: 1,
+        name: "pdf-extractor",
+        description: "Extract PDF tables",
+        source_path: "/sk/pdf",
+        enabled: true,
+        pinned: false,
+      },
+      {
+        id: 2,
+        name: "react-helper",
+        description: "React patterns reference",
+        source_path: "/sk/react",
+        enabled: true,
+        pinned: false,
+      },
+      {
+        id: 3,
+        name: "yaml-linter",
+        description: "Lint YAML configs",
+        source_path: "/sk/yaml",
+        enabled: true,
+        pinned: false,
+      },
     ]);
     vi.stubGlobal("fetch", singleTurnFetch());
 
@@ -136,22 +161,60 @@ describe("runAgentLoop — Claude Skills injection", () => {
     expect(stub!.content).toContain("- react-helper: React patterns reference");
     expect(stub!.content).toContain("- yaml-linter: Lint YAML configs");
     // The stub is a single message, not one per skill.
-    expect(systemMsgs(collected).filter((m) => m.content.includes("imported Claude Skills"))).toHaveLength(1);
+    expect(
+      systemMsgs(collected).filter((m) =>
+        m.content.includes("imported Claude Skills"),
+      ),
+    ).toHaveLength(1);
     // Pinned-body get path was never invoked.
     expect(claudeSkillGetMock).not.toHaveBeenCalled();
   });
 
   it("injects M pinned-skill bodies in enabled-list order, each with a separator", async () => {
     claudeSkillListMock.mockResolvedValue([
-      { id: 1, name: "alpha", description: "first pinned", source_path: "/a", enabled: true, pinned: true },
-      { id: 2, name: "beta", description: "second pinned", source_path: "/b", enabled: true, pinned: true },
+      {
+        id: 1,
+        name: "alpha",
+        description: "first pinned",
+        source_path: "/a",
+        enabled: true,
+        pinned: true,
+      },
+      {
+        id: 2,
+        name: "beta",
+        description: "second pinned",
+        source_path: "/b",
+        enabled: true,
+        pinned: true,
+      },
     ]);
     claudeSkillGetMock.mockImplementation(async (name: string) => {
       if (name === "alpha") {
-        return { id: 1, name: "alpha", description: "first pinned", source_path: "/a", enabled: true, pinned: true, body_md: "ALPHA-BODY-CONTENT", allowed_tools_json: null, imported_at: 1 };
+        return {
+          id: 1,
+          name: "alpha",
+          description: "first pinned",
+          source_path: "/a",
+          enabled: true,
+          pinned: true,
+          body_md: "ALPHA-BODY-CONTENT",
+          allowed_tools_json: null,
+          imported_at: 1,
+        };
       }
       if (name === "beta") {
-        return { id: 2, name: "beta", description: "second pinned", source_path: "/b", enabled: true, pinned: true, body_md: "BETA-BODY-CONTENT", allowed_tools_json: null, imported_at: 2 };
+        return {
+          id: 2,
+          name: "beta",
+          description: "second pinned",
+          source_path: "/b",
+          enabled: true,
+          pinned: true,
+          body_md: "BETA-BODY-CONTENT",
+          allowed_tools_json: null,
+          imported_at: 2,
+        };
       }
       return null;
     });
@@ -165,7 +228,9 @@ describe("runAgentLoop — Claude Skills injection", () => {
     // Canonical system + pinned-bodies combined message. No non-pinned
     // stub because every enabled skill is pinned.
     expect(sys.length).toBe(2);
-    const pinnedMsg = sys.find((m) => m.content.includes("--- Claude Skill: alpha ---"));
+    const pinnedMsg = sys.find((m) =>
+      m.content.includes("--- Claude Skill: alpha ---"),
+    );
     expect(pinnedMsg).toBeDefined();
     expect(pinnedMsg!.content).toContain("ALPHA-BODY-CONTENT");
     expect(pinnedMsg!.content).toContain("--- Claude Skill: beta ---");
@@ -180,12 +245,33 @@ describe("runAgentLoop — Claude Skills injection", () => {
 
   it("emits both stub and pinned bodies when the enabled set contains a mix", async () => {
     claudeSkillListMock.mockResolvedValue([
-      { id: 1, name: "alpha", description: "pinned one", source_path: "/a", enabled: true, pinned: true },
-      { id: 2, name: "gamma", description: "non-pinned helper", source_path: "/g", enabled: true, pinned: false },
+      {
+        id: 1,
+        name: "alpha",
+        description: "pinned one",
+        source_path: "/a",
+        enabled: true,
+        pinned: true,
+      },
+      {
+        id: 2,
+        name: "gamma",
+        description: "non-pinned helper",
+        source_path: "/g",
+        enabled: true,
+        pinned: false,
+      },
     ]);
     claudeSkillGetMock.mockResolvedValue({
-      id: 1, name: "alpha", description: "pinned one", source_path: "/a",
-      enabled: true, pinned: true, body_md: "ALPHA-BODY", allowed_tools_json: null, imported_at: 1,
+      id: 1,
+      name: "alpha",
+      description: "pinned one",
+      source_path: "/a",
+      enabled: true,
+      pinned: true,
+      body_md: "ALPHA-BODY",
+      allowed_tools_json: null,
+      imported_at: 1,
     });
     vi.stubGlobal("fetch", singleTurnFetch());
 
@@ -196,7 +282,9 @@ describe("runAgentLoop — Claude Skills injection", () => {
     const sys = systemMsgs(collected);
     // Canonical + stub + pinned-bodies = 3.
     expect(sys.length).toBe(3);
-    expect(sys.some((m) => m.content.includes("- gamma: non-pinned helper"))).toBe(true);
+    expect(
+      sys.some((m) => m.content.includes("- gamma: non-pinned helper")),
+    ).toBe(true);
     expect(sys.some((m) => m.content.includes("ALPHA-BODY"))).toBe(true);
     // Pinned-body get was called only for the pinned skill.
     expect(claudeSkillGetMock).toHaveBeenCalledWith("alpha");

@@ -5,11 +5,20 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // module under test so its localStorage reads/writes work.
 const storeMap = new Map<string, string>();
 const fakeStorage: Storage = {
-  get length() { return storeMap.size; },
-  clear: () => { storeMap.clear(); },
-  getItem: (k: string) => (storeMap.has(k) ? (storeMap.get(k) as string) : null),
-  setItem: (k: string, v: string) => { storeMap.set(k, String(v)); },
-  removeItem: (k: string) => { storeMap.delete(k); },
+  get length() {
+    return storeMap.size;
+  },
+  clear: () => {
+    storeMap.clear();
+  },
+  getItem: (k: string) =>
+    storeMap.has(k) ? (storeMap.get(k) as string) : null,
+  setItem: (k: string, v: string) => {
+    storeMap.set(k, String(v));
+  },
+  removeItem: (k: string) => {
+    storeMap.delete(k);
+  },
   key: (i: number) => Array.from(storeMap.keys())[i] ?? null,
 };
 Object.defineProperty(globalThis, "localStorage", {
@@ -150,8 +159,12 @@ describe("prompt-templates: custom persistence", () => {
 describe("prompt-templates: filterByTrigger", () => {
   it("matches by prefix, case-insensitive", () => {
     const built = getBuiltInTemplates();
-    expect(filterByTrigger(built, "expl").map((t) => t.trigger)).toEqual(["explain"]);
-    expect(filterByTrigger(built, "EXPL").map((t) => t.trigger)).toEqual(["explain"]);
+    expect(filterByTrigger(built, "expl").map((t) => t.trigger)).toEqual([
+      "explain",
+    ]);
+    expect(filterByTrigger(built, "EXPL").map((t) => t.trigger)).toEqual([
+      "explain",
+    ]);
   });
 
   it("returns the full list when prefix is empty", () => {

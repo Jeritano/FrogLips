@@ -38,7 +38,10 @@ describe("parseConversationParams", () => {
   });
 
   it("drops a blank system prompt", () => {
-    expect(parseConversationParams(JSON.stringify({ system_prompt: "   " })).system_prompt).toBeNull();
+    expect(
+      parseConversationParams(JSON.stringify({ system_prompt: "   " }))
+        .system_prompt,
+    ).toBeNull();
   });
 });
 
@@ -48,7 +51,12 @@ describe("serializeConversationParams", () => {
   });
 
   it("round-trips through parse", () => {
-    const p = { temperature: 0.3, top_p: null, max_tokens: 256, system_prompt: "x" };
+    const p = {
+      temperature: 0.3,
+      top_p: null,
+      max_tokens: 256,
+      system_prompt: "x",
+    };
     const raw = serializeConversationParams(p);
     expect(raw).not.toBeNull();
     expect(parseConversationParams(raw)).toEqual(p);

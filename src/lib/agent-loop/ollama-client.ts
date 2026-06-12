@@ -57,7 +57,12 @@ export function toOllamaMessages(msgs: Message[]) {
       const normalized = m.tool_calls
         // Drop any tool_call that lacks a function name — Ollama refuses
         // the whole request on a single empty-name entry.
-        .filter((tc) => tc.function && typeof tc.function.name === "string" && tc.function.name.length > 0)
+        .filter(
+          (tc) =>
+            tc.function &&
+            typeof tc.function.name === "string" &&
+            tc.function.name.length > 0,
+        )
         .map((tc) => {
           // Coerce arguments to an object. If we already have an object
           // (some streaming paths deliver the parsed form), pass it
@@ -70,7 +75,11 @@ export function toOllamaMessages(msgs: Message[]) {
           } else if (typeof raw === "string" && raw.trim().length > 0) {
             try {
               const parsed = JSON.parse(raw);
-              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              if (
+                parsed &&
+                typeof parsed === "object" &&
+                !Array.isArray(parsed)
+              ) {
                 argsObj = parsed as Record<string, unknown>;
               }
             } catch {
@@ -94,7 +103,11 @@ export function toOllamaMessages(msgs: Message[]) {
       if (normalized.length === 0) {
         return { role: "assistant" as const, content: m.content ?? "" };
       }
-      return { role: "assistant" as const, content: m.content ?? "", tool_calls: normalized };
+      return {
+        role: "assistant" as const,
+        content: m.content ?? "",
+        tool_calls: normalized,
+      };
     }
     // Vision: Ollama /api/chat accepts `images: [base64...]` alongside text.
     // The base64 must be the raw payload — no `data:` prefix.
@@ -105,7 +118,10 @@ export function toOllamaMessages(msgs: Message[]) {
         images: m.images.map((img) => img.base64),
       };
     }
-    return { role: m.role as "system" | "user" | "assistant", content: m.content };
+    return {
+      role: m.role as "system" | "user" | "assistant",
+      content: m.content,
+    };
   });
 }
 
@@ -125,7 +141,11 @@ export async function streamOllamaChat(
   signal: AbortSignal,
   onContentChunk: (delta: string) => void,
 ): Promise<StreamChatResult> {
-  const to = withTimeout(signal, OLLAMA_REQUEST_TIMEOUT_MS, "Ollama request timed out");
+  const to = withTimeout(
+    signal,
+    OLLAMA_REQUEST_TIMEOUT_MS,
+    "Ollama request timed out",
+  );
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -153,8 +173,9 @@ export async function streamOllamaChat(
         // rejection — Vitest then fails the whole run even when every
         // test passed. `.catch(() => undefined)` keeps the call truly
         // best-effort.
-        void invoke("append_diag_log", { line: `[ollama-400] ${dump}` })
-          .catch(() => undefined);
+        void invoke("append_diag_log", { line: `[ollama-400] ${dump}` }).catch(
+          () => undefined,
+        );
       } catch {
         /* ignore */
       }
@@ -186,7 +207,9 @@ export async function streamOllamaChat(
         content += c;
         onContentChunk(c);
       }
-      const tcs = msg.tool_calls as Array<Partial<ToolCall> & { index?: number }> | undefined;
+      const tcs = msg.tool_calls as
+        | Array<Partial<ToolCall> & { index?: number }>
+        | undefined;
       if (Array.isArray(tcs)) {
         tcs.forEach((tc, i) => {
           const idx = typeof tc.index === "number" ? tc.index : i;
@@ -194,7 +217,8 @@ export async function streamOllamaChat(
         });
       }
     }
-    if (typeof obj.prompt_eval_count === "number") promptTok = obj.prompt_eval_count;
+    if (typeof obj.prompt_eval_count === "number")
+      promptTok = obj.prompt_eval_count;
     if (typeof obj.eval_count === "number") evalTok = obj.eval_count;
   };
 

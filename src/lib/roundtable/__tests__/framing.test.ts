@@ -1,9 +1,28 @@
 import { describe, it, expect } from "vitest";
-import { buildMessages, buildSystemPrompt, sanitizeTurn, visibleTurns } from "../framing";
+import {
+  buildMessages,
+  buildSystemPrompt,
+  sanitizeTurn,
+  visibleTurns,
+} from "../framing";
 import type { RoundtableConfig, Seat, Turn } from "../types";
 
-const seatA: Seat = { id: "a", name: "Optimist", color: "#0f0", backend: "openrouter", model: "x/a", system: "Be hopeful." };
-const seatB: Seat = { id: "b", name: "Skeptic", color: "#00f", backend: "openrouter", model: "x/b", system: "Be doubtful." };
+const seatA: Seat = {
+  id: "a",
+  name: "Optimist",
+  color: "#0f0",
+  backend: "openrouter",
+  model: "x/a",
+  system: "Be hopeful.",
+};
+const seatB: Seat = {
+  id: "b",
+  name: "Skeptic",
+  color: "#00f",
+  backend: "openrouter",
+  model: "x/b",
+  system: "Be doubtful.",
+};
 
 function cfg(over: Partial<RoundtableConfig> = {}): RoundtableConfig {
   return {
@@ -18,7 +37,19 @@ function cfg(over: Partial<RoundtableConfig> = {}): RoundtableConfig {
 }
 
 function turn(seat: Seat, text: string, round = 0): Turn {
-  return { id: `t-${seat.id}-${round}`, seatId: seat.id, speaker: seat.name, color: seat.color, text, status: "done", round, kind: "seat", tokensIn: 0, tokensOut: 0, usd: 0 };
+  return {
+    id: `t-${seat.id}-${round}`,
+    seatId: seat.id,
+    speaker: seat.name,
+    color: seat.color,
+    text,
+    status: "done",
+    round,
+    kind: "seat",
+    tokensIn: 0,
+    tokensOut: 0,
+    usd: 0,
+  };
 }
 
 describe("buildSystemPrompt", () => {
@@ -41,33 +72,52 @@ describe("buildMessages", () => {
   });
 
   it("non-opener: folds prior turns into one user message", () => {
-    const turns = [turn(seatA, "AGI is steerable as we build."), turn(seatB, "Steering is unproven.")];
+    const turns = [
+      turn(seatA, "AGI is steerable as we build."),
+      turn(seatB, "Steering is unproven."),
+    ];
     const msgs = buildMessages(cfg(), seatA, turns);
     expect(msgs[1].content).toContain("Conversation so far:");
-    expect(msgs[1].content).toContain("Optimist: AGI is steerable as we build.");
+    expect(msgs[1].content).toContain(
+      "Optimist: AGI is steerable as we build.",
+    );
     expect(msgs[1].content).toContain("Skeptic: Steering is unproven.");
     expect(msgs[1].content).toContain("Now respond as Optimist.");
   });
 });
 
 describe("visibleTurns", () => {
-  const turns = [turn(seatA, "1"), turn(seatB, "2"), turn(seatA, "3"), turn(seatB, "4"), turn(seatA, "5")];
+  const turns = [
+    turn(seatA, "1"),
+    turn(seatB, "2"),
+    turn(seatA, "3"),
+    turn(seatB, "4"),
+    turn(seatA, "5"),
+  ];
   it("full = all done turns", () => {
     expect(visibleTurns(cfg({ memoryMode: "full" }), turns)).toHaveLength(5);
   });
   it("recent = last K turns", () => {
-    const v = visibleTurns(cfg({ memoryMode: "recent", recentWindow: 2 }), turns);
+    const v = visibleTurns(
+      cfg({ memoryMode: "recent", recentWindow: 2 }),
+      turns,
+    );
     expect(v.map((t) => t.text)).toEqual(["4", "5"]);
   });
   it("drops non-done / empty turns", () => {
-    const withBad = [...turns, { ...turn(seatB, ""), status: "error" as const }];
+    const withBad = [
+      ...turns,
+      { ...turn(seatB, ""), status: "error" as const },
+    ];
     expect(visibleTurns(cfg(), withBad)).toHaveLength(5);
   });
 });
 
 describe("sanitizeTurn", () => {
   it("strips a leaked leading self-prefix", () => {
-    expect(sanitizeTurn("Skeptic: I doubt it.", seatB, [seatA, seatB])).toBe("I doubt it.");
+    expect(sanitizeTurn("Skeptic: I doubt it.", seatB, [seatA, seatB])).toBe(
+      "I doubt it.",
+    );
   });
   it("trims a hijacked second speaker", () => {
     const raw = "I doubt it.\nOptimist: But consider the upside.";
@@ -88,13 +138,16 @@ describe("sanitizeTurn", () => {
   it("keeps a vocative addressing another participant (not a hijack)", () => {
     // Lowercase / second-person continuation after the colon = the speaker
     // addressing someone, NOT writing their turn — must not be truncated.
-    const raw = "My plan holds.\nOptimist: you ignore the compounding risk that sinks it.";
+    const raw =
+      "My plan holds.\nOptimist: you ignore the compounding risk that sinks it.";
     expect(sanitizeTurn(raw, seatB, [seatA, seatB])).toBe(raw);
   });
   it("never manufactures an empty turn — falls back to the original", () => {
     // A reply that is only the self-prefix would strip to "" — must fall back
     // to the original so the engine never mislabels it "empty response".
     expect(sanitizeTurn("Skeptic:", seatB, [seatA, seatB])).toBe("Skeptic:");
-    expect(sanitizeTurn("Skeptic: ", seatB, [seatA, seatB]).length).toBeGreaterThan(0);
+    expect(
+      sanitizeTurn("Skeptic: ", seatB, [seatA, seatB]).length,
+    ).toBeGreaterThan(0);
   });
 });

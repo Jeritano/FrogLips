@@ -26,21 +26,29 @@ export interface QuickPromptToast {
  */
 export function useQuickPromptToast(): QuickPromptToast {
   const [quickToast, setQuickToast] = useState<QuickToast | null>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
 
   useTauriEvent<QuickPromptCompleted>(
     "quick-prompt-completed",
     useCallback((e) => {
       const payload = e.payload;
-      setQuickToast({ reply: payload.reply ?? "", error: payload.error ?? null });
+      setQuickToast({
+        reply: payload.reply ?? "",
+        error: payload.error ?? null,
+      });
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       timeoutRef.current = setTimeout(() => setQuickToast(null), 8000);
     }, []),
   );
 
-  useEffect(() => () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
 
   const dismissToast = useCallback(() => setQuickToast(null), []);
 

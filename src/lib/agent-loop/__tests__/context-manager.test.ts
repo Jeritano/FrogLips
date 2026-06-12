@@ -20,7 +20,13 @@ function asst(content: string): Message {
   return { conversation_id: CONV, role: "assistant", content };
 }
 function tool(content: string): Message {
-  return { conversation_id: CONV, role: "tool", content, tool_call_id: "t1", tool_name: "read_file" };
+  return {
+    conversation_id: CONV,
+    role: "tool",
+    content,
+    tool_call_id: "t1",
+    tool_name: "read_file",
+  };
 }
 
 /** Build a string of roughly `tokens` estimated tokens (chars/4). */
@@ -132,14 +138,26 @@ describe("applyContextBudget", () => {
 
   it("system prompt is always preserved and never truncated", () => {
     const bigSys = sys(blob(10000));
-    const msgs = [bigSys, tool(blob(8000)), user(blob(8000)), asst("a"), user("b")];
+    const msgs = [
+      bigSys,
+      tool(blob(8000)),
+      user(blob(8000)),
+      asst("a"),
+      user("b"),
+    ];
     const r = applyContextBudget(msgs, { contextTokens: 4096 });
     expect(r.messages[0]).toBe(bigSys);
     expect(r.messages[0].content).toBe(bigSys.content);
   });
 
   it("estimatedAfter never exceeds estimatedBefore when trimmed", () => {
-    const msgs = [sys("rules"), tool(blob(9000)), user(blob(9000)), asst("a"), user("b")];
+    const msgs = [
+      sys("rules"),
+      tool(blob(9000)),
+      user(blob(9000)),
+      asst("a"),
+      user("b"),
+    ];
     const r = applyContextBudget(msgs, { contextTokens: 4096 });
     expect(r.estimatedAfter).toBeLessThanOrEqual(r.estimatedBefore);
   });
@@ -151,11 +169,23 @@ describe("collapse preserves tool-call/result pairing (HIGH 2026-05-30)", () => 
       conversation_id: CONV,
       role: "assistant",
       content,
-      tool_calls: [{ id, type: "function", function: { name: "read_file", arguments: "{}" } }],
+      tool_calls: [
+        {
+          id,
+          type: "function",
+          function: { name: "read_file", arguments: "{}" },
+        },
+      ],
     };
   }
   function toolRes(id: string, content: string): Message {
-    return { conversation_id: CONV, role: "tool", content, tool_call_id: id, tool_name: "read_file" };
+    return {
+      conversation_id: CONV,
+      role: "tool",
+      content,
+      tool_call_id: id,
+      tool_name: "read_file",
+    };
   }
 
   /** Every kept `tool` message must have a preceding assistant `tool_calls`
@@ -192,7 +222,9 @@ describe("collapse preserves tool-call/result pairing (HIGH 2026-05-30)", () => 
     // No orphaned tool results anywhere in the budgeted array.
     assertNoOrphanToolResults(r.messages);
     // The first non-system message must not be a bare tool result.
-    const firstNonSystem = r.messages.find((m, i) => i > 0 && m.role !== "system");
+    const firstNonSystem = r.messages.find(
+      (m, i) => i > 0 && m.role !== "system",
+    );
     expect(firstNonSystem?.role).not.toBe("tool");
     // Live user request preserved at the tail.
     expect(r.messages[r.messages.length - 1].content).toBe("final question");

@@ -22,7 +22,11 @@ export interface FlowDoc {
 
 /** Serialize a Flow to a portable, pretty-printed document string. */
 export function flowToDoc(name: string, graph: WorkflowGraph): string {
-  const doc: FlowDoc = { froglips_flow: FLOW_SCHEMA_VERSION, name: name.trim() || "Imported Flow", graph };
+  const doc: FlowDoc = {
+    froglips_flow: FLOW_SCHEMA_VERSION,
+    name: name.trim() || "Imported Flow",
+    graph,
+  };
   return JSON.stringify(doc, null, 2);
 }
 
@@ -36,7 +40,10 @@ export function flowFromDoc(text: string): FlowImport {
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { ok: false, error: "Not valid JSON — paste the whole exported Flow." };
+    return {
+      ok: false,
+      error: "Not valid JSON — paste the whole exported Flow.",
+    };
   }
   if (!parsed || typeof parsed !== "object") {
     return { ok: false, error: "Not a Flow document." };
@@ -53,13 +60,19 @@ export function flowFromDoc(text: string): FlowImport {
   }
   const g = d.graph as Partial<WorkflowGraph> | undefined;
   if (!g || !Array.isArray(g.cards) || !Array.isArray(g.edges)) {
-    return { ok: false, error: "Flow document is missing its cards/edges graph." };
+    return {
+      ok: false,
+      error: "Flow document is missing its cards/edges graph.",
+    };
   }
   const graph: WorkflowGraph = { cards: g.cards, edges: g.edges };
   const v = validateGraph(graph);
   if (!v.ok) {
     return { ok: false, error: `Invalid Flow graph: ${v.error}` };
   }
-  const name = typeof d.name === "string" && d.name.trim() ? d.name.trim() : "Imported Flow";
+  const name =
+    typeof d.name === "string" && d.name.trim()
+      ? d.name.trim()
+      : "Imported Flow";
   return { ok: true, name, graph };
 }

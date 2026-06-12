@@ -63,7 +63,9 @@ import { executeTool } from "../dispatch";
 
 describe("prompt-injection wrapper relay", () => {
   it("propagates the warning header + BEGIN/END markers from web_fetch", async () => {
-    const out = await executeTool("web_fetch", { url: "https://evil.example/" });
+    const out = await executeTool("web_fetch", {
+      url: "https://evil.example/",
+    });
     const parsed = JSON.parse(out);
     expect(parsed.status).toBe(200);
     expect(typeof parsed.content).toBe("string");
@@ -81,7 +83,9 @@ describe("prompt-injection wrapper relay", () => {
   });
 
   it("does not add markers to clean content", async () => {
-    const out = await executeTool("web_fetch", { url: "https://news.example/" });
+    const out = await executeTool("web_fetch", {
+      url: "https://news.example/",
+    });
     const parsed = JSON.parse(out);
     expect(parsed.content).not.toContain(WARNING_TAG);
     expect(parsed.content).not.toContain(BEGIN_MARKER);

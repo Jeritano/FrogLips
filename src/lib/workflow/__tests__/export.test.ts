@@ -31,7 +31,13 @@ describe("flow export/import", () => {
   });
 
   it("rejects an unsupported future version", () => {
-    const r = flowFromDoc(JSON.stringify({ froglips_flow: 99, name: "X", graph: { cards: [], edges: [] } }));
+    const r = flowFromDoc(
+      JSON.stringify({
+        froglips_flow: 99,
+        name: "X",
+        graph: { cards: [], edges: [] },
+      }),
+    );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("version");
   });
@@ -42,11 +48,53 @@ describe("flow export/import", () => {
       name: "bad",
       graph: {
         cards: [
-          { id: "a", name: "A", preset: "general", prompt: "x", tools: [], schedule: null, backend: null, model: null, placed: true, unattended: false, x: 0, y: 0 },
-          { id: "b", name: "B", preset: "general", prompt: "x", tools: [], schedule: null, backend: null, model: null, placed: true, unattended: false, x: 0, y: 0 },
-          { id: "c", name: "C", preset: "general", prompt: "x", tools: [], schedule: null, backend: null, model: null, placed: true, unattended: false, x: 0, y: 0 },
+          {
+            id: "a",
+            name: "A",
+            preset: "general",
+            prompt: "x",
+            tools: [],
+            schedule: null,
+            backend: null,
+            model: null,
+            placed: true,
+            unattended: false,
+            x: 0,
+            y: 0,
+          },
+          {
+            id: "b",
+            name: "B",
+            preset: "general",
+            prompt: "x",
+            tools: [],
+            schedule: null,
+            backend: null,
+            model: null,
+            placed: true,
+            unattended: false,
+            x: 0,
+            y: 0,
+          },
+          {
+            id: "c",
+            name: "C",
+            preset: "general",
+            prompt: "x",
+            tools: [],
+            schedule: null,
+            backend: null,
+            model: null,
+            placed: true,
+            unattended: false,
+            x: 0,
+            y: 0,
+          },
         ],
-        edges: [{ from: "a", to: "c" }, { from: "b", to: "c" }], // fan-in → invalid
+        edges: [
+          { from: "a", to: "c" },
+          { from: "b", to: "c" },
+        ], // fan-in → invalid
       },
     };
     const r = flowFromDoc(JSON.stringify(bad));

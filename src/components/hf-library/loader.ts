@@ -82,7 +82,10 @@ function buildUrl(opts: {
   return `${HF_API}?${p.toString()}`;
 }
 
-async function fetchOne(url: string, signal: AbortSignal): Promise<{
+async function fetchOne(
+  url: string,
+  signal: AbortSignal,
+): Promise<{
   models: HfModel[];
   totalCount: number | null;
 }> {
@@ -93,7 +96,9 @@ async function fetchOne(url: string, signal: AbortSignal): Promise<{
   const data = (await res.json()) as HfModel[];
   return {
     models: Array.isArray(data) ? data : [],
-    totalCount: Number.isFinite(totalCount as number) ? (totalCount as number) : null,
+    totalCount: Number.isFinite(totalCount as number)
+      ? (totalCount as number)
+      : null,
   };
 }
 
@@ -156,7 +161,10 @@ export async function loadHuggingFace(opts: LoadOpts): Promise<LoadResult> {
   // Sum-of-totals is misleading (overlap) so use the max across calls as a
   // floor. HF doesn't expose a union total, so this is the best estimate.
   const totalCount = results.reduce(
-    (acc, r) => (r.totalCount !== null && (acc === null || r.totalCount > acc) ? r.totalCount : acc),
+    (acc, r) =>
+      r.totalCount !== null && (acc === null || r.totalCount > acc)
+        ? r.totalCount
+        : acc,
     null as number | null,
   );
   return { models: merged, totalCount };
@@ -171,7 +179,11 @@ export function matchesApps(model: HfModel, apps: string[]): boolean {
   const tags = (model.tags ?? []).map((t) => t.toLowerCase());
   return apps.some((a) => {
     const slug = a.toLowerCase();
-    return tags.includes(slug) || tags.includes(`library:${slug}`) || tags.includes(`app:${slug}`);
+    return (
+      tags.includes(slug) ||
+      tags.includes(`library:${slug}`) ||
+      tags.includes(`app:${slug}`)
+    );
   });
 }
 

@@ -209,6 +209,10 @@ const RoundtableView = lazy(() =>
 
 function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  // Self-healing send (2026-06-11): ModelPicker registers its "start the
+  // current selection" handle here so ChatWindow can warm the model on
+  // first send instead of gating the composer behind the Start button.
+  const ensureStartRef = useRef<(() => Promise<boolean>) | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   // Ref mirror for window-event handlers registered with [] deps
   // (froglips:open-conversation) — they need the LATEST list without
@@ -1500,6 +1504,9 @@ function App() {
               status={status}
               onStatusChange={setStatus}
               desiredModel={current?.model ?? null}
+              exposeStart={(fn) => {
+                ensureStartRef.current = fn;
+              }}
             />
           )}
           {/* UI review U-C2: previously the header collapsed to a single
@@ -1602,6 +1609,9 @@ function App() {
               onConversationCreated={onConvCreated}
               onMemoriesChanged={onMemoriesChanged}
               onForked={onForked}
+              ensureModel={() =>
+                ensureStartRef.current?.() ?? Promise.resolve(false)
+              }
             />
           </ErrorBoundary>
         )}

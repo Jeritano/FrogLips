@@ -10,7 +10,12 @@ import {
 } from "react";
 import { runRoundtable, type RoundtableHooks } from "./engine";
 import type { PriceTable } from "./cost";
-import type { RoundtableConfig, RoundtableEndReason, RoundtableTotals, Turn } from "./types";
+import type {
+  RoundtableConfig,
+  RoundtableEndReason,
+  RoundtableTotals,
+  Turn,
+} from "./types";
 import { announce } from "../announce";
 import { logDiag } from "../diagnostics";
 
@@ -24,7 +29,13 @@ import { logDiag } from "../diagnostics";
  * many deltas/sec; buffer them and flush once per frame into one setState.
  */
 
-const EMPTY_TOTALS: RoundtableTotals = { turns: 0, tokensIn: 0, tokensOut: 0, usd: 0, usdPartial: false };
+const EMPTY_TOTALS: RoundtableTotals = {
+  turns: 0,
+  tokensIn: 0,
+  tokensOut: 0,
+  usd: 0,
+  usdPartial: false,
+};
 
 interface RoundtableRunCtx {
   running: boolean;
@@ -143,7 +154,12 @@ export function RoundtableRunProvider({ children }: { children: ReactNode }) {
         setEndReason(res.reason);
         setTotals(res.totals);
       } catch (e) {
-        logDiag({ level: "error", source: "roundtable", message: "runRoundtable threw", detail: e });
+        logDiag({
+          level: "error",
+          source: "roundtable",
+          message: "runRoundtable threw",
+          detail: e,
+        });
         setEndReason("error");
       } finally {
         runningRef.current = false;
@@ -198,8 +214,32 @@ export function RoundtableRunProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<RoundtableRunCtx>(
-    () => ({ running, config, turns, totals, statusLabel, endReason, completedAt, start, inject, stop, clear }),
-    [running, config, turns, totals, statusLabel, endReason, completedAt, start, inject, stop, clear],
+    () => ({
+      running,
+      config,
+      turns,
+      totals,
+      statusLabel,
+      endReason,
+      completedAt,
+      start,
+      inject,
+      stop,
+      clear,
+    }),
+    [
+      running,
+      config,
+      turns,
+      totals,
+      statusLabel,
+      endReason,
+      completedAt,
+      start,
+      inject,
+      stop,
+      clear,
+    ],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -208,7 +248,9 @@ export function RoundtableRunProvider({ children }: { children: ReactNode }) {
 export function useRoundtableRun(): RoundtableRunCtx {
   const ctx = useContext(Ctx);
   if (!ctx) {
-    throw new Error("useRoundtableRun() must be used inside <RoundtableRunProvider>.");
+    throw new Error(
+      "useRoundtableRun() must be used inside <RoundtableRunProvider>.",
+    );
   }
   return ctx;
 }

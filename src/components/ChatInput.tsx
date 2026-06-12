@@ -80,7 +80,14 @@ function detectSlashContext(
 
 interface Props {
   disabled?: boolean;
-  onSend: (text: string, images?: ChatImage[]) => void;
+  /**
+   * Dispatch the message. May return a promise resolving false when the
+   * send could not happen (e.g. self-healing model warm-up failed) — the
+   * composer then RESTORES the text/images so nothing is lost.
+   */
+  onSend: (text: string, images?: ChatImage[]) => void | Promise<boolean>;
+  /** Self-healing send: model is warming up for a just-submitted message. */
+  warming?: boolean;
   onAbort?: () => void;
   streaming?: boolean;
   /** Active model id — used to gate the image-drop affordance. */
@@ -130,6 +137,7 @@ async function fileToScrubbedPng(
 export function ChatInput({
   disabled,
   onSend,
+  warming,
   onAbort,
   streaming,
   currentModel,
@@ -279,7 +287,19 @@ export function ChatInput({
   function send() {
     const t = text.trim();
     if (!t && images.length === 0) return;
-    onSend(t, images.length > 0 ? images : undefined);
+    const imgs = images.length > 0 ? images : undefined;
+    const ret = onSend(t, imgs);
+    // Self-healing send: an async onSend resolving false means the message
+    // never dispatched (model warm-up failed) — restore the composer so the
+    // user's text isn't lost.
+    if (ret && typeof (ret as Promise<boolean>).then === "function") {
+      void (ret as Promise<boolean>).then((ok) => {
+        if (ok === false && mountedRef.current) {
+          setText(t);
+          setImages(imgs ?? []);
+        }
+      });
+    }
     setText("");
     setImages([]);
     setSlashCtx(null);
@@ -803,11 +823,13 @@ export function ChatInput({
             setTimeout(() => setSlashCtx(null), 120);
           }}
           placeholder={
-            !status?.running
-              ? "Pick a model in the top bar and press Start to begin…"
-              : listening
-                ? "Listening…"
-                : "Message… (drop files, / for prompts)"
+            warming
+              ? "Warming up the model…"
+              : !status?.running
+                ? "Message… (the selected model starts automatically)"
+                : listening
+                  ? "Listening…"
+                  : "Message… (drop files, / for prompts)"
           }
           disabled={disabled}
           rows={1}

@@ -15,7 +15,10 @@ import { useEffect, useRef } from "react";
  * regression-tested. `commit` is read via a ref too, so an unstable callback
  * identity can't cause the effect to re-run.
  */
-export function useCommitOnUnmount<T>(value: T | null | undefined, commit: (v: T) => void): void {
+export function useCommitOnUnmount<T>(
+  value: T | null | undefined,
+  commit: (v: T) => void,
+): void {
   const valueRef = useRef(value);
   valueRef.current = value;
   const commitRef = useRef(commit);

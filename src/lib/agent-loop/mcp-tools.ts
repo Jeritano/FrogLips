@@ -43,7 +43,10 @@ const MCP_SCHEMA_MAX_DEPTH = 8;
 const MCP_SCHEMA_MAX_REFS = 32;
 
 /** Depth of the deepest object/array in `v`. Primitives → 0. */
-function objectDepth(v: unknown, seen: WeakSet<object> = new WeakSet()): number {
+function objectDepth(
+  v: unknown,
+  seen: WeakSet<object> = new WeakSet(),
+): number {
   if (!v || typeof v !== "object") return 0;
   if (seen.has(v as object)) return MCP_SCHEMA_MAX_DEPTH + 1; // cycle → over cap
   seen.add(v as object);
@@ -99,8 +102,7 @@ function sanitizeMcpSchema(
     logDiag({
       level: "warn",
       source: "mcp-tools",
-      message:
-        `MCP tool '${serverName}.${toolName}' inputSchema not JSON-serializable — using fallback schema.`,
+      message: `MCP tool '${serverName}.${toolName}' inputSchema not JSON-serializable — using fallback schema.`,
     });
     return fallbackSchema();
   }
@@ -235,8 +237,7 @@ export async function fetchMcpTools(): Promise<OpenAIToolDef[]> {
         logDiag({
           level: "warn",
           source: "mcp-tools",
-          message:
-            `Skipping MCP tool '${s.name}.${t.name}': tool names must match [A-Za-z0-9-]+`,
+          message: `Skipping MCP tool '${s.name}.${t.name}': tool names must match [A-Za-z0-9-]+`,
         });
         continue;
       }
@@ -297,13 +298,17 @@ function validateMcpArgs(
       const t = (sub as { type?: unknown })?.type;
       if (typeof t !== "string") continue;
       const expected = t.toLowerCase();
-      const actual =
-        Array.isArray(v) ? "array" :
-        typeof v === "object" ? "object" :
-        typeof v;
-      const ok = expected === actual
-        || (expected === "integer" && actual === "number" && Number.isInteger(v as number))
-        || (expected === "number" && actual === "number");
+      const actual = Array.isArray(v)
+        ? "array"
+        : typeof v === "object"
+          ? "object"
+          : typeof v;
+      const ok =
+        expected === actual ||
+        (expected === "integer" &&
+          actual === "number" &&
+          Number.isInteger(v as number)) ||
+        (expected === "number" && actual === "number");
       if (!ok) {
         return `field '${key}' expected type '${expected}', got '${actual}'`;
       }
@@ -320,7 +325,10 @@ function validateMcpArgs(
 const MCP_TOOL_SCHEMAS: Map<string, Record<string, unknown>> = new Map();
 
 /** Internal: called by discoverMcpTools to keep the schema cache fresh. */
-export function rememberMcpToolSchema(fullName: string, schema: Record<string, unknown>): void {
+export function rememberMcpToolSchema(
+  fullName: string,
+  schema: Record<string, unknown>,
+): void {
   MCP_TOOL_SCHEMAS.set(fullName, schema);
 }
 
@@ -364,7 +372,12 @@ export async function dispatchMcpTool(
   }
   try {
     const text = await api.mcpCallTool(parsed.server, parsed.tool, args);
-    return JSON.stringify({ ok: true, server: parsed.server, tool: parsed.tool, text });
+    return JSON.stringify({
+      ok: true,
+      server: parsed.server,
+      tool: parsed.tool,
+      text,
+    });
   } catch (e) {
     return JSON.stringify({
       ok: false,

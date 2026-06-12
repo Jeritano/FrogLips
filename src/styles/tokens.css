@@ -19,18 +19,18 @@
   --danger-bg: rgba(239, 68, 68, 0.12);
   --danger-bg-strong: rgba(239, 68, 68, 0.22);
   --danger-fg: #f87171;
-  --danger-border: rgba(239, 68, 68, 0.30);
+  --danger-border: rgba(239, 68, 68, 0.3);
   --warn: #eab308;
   --warn-bg: rgba(234, 179, 8, 0.15);
   --warn-fg: #fbbf24;
-  --warn-border: rgba(234, 179, 8, 0.30);
+  --warn-border: rgba(234, 179, 8, 0.3);
   --green: #22c55e;
   --green-bg: rgba(34, 197, 94, 0.12);
   --green-fg: #4ade80;
-  --green-border: rgba(34, 197, 94, 0.30);
+  --green-border: rgba(34, 197, 94, 0.3);
   --overlay-soft: rgba(255, 255, 255, 0.06);
   --overlay-softer: rgba(255, 255, 255, 0.04);
-  --overlay-strong: rgba(255, 255, 255, 0.10);
+  --overlay-strong: rgba(255, 255, 255, 0.1);
 
   /* Model-browser tag pill palette. Distinct hues so backends are
      visually distinguishable in dense installed-models lists. Hex
@@ -111,7 +111,7 @@
      two legacy shadows (--shadow-modal/--shadow-toast) alias into it. */
   /* Two-layer (contact + ambient) so depth reads premium, not flat. */
   --elev-1: 0 1px 2px rgba(0, 0, 0, 0.28);
-  --elev-2: 0 1px 2px rgba(0, 0, 0, 0.24), 0 3px 8px rgba(0, 0, 0, 0.30);
+  --elev-2: 0 1px 2px rgba(0, 0, 0, 0.24), 0 3px 8px rgba(0, 0, 0, 0.3);
   --elev-3: 0 2px 4px rgba(0, 0, 0, 0.24), 0 8px 24px rgba(0, 0, 0, 0.36);
   --elev-4: 0 4px 8px rgba(0, 0, 0, 0.28), 0 16px 48px rgba(0, 0, 0, 0.46);
 
@@ -138,7 +138,14 @@
   color-scheme: dark;
   /* `--ui-font` is set by src/lib/appearance.ts (Interface font pref); the
      fallback reproduces the historical default so nothing shifts pre-apply. */
-  font-family: var(--ui-font, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif);
+  font-family: var(
+    --ui-font,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Inter",
+    "Segoe UI",
+    sans-serif
+  );
   -webkit-font-smoothing: antialiased;
 }
 
@@ -155,39 +162,39 @@
   --text-3: #71717a;
   --text-muted: #52525b;
   --accent: #4f46e5;
-  --accent-bg: rgba(79, 70, 229, 0.10);
-  --accent-strong: rgba(79, 70, 229, 0.20);
+  --accent-bg: rgba(79, 70, 229, 0.1);
+  --accent-strong: rgba(79, 70, 229, 0.2);
   --danger: #dc2626;
-  --danger-bg: rgba(220, 38, 38, 0.10);
-  --danger-bg-strong: rgba(220, 38, 38, 0.20);
+  --danger-bg: rgba(220, 38, 38, 0.1);
+  --danger-bg-strong: rgba(220, 38, 38, 0.2);
   --danger-fg: #b91c1c;
-  --danger-border: rgba(220, 38, 38, 0.30);
+  --danger-border: rgba(220, 38, 38, 0.3);
   --warn: #b45309;
-  --warn-bg: rgba(180, 83, 9, 0.10);
+  --warn-bg: rgba(180, 83, 9, 0.1);
   --warn-fg: #92400e;
-  --warn-border: rgba(180, 83, 9, 0.30);
+  --warn-border: rgba(180, 83, 9, 0.3);
   --green: #16a34a;
-  --green-bg: rgba(22, 163, 74, 0.10);
+  --green-bg: rgba(22, 163, 74, 0.1);
   --green-fg: #15803d;
-  --green-border: rgba(22, 163, 74, 0.30);
+  --green-border: rgba(22, 163, 74, 0.3);
   --overlay-soft: rgba(0, 0, 0, 0.04);
   --overlay-softer: rgba(0, 0, 0, 0.02);
   --overlay-strong: rgba(0, 0, 0, 0.08);
   /* Light-mode mb-tag palette: deeper hues so pills stay readable on a
      bright surface; same hex fallbacks as dark mode for graceful
      degradation. */
-  --mb-tag-ollama-bg: rgba(37, 99, 235, 0.10);
+  --mb-tag-ollama-bg: rgba(37, 99, 235, 0.1);
   --mb-tag-ollama-fg: #1d4ed8;
-  --mb-tag-cloud-bg: rgba(2, 132, 199, 0.10);
+  --mb-tag-cloud-bg: rgba(2, 132, 199, 0.1);
   --mb-tag-cloud-fg: #0369a1;
-  --mb-tag-mlx-bg: rgba(126, 34, 206, 0.10);
+  --mb-tag-mlx-bg: rgba(126, 34, 206, 0.1);
   --mb-tag-mlx-fg: #6b21a8;
   --shadow-modal: 0 12px 48px rgba(0, 0, 0, 0.15);
-  --shadow-toast: 0 6px 16px rgba(0, 0, 0, 0.10);
+  --shadow-toast: 0 6px 16px rgba(0, 0, 0, 0.1);
   /* Lighter, two-layer elevation so shadows stay subtle on a bright surface. */
   --elev-1: 0 1px 2px rgba(0, 0, 0, 0.06);
   --elev-2: 0 1px 2px rgba(0, 0, 0, 0.06), 0 3px 8px rgba(0, 0, 0, 0.08);
-  --elev-3: 0 2px 4px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.10);
+  --elev-3: 0 2px 4px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.1);
   --elev-4: 0 4px 8px rgba(0, 0, 0, 0.08), 0 16px 48px rgba(0, 0, 0, 0.14);
   --spinner-track: rgba(0, 0, 0, 0.14);
   --caret-svg: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2352525b' stroke-width='2'><polyline points='6 9 12 15 18 9'/></svg>");
@@ -273,8 +280,12 @@
   animation: skeleton-shimmer 1.2s ease-in-out infinite;
 }
 @keyframes skeleton-shimmer {
-  0% { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
 }
 /* Block-level menu rows that now lead with an icon: keep full width + align. */
 .topbar-menu button,
@@ -308,6 +319,8 @@
 /* Tactile press — every button depresses slightly. Excludes React Flow's
    canvas controls (they manage their own transforms). Honors reduced-motion
    via the duration guard above (the transform itself is instant + brief). */
-button:active:not(:disabled):not([aria-disabled="true"]):not([class*="react-flow"]) {
+button:active:not(:disabled):not([aria-disabled="true"]):not(
+    [class*="react-flow"]
+  ) {
   transform: scale(0.97);
 }

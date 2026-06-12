@@ -64,12 +64,12 @@ describe("policyDecisionFor", () => {
       allowed_shell_prefixes: ["cargo", "git"],
       source_path: "/home/u/.config/froglips/policy.json",
     };
-    expect(policyDecisionFor(policy, "run_shell", { command: "cargo test" })).toBe(
-      "auto",
-    );
-    expect(policyDecisionFor(policy, "run_shell", { command: "rm -rf /" })).toBe(
-      "needs-confirm",
-    );
+    expect(
+      policyDecisionFor(policy, "run_shell", { command: "cargo test" }),
+    ).toBe("auto");
+    expect(
+      policyDecisionFor(policy, "run_shell", { command: "rm -rf /" }),
+    ).toBe("needs-confirm");
   });
 
   it("repo-local allowed_shell_prefixes is downgraded to needs-confirm", () => {
@@ -90,7 +90,9 @@ describe("policyDecisionFor", () => {
       source_path: "/home/u/.config/froglips/policy.json",
     };
     expect(
-      policyDecisionFor(policy, "run_shell", { command: "cargo test; rm -rf /" }),
+      policyDecisionFor(policy, "run_shell", {
+        command: "cargo test; rm -rf /",
+      }),
     ).toBe("needs-confirm");
   });
 
@@ -122,7 +124,12 @@ describe("policyDecisionFor", () => {
       source_path: "/home/u/.config/froglips/policy.json",
     };
     expect(
-      policyDecisionFor(policy, "http_request", { method: "POST" }, "privileged"),
+      policyDecisionFor(
+        policy,
+        "http_request",
+        { method: "POST" },
+        "privileged",
+      ),
     ).toBe("needs-confirm");
     expect(
       policyDecisionFor(policy, "http_request", { method: "GET" }, "normal"),
@@ -134,16 +141,18 @@ describe("policyDecisionFor", () => {
       allowed_write_paths: ["src/", "tests/"],
       denied_write_paths: [".env", "secrets/", "*.key"],
     };
-    expect(policyDecisionFor(policy, "write_file", { path: ".env" })).toBe("denied");
+    expect(policyDecisionFor(policy, "write_file", { path: ".env" })).toBe(
+      "denied",
+    );
     expect(
       policyDecisionFor(policy, "edit_file", { path: "secrets/db.json" }),
     ).toBe("denied");
-    expect(policyDecisionFor(policy, "write_file", { path: "src/main.rs" })).toBe(
-      "auto",
-    );
     expect(
-      policyDecisionFor(policy, "write_file", { path: "README.md" }),
-    ).toBe("needs-confirm");
+      policyDecisionFor(policy, "write_file", { path: "src/main.rs" }),
+    ).toBe("auto");
+    expect(policyDecisionFor(policy, "write_file", { path: "README.md" })).toBe(
+      "needs-confirm",
+    );
   });
 
   it("denies case-folded write targets (APFS is case-insensitive)", () => {
@@ -154,13 +163,19 @@ describe("policyDecisionFor", () => {
       allowed_write_paths: ["src/"],
       denied_write_paths: [".env", "secrets/", "*.key"],
     };
-    expect(policyDecisionFor(policy, "write_file", { path: "Secrets/db.json" })).toBe("denied");
-    expect(policyDecisionFor(policy, "write_file", { path: ".ENV" })).toBe("denied");
-    expect(policyDecisionFor(policy, "edit_file", { path: "config/prod.KEY" })).toBe("denied");
-    // A true sibling sharing a prefix is NOT denied.
-    expect(policyDecisionFor(policy, "write_file", { path: "public/index.html" })).toBe(
-      "needs-confirm",
+    expect(
+      policyDecisionFor(policy, "write_file", { path: "Secrets/db.json" }),
+    ).toBe("denied");
+    expect(policyDecisionFor(policy, "write_file", { path: ".ENV" })).toBe(
+      "denied",
     );
+    expect(
+      policyDecisionFor(policy, "edit_file", { path: "config/prod.KEY" }),
+    ).toBe("denied");
+    // A true sibling sharing a prefix is NOT denied.
+    expect(
+      policyDecisionFor(policy, "write_file", { path: "public/index.html" }),
+    ).toBe("needs-confirm");
   });
 
   it("respects auto_approve_dangerous_tools list", () => {
@@ -225,7 +240,9 @@ describe("runAgentLoop with project policy", () => {
     expect(requestConfirmation).not.toHaveBeenCalled();
 
     const last = collected[collected.length - 1] ?? [];
-    const toolMsgs = last.filter((m) => m.role === "tool" && m.tool_name === "run_shell");
+    const toolMsgs = last.filter(
+      (m) => m.role === "tool" && m.tool_name === "run_shell",
+    );
     expect(toolMsgs.length).toBe(1);
   });
 

@@ -19,9 +19,30 @@ import {
  */
 
 const ROUTES: ChatRoute[] = [
-  { id: "code", label: "Coder", whenToUse: "programming, debugging", keywords: ["```", "stack trace"], model: "qwen3-coder", backend: "ollama", preset: "coder" },
-  { id: "web", label: "Web", whenToUse: "current events, look something up", model: "llama3", backend: "ollama" },
-  { id: "reason", label: "Reasoner", whenToUse: "hard math and logic", model: "deepseek-r1:cloud", backend: "ollama", isDefault: true },
+  {
+    id: "code",
+    label: "Coder",
+    whenToUse: "programming, debugging",
+    keywords: ["```", "stack trace"],
+    model: "qwen3-coder",
+    backend: "ollama",
+    preset: "coder",
+  },
+  {
+    id: "web",
+    label: "Web",
+    whenToUse: "current events, look something up",
+    model: "llama3",
+    backend: "ollama",
+  },
+  {
+    id: "reason",
+    label: "Reasoner",
+    whenToUse: "hard math and logic",
+    model: "deepseek-r1:cloud",
+    backend: "ollama",
+    isDefault: true,
+  },
 ];
 
 describe("routeMessage", () => {
@@ -32,7 +53,9 @@ describe("routeMessage", () => {
 
   it("takes the keyword fast-path without calling the classifier", async () => {
     const classify = vi.fn(async () => "2");
-    const d = await routeMessage("here is a ``` code block", ROUTES, { classify });
+    const d = await routeMessage("here is a ``` code block", ROUTES, {
+      classify,
+    });
     expect(d?.routeId).toBe("code");
     expect(d?.method).toBe("keyword");
     expect(classify).not.toHaveBeenCalled();
@@ -75,7 +98,9 @@ describe("routeMessage", () => {
   });
 
   it("clamps an out-of-range classifier number to default", async () => {
-    const d = await routeMessage("thing", ROUTES, { classify: async () => "99" });
+    const d = await routeMessage("thing", ROUTES, {
+      classify: async () => "99",
+    });
     expect(d?.method).toBe("default");
   });
 
@@ -83,7 +108,8 @@ describe("routeMessage", () => {
     // A reasoning model that streams its chain-of-thought inline: the '2' and
     // '3' are inside <think>; the real answer is '1' after it.
     const d = await routeMessage("debug my code", ROUTES, {
-      classify: async () => "<think>could be 2 (web) or 3 (reason)...</think>\n1",
+      classify: async () =>
+        "<think>could be 2 (web) or 3 (reason)...</think>\n1",
     });
     expect(d?.routeId).toBe("code");
     expect(d?.method).toBe("classifier");
@@ -155,17 +181,30 @@ describe("routeMessage — semantic stage (Stage 2)", () => {
 // isn't reliably writable; a fresh Map-backed store per test isolates config CRUD.
 class MemStore {
   private m = new Map<string, string>();
-  getItem(k: string) { return this.m.has(k) ? this.m.get(k)! : null; }
-  setItem(k: string, v: string) { this.m.set(k, String(v)); }
-  removeItem(k: string) { this.m.delete(k); }
-  clear() { this.m.clear(); }
-  key(i: number) { return [...this.m.keys()][i] ?? null; }
-  get length() { return this.m.size; }
+  getItem(k: string) {
+    return this.m.has(k) ? this.m.get(k)! : null;
+  }
+  setItem(k: string, v: string) {
+    this.m.set(k, String(v));
+  }
+  removeItem(k: string) {
+    this.m.delete(k);
+  }
+  clear() {
+    this.m.clear();
+  }
+  key(i: number) {
+    return [...this.m.keys()][i] ?? null;
+  }
+  get length() {
+    return this.m.size;
+  }
 }
 
 describe("router configurations", () => {
   beforeEach(() => {
-    (globalThis as unknown as { localStorage: Storage }).localStorage = new MemStore() as unknown as Storage;
+    (globalThis as unknown as { localStorage: Storage }).localStorage =
+      new MemStore() as unknown as Storage;
   });
 
   it("creates a config, makes it active, and exposes its routes via loadRoutes", () => {

@@ -1,5 +1,10 @@
 import { Download } from "lucide-react";
-import { conversationToMarkdown, downloadText, safeFilename, type ExportMode } from "../lib/export";
+import {
+  conversationToMarkdown,
+  downloadText,
+  safeFilename,
+  type ExportMode,
+} from "../lib/export";
 import type { Conversation, Message } from "../types";
 
 interface Props {
@@ -15,9 +20,19 @@ interface Props {
  * Export-as-Markdown dropdown. Extracted verbatim from ChatWindow's toolbar —
  * a button plus a `role="menu"` popover with plain / detailed Markdown modes.
  */
-export function ExportMenu({ conversation, messages, open, onToggle, onClose, disabled }: Props) {
+export function ExportMenu({
+  conversation,
+  messages,
+  open,
+  onToggle,
+  onClose,
+  disabled,
+}: Props) {
   return (
-    <div className="export-menu-wrap" style={{ position: "relative", display: "inline-block" }}>
+    <div
+      className="export-menu-wrap"
+      style={{ position: "relative", display: "inline-block" }}
+    >
       <button
         data-testid="export-btn"
         className="agent-toggle"
@@ -55,11 +70,20 @@ export function ExportMenu({ conversation, messages, open, onToggle, onClose, di
               role="menuitem"
               data-testid={`export-${mode}`}
               className="agent-toggle"
-              style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "transparent" }}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                border: "none",
+                background: "transparent",
+              }}
               onClick={() => {
                 const md = conversationToMarkdown(conversation, messages, mode);
                 const suffix = mode === "detailed" ? "detailed" : undefined;
-                downloadText(md, safeFilename(conversation.title, "md", suffix));
+                downloadText(
+                  md,
+                  safeFilename(conversation.title, "md", suffix),
+                );
                 onClose();
               }}
             >

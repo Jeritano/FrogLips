@@ -20,7 +20,6 @@ function fmtTs(ms: number): string {
   }
 }
 
-
 export function AuditLog() {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<AgentAuditRow[]>([]);
@@ -95,9 +94,7 @@ export function AuditLog() {
     <div className="audit-log-panel">
       <div className="audit-log-toggle" onClick={() => setOpen((v) => !v)}>
         <span className="audit-log-title">Audit log</span>
-        <span className="audit-log-hint">
-          {open ? "[hide]" : "[show]"}
-        </span>
+        <span className="audit-log-hint">{open ? "[hide]" : "[show]"}</span>
         {stats && (
           <span className="audit-log-hint">
             {stats.total_calls_24h} calls / 24h
@@ -156,7 +153,10 @@ export function AuditLog() {
             </label>
             <label className="audit-log-field">
               Time:&nbsp;
-              <select value={timeIdx} onChange={(e) => setTimeIdx(Number(e.target.value))}>
+              <select
+                value={timeIdx}
+                onChange={(e) => setTimeIdx(Number(e.target.value))}
+              >
                 {TIME_FILTERS.map((f, i) => (
                   <option key={f.label} value={i}>
                     {f.label}
@@ -183,9 +183,7 @@ export function AuditLog() {
             </span>
           </div>
 
-          {err && (
-            <div className="audit-log-err">{err}</div>
-          )}
+          {err && <div className="audit-log-err">{err}</div>}
 
           <div className="audit-log-table-wrap">
             <table className="audit-log-table">
@@ -219,12 +217,16 @@ export function AuditLog() {
                         r.outcome === "ok"
                           ? undefined
                           : r.outcome === "denied"
-                          ? "audit-outcome-denied"
-                          : r.outcome === "dry_run"
-                          ? "audit-outcome-dryrun"
-                          : "audit-outcome-warn"
+                            ? "audit-outcome-denied"
+                            : r.outcome === "dry_run"
+                              ? "audit-outcome-dryrun"
+                              : "audit-outcome-warn"
                       }
-                      title={r.outcome === "dry_run" ? "Tool side-effect suppressed by dry-run mode" : undefined}
+                      title={
+                        r.outcome === "dry_run"
+                          ? "Tool side-effect suppressed by dry-run mode"
+                          : undefined
+                      }
                     >
                       {r.outcome === "dry_run" ? "dry-run" : r.outcome}
                       {r.error_kind ? `:${r.error_kind}` : ""}

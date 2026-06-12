@@ -59,41 +59,78 @@ interface Props {
  */
 const ALL_TOOLS = [
   // Filesystem read
-  "read_file", "list_dir", "search_files", "file_exists",
+  "read_file",
+  "list_dir",
+  "search_files",
+  "file_exists",
   // Filesystem mutate
-  "edit_file", "multi_edit", "write_file", "make_dir", "move_path", "copy_path",
+  "edit_file",
+  "multi_edit",
+  "write_file",
+  "make_dir",
+  "move_path",
+  "copy_path",
   // Diff / hash inspection
-  "diff_files", "hash_file",
+  "diff_files",
+  "hash_file",
   // Shell + automation
-  "run_shell", "run_code", "applescript_run", "open_app", "show_notification",
+  "run_shell",
+  "run_code",
+  "applescript_run",
+  "open_app",
+  "show_notification",
   // Git
-  "git_status", "git_diff", "git_log", "git_show", "git_branches", "git_commit",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "git_branches",
+  "git_commit",
   // Knowledge / project search
-  "find_definition", "find_references", "format_code", "search_project_knowledge", "calculate",
+  "find_definition",
+  "find_references",
+  "format_code",
+  "search_project_knowledge",
+  "calculate",
   // Long-term semantic memory
-  "recall_memory", "remember",
+  "recall_memory",
+  "remember",
   // PDF / web
-  "read_pdf", "web_fetch", "web_search", "http_request",
+  "read_pdf",
+  "web_fetch",
+  "web_search",
+  "http_request",
   // UI / clipboard
-  "screenshot", "clipboard_get", "clipboard_set",
+  "screenshot",
+  "clipboard_get",
+  "clipboard_set",
   // Process inspection (kill_process intentionally omitted)
   "list_processes",
   // Filesystem watch
-  "watch_path", "poll_watch", "stop_watch", "list_watches",
+  "watch_path",
+  "poll_watch",
+  "stop_watch",
+  "list_watches",
   // Image gen
   // Task management
-  "task_create", "task_status", "task_list",
+  "task_create",
+  "task_status",
+  "task_list",
   // Interaction
   "ask_user",
   // Procedural memory (workflow skills) — saved sequences of tool calls
   // that future runs can replay by name.
-  "workflow_save_skill", "workflow_list_skills", "workflow_get_skill",
-  "workflow_invoke_skill", "workflow_delete_skill",
+  "workflow_save_skill",
+  "workflow_list_skills",
+  "workflow_get_skill",
+  "workflow_invoke_skill",
+  "workflow_delete_skill",
   // Claude Skills (imported Anthropic SKILL.md packages) — list/load the
   // user's imported skill library. Useful in workflow agents that want
   // to mount domain knowledge on demand instead of carrying the body in
   // the card's system prompt.
-  "list_claude_skills", "load_claude_skill",
+  "list_claude_skills",
+  "load_claude_skill",
 ];
 
 /**
@@ -165,7 +202,9 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   // Loading state for the model dropdown. `null` = settled; string = error.
   // Without this, a slow / failed `listAllModels` shows an empty dropdown with
   // no signal whether models are loading, missing, or the call simply failed.
-  const [modelsState, setModelsState] = useState<"loading" | "ok" | "error">("loading");
+  const [modelsState, setModelsState] = useState<"loading" | "ok" | "error">(
+    "loading",
+  );
 
   useModalA11y({ open: true, onClose, containerRef: ref });
   // Re-seed the draft only when the form opens on a DIFFERENT card. Without
@@ -225,6 +264,13 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
     setDraft((d) => ({ ...d, [key]: value }));
   }
 
+  // Merge one key into the (possibly null) nodeConfig. The Advanced section
+  // below writes through here so values set in the per-node-type
+  // NodeConfigEditor survive alongside the universal fields.
+  function patchCfg(p: Partial<WorkflowNodeConfig>) {
+    setDraft((d) => ({ ...d, nodeConfig: { ...(d.nodeConfig ?? {}), ...p } }));
+  }
+
   function toggleTool(tool: string) {
     setDraft((d) => ({
       ...d,
@@ -240,7 +286,9 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   // there, so `transitionend` may not fire).
   function exit(then: () => void, mode: "fly" | "fade" = "fly") {
     const node = cardRef.current;
-    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const reduce = window.matchMedia?.(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
     if (!node || reduce) {
       then();
       return;
@@ -273,9 +321,7 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
     ? {
         ["--wf-fly-x" as string]: `${origin.x + origin.w / 2}px`,
         ["--wf-fly-y" as string]: `${origin.y + origin.h / 2}px`,
-        ["--wf-fly-scale" as string]: String(
-          Math.max(origin.w / 420, 0.12),
-        ),
+        ["--wf-fly-scale" as string]: String(Math.max(origin.w / 420, 0.12)),
       }
     : {};
 
@@ -290,7 +336,9 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   return (
     <div
       className="wf-form-overlay"
-      onClick={(e) => { if (e.target === e.currentTarget) handleCancel(); }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) handleCancel();
+      }}
       role="dialog"
       aria-modal="true"
       aria-label="Agent card"
@@ -303,14 +351,16 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
       >
         <div className="wf-form-inner" ref={ref}>
           <div className="wf-form-head">
-            <span className="wf-form-title">{card.placed ? "Edit agent" : "New agent"}</span>
+            <span className="wf-form-title">
+              {card.placed ? "Edit agent" : "New agent"}
+            </span>
             <button
               type="button"
               className="wf-form-close"
               onClick={handleCancel}
               aria-label="Close"
             >
-              <X size={16}/>
+              <X size={16} />
             </button>
           </div>
           <div className="wf-form-body">
@@ -335,9 +385,14 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
             </label>
             <label className="wf-field">
               <span>Role</span>
-              <select value={draft.preset} onChange={(e) => set("preset", e.target.value)}>
+              <select
+                value={draft.preset}
+                onChange={(e) => set("preset", e.target.value)}
+              >
                 {presets.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
                 ))}
               </select>
             </label>
@@ -345,14 +400,22 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
               <span>Node type</span>
               <select
                 value={draft.nodeType ?? "agent"}
-                onChange={(e) => set("nodeType", e.target.value as WorkflowNodeType)}
+                onChange={(e) =>
+                  set("nodeType", e.target.value as WorkflowNodeType)
+                }
               >
                 {WORKFLOW_NODE_TYPES.map((nt) => (
-                  <option key={nt.value} value={nt.value}>{nt.label}</option>
+                  <option key={nt.value} value={nt.value}>
+                    {nt.label}
+                  </option>
                 ))}
               </select>
               <small className="wf-field-hint">
-                {WORKFLOW_NODE_TYPES.find((nt) => nt.value === (draft.nodeType ?? "agent"))?.blurb}
+                {
+                  WORKFLOW_NODE_TYPES.find(
+                    (nt) => nt.value === (draft.nodeType ?? "agent"),
+                  )?.blurb
+                }
               </small>
             </label>
             {draft.nodeType && draft.nodeType !== "agent" && (
@@ -407,7 +470,10 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                       : "System default"}
                 </option>
                 {models.map((m) => (
-                  <option key={`${m.backend}::${m.id}`} value={`${m.backend}::${m.id}`}>
+                  <option
+                    key={`${m.backend}::${m.id}`}
+                    value={`${m.backend}::${m.id}`}
+                  >
                     {m.id} ({m.backend})
                   </option>
                 ))}
@@ -417,16 +483,17 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                     branch). Encode with the card's existing backend so save
                     is non-destructive. */}
                 {draft.model && !models.some((m) => m.id === draft.model) && (
-                  <option
-                    value={`${draft.backend ?? ""}::${draft.model}`}
-                  >
+                  <option value={`${draft.backend ?? ""}::${draft.model}`}>
                     {draft.model}
                     {draft.backend ? ` (${draft.backend})` : " (pinned)"}
                   </option>
                 )}
               </select>
               {modelsState === "error" && (
-                <small className="wf-field-hint" style={{ color: "var(--danger, #d33)" }}>
+                <small
+                  className="wf-field-hint"
+                  style={{ color: "var(--danger, #d33)" }}
+                >
                   Could not load the installed-models list. Check that Ollama is
                   running and MLX is set up, then reopen this dialog.
                 </small>
@@ -443,7 +510,10 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
               <summary className="wf-collapse-summary">
                 <span>System prompt (optional)</span>
                 {(draft.systemPrompt ?? "").trim() !== "" && (
-                  <span className="wf-collapse-badge" title="This card has a custom system prompt">
+                  <span
+                    className="wf-collapse-badge"
+                    title="This card has a custom system prompt"
+                  >
                     • set
                   </span>
                 )}
@@ -452,15 +522,18 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                 <textarea
                   value={draft.systemPrompt ?? ""}
                   onChange={(e) =>
-                    set("systemPrompt", e.target.value === "" ? null : e.target.value)
+                    set(
+                      "systemPrompt",
+                      e.target.value === "" ? null : e.target.value,
+                    )
                   }
                   rows={3}
                   placeholder="Persona, constraints, output format. Leave blank to inherit from Role."
                   maxLength={16_384}
                 />
                 <small className="wf-field-hint">
-                  Overrides the Role's system prompt for THIS card only. Use it to
-                  give one agent a different persona, output format, or hard
+                  Overrides the Role's system prompt for THIS card only. Use it
+                  to give one agent a different persona, output format, or hard
                   constraints without making a new Role. Blank = use the Role's
                   default.
                 </small>
@@ -482,7 +555,11 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
             {/* Card color theme — colour-code agents on a busy canvas. */}
             <div className="wf-field">
               <span>Card color</span>
-              <div className="wf-color-row" role="radiogroup" aria-label="Card accent color">
+              <div
+                className="wf-color-row"
+                role="radiogroup"
+                aria-label="Card accent color"
+              >
                 {WORKFLOW_CARD_COLORS.map((c) => {
                   const selected = (draft.color ?? null) === c.value;
                   return (
@@ -509,7 +586,11 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                 placeholder="every 30m  ·  daily 09:00"
                 aria-invalid={schedErr != null}
               />
-              {schedErr && <p className="wf-field-error" role="alert">{schedErr}</p>}
+              {schedErr && (
+                <p className="wf-field-error" role="alert">
+                  {schedErr}
+                </p>
+              )}
             </label>
             <label className="wf-field wf-field-check">
               <input
@@ -517,9 +598,7 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                 checked={draft.unattended === true}
                 onChange={(e) => set("unattended", e.target.checked)}
               />
-              <span>
-                Auto-approve this agent's tool calls.
-              </span>
+              <span>Auto-approve this agent's tool calls.</span>
             </label>
             <p className="wf-field-hint" style={{ marginTop: "-4px" }}>
               When checked, this agent runs every tool call it issues without
@@ -529,7 +608,14 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
             {/* Phase 1.3 — per-card model params. Three optional inputs;
                 blank = backend default. Kept in a single row so the form
                 doesn't sprawl. */}
-            <div className="wf-field" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            <div
+              className="wf-field"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 8,
+              }}
+            >
               <label>
                 <span>Temperature (0–2)</span>
                 <input
@@ -540,13 +626,16 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                   placeholder="default"
                   value={draft.params?.temperature ?? ""}
                   onChange={(e) => {
-                    const v = e.target.value === "" ? null : Number(e.target.value);
+                    const v =
+                      e.target.value === "" ? null : Number(e.target.value);
                     // Clamp on write — the HTML min/max are advisory for typed
                     // input, so an out-of-range value would otherwise persist
                     // and run live this session (it only self-heals on reload).
                     set("params", {
                       ...(draft.params ?? {}),
-                      temperature: Number.isFinite(v) ? Math.min(2, Math.max(0, v as number)) : null,
+                      temperature: Number.isFinite(v)
+                        ? Math.min(2, Math.max(0, v as number))
+                        : null,
                     });
                   }}
                 />
@@ -561,10 +650,13 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                   placeholder="default"
                   value={draft.params?.top_p ?? ""}
                   onChange={(e) => {
-                    const v = e.target.value === "" ? null : Number(e.target.value);
+                    const v =
+                      e.target.value === "" ? null : Number(e.target.value);
                     set("params", {
                       ...(draft.params ?? {}),
-                      top_p: Number.isFinite(v) ? Math.min(1, Math.max(0, v as number)) : null,
+                      top_p: Number.isFinite(v)
+                        ? Math.min(1, Math.max(0, v as number))
+                        : null,
                     });
                   }}
                 />
@@ -578,15 +670,29 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                   placeholder="default"
                   value={draft.params?.max_tokens ?? ""}
                   onChange={(e) => {
-                    const v = e.target.value === "" ? null : Number(e.target.value);
-                    set("params", { ...(draft.params ?? {}), max_tokens: Number.isFinite(v) && v! > 0 ? Math.min(131072, Math.floor(v!)) : null });
+                    const v =
+                      e.target.value === "" ? null : Number(e.target.value);
+                    set("params", {
+                      ...(draft.params ?? {}),
+                      max_tokens:
+                        Number.isFinite(v) && v! > 0
+                          ? Math.min(131072, Math.floor(v!))
+                          : null,
+                    });
                   }}
                 />
               </label>
             </div>
             {/* Phase 1.6 — retry policy. Two inputs; max=0 (default)
                 disables retries. */}
-            <div className="wf-field" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div
+              className="wf-field"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 8,
+              }}
+            >
               <label>
                 <span>Retry on error (0–5)</span>
                 <input
@@ -597,11 +703,23 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                   placeholder="0 (no retry)"
                   value={draft.retry?.max ?? ""}
                   onChange={(e) => {
-                    const v = e.target.value === "" ? 0 : Math.max(0, Math.min(5, Math.floor(Number(e.target.value) || 0)));
+                    const v =
+                      e.target.value === ""
+                        ? 0
+                        : Math.max(
+                            0,
+                            Math.min(
+                              5,
+                              Math.floor(Number(e.target.value) || 0),
+                            ),
+                          );
                     if (v === 0) {
                       set("retry", null);
                     } else {
-                      set("retry", { max: v, backoff_ms: draft.retry?.backoff_ms ?? 1000 });
+                      set("retry", {
+                        max: v,
+                        backoff_ms: draft.retry?.backoff_ms ?? 1000,
+                      });
                     }
                   }}
                 />
@@ -617,7 +735,16 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                   value={draft.retry?.backoff_ms ?? ""}
                   disabled={!draft.retry || draft.retry.max === 0}
                   onChange={(e) => {
-                    const v = e.target.value === "" ? 1000 : Math.max(0, Math.min(60_000, Math.floor(Number(e.target.value) || 0)));
+                    const v =
+                      e.target.value === ""
+                        ? 1000
+                        : Math.max(
+                            0,
+                            Math.min(
+                              60_000,
+                              Math.floor(Number(e.target.value) || 0),
+                            ),
+                          );
                     if (draft.retry && draft.retry.max > 0) {
                       set("retry", { ...draft.retry, backoff_ms: v });
                     }
@@ -625,6 +752,159 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                 />
               </label>
             </div>
+            {/* Flows Wave 1 — advanced: gate/halt + universal budget
+                ceilings. Applies to EVERY node type (the runner enforces
+                both regardless of nodeType); collapsed by default with a
+                "• set" badge so configured cards aren't silently hidden.
+                The budget pair is omitted for the Budget node, whose
+                Orchestration settings already expose the same fields. */}
+            <details className="wf-field wf-collapse">
+              <summary className="wf-collapse-summary">
+                <span>Advanced (halt gate · budget)</span>
+                {(draft.nodeConfig?.haltWhen != null ||
+                  draft.nodeConfig?.maxTokens != null ||
+                  draft.nodeConfig?.maxMs != null) && (
+                  <span
+                    className="wf-collapse-badge"
+                    title="This card has advanced settings"
+                  >
+                    • set
+                  </span>
+                )}
+              </summary>
+              <div
+                className="wf-collapse-body"
+                style={{ display: "grid", gap: 10 }}
+              >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 8,
+                  }}
+                >
+                  <label>
+                    <span>Halt when key</span>
+                    <input
+                      placeholder="scratchpad key"
+                      value={draft.nodeConfig?.haltWhen?.key ?? ""}
+                      onChange={(e) => {
+                        const key = e.target.value;
+                        patchCfg({
+                          haltWhen: key
+                            ? {
+                                key,
+                                equals:
+                                  draft.nodeConfig?.haltWhen?.equals ?? "",
+                              }
+                            : null,
+                        });
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>equals value</span>
+                    <input
+                      placeholder="e.g. done"
+                      value={draft.nodeConfig?.haltWhen?.equals ?? ""}
+                      disabled={!draft.nodeConfig?.haltWhen?.key}
+                      onChange={(e) => {
+                        const key = draft.nodeConfig?.haltWhen?.key;
+                        if (key)
+                          patchCfg({
+                            haltWhen: { key, equals: e.target.value },
+                          });
+                      }}
+                    />
+                  </label>
+                </div>
+                <small className="wf-field-hint">
+                  After this card finishes, the flow stops cleanly when the
+                  shared scratchpad entry at the key equals the value (cards
+                  write entries via the workflow_set tool). Blank key = never
+                  halt.
+                </small>
+                {draft.nodeType !== "budget" && (
+                  <>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 8,
+                      }}
+                    >
+                      <label>
+                        <span>Budget: max tokens</span>
+                        <input
+                          type="number"
+                          min={1}
+                          step={64}
+                          placeholder="no limit"
+                          value={draft.nodeConfig?.maxTokens ?? ""}
+                          onChange={(e) => {
+                            const v =
+                              e.target.value === ""
+                                ? null
+                                : Math.floor(Number(e.target.value));
+                            patchCfg({
+                              maxTokens:
+                                v != null && Number.isFinite(v) && v > 0
+                                  ? Math.min(1_000_000, v)
+                                  : null,
+                            });
+                          }}
+                        />
+                      </label>
+                      <label>
+                        <span>Budget: max seconds</span>
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          placeholder="no limit"
+                          value={
+                            draft.nodeConfig?.maxMs != null
+                              ? Math.round(draft.nodeConfig.maxMs / 1000)
+                              : ""
+                          }
+                          onChange={(e) => {
+                            const v =
+                              e.target.value === ""
+                                ? null
+                                : Math.floor(Number(e.target.value));
+                            patchCfg({
+                              maxMs:
+                                v != null && Number.isFinite(v) && v > 0
+                                  ? Math.min(3600, v) * 1000
+                                  : null,
+                            });
+                          }}
+                        />
+                      </label>
+                    </div>
+                    <label>
+                      <span>When budget hit</span>
+                      <select
+                        value={draft.nodeConfig?.onExceed ?? "best"}
+                        onChange={(e) =>
+                          patchCfg({
+                            onExceed: e.target.value as "stop" | "best",
+                          })
+                        }
+                      >
+                        <option value="best">Return best effort so far</option>
+                        <option value="stop">Fail the card</option>
+                      </select>
+                    </label>
+                    <small className="wf-field-hint">
+                      Ceilings apply to every node type — the token cap per
+                      model call, the seconds for the whole card. Blank = no
+                      limit.
+                    </small>
+                  </>
+                )}
+              </div>
+            </details>
             <ToolPicker
               selected={draft.tools}
               onChange={(next) => set("tools", next)}
@@ -632,7 +912,9 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
             />
           </div>
           <div className="wf-form-foot">
-            <button type="button" className="wf-btn" onClick={handleCancel}>Cancel</button>
+            <button type="button" className="wf-btn" onClick={handleCancel}>
+              Cancel
+            </button>
             <button
               type="button"
               className="wf-btn wf-btn-primary"
@@ -669,7 +951,8 @@ function NodeConfigEditor({
   presets: Array<{ id: string; name: string }>;
   onChange: (cfg: WorkflowNodeConfig) => void;
 }) {
-  const patch = (p: Partial<WorkflowNodeConfig>) => onChange({ ...config, ...p });
+  const patch = (p: Partial<WorkflowNodeConfig>) =>
+    onChange({ ...config, ...p });
   const num = (v: string, lo: number, hi: number): number | undefined => {
     if (v === "") return undefined;
     const n = Math.floor(Number(v));
@@ -677,7 +960,16 @@ function NodeConfigEditor({
   };
 
   return (
-    <div className="wf-field" style={{ border: "1px solid var(--border-hairline, #2a2a2a)", borderRadius: 8, padding: 10, display: "grid", gap: 10 }}>
+    <div
+      className="wf-field"
+      style={{
+        border: "1px solid var(--border-subtle)",
+        borderRadius: 8,
+        padding: 10,
+        display: "grid",
+        gap: 10,
+      }}
+    >
       <span style={{ fontWeight: 600 }}>Orchestration settings</span>
 
       {(nodeType === "moa" || nodeType === "consistency") && (
@@ -685,7 +977,10 @@ function NodeConfigEditor({
           <label>
             <span>{nodeType === "moa" ? "Proposers" : "Samples"} (2–8)</span>
             <input
-              type="number" min={2} max={8} step={1}
+              type="number"
+              min={2}
+              max={8}
+              step={1}
               placeholder={nodeType === "moa" ? "3" : "5"}
               value={config.members ?? ""}
               onChange={(e) => patch({ members: num(e.target.value, 2, 8) })}
@@ -696,7 +991,9 @@ function NodeConfigEditor({
               <span>Aggregate by</span>
               <select
                 value={config.voteMode ?? "synth"}
-                onChange={(e) => patch({ voteMode: e.target.value as "synth" | "vote" })}
+                onChange={(e) =>
+                  patch({ voteMode: e.target.value as "synth" | "vote" })
+                }
               >
                 <option value="synth">Merge (synthesize)</option>
                 <option value="vote">Majority vote</option>
@@ -720,9 +1017,10 @@ function NodeConfigEditor({
             onChange={(m, b) => patch({ synthModel: m, synthBackend: b })}
           />
           <small className="wf-field-hint">
-            The {nodeType === "moa" ? "proposers" : "samples"} run in parallel against the card's model.
-            Same-model fan-out is cheap on RAM — Ollama loads the model once and serves the
-            requests concurrently (only KV-cache grows). Choosing a <em>different</em> synthesis model
+            The {nodeType === "moa" ? "proposers" : "samples"} run in parallel
+            against the card's model. Same-model fan-out is cheap on RAM —
+            Ollama loads the model once and serves the requests concurrently
+            (only KV-cache grows). Choosing a <em>different</em> synthesis model
             loads a second model, so leave it blank on a memory-tight machine.
           </small>
         </>
@@ -730,11 +1028,17 @@ function NodeConfigEditor({
 
       {nodeType === "critic" && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
+          >
             <label>
               <span>Max iterations (1–6)</span>
               <input
-                type="number" min={1} max={6} step={1} placeholder="3"
+                type="number"
+                min={1}
+                max={6}
+                step={1}
+                placeholder="3"
                 value={config.maxIters ?? ""}
                 onChange={(e) => patch({ maxIters: num(e.target.value, 1, 6) })}
               />
@@ -742,9 +1046,15 @@ function NodeConfigEditor({
             <label>
               <span>Pass score (0–100)</span>
               <input
-                type="number" min={0} max={100} step={1} placeholder="80"
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                placeholder="80"
                 value={config.passThreshold ?? ""}
-                onChange={(e) => patch({ passThreshold: num(e.target.value, 0, 100) })}
+                onChange={(e) =>
+                  patch({ passThreshold: num(e.target.value, 0, 100) })
+                }
               />
             </label>
           </div>
@@ -764,6 +1074,33 @@ function NodeConfigEditor({
             backend={config.criticBackend ?? null}
             onChange={(m, b) => patch({ criticModel: m, criticBackend: b })}
           />
+          <label>
+            <span>Critic system prompt (optional)</span>
+            <textarea
+              rows={2}
+              placeholder="Persona for the critique pass only. Blank = inherit this card's persona."
+              value={config.criticSystemPrompt ?? ""}
+              onChange={(e) =>
+                patch({ criticSystemPrompt: e.target.value || null })
+              }
+            />
+          </label>
+          <label>
+            <span>Verify command (optional)</span>
+            <input
+              placeholder="e.g. npm test --silent"
+              value={config.verifyCmd ?? ""}
+              onChange={(e) => patch({ verifyCmd: e.target.value || null })}
+            />
+          </label>
+          <small
+            className="wf-field-hint"
+            style={{ color: "var(--danger, #d33)" }}
+          >
+            Runs as a REAL shell command on your machine before every critique
+            pass — exit code + output ground the critic's score. Only set
+            commands you would run yourself in a terminal.
+          </small>
         </>
       )}
 
@@ -772,9 +1109,15 @@ function NodeConfigEditor({
           <label>
             <span>Escalate if score below (0–100)</span>
             <input
-              type="number" min={0} max={100} step={1} placeholder="70"
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              placeholder="70"
               value={config.passThreshold ?? ""}
-              onChange={(e) => patch({ passThreshold: num(e.target.value, 0, 100) })}
+              onChange={(e) =>
+                patch({ passThreshold: num(e.target.value, 0, 100) })
+              }
             />
           </label>
           <NodeModelSelect
@@ -817,7 +1160,14 @@ function NodeConfigEditor({
           <span>Operation</span>
           <select
             value={config.blackboardOp ?? "snapshot"}
-            onChange={(e) => patch({ blackboardOp: e.target.value as "summarize" | "snapshot" | "clear" })}
+            onChange={(e) =>
+              patch({
+                blackboardOp: e.target.value as
+                  | "summarize"
+                  | "snapshot"
+                  | "clear",
+              })
+            }
           >
             <option value="snapshot">Snapshot (dump shared state)</option>
             <option value="summarize">Summarize (brief the next agent)</option>
@@ -828,20 +1178,32 @@ function NodeConfigEditor({
 
       {nodeType === "budget" && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
+          >
             <label>
               <span>Max tokens</span>
               <input
-                type="number" min={1} step={64} placeholder="unlimited"
+                type="number"
+                min={1}
+                step={64}
+                placeholder="unlimited"
                 value={config.maxTokens ?? ""}
-                onChange={(e) => patch({ maxTokens: num(e.target.value, 1, 1_000_000) })}
+                onChange={(e) =>
+                  patch({ maxTokens: num(e.target.value, 1, 1_000_000) })
+                }
               />
             </label>
             <label>
               <span>Max seconds</span>
               <input
-                type="number" min={1} step={1} placeholder="unlimited"
-                value={config.maxMs != null ? Math.round(config.maxMs / 1000) : ""}
+                type="number"
+                min={1}
+                step={1}
+                placeholder="unlimited"
+                value={
+                  config.maxMs != null ? Math.round(config.maxMs / 1000) : ""
+                }
                 onChange={(e) => {
                   const s = num(e.target.value, 1, 3600);
                   patch({ maxMs: s == null ? null : s * 1000 });
@@ -853,7 +1215,9 @@ function NodeConfigEditor({
             <span>When ceiling hit</span>
             <select
               value={config.onExceed ?? "best"}
-              onChange={(e) => patch({ onExceed: e.target.value as "stop" | "best" })}
+              onChange={(e) =>
+                patch({ onExceed: e.target.value as "stop" | "best" })
+              }
             >
               <option value="best">Return best effort so far</option>
               <option value="stop">Fail the card</option>
@@ -880,7 +1244,9 @@ function NodeModelSelect({
   backend: string | null;
   onChange: (model: string | null, backend: string | null) => void;
 }) {
-  const value = model ? `${backend ?? findModelBackend(models, model) ?? ""}::${model}` : "";
+  const value = model
+    ? `${backend ?? findModelBackend(models, model) ?? ""}::${model}`
+    : "";
   return (
     <label>
       <span>{label}</span>
@@ -888,9 +1254,15 @@ function NodeModelSelect({
         value={value}
         onChange={(e) => {
           const v = e.target.value;
-          if (v === "") { onChange(null, null); return; }
+          if (v === "") {
+            onChange(null, null);
+            return;
+          }
           const sep = v.indexOf("::");
-          if (sep < 0) { onChange(v, null); return; }
+          if (sep < 0) {
+            onChange(v, null);
+            return;
+          }
           onChange(v.slice(sep + 2), v.slice(0, sep) || null);
         }}
       >
@@ -902,7 +1274,8 @@ function NodeModelSelect({
         ))}
         {model && !models.some((m) => m.id === model) && (
           <option value={`${backend ?? ""}::${model}`}>
-            {model}{backend ? ` (${backend})` : " (pinned)"}
+            {model}
+            {backend ? ` (${backend})` : " (pinned)"}
           </option>
         )}
       </select>
@@ -926,22 +1299,60 @@ function RouteEditor({
     onChange(routes.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
   const remove = (i: number) => onChange(routes.filter((_, idx) => idx !== i));
   const add = () =>
-    onChange([...routes, { label: "", when: "", model: null, backend: null, preset: null }]);
+    onChange([
+      ...routes,
+      { label: "", when: "", model: null, backend: null, preset: null },
+    ]);
 
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <span>Routes</span>
       {routes.length === 0 && (
-        <small className="wf-field-hint">No routes yet — add at least one so the classifier has somewhere to send the task.</small>
+        <small className="wf-field-hint">
+          No routes yet — add at least one so the classifier has somewhere to
+          send the task.
+        </small>
       )}
       {routes.map((r, i) => (
-        <div key={i} style={{ display: "grid", gap: 4, border: "1px solid var(--border-hairline, #2a2a2a)", borderRadius: 6, padding: 8 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr auto", gap: 6 }}>
-            <input placeholder="label (e.g. code)" value={r.label} onChange={(e) => update(i, { label: e.target.value })} />
-            <input placeholder="when… (e.g. task is about programming)" value={r.when} onChange={(e) => update(i, { when: e.target.value })} />
-            <button type="button" className="wf-btn" onClick={() => remove(i)} title="Remove route"><X size={14}/></button>
+        <div
+          key={i}
+          style={{
+            display: "grid",
+            gap: 4,
+            border: "1px solid var(--border-subtle)",
+            borderRadius: 6,
+            padding: 8,
+          }}
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 2fr auto",
+              gap: 6,
+            }}
+          >
+            <input
+              placeholder="label (e.g. code)"
+              value={r.label}
+              onChange={(e) => update(i, { label: e.target.value })}
+            />
+            <input
+              placeholder="when… (e.g. task is about programming)"
+              value={r.when}
+              onChange={(e) => update(i, { when: e.target.value })}
+            />
+            <button
+              type="button"
+              className="wf-btn"
+              onClick={() => remove(i)}
+              title="Remove route"
+            >
+              <X size={14} />
+            </button>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          <div
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}
+          >
             <NodeModelSelect
               label="Model"
               models={models}
@@ -951,17 +1362,24 @@ function RouteEditor({
             />
             <label>
               <span>Role</span>
-              <select value={r.preset ?? ""} onChange={(e) => update(i, { preset: e.target.value || null })}>
+              <select
+                value={r.preset ?? ""}
+                onChange={(e) => update(i, { preset: e.target.value || null })}
+              >
                 <option value="">Inherit card role</option>
                 {presets.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
                 ))}
               </select>
             </label>
           </div>
         </div>
       ))}
-      <button type="button" className="wf-btn" onClick={add}>+ Add route</button>
+      <button type="button" className="wf-btn" onClick={add}>
+        + Add route
+      </button>
     </div>
   );
 }
@@ -990,7 +1408,9 @@ function ToolPicker({
   // dev-console warning from firing on every render of a card.
   const groups = useMemo(() => resolveToolGroups(ALL_TOOLS), []);
 
-  const [collapse, setCollapse] = useState<CollapseMap>(() => loadCollapseState());
+  const [collapse, setCollapse] = useState<CollapseMap>(() =>
+    loadCollapseState(),
+  );
 
   const toggleCollapse = (id: string, defaultClosed: boolean) => {
     setCollapse((prev) => {
@@ -1078,10 +1498,7 @@ function ToolPicker({
                         onClick={() => onToggleOne(tool)}
                       >
                         <span className="wf-tool-item-name">{tool}</span>
-                        <span
-                          className="wf-tool-item-check"
-                          aria-hidden="true"
-                        >
+                        <span className="wf-tool-item-check" aria-hidden="true">
                           {isOn ? "☑" : "☐"}
                         </span>
                       </button>
@@ -1094,8 +1511,8 @@ function ToolPicker({
         })}
       </div>
       <p className="wf-field-hint">
-        No tools selected = role default tools. Click a category checkbox
-        to toggle every tool in that group at once.
+        No tools selected = role default tools. Click a category checkbox to
+        toggle every tool in that group at once.
       </p>
     </div>
   );

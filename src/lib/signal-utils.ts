@@ -91,7 +91,10 @@ export function withInactivityTimeout(
   const kick = (ms = idleMs) => {
     if (ctrl.signal.aborted) return;
     if (t) clearTimeout(t);
-    t = setTimeout(() => ctrl.abort(new DOMException(message, "TimeoutError")), ms);
+    t = setTimeout(
+      () => ctrl.abort(new DOMException(message, "TimeoutError")),
+      ms,
+    );
   };
   const dispose = () => {
     if (t) {

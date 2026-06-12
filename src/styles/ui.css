@@ -18,7 +18,8 @@
   border-radius: var(--radius-sm);
   cursor: pointer;
   white-space: nowrap;
-  transition: background-color var(--dur-fast) var(--ease-standard),
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
     border-color var(--dur-fast) var(--ease-standard),
     color var(--dur-fast) var(--ease-standard),
     box-shadow var(--dur-fast) var(--ease-standard),
@@ -54,11 +55,15 @@
   background: var(--accent);
   color: #fff;
   /* Ambient lift + a 1px top highlight = the Linear/Things primary finish. */
-  box-shadow: var(--elev-1), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  box-shadow:
+    var(--elev-1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 .ui-btn--primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 88%, #000);
-  box-shadow: var(--elev-2), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  box-shadow:
+    var(--elev-2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 .ui-btn--secondary {
   background: var(--surface-2);
@@ -105,7 +110,8 @@
   background: var(--surface-2);
   color: var(--text-2);
   cursor: pointer;
-  transition: background-color var(--dur-fast) var(--ease-standard),
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
     color var(--dur-fast) var(--ease-standard),
     transform var(--dur-fast) var(--ease-standard);
 }
@@ -143,7 +149,8 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
-  transition: border-color var(--dur-fast) var(--ease-standard),
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
     box-shadow var(--dur-fast) var(--ease-standard);
 }
 .ui-input::placeholder {

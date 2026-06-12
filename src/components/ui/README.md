@@ -29,14 +29,14 @@ markup so styling + a11y stay centralized.
 
 Replace one component family at a time, lowest-risk first, verifying visually:
 
-| Hand-rolled today | Replace with |
-|---|---|
-| `<button className="...">` | `<Button variant size>` / `<IconButton aria-label>` |
-| `title="…"` tooltips (mouse-only) | `<Tooltip content>` (also keyboard-focus) |
-| absolutely-positioned menus | `DropdownMenu*` |
-| `ConfirmDialog` / modal kit | `Dialog` + `DialogContent` |
-| ad-hoc toggle checkboxes | `Switch` |
-| tab bars | `Tabs*` |
+| Hand-rolled today                 | Replace with                                        |
+| --------------------------------- | --------------------------------------------------- |
+| `<button className="...">`        | `<Button variant size>` / `<IconButton aria-label>` |
+| `title="…"` tooltips (mouse-only) | `<Tooltip content>` (also keyboard-focus)           |
+| absolutely-positioned menus       | `DropdownMenu*`                                     |
+| `ConfirmDialog` / modal kit       | `Dialog` + `DialogContent`                          |
+| ad-hoc toggle checkboxes          | `Switch`                                            |
+| tab bars                          | `Tabs*`                                             |
 
 The legacy per-feature CSS (`chat.css`, `panels.css`, …) and the `ui-` kit
 coexist by namespace, so migration is page-by-page with no big-bang rewrite.

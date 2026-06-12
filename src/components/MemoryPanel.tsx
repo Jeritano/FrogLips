@@ -44,8 +44,16 @@ const SCOPE_LETTERS: Record<MemoryScope, string> = {
 
 const MODE_OPTIONS: { value: MemoryMode; label: string; desc: string }[] = [
   { value: "off", label: "Off", desc: "Memory disabled." },
-  { value: "manual", label: "Suggest", desc: "Recalls memories; add them yourself." },
-  { value: "queue", label: "Review", desc: "Auto-extracts into a queue you approve." },
+  {
+    value: "manual",
+    label: "Suggest",
+    desc: "Recalls memories; add them yourself.",
+  },
+  {
+    value: "queue",
+    label: "Review",
+    desc: "Auto-extracts into a queue you approve.",
+  },
   { value: "direct", label: "Auto", desc: "Auto-extracts and auto-approves." },
 ];
 
@@ -63,7 +71,11 @@ function nextDown(s: MemoryScope): MemoryScope | null {
   return null;
 }
 
-export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Props) {
+export function MemoryPanel({
+  refreshToken,
+  workspaceRoot,
+  conversationId,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<Memory[]>([]);
   const [pending, setPending] = useState<Memory[]>([]);
@@ -91,8 +103,16 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
       // leaked conversation-scoped memories from other chats and
       // project-scoped memories from other workspaces.
       const [a, p] = await Promise.all([
-        api.listMemories("active", workspaceRoot ?? null, conversationId ?? null),
-        api.listMemories("pending", workspaceRoot ?? null, conversationId ?? null),
+        api.listMemories(
+          "active",
+          workspaceRoot ?? null,
+          conversationId ?? null,
+        ),
+        api.listMemories(
+          "pending",
+          workspaceRoot ?? null,
+          conversationId ?? null,
+        ),
       ]);
       if (seq !== refreshSeqRef.current) return; // superseded by a newer refresh
       setActive(a);
@@ -110,7 +130,9 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
   // Refresh on open AND on every refreshToken bump — even while collapsed —
   // so the count badge (active.length / pending.length) stays accurate after
   // onMemoriesChanged fires without the panel needing to be opened first.
-  useEffect(() => { refresh(); }, [open, refreshToken, refresh]);
+  useEffect(() => {
+    refresh();
+  }, [open, refreshToken, refresh]);
 
   function changeMode(m: MemoryMode) {
     setMode(m);
@@ -123,8 +145,11 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
     try {
       await api.updateMemoryStatus(id, "active");
       await refresh();
-    } catch (e) { setErr(`Approve failed: ${e}`); }
-    finally { setBusy(null); }
+    } catch (e) {
+      setErr(`Approve failed: ${e}`);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function reject(id: number) {
@@ -133,8 +158,11 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
     try {
       await api.deleteMemory(id);
       await refresh();
-    } catch (e) { setErr(`Reject failed: ${e}`); }
-    finally { setBusy(null); }
+    } catch (e) {
+      setErr(`Reject failed: ${e}`);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function del(id: number) {
@@ -143,8 +171,11 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
     try {
       await api.deleteMemory(id);
       await refresh();
-    } catch (e) { setErr(`Delete failed: ${e}`); }
-    finally { setBusy(null); }
+    } catch (e) {
+      setErr(`Delete failed: ${e}`);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function promote(m: Memory) {
@@ -159,8 +190,11 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
       }
       await promoteMemory(m.id);
       await refresh();
-    } catch (e) { setErr(`Promote failed: ${e}`); }
-    finally { setBusy(null); }
+    } catch (e) {
+      setErr(`Promote failed: ${e}`);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function demote(m: Memory) {
@@ -172,13 +206,20 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
       // binding when the memory hasn't been bound previously.
       if (m.scope === "global" && !m.project_root && workspaceRoot) {
         await api.memorySetContext(m.id, workspaceRoot, null);
-      } else if (m.scope === "project" && !m.conversation_id && conversationId != null) {
+      } else if (
+        m.scope === "project" &&
+        !m.conversation_id &&
+        conversationId != null
+      ) {
         await api.memorySetContext(m.id, null, conversationId);
       }
       await demoteMemory(m.id);
       await refresh();
-    } catch (e) { setErr(`Demote failed: ${e}`); }
-    finally { setBusy(null); }
+    } catch (e) {
+      setErr(`Demote failed: ${e}`);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function saveNew() {
@@ -197,7 +238,8 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
     try {
       await saveMemory({
         content,
-        conversationId: newMemoryScope === "conversation" ? conversationId : null,
+        conversationId:
+          newMemoryScope === "conversation" ? conversationId : null,
         scope: newMemoryScope,
         projectRoot: newMemoryScope === "project" ? workspaceRoot : null,
         tags: "manual",
@@ -214,7 +256,10 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
   // Apply scope chip filter on top of the active/inbox tab selection.
   const baseList = tab === "active" ? active : pending;
   const list = useMemo(
-    () => (scopeFilter === "all" ? baseList : baseList.filter((m) => m.scope === scopeFilter)),
+    () =>
+      scopeFilter === "all"
+        ? baseList
+        : baseList.filter((m) => m.scope === scopeFilter),
     [baseList, scopeFilter],
   );
 
@@ -223,10 +268,19 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
 
   return (
     <div className={`memory-panel ${open ? "open" : ""}`}>
-      <button data-testid="memories-toggle" className="memory-toggle" onClick={() => setOpen(!open)}>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+      <button
+        data-testid="memories-toggle"
+        className="memory-toggle"
+        onClick={() => setOpen(!open)}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+        </svg>
         Memories
-        <span className="memory-count">{active.length}{pending.length > 0 && ` · ${pending.length}!`}</span>
+        <span className="memory-count">
+          {active.length}
+          {pending.length > 0 && ` · ${pending.length}!`}
+        </span>
         <span className={`memory-chevron ${open ? "open" : ""}`}>▸</span>
       </button>
 
@@ -235,9 +289,14 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
           {/* Mode selector */}
           <div className="memory-mode-row">
             <label className="memory-mode-label">Mode</label>
-            <select value={mode} onChange={(e) => changeMode(e.target.value as MemoryMode)}>
+            <select
+              value={mode}
+              onChange={(e) => changeMode(e.target.value as MemoryMode)}
+            >
               {MODE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
               ))}
             </select>
           </div>
@@ -247,28 +306,40 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
 
           {/* Tabs */}
           <div className="memory-tabs">
-            <button className={`memory-tab ${tab === "active" ? "active" : ""}`} onClick={() => setTab("active")}>
+            <button
+              className={`memory-tab ${tab === "active" ? "active" : ""}`}
+              onClick={() => setTab("active")}
+            >
               Active <span className="memory-tab-count">{active.length}</span>
             </button>
-            <button className={`memory-tab ${tab === "pending" ? "active" : ""}`} onClick={() => setTab("pending")}>
+            <button
+              className={`memory-tab ${tab === "pending" ? "active" : ""}`}
+              onClick={() => setTab("pending")}
+            >
               Inbox <span className="memory-tab-count">{pending.length}</span>
             </button>
           </div>
 
           {/* Scope filter chips */}
-          <div className="memory-scope-chips" data-testid="memory-scope-chips" role="tablist">
-            {(["all", "global", "project", "conversation"] as const).map((s) => (
-              <button
-                key={s}
-                role="tab"
-                aria-selected={scopeFilter === s}
-                data-testid={`scope-chip-${s}`}
-                className={`memory-scope-chip ${scopeFilter === s ? "active" : ""}`}
-                onClick={() => setScopeFilter(s)}
-              >
-                {s === "all" ? "All" : SCOPE_LABELS[s]}
-              </button>
-            ))}
+          <div
+            className="memory-scope-chips"
+            data-testid="memory-scope-chips"
+            role="tablist"
+          >
+            {(["all", "global", "project", "conversation"] as const).map(
+              (s) => (
+                <button
+                  key={s}
+                  role="tab"
+                  aria-selected={scopeFilter === s}
+                  data-testid={`scope-chip-${s}`}
+                  className={`memory-scope-chip ${scopeFilter === s ? "active" : ""}`}
+                  onClick={() => setScopeFilter(s)}
+                >
+                  {s === "all" ? "All" : SCOPE_LABELS[s]}
+                </button>
+              ),
+            )}
           </div>
 
           {/* Manual add row */}
@@ -280,7 +351,10 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
               value={newMemoryText}
               onChange={(e) => setNewMemoryText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !savingNew) { e.preventDefault(); saveNew(); }
+                if (e.key === "Enter" && !savingNew) {
+                  e.preventDefault();
+                  saveNew();
+                }
               }}
             />
             <select
@@ -302,20 +376,24 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
               className="memory-btn"
               disabled={savingNew || !newMemoryText.trim()}
               onClick={saveNew}
-            >Save</button>
+            >
+              Save
+            </button>
           </div>
 
-          {err && (
-            <ErrorBar message={err} onDismiss={() => setErr(null)} />
-          )}
+          {err && <ErrorBar message={err} onDismiss={() => setErr(null)} />}
 
           {/* List */}
           <div className="memory-list">
-            {list.length === 0 && (
-              tab === "active" ? (
+            {list.length === 0 &&
+              (tab === "active" ? (
                 <EmptyState
                   icon={<Star size={24} />}
-                  heading={scopeFilter === "all" ? "No memories yet" : "No memories at this scope"}
+                  heading={
+                    scopeFilter === "all"
+                      ? "No memories yet"
+                      : "No memories at this scope"
+                  }
                   sub={
                     scopeFilter === "all"
                       ? "Save one above, or let memory mode capture them as you chat."
@@ -330,13 +408,16 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
                   sub="Memories awaiting your review will appear here."
                   data-testid="memory-empty-pending"
                 />
-              )
-            )}
+              ))}
             {list.map((m) => {
               const up = nextUp(m.scope);
               const down = nextDown(m.scope);
               return (
-                <div key={m.id} className="memory-item" data-testid={`memory-item-${m.id}`}>
+                <div
+                  key={m.id}
+                  className="memory-item"
+                  data-testid={`memory-item-${m.id}`}
+                >
                   <span
                     className={`memory-scope-badge scope-${m.scope}`}
                     data-testid={`scope-badge-${m.id}`}
@@ -348,8 +429,22 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
                   <div className="memory-item-actions">
                     {tab === "pending" ? (
                       <>
-                        <button className="memory-btn approve" disabled={busy === m.id} onClick={() => approve(m.id)} title="Approve"><Check size={14} /></button>
-                        <button className="memory-btn reject" disabled={busy === m.id} onClick={() => reject(m.id)} title="Reject"><X size={14} /></button>
+                        <button
+                          className="memory-btn approve"
+                          disabled={busy === m.id}
+                          onClick={() => approve(m.id)}
+                          title="Approve"
+                        >
+                          <Check size={14} />
+                        </button>
+                        <button
+                          className="memory-btn reject"
+                          disabled={busy === m.id}
+                          onClick={() => reject(m.id)}
+                          title="Reject"
+                        >
+                          <X size={14} />
+                        </button>
                       </>
                     ) : (
                       <>
@@ -357,21 +452,35 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
                           className="memory-btn promote"
                           disabled={busy === m.id || up === null}
                           onClick={() => promote(m)}
-                          title={up ? `Promote → ${SCOPE_LABELS[up]}` : "Already global"}
+                          title={
+                            up
+                              ? `Promote → ${SCOPE_LABELS[up]}`
+                              : "Already global"
+                          }
                           aria-label="Promote memory"
-                        >↑</button>
+                        >
+                          ↑
+                        </button>
                         <button
                           className="memory-btn demote"
                           disabled={busy === m.id || down === null}
                           onClick={() => demote(m)}
-                          title={down ? `Demote → ${SCOPE_LABELS[down]}` : "Already conversation"}
+                          title={
+                            down
+                              ? `Demote → ${SCOPE_LABELS[down]}`
+                              : "Already conversation"
+                          }
                           aria-label="Demote memory"
-                        >↓</button>
+                        >
+                          ↓
+                        </button>
                         <button
                           className="memory-btn delete"
                           disabled={busy === m.id}
                           onClick={() =>
-                            deleteConfirm.request(String(m.id), () => { void del(m.id); })
+                            deleteConfirm.request(String(m.id), () => {
+                              void del(m.id);
+                            })
                           }
                           title={
                             deleteConfirm.armed === String(m.id)
@@ -384,9 +493,11 @@ export function MemoryPanel({ refreshToken, workspaceRoot, conversationId }: Pro
                               : "Delete memory"
                           }
                         >
-                          {deleteConfirm.armed === String(m.id)
-                            ? "Click again to confirm"
-                            : <X size={14} />}
+                          {deleteConfirm.armed === String(m.id) ? (
+                            "Click again to confirm"
+                          ) : (
+                            <X size={14} />
+                          )}
                         </button>
                       </>
                     )}

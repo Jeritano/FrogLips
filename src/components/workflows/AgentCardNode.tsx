@@ -68,22 +68,32 @@ function AgentCardNodeImpl({ data }: NodeProps) {
         title="Edit agent"
       >
         <div className="wf-node-head">
-          <span className="wf-node-name" title={d.name}>{d.name}</span>
-          <span className={`wf-badge wf-badge-${d.state}`}>{STATE_LABEL[d.state]}</span>
+          <span className="wf-node-name" title={d.name}>
+            {d.name}
+          </span>
+          <span className={`wf-badge wf-badge-${d.state}`}>
+            {STATE_LABEL[d.state]}
+          </span>
         </div>
         <div className="wf-node-meta">
           <span className="wf-node-preset">{d.preset}</span>
           {d.nodeType && d.nodeType !== "agent" && (
             <span
               className="wf-node-nodetype"
-              title={WORKFLOW_NODE_TYPES.find((nt) => nt.value === d.nodeType)?.blurb}
+              title={
+                WORKFLOW_NODE_TYPES.find((nt) => nt.value === d.nodeType)?.blurb
+              }
             >
-              {WORKFLOW_NODE_TYPES.find((nt) => nt.value === d.nodeType)?.label ?? d.nodeType}
+              {WORKFLOW_NODE_TYPES.find((nt) => nt.value === d.nodeType)
+                ?.label ?? d.nodeType}
             </span>
           )}
           {d.schedule && (
-            <span className="wf-node-schedule" title={`Scheduled: ${d.schedule}`}>
-              <Clock size={14}/> {d.schedule}
+            <span
+              className="wf-node-schedule"
+              title={`Scheduled: ${d.schedule}`}
+            >
+              <Clock size={14} /> {d.schedule}
             </span>
           )}
         </div>
@@ -117,7 +127,7 @@ function AgentCardNodeImpl({ data }: NodeProps) {
           title="Delete card"
           aria-label="Delete card"
         >
-          <X size={14}/>
+          <X size={14} />
         </button>
       </div>
       <Handle type="source" position={Position.Right} className="wf-handle" />
@@ -143,19 +153,19 @@ function dataEqual(prev: NodeProps, next: NodeProps): boolean {
   const a = prev.data as AgentCardNodeData;
   const b = next.data as AgentCardNodeData;
   return (
-    a.name === b.name
-    && a.preset === b.preset
-    && a.schedule === b.schedule
-    && a.state === b.state
-    && a.midChain === b.midChain
-    && a.color === b.color
+    a.name === b.name &&
+    a.preset === b.preset &&
+    a.schedule === b.schedule &&
+    a.state === b.state &&
+    a.midChain === b.midChain &&
+    a.color === b.color &&
     // ReactFlow's NodeProps carry position + selected + dimensions —
     // re-render on those because they map to visible chrome.
-    && prev.selected === next.selected
-    && prev.positionAbsoluteX === next.positionAbsoluteX
-    && prev.positionAbsoluteY === next.positionAbsoluteY
-    && prev.width === next.width
-    && prev.height === next.height
+    prev.selected === next.selected &&
+    prev.positionAbsoluteX === next.positionAbsoluteX &&
+    prev.positionAbsoluteY === next.positionAbsoluteY &&
+    prev.width === next.width &&
+    prev.height === next.height
   );
 }
 

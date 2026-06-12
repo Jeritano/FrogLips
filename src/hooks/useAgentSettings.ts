@@ -69,15 +69,22 @@ export function useAgentSettings(): AgentSettings {
   const [approveAllShell, setApproveAllShell] = useState(false);
   const [approveAllWrite, setApproveAllWrite] = useState(false);
   const [dryRunState, setDryRunState] = useState<boolean>(() => loadDryRun());
-  const [approvedShellPrefixes, setApprovedShellPrefixes] = useState<string[]>([]);
+  const [approvedShellPrefixes, setApprovedShellPrefixes] = useState<string[]>(
+    [],
+  );
   const [presets, setPresets] = useState<AgentPreset[]>(() => loadAllPresets());
-  const [activePresetId, setActivePresetIdState] = useState<string>(() => getActivePresetId());
+  const [activePresetId, setActivePresetIdState] = useState<string>(() =>
+    getActivePresetId(),
+  );
 
-  const activePreset = presets.find((p) => p.id === activePresetId) ?? presets[0];
+  const activePreset =
+    presets.find((p) => p.id === activePresetId) ?? presets[0];
 
   const toggleAllowed = (name: string) => {
     setAllowlist((prev) => {
-      const next = prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name];
+      const next = prev.includes(name)
+        ? prev.filter((n) => n !== name)
+        : [...prev, name];
       saveAllowlist(next);
       return next;
     });

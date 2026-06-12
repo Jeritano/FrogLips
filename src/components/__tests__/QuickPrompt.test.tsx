@@ -12,7 +12,9 @@ const { handlers, invokeMock, listenMock } = vi.hoisted(() => {
   const invokeMock = vi.fn(async () => undefined);
   const listenMock = vi.fn(async (name: string, fn: Handler) => {
     handlers[name] = fn;
-    return () => { delete handlers[name]; };
+    return () => {
+      delete handlers[name];
+    };
   });
   return { handlers, invokeMock, listenMock };
 });
@@ -20,7 +22,9 @@ const { handlers, invokeMock, listenMock } = vi.hoisted(() => {
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { QuickPrompt } from "../QuickPrompt";
 
@@ -40,7 +44,9 @@ async function mount(): Promise<Harness> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  await act(async () => { root.render(<QuickPrompt />); });
+  await act(async () => {
+    root.render(<QuickPrompt />);
+  });
   await flush();
   return { container, root };
 }
@@ -62,7 +68,9 @@ describe("QuickPrompt", () => {
     expect(ta).not.toBeNull();
     const btn = container.querySelector(".quick-send") as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("submits prompt on Enter and streams chunks into the reply panel", async () => {
@@ -84,7 +92,9 @@ describe("QuickPrompt", () => {
     await flush();
 
     await act(async () => {
-      ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      ta.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
     });
     await flush();
 
@@ -94,19 +104,31 @@ describe("QuickPrompt", () => {
     );
 
     // Find the event channel name the component registered for.
-    const channel = Object.keys(handlers).find((n) => n.startsWith("quick-prompt-response:"));
+    const channel = Object.keys(handlers).find((n) =>
+      n.startsWith("quick-prompt-response:"),
+    );
     expect(channel).toBeDefined();
     await act(async () => {
-      handlers[channel!]({ payload: { op_id: "x", delta: "hi ", done: false, error: null } });
-      handlers[channel!]({ payload: { op_id: "x", delta: "there", done: false, error: null } });
-      handlers[channel!]({ payload: { op_id: "x", delta: "", done: true, error: null } });
+      handlers[channel!]({
+        payload: { op_id: "x", delta: "hi ", done: false, error: null },
+      });
+      handlers[channel!]({
+        payload: { op_id: "x", delta: "there", done: false, error: null },
+      });
+      handlers[channel!]({
+        payload: { op_id: "x", delta: "", done: true, error: null },
+      });
     });
     await flush();
 
-    const reply = container.querySelector('[data-testid="quick-reply"]') as HTMLElement;
+    const reply = container.querySelector(
+      '[data-testid="quick-reply"]',
+    ) as HTMLElement;
     expect(reply.textContent).toContain("hi there");
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("invokes quick_prompt_hide on Escape", async () => {
@@ -116,6 +138,8 @@ describe("QuickPrompt", () => {
     });
     await flush();
     expect(invokeMock).toHaveBeenCalledWith("quick_prompt_hide");
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
   });
 });

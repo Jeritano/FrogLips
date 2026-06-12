@@ -24,7 +24,13 @@ vi.mock("../../lib/tauri-api", () => {
         duration_ms: 7,
       })),
       ragSearch: vi.fn(async () => [
-        { path: "x.ts", snippet: "hit", score: 0.9, start_byte: 0, end_byte: 3 },
+        {
+          path: "x.ts",
+          snippet: "hit",
+          score: 0.9,
+          start_byte: 0,
+          end_byte: 3,
+        },
       ]),
       ragDeleteCorpus: vi.fn(async () => undefined),
     },
@@ -93,7 +99,10 @@ describe("RagPanel", () => {
 
     await act(async () => {
       // Fire onChange via native setter so React picks it up.
-      const setNativeValue = (el: HTMLInputElement | HTMLSelectElement, v: string) => {
+      const setNativeValue = (
+        el: HTMLInputElement | HTMLSelectElement,
+        v: string,
+      ) => {
         const proto = Object.getPrototypeOf(el);
         const desc = Object.getOwnPropertyDescriptor(proto, "value");
         desc?.set?.call(el, v);

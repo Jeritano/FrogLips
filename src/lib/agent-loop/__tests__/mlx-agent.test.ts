@@ -14,7 +14,10 @@ import type { Message, ServerStatus } from "../../../types";
 vi.mock("../../tauri-api", () => {
   return {
     api: {
-      agentListDir: vi.fn(async () => ({ entries: ["a.txt"], truncated: false })),
+      agentListDir: vi.fn(async () => ({
+        entries: ["a.txt"],
+        truncated: false,
+      })),
       agentClassifyShell: vi.fn(async () => "normal"),
       agentClassifyApplescript: vi.fn(async () => "normal"),
       agentClassifyHttp: vi.fn(async () => "normal"),
@@ -66,18 +69,32 @@ describe("streamMlxAgentChat — tool_calls delta parsing", () => {
     const frames = [
       // Slot 0: name + opening of the JSON args (string fragment).
       sse({
-        choices: [{
-          index: 0,
-          delta: {
-            tool_calls: [
-              { index: 0, id: "call-1", type: "function", function: { name: "list_dir", arguments: '{"path":"/t' } },
-            ],
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-1",
+                  type: "function",
+                  function: { name: "list_dir", arguments: '{"path":"/t' },
+                },
+              ],
+            },
           },
-        }],
+        ],
       }),
       // Slot 0: remaining args fragment.
       sse({
-        choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'mp"}' } }] } }],
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [{ index: 0, function: { arguments: 'mp"}' } }],
+            },
+          },
+        ],
       }),
       // Final frame carries the usage block.
       sse({
@@ -86,7 +103,10 @@ describe("streamMlxAgentChat — tool_calls delta parsing", () => {
       }),
       "data: [DONE]\n\n",
     ];
-    vi.stubGlobal("fetch", vi.fn(async () => sseResponse(frames)));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => sseResponse(frames)),
+    );
 
     const result = await streamMlxAgentChat(
       STATUS,
@@ -116,21 +136,34 @@ describe("runAgentLoop — backend:'mlx'", () => {
     // Turn 2: SSE stream with a plain-text final reply (no tool calls).
     const turn1 = [
       sse({
-        choices: [{
-          index: 0,
-          delta: {
-            tool_calls: [
-              { index: 0, id: "tc-1", type: "function", function: { name: "list_dir", arguments: '{"path":"/tmp"}' } },
-            ],
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "tc-1",
+                  type: "function",
+                  function: { name: "list_dir", arguments: '{"path":"/tmp"}' },
+                },
+              ],
+            },
           },
-        }],
+        ],
       }),
-      sse({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 2 } }),
+      sse({
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 5, completion_tokens: 2 },
+      }),
       "data: [DONE]\n\n",
     ];
     const turn2 = [
       sse({ choices: [{ index: 0, delta: { content: "All done." } }] }),
-      sse({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 9, completion_tokens: 3 } }),
+      sse({
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 9, completion_tokens: 3 },
+      }),
       "data: [DONE]\n\n",
     ];
 
@@ -163,7 +196,9 @@ describe("runAgentLoop — backend:'mlx'", () => {
     // The list_dir tool call was dispatched — a `tool` message with the
     // dispatcher's result is present in the final transcript.
     const last = collected[collected.length - 1] ?? [];
-    const toolMsg = last.find((m) => m.role === "tool" && m.tool_name === "list_dir");
+    const toolMsg = last.find(
+      (m) => m.role === "tool" && m.tool_name === "list_dir",
+    );
     expect(toolMsg).toBeDefined();
     expect(toolMsg?.tool_call_id).toBe("tc-1");
     const parsed = JSON.parse(toolMsg!.content);
@@ -182,21 +217,28 @@ describe("runAgentLoop — backend:'mlx'", () => {
       const path = `/tmp/iter-${turn++}`;
       return sseResponse([
         sse({
-          choices: [{
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  id: `tc-${turn}`,
-                  type: "function",
-                  function: { name: "list_dir", arguments: JSON.stringify({ path }) },
-                },
-              ],
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: `tc-${turn}`,
+                    type: "function",
+                    function: {
+                      name: "list_dir",
+                      arguments: JSON.stringify({ path }),
+                    },
+                  },
+                ],
+              },
             },
-          }],
+          ],
         }),
-        sse({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }),
+        sse({
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        }),
         "data: [DONE]\n\n",
       ]);
     });
@@ -223,7 +265,8 @@ describe("runAgentLoop — backend:'mlx'", () => {
     // The final transcript carries the iteration-limit assistant message.
     const last = collected[collected.length - 1] ?? [];
     const capMsg = last.find(
-      (m) => m.role === "assistant" && /maximum iteration limit/i.test(m.content),
+      (m) =>
+        m.role === "assistant" && /maximum iteration limit/i.test(m.content),
     );
     expect(capMsg).toBeDefined();
   });

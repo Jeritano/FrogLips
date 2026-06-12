@@ -44,9 +44,9 @@ describe("streamAgentChat — retry / backoff predicate", () => {
       (v) => ({ ok: true as const, v }),
       (e) => ({ ok: false as const, e }),
     );
-    return vi.runAllTimersAsync().then(() =>
-      settled.then((r) => (r.ok ? r.v : Promise.reject(r.e))),
-    );
+    return vi
+      .runAllTimersAsync()
+      .then(() => settled.then((r) => (r.ok ? r.v : Promise.reject(r.e))));
   }
 
   it("retries a 5xx error and succeeds on a later attempt", async () => {
@@ -62,9 +62,16 @@ describe("streamAgentChat — retry / backoff predicate", () => {
 
     let retries = 0;
     const result = await runWithTimers(
-      streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
-        retries++;
-      }),
+      streamAgentChat(
+        baseOpts(),
+        MSGS,
+        [],
+        new AbortController().signal,
+        () => {},
+        () => {
+          retries++;
+        },
+      ),
     );
 
     expect(result.content).toBe("recovered");
@@ -83,9 +90,16 @@ describe("streamAgentChat — retry / backoff predicate", () => {
 
     let retries = 0;
     const result = await runWithTimers(
-      streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
-        retries++;
-      }),
+      streamAgentChat(
+        baseOpts(),
+        MSGS,
+        [],
+        new AbortController().signal,
+        () => {},
+        () => {
+          retries++;
+        },
+      ),
     );
 
     expect(result.content).toBe("connected");
@@ -93,15 +107,24 @@ describe("streamAgentChat — retry / backoff predicate", () => {
   });
 
   it("does NOT retry a 4xx error — propagates immediately", async () => {
-    const fetchMock = vi.fn(async () => new Response("bad request", { status: 400 }));
+    const fetchMock = vi.fn(
+      async () => new Response("bad request", { status: 400 }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     let retries = 0;
     await expect(
       runWithTimers(
-        streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
-          retries++;
-        }),
+        streamAgentChat(
+          baseOpts(),
+          MSGS,
+          [],
+          new AbortController().signal,
+          () => {},
+          () => {
+            retries++;
+          },
+        ),
       ),
     ).rejects.toThrow(/400/);
     expect(retries).toBe(0);
@@ -109,15 +132,24 @@ describe("streamAgentChat — retry / backoff predicate", () => {
   });
 
   it("gives up after RETRY_MAX retries on persistent 5xx", async () => {
-    const fetchMock = vi.fn(async () => new Response("still down", { status: 500 }));
+    const fetchMock = vi.fn(
+      async () => new Response("still down", { status: 500 }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     let retries = 0;
     await expect(
       runWithTimers(
-        streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
-          retries++;
-        }),
+        streamAgentChat(
+          baseOpts(),
+          MSGS,
+          [],
+          new AbortController().signal,
+          () => {},
+          () => {
+            retries++;
+          },
+        ),
       ),
     ).rejects.toThrow(/500/);
     // Initial attempt + RETRY_MAX retries.
@@ -136,9 +168,16 @@ describe("streamAgentChat — retry / backoff predicate", () => {
     let retries = 0;
     await expect(
       runWithTimers(
-        streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
-          retries++;
-        }),
+        streamAgentChat(
+          baseOpts(),
+          MSGS,
+          [],
+          new AbortController().signal,
+          () => {},
+          () => {
+            retries++;
+          },
+        ),
       ),
     ).rejects.toThrow(/unexpected token/);
     expect(retries).toBe(0);
@@ -158,9 +197,16 @@ describe("streamAgentChat — retry / backoff predicate", () => {
     let retries = 0;
     await expect(
       runWithTimers(
-        streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
-          retries++;
-        }),
+        streamAgentChat(
+          baseOpts(),
+          MSGS,
+          [],
+          new AbortController().signal,
+          () => {},
+          () => {
+            retries++;
+          },
+        ),
       ),
     ).rejects.toThrow(/aborted/i);
     expect(retries).toBe(0);
@@ -178,9 +224,16 @@ describe("streamAgentChat — retry / backoff predicate", () => {
 
     let retries = 0;
     const result = await runWithTimers(
-      streamAgentChat(baseOpts(), MSGS, [], new AbortController().signal, () => {}, () => {
-        retries++;
-      }),
+      streamAgentChat(
+        baseOpts(),
+        MSGS,
+        [],
+        new AbortController().signal,
+        () => {},
+        () => {
+          retries++;
+        },
+      ),
     );
     expect(result.content).toBe("recovered");
     expect(retries).toBe(1);
@@ -194,7 +247,14 @@ describe("streamAgentChat — retry / backoff predicate", () => {
 
     await expect(
       runWithTimers(
-        streamAgentChat(baseOpts(), MSGS, [], ac.signal, () => {}, () => {}),
+        streamAgentChat(
+          baseOpts(),
+          MSGS,
+          [],
+          ac.signal,
+          () => {},
+          () => {},
+        ),
       ),
     ).rejects.toThrow();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -207,7 +267,14 @@ describe("streamAgentChat — retry / backoff predicate", () => {
     const opts = { ...baseOpts(), backend: "mlx" as const, serverStatus: null };
     await expect(
       runWithTimers(
-        streamAgentChat(opts, MSGS, [], new AbortController().signal, () => {}, () => {}),
+        streamAgentChat(
+          opts,
+          MSGS,
+          [],
+          new AbortController().signal,
+          () => {},
+          () => {},
+        ),
       ),
     ).rejects.toThrow(/MLX backend/i);
   });
@@ -227,7 +294,14 @@ describe("streamAgentChat — keep_alive gating (local vs cloud)", () => {
       return ndjsonResponse("ok");
     });
     vi.stubGlobal("fetch", fetchMock);
-    await streamAgentChat({ ...baseOpts(), model }, MSGS, [], new AbortController().signal, () => {}, () => {});
+    await streamAgentChat(
+      { ...baseOpts(), model },
+      MSGS,
+      [],
+      new AbortController().signal,
+      () => {},
+      () => {},
+    );
     return captured;
   }
 

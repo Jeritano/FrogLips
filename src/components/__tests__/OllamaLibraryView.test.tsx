@@ -25,7 +25,9 @@ vi.mock("../../lib/tauri-api", () => ({
 import { OllamaLibraryView } from "../OllamaLibraryView";
 import { api } from "../../lib/tauri-api";
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 // Two-card sample, hand-tuned to make each test assertion crisp:
 //  * "alpha" — multi-capability (vision + tools) flagship, big pull count
@@ -71,7 +73,9 @@ const FALLBACK = [
   },
 ];
 
-function noop() { /* test stub */ }
+function noop() {
+  /* test stub */
+}
 
 const STUB_PROPS = {
   installedOllama: [],
@@ -88,15 +92,21 @@ const STUB_PROPS = {
 
 function mountIn(container: HTMLDivElement, ui: React.ReactNode): Root {
   const root = createRoot(container);
-  act(() => { root.render(ui); });
+  act(() => {
+    root.render(ui);
+  });
   return root;
 }
 
 async function flushPromises() {
   // Two-tick flush: microtasks for the fetch promise, then the setState batch
   // that schedules the re-render.
-  await act(async () => { await Promise.resolve(); });
-  await act(async () => { await Promise.resolve(); });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
 }
 
 describe("OllamaLibraryView", () => {
@@ -118,27 +128,37 @@ describe("OllamaLibraryView", () => {
   it("renders 8 skeleton placeholders while the fetch is pending", () => {
     // Never-resolving promise so we stay in the loading state.
     (api.ollamaLibraryFetch as ReturnType<typeof vi.fn>).mockReturnValue(
-      new Promise(() => { /* never resolves */ }),
+      new Promise(() => {
+        /* never resolves */
+      }),
     );
     root = mountIn(container, <OllamaLibraryView {...STUB_PROPS} />);
 
     const skeletons = container.querySelectorAll(".mb-ollama-skel");
     expect(skeletons.length).toBe(8);
     // Real entries shouldn't render yet.
-    expect(container.querySelectorAll('[data-testid="ollama-library-card"]').length).toBe(0);
+    expect(
+      container.querySelectorAll('[data-testid="ollama-library-card"]').length,
+    ).toBe(0);
   });
 
   it("renders one card per entry once the fetch resolves", async () => {
-    (api.ollamaLibraryFetch as ReturnType<typeof vi.fn>).mockResolvedValue(SAMPLE);
+    (api.ollamaLibraryFetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      SAMPLE,
+    );
     root = mountIn(container, <OllamaLibraryView {...STUB_PROPS} />);
 
     await flushPromises();
 
-    const cards = container.querySelectorAll('[data-testid="ollama-library-card"]');
+    const cards = container.querySelectorAll(
+      '[data-testid="ollama-library-card"]',
+    );
     expect(cards.length).toBe(3);
     // Names render in order. Default sort is "popular" (by pulls desc):
     // alpha 1.2M > gamma 800K > beta 50K.
-    const names = Array.from(cards).map((c) => c.querySelector("h2")?.textContent);
+    const names = Array.from(cards).map(
+      (c) => c.querySelector("h2")?.textContent,
+    );
     expect(names).toEqual(["alpha", "gamma", "beta"]);
     // Capability chips render with the expected colors (orange = vision).
     const visionChips = container.querySelectorAll(
@@ -148,28 +168,38 @@ describe("OllamaLibraryView", () => {
   });
 
   it("filter chip narrows results to entries with that capability", async () => {
-    (api.ollamaLibraryFetch as ReturnType<typeof vi.fn>).mockResolvedValue(SAMPLE);
+    (api.ollamaLibraryFetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      SAMPLE,
+    );
     root = mountIn(container, <OllamaLibraryView {...STUB_PROPS} />);
     await flushPromises();
 
     // All three visible before any filter.
-    expect(container.querySelectorAll('[data-testid="ollama-library-card"]').length).toBe(3);
+    expect(
+      container.querySelectorAll('[data-testid="ollama-library-card"]').length,
+    ).toBe(3);
 
     const visionChip = container.querySelector(
       '[data-testid="filter-chip-vision"]',
     ) as HTMLButtonElement;
     expect(visionChip).toBeTruthy();
-    act(() => { visionChip.click(); });
+    act(() => {
+      visionChip.click();
+    });
 
     // Only alpha has the vision capability.
-    const cards = container.querySelectorAll('[data-testid="ollama-library-card"]');
+    const cards = container.querySelectorAll(
+      '[data-testid="ollama-library-card"]',
+    );
     expect(cards.length).toBe(1);
     expect(cards[0].querySelector("h2")?.textContent).toBe("alpha");
     expect(visionChip.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("sort dropdown reorders by Newest (smallest days-ago first)", async () => {
-    (api.ollamaLibraryFetch as ReturnType<typeof vi.fn>).mockResolvedValue(SAMPLE);
+    (api.ollamaLibraryFetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      SAMPLE,
+    );
     root = mountIn(container, <OllamaLibraryView {...STUB_PROPS} />);
     await flushPromises();
 
@@ -182,8 +212,12 @@ describe("OllamaLibraryView", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
 
-    const cards = container.querySelectorAll('[data-testid="ollama-library-card"]');
-    const names = Array.from(cards).map((c) => c.querySelector("h2")?.textContent);
+    const cards = container.querySelectorAll(
+      '[data-testid="ollama-library-card"]',
+    );
+    const names = Array.from(cards).map(
+      (c) => c.querySelector("h2")?.textContent,
+    );
     // beta 2d < alpha 3w (21d) < gamma 6mo (~180d).
     expect(names).toEqual(["beta", "alpha", "gamma"]);
   });
@@ -197,7 +231,9 @@ describe("OllamaLibraryView", () => {
 
     const banner = container.querySelector(".mb-ollama-banner");
     expect(banner?.textContent).toMatch(/couldn't reach/i);
-    const cards = container.querySelectorAll('[data-testid="ollama-library-card"]');
+    const cards = container.querySelectorAll(
+      '[data-testid="ollama-library-card"]',
+    );
     expect(cards.length).toBe(1);
     expect(cards[0].querySelector("h2")?.textContent).toBe("fallback-model");
   });

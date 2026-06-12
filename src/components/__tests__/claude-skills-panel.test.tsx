@@ -22,7 +22,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ClaudeSkillRow, ClaudeSkillSummary } from "../../types";
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const fixtures: ClaudeSkillSummary[] = [
   {
@@ -53,7 +55,8 @@ const fullFixture: ClaudeSkillRow = {
 };
 
 // Track the value returned from the next folder-picker call. Reset per test.
-let dialogOpenResult: string | string[] | null = "/Users/joseph/skills/pdf-fill";
+let dialogOpenResult: string | string[] | null =
+  "/Users/joseph/skills/pdf-fill";
 const dialogOpenSpy = vi.fn(async () => dialogOpenResult);
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -65,7 +68,9 @@ vi.mock("../../lib/tauri-api", () => {
     api: {
       claudeSkillList: vi.fn(async () => fixtures),
       claudeSkillGet: vi.fn(async () => fullFixture),
-      claudeSkillImport: vi.fn(async (_path: string, _overwrite?: boolean) => fullFixture),
+      claudeSkillImport: vi.fn(
+        async (_path: string, _overwrite?: boolean) => fullFixture,
+      ),
       claudeSkillSetEnabled: vi.fn(async () => undefined),
       claudeSkillSetPinned: vi.fn(async () => undefined),
       claudeSkillDelete: vi.fn(async () => undefined),
@@ -93,7 +98,9 @@ interface Harness {
   cleanup: () => Promise<void>;
 }
 
-async function mount(props: Partial<Parameters<typeof ClaudeSkillsPanel>[0]> = {}): Promise<Harness> {
+async function mount(
+  props: Partial<Parameters<typeof ClaudeSkillsPanel>[0]> = {},
+): Promise<Harness> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -122,11 +129,17 @@ describe("ClaudeSkillsPanel", () => {
     dialogOpenResult = "/Users/joseph/skills/pdf-fill";
     dialogOpenSpy.mockClear();
     (api.claudeSkillList as ReturnType<typeof vi.fn>).mockClear();
-    (api.claudeSkillList as ReturnType<typeof vi.fn>).mockResolvedValue(fixtures);
+    (api.claudeSkillList as ReturnType<typeof vi.fn>).mockResolvedValue(
+      fixtures,
+    );
     (api.claudeSkillGet as ReturnType<typeof vi.fn>).mockClear();
-    (api.claudeSkillGet as ReturnType<typeof vi.fn>).mockResolvedValue(fullFixture);
+    (api.claudeSkillGet as ReturnType<typeof vi.fn>).mockResolvedValue(
+      fullFixture,
+    );
     (api.claudeSkillImport as ReturnType<typeof vi.fn>).mockClear();
-    (api.claudeSkillImport as ReturnType<typeof vi.fn>).mockResolvedValue(fullFixture);
+    (api.claudeSkillImport as ReturnType<typeof vi.fn>).mockResolvedValue(
+      fullFixture,
+    );
     (api.claudeSkillSetEnabled as ReturnType<typeof vi.fn>).mockClear();
     (api.claudeSkillSetPinned as ReturnType<typeof vi.fn>).mockClear();
     (api.claudeSkillDelete as ReturnType<typeof vi.fn>).mockClear();
@@ -141,7 +154,9 @@ describe("ClaudeSkillsPanel", () => {
     (api.claudeSkillList as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
 
     const h = await mount();
-    const empty = h.container.querySelector('[data-testid="claude-skills-empty"]');
+    const empty = h.container.querySelector(
+      '[data-testid="claude-skills-empty"]',
+    );
     expect(empty).not.toBeNull();
     expect(empty?.textContent).toContain("No Skills imported");
     expect(empty?.textContent).toContain("list_claude_skills()");
@@ -152,10 +167,14 @@ describe("ClaudeSkillsPanel", () => {
 
   it("renders one row per skill with name, description, and source path", async () => {
     const h = await mount();
-    const table = h.container.querySelector('[data-testid="claude-skills-table"]');
+    const table = h.container.querySelector(
+      '[data-testid="claude-skills-table"]',
+    );
     expect(table).not.toBeNull();
 
-    const row1 = h.container.querySelector('[data-testid="claude-skills-row-pdf-fill"]') as HTMLElement;
+    const row1 = h.container.querySelector(
+      '[data-testid="claude-skills-row-pdf-fill"]',
+    ) as HTMLElement;
     const row2 = h.container.querySelector(
       '[data-testid="claude-skills-row-docx-report"]',
     ) as HTMLElement;
@@ -164,21 +183,29 @@ describe("ClaudeSkillsPanel", () => {
 
     expect(row1.textContent).toContain("pdf-fill");
     expect(row1.textContent).toContain("Fill an Anthropic-format PDF skill");
-    const path1 = h.container.querySelector('[data-testid="claude-skills-path-pdf-fill"]');
+    const path1 = h.container.querySelector(
+      '[data-testid="claude-skills-path-pdf-fill"]',
+    );
     expect(path1?.textContent).toBe("/Users/joseph/skills/pdf-fill");
 
     expect(row2.textContent).toContain("docx-report");
-    const path2 = h.container.querySelector('[data-testid="claude-skills-path-docx-report"]');
+    const path2 = h.container.querySelector(
+      '[data-testid="claude-skills-path-docx-report"]',
+    );
     expect(path2?.textContent).toBe("/Users/joseph/skills/docx-report");
 
     // Status chips reflect the fixture state.
-    const enabled1 = h.container.querySelector('[data-testid="claude-skills-chip-enabled-pdf-fill"]');
+    const enabled1 = h.container.querySelector(
+      '[data-testid="claude-skills-chip-enabled-pdf-fill"]',
+    );
     expect(enabled1?.textContent).toContain("enabled");
     const enabled2 = h.container.querySelector(
       '[data-testid="claude-skills-chip-enabled-docx-report"]',
     );
     expect(enabled2?.textContent).toContain("disabled");
-    const pinned1 = h.container.querySelector('[data-testid="claude-skills-chip-pinned-pdf-fill"]');
+    const pinned1 = h.container.querySelector(
+      '[data-testid="claude-skills-chip-pinned-pdf-fill"]',
+    );
     expect(pinned1).not.toBeNull();
     const pinned2 = h.container.querySelector(
       '[data-testid="claude-skills-chip-pinned-docx-report"]',
@@ -208,7 +235,10 @@ describe("ClaudeSkillsPanel", () => {
     };
     expect(dialogCall.directory).toBe(true);
 
-    expect(api.claudeSkillImport).toHaveBeenCalledWith("/Users/joseph/skills/new-one", false);
+    expect(api.claudeSkillImport).toHaveBeenCalledWith(
+      "/Users/joseph/skills/new-one",
+      false,
+    );
 
     await h.cleanup();
   });
@@ -283,7 +313,9 @@ describe("ClaudeSkillsPanel", () => {
 
     expect(api.claudeSkillSetEnabled).toHaveBeenCalledWith("pdf-fill", false);
     // refresh fires another list call.
-    expect((api.claudeSkillList as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+    expect(
+      (api.claudeSkillList as ReturnType<typeof vi.fn>).mock.calls.length,
+    ).toBeGreaterThan(1);
 
     // docx-report is currently disabled — clicking should enable it.
     const toggle2 = h.container.querySelector(
@@ -313,7 +345,9 @@ describe("ClaudeSkillsPanel", () => {
     });
     await flush();
     expect(api.claudeSkillSetPinned).toHaveBeenCalledWith("pdf-fill", false);
-    expect((api.claudeSkillList as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+    expect(
+      (api.claudeSkillList as ReturnType<typeof vi.fn>).mock.calls.length,
+    ).toBeGreaterThan(1);
 
     const pinBtn = h.container.querySelector(
       '[data-testid="claude-skills-toggle-pinned-docx-report"]',
@@ -372,13 +406,17 @@ describe("ClaudeSkillsPanel", () => {
     await flush();
 
     expect(api.claudeSkillGet).toHaveBeenCalledWith("pdf-fill");
-    const body = h.container.querySelector('[data-testid="claude-skills-body-md"]');
+    const body = h.container.querySelector(
+      '[data-testid="claude-skills-body-md"]',
+    );
     expect(body).not.toBeNull();
     expect(body?.textContent).toContain("# pdf-fill");
     expect(body?.textContent).toContain("This skill fills a PDF form");
 
     // allowed_tools_json gets parsed into chips.
-    const tools = h.container.querySelector('[data-testid="claude-skills-allowed-tools"]');
+    const tools = h.container.querySelector(
+      '[data-testid="claude-skills-allowed-tools"]',
+    );
     expect(tools).not.toBeNull();
     expect(tools?.textContent).toContain("Read");
     expect(tools?.textContent).toContain("Write");
@@ -432,7 +470,8 @@ describe("ClaudeSkillsPanel feature detection", () => {
     vi.doMock("../../lib/diagnostics", () => ({ logDiag: vi.fn() }));
     vi.doMock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
-    const { ClaudeSkillsPanel: FreshPanel } = await import("../ClaudeSkillsPanel");
+    const { ClaudeSkillsPanel: FreshPanel } =
+      await import("../ClaudeSkillsPanel");
 
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -444,7 +483,9 @@ describe("ClaudeSkillsPanel feature detection", () => {
       await Promise.resolve();
     });
 
-    const hint = container.querySelector('[data-testid="claude-skills-unsupported"]');
+    const hint = container.querySelector(
+      '[data-testid="claude-skills-unsupported"]',
+    );
     expect(hint).not.toBeNull();
     expect(hint?.textContent).toContain("not yet available");
     expect(listSpy).not.toHaveBeenCalled();

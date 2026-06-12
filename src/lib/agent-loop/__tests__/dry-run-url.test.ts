@@ -68,7 +68,9 @@ describe("dryRunValidateUrl — data: URL MIME gating", () => {
   });
 
   it("rejects data:application/javascript", () => {
-    expect(dryRunValidateUrl("data:application/javascript,alert(1)").ok).toBe(false);
+    expect(dryRunValidateUrl("data:application/javascript,alert(1)").ok).toBe(
+      false,
+    );
   });
 
   it("rejects data:image/svg+xml — SVG can execute script", () => {
@@ -80,7 +82,9 @@ describe("dryRunValidateUrl — data: URL MIME gating", () => {
   });
 
   it("rejects base64 data:image/svg+xml", () => {
-    expect(dryRunValidateUrl("data:image/svg+xml;base64,PHN2Zy8+").ok).toBe(false);
+    expect(dryRunValidateUrl("data:image/svg+xml;base64,PHN2Zy8+").ok).toBe(
+      false,
+    );
   });
 
   it("still allows raster data:image/jpeg and image/webp", () => {

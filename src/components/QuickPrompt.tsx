@@ -83,7 +83,11 @@ export function QuickPrompt() {
     // for the lifetime of the window. Drop any prior handle before
     // assigning the new one.
     if (unlistenRef.current) {
-      try { unlistenRef.current(); } catch { /* listener already dead */ }
+      try {
+        unlistenRef.current();
+      } catch {
+        /* listener already dead */
+      }
       unlistenRef.current = null;
     }
     try {
@@ -142,7 +146,9 @@ export function QuickPrompt() {
     // Surface result in the main chat. ChatWindow already toasts via
     // `quick-prompt-completed`; this just brings the main window forward
     // and hides ours. Strict v1.3: no auto-message-creation.
-    try { await navigator.clipboard.writeText(reply); } catch (err) {
+    try {
+      await navigator.clipboard.writeText(reply);
+    } catch (err) {
       logDiag({
         level: "info",
         source: "quick-prompt",
@@ -150,7 +156,9 @@ export function QuickPrompt() {
         detail: err,
       });
     }
-    try { await invoke("quick_prompt_hide"); } catch (err) {
+    try {
+      await invoke("quick_prompt_hide");
+    } catch (err) {
       logDiag({
         level: "warn",
         source: "quick-prompt",
@@ -199,13 +207,21 @@ export function QuickPrompt() {
           {err ? (
             <div className="quick-error">{err}</div>
           ) : (
-            <pre className="quick-reply-text">{reply || (phase === "streaming" ? "…" : "(empty)")}</pre>
+            <pre className="quick-reply-text">
+              {reply || (phase === "streaming" ? "…" : "(empty)")}
+            </pre>
           )}
           {(phase === "done" || phase === "error") && (
             <div className="quick-actions">
-              <button type="button" onClick={copyReply} disabled={!reply}>Copy</button>
-              <button type="button" onClick={openInMain}>Open in main app</button>
-              <button type="button" onClick={reset}>New</button>
+              <button type="button" onClick={copyReply} disabled={!reply}>
+                Copy
+              </button>
+              <button type="button" onClick={openInMain}>
+                Open in main app
+              </button>
+              <button type="button" onClick={reset}>
+                New
+              </button>
             </div>
           )}
         </div>

@@ -26,7 +26,9 @@ export function ParamsPanel({ params, onSave, onClose, disabled }: Props) {
   const idBase = useId();
 
   // Re-seed the draft when the conversation (and thus `params`) changes.
-  useEffect(() => { setDraft(params); }, [params]);
+  useEffect(() => {
+    setDraft(params);
+  }, [params]);
 
   function commit(next: ConversationParams) {
     setDraft(next);
@@ -34,7 +36,10 @@ export function ParamsPanel({ params, onSave, onClose, disabled }: Props) {
 
   function setTemp(raw: string) {
     const n = raw.trim() === "" ? null : Number(raw);
-    commit({ ...draft, temperature: n != null && Number.isFinite(n) ? n : null });
+    commit({
+      ...draft,
+      temperature: n != null && Number.isFinite(n) ? n : null,
+    });
   }
   function setTopP(raw: string) {
     const n = raw.trim() === "" ? null : Number(raw);
@@ -44,7 +49,8 @@ export function ParamsPanel({ params, onSave, onClose, disabled }: Props) {
     const n = raw.trim() === "" ? null : Number(raw);
     commit({
       ...draft,
-      max_tokens: n != null && Number.isFinite(n) ? Math.max(1, Math.floor(n)) : null,
+      max_tokens:
+        n != null && Number.isFinite(n) ? Math.max(1, Math.floor(n)) : null,
     });
   }
   function setSystem(raw: string) {
@@ -52,7 +58,12 @@ export function ParamsPanel({ params, onSave, onClose, disabled }: Props) {
   }
 
   return (
-    <div className="params-panel" data-testid="params-panel" role="group" aria-label="Conversation parameters">
+    <div
+      className="params-panel"
+      data-testid="params-panel"
+      role="group"
+      aria-label="Conversation parameters"
+    >
       <div className="params-panel-header">
         <span className="params-panel-title">Conversation parameters</span>
         <button
@@ -80,7 +91,9 @@ export function ParamsPanel({ params, onSave, onClose, disabled }: Props) {
             onChange={(e) => setTemp(e.target.value)}
             aria-describedby={`${idBase}-temp-hint`}
           />
-          <span id={`${idBase}-temp-hint`} className="params-hint">0–2</span>
+          <span id={`${idBase}-temp-hint`} className="params-hint">
+            0–2
+          </span>
         </label>
         <label className="params-field">
           <span>Top-p</span>
@@ -129,7 +142,11 @@ export function ParamsPanel({ params, onSave, onClose, disabled }: Props) {
           className="agent-toggle"
           data-testid="params-reset"
           disabled={disabled || paramsAreEmpty(draft)}
-          onClick={() => { const e = emptyParams(); setDraft(e); onSave(e); }}
+          onClick={() => {
+            const e = emptyParams();
+            setDraft(e);
+            onSave(e);
+          }}
         >
           Reset to defaults
         </button>

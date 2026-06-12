@@ -45,19 +45,29 @@ export function ModelCard(props: Props) {
   const tags = (m.tags ?? []).map((t) => t.toLowerCase());
   const isMlx = tags.includes("mlx") || m.id.startsWith("mlx-community/");
   const isGguf = tags.includes("gguf");
-  const hasInference = tags.some((t) => t === "inference" || t.startsWith("inference_provider:") || t === "warm");
+  const hasInference = tags.some(
+    (t) =>
+      t === "inference" || t.startsWith("inference_provider:") || t === "warm",
+  );
   const params = paramPill(extractParams(m));
   const updated = relTime(m.lastModified);
   const pipeline = m.pipeline_tag ?? null;
-  const pColor = pipeline ? PIPELINE_COLOR[pipeline] ?? "#6b7280" : null;
+  const pColor = pipeline ? (PIPELINE_COLOR[pipeline] ?? "#6b7280") : null;
   const initial = m.id.charAt(0).toUpperCase();
 
-  let action: { label: ReactNode; cls?: string; on: () => void; disabled?: boolean };
+  let action: {
+    label: ReactNode;
+    cls?: string;
+    on: () => void;
+    disabled?: boolean;
+  };
   if (props.ggufMode) {
     // GGUF tab: action button is the file-list expander toggle.
     const baseLabel = props.ggufSummary
       ? props.ggufSummary
-      : props.expanded ? "Hide files" : "View files";
+      : props.expanded
+        ? "Hide files"
+        : "View files";
     action = {
       label: `${baseLabel} ${props.expanded ? "▴" : "▾"}`,
       on: () => props.onToggleExpand?.(),
@@ -70,7 +80,15 @@ export function ModelCard(props: Props) {
     };
   } else if (isMlx) {
     action = {
-      label: props.pulling ? "…" : props.done ? <><Check size={14} /> Done</> : "Pull",
+      label: props.pulling ? (
+        "…"
+      ) : props.done ? (
+        <>
+          <Check size={14} /> Done
+        </>
+      ) : (
+        "Pull"
+      ),
       on: () => props.onPull(m.id),
       disabled: props.pulling || props.done,
     };
@@ -86,10 +104,16 @@ export function ModelCard(props: Props) {
       data-testid="hf-model-card"
     >
       <div className="hfl-card-head">
-        <div className="hfl-avatar" aria-hidden>{initial}</div>
-        <div className="hfl-card-id" title={m.id}>{m.id}</div>
+        <div className="hfl-avatar" aria-hidden>
+          {initial}
+        </div>
+        <div className="hfl-card-id" title={m.id}>
+          {m.id}
+        </div>
         {hasInference && (
-          <span className="hfl-bolt" title="Inference Available"><Zap size={16} /></span>
+          <span className="hfl-bolt" title="Inference Available">
+            <Zap size={16} />
+          </span>
         )}
       </div>
       <div className="hfl-card-chips">
@@ -107,10 +131,16 @@ export function ModelCard(props: Props) {
         )}
       </div>
       <div className="hfl-card-foot">
-        <span className="hfl-updated">{updated ? `Updated ${updated}` : "—"}</span>
+        <span className="hfl-updated">
+          {updated ? `Updated ${updated}` : "—"}
+        </span>
         <span className="hfl-stats">
-          <span title="Downloads"><Download size={12} /> {abbrev(m.downloads)}</span>
-          <span title="Likes" style={{ marginLeft: 8 }}><Heart size={12} /> {abbrev(m.likes)}</span>
+          <span title="Downloads">
+            <Download size={12} /> {abbrev(m.downloads)}
+          </span>
+          <span title="Likes" style={{ marginLeft: 8 }}>
+            <Heart size={12} /> {abbrev(m.likes)}
+          </span>
         </span>
       </div>
       {props.err && <div className="hfl-card-err">{props.err}</div>}
@@ -126,7 +156,10 @@ export function ModelCard(props: Props) {
         </button>
       </div>
       {props.ggufMode && props.expanded && props.children && (
-        <div className="hfl-card-gguf-files" data-testid={`hfl-gguf-files-${m.id}`}>
+        <div
+          className="hfl-card-gguf-files"
+          data-testid={`hfl-gguf-files-${m.id}`}
+        >
           {props.children}
         </div>
       )}

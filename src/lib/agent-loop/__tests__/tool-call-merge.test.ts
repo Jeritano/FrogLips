@@ -15,7 +15,11 @@ function chunk(
 describe("mergeToolCallChunk", () => {
   it("merges a name then piecewise string argument fragments", () => {
     const acc: PartialToolCall[] = [];
-    mergeToolCallChunk(acc, 0, chunk("read_file", "", { id: "c1", type: "function" }));
+    mergeToolCallChunk(
+      acc,
+      0,
+      chunk("read_file", "", { id: "c1", type: "function" }),
+    );
     mergeToolCallChunk(acc, 0, chunk("", '{"path":"/tm'));
     mergeToolCallChunk(acc, 0, chunk("", 'p/x"}'));
     const out = finalizeToolCalls(acc);
@@ -51,7 +55,9 @@ describe("mergeToolCallChunk", () => {
     const acc: PartialToolCall[] = [];
     mergeToolCallChunk(acc, 0, chunk("t", '{"old":1}'));
     mergeToolCallChunk(acc, 0, chunk("", { fresh: true }));
-    expect(finalizeToolCalls(acc)[0].function.arguments).toEqual({ fresh: true });
+    expect(finalizeToolCalls(acc)[0].function.arguments).toEqual({
+      fresh: true,
+    });
   });
 });
 
@@ -84,7 +90,9 @@ describe("finalizeToolCalls", () => {
     // trip "Value looks like object, but can't find closing '}'". `"{}"`
     // is the safe well-formed-empty default.
     const acc: PartialToolCall[] = [];
-    mergeToolCallChunk(acc, 0, { function: { name: "noargs" } as { name: string; arguments: string } });
+    mergeToolCallChunk(acc, 0, {
+      function: { name: "noargs" } as { name: string; arguments: string },
+    });
     expect(finalizeToolCalls(acc)[0].function.arguments).toBe("{}");
   });
 
@@ -112,7 +120,11 @@ describe("finalizeToolCalls", () => {
     // "Value looks like object, but can't find closing '}' symbol" 400.
     // Anything outside `[A-Za-z0-9_-]` is replaced with a minted `call_<8>`.
     const acc: PartialToolCall[] = [];
-    mergeToolCallChunk(acc, 0, chunk("t", "{}", { id: "functions.web_search:0" }));
+    mergeToolCallChunk(
+      acc,
+      0,
+      chunk("t", "{}", { id: "functions.web_search:0" }),
+    );
     expect(finalizeToolCalls(acc)[0].id).toMatch(/^call_[0-9a-z]{8}$/);
   });
 

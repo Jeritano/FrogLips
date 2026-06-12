@@ -58,7 +58,9 @@ export function DetachedChatView({ conversationId }: Props) {
         if (!cancelled) setLoadError(String(e));
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [conversationId, retryTick]);
 
   // Cross-window sync: any window that mutates this conversation fires
@@ -78,17 +80,25 @@ export function DetachedChatView({ conversationId }: Props) {
   // deferred.
   useTauriEvent<number>(
     "conversation-updated",
-    useCallback((e) => {
-      const cid = e.payload;
-      if (cid === conversationId || cid === -1) {
-        // Re-fetch the bare conversation row so the header reflects
-        // remote renames. Message list refresh deferred.
-        void api.listConversations().then((rows) => {
-          const fresh = rows.find((r) => r.id === conversationId);
-          if (fresh) setConversation(fresh);
-        }).catch(() => { /* best-effort */ });
-      }
-    }, [conversationId]),
+    useCallback(
+      (e) => {
+        const cid = e.payload;
+        if (cid === conversationId || cid === -1) {
+          // Re-fetch the bare conversation row so the header reflects
+          // remote renames. Message list refresh deferred.
+          void api
+            .listConversations()
+            .then((rows) => {
+              const fresh = rows.find((r) => r.id === conversationId);
+              if (fresh) setConversation(fresh);
+            })
+            .catch(() => {
+              /* best-effort */
+            });
+        }
+      },
+      [conversationId],
+    ),
   );
 
   // Server-status follow: same flow as the main window.
@@ -103,7 +113,10 @@ export function DetachedChatView({ conversationId }: Props) {
         {/* Dismiss RE-RUNS the fetch instead of dead-ending on "Loading…"
             forever (the effect only re-fires on conversationId, which never
             changes for a window). 2026-05-30 */}
-        <ErrorBar message={`${loadError} — dismiss to retry.`} onDismiss={() => setRetryTick((t) => t + 1)} />
+        <ErrorBar
+          message={`${loadError} — dismiss to retry.`}
+          onDismiss={() => setRetryTick((t) => t + 1)}
+        />
       </div>
     );
   }
@@ -117,7 +130,11 @@ export function DetachedChatView({ conversationId }: Props) {
   }
 
   return (
-    <div className="app detached" data-testid="detached-ready" data-conv-id={conversation.id}>
+    <div
+      className="app detached"
+      data-testid="detached-ready"
+      data-conv-id={conversation.id}
+    >
       <main className="main detached-main">
         <header>
           <ModelPicker status={status} onStatusChange={setStatus} />

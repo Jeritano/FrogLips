@@ -43,6 +43,17 @@ interface BackendProbe {
     | null;
 }
 
+/** RAM bucket a starter is sized for — drives which group leads on this Mac. */
+type RamTier = "small" | "mid" | "large" | "flagship";
+
+/** Map detected total RAM (GiB) to the starter tier this machine should lead with. */
+function ramTier(totalGb: number): RamTier {
+  if (totalGb <= 16) return "small";
+  if (totalGb <= 36) return "mid";
+  if (totalGb <= 64) return "large";
+  return "flagship";
+}
+
 interface StarterModel {
   id: string;
   label: string;
@@ -54,10 +65,17 @@ interface StarterModel {
   pull: "ollama" | "hf";
   /** Which backend this model is intended for (used to set last_backend on download). */
   backend: BackendKey;
+  /** RAM bucket this starter is sized for (see `ramTier`). */
+  tier: RamTier;
 }
 
 // Tweakable recommendations — bundling here (not in Rust) avoids a recompile
 // when we want to refresh the starter list (per spec).
+//
+// RAM tiers (2026-06-11): a 128 GB Mac used to get the same 3B starter as an
+// 8 GB Air. Each entry now carries a `tier` and step 2 leads with the tier
+// that matches the detected RAM. Ids are reused verbatim from the ModelBrowser
+// curated catalog — never invent ids here.
 const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
   native: [
     {
@@ -68,6 +86,7 @@ const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
       description: "Small, fast, general-purpose. Default starter pick.",
       pull: "hf",
       backend: "native",
+      tier: "small",
     },
   ],
   mlx: [
@@ -79,6 +98,7 @@ const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
       description: "Small, fast, general-purpose. Default starter pick.",
       pull: "hf",
       backend: "mlx",
+      tier: "small",
     },
   ],
   ollama: [
@@ -90,6 +110,7 @@ const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
       description: "Small, fast, general-purpose. Default starter pick.",
       pull: "ollama",
       backend: "ollama",
+      tier: "small",
     },
     {
       id: "qwen2.5-coder:7b",
@@ -99,11 +120,81 @@ const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
       description: "Larger, code-tuned. Pick this for programming help.",
       pull: "ollama",
       backend: "ollama",
+      tier: "small",
+    },
+    {
+      id: "qwen3:14b",
+      label: "Qwen3 14B",
+      size: "~9 GB",
+      approxGb: 9,
+      description: "Capable mid-size Qwen3, strong all-rounder.",
+      pull: "ollama",
+      backend: "ollama",
+      tier: "mid",
+    },
+    {
+      id: "qwen2.5-coder:14b",
+      label: "Qwen2.5 Coder 14B",
+      size: "~9 GB",
+      approxGb: 9,
+      description: "Mid-size coder. Pick this for programming help.",
+      pull: "ollama",
+      backend: "ollama",
+      tier: "mid",
+    },
+    {
+      id: "qwen3:32b",
+      label: "Qwen3 32B",
+      size: "~20 GB",
+      approxGb: 20,
+      description: "Dense Qwen3 flagship, excellent reasoning.",
+      pull: "ollama",
+      backend: "ollama",
+      tier: "large",
+    },
+    {
+      id: "qwen2.5-coder:32b",
+      label: "Qwen2.5 Coder 32B",
+      size: "~20 GB",
+      approxGb: 20,
+      description:
+        "Strong code-focused Qwen2.5. Pick this for programming help.",
+      pull: "ollama",
+      backend: "ollama",
+      tier: "large",
+    },
+    {
+      id: "llama3.3:70b",
+      label: "Llama 3.3 70B",
+      size: "~43 GB",
+      approxGb: 43,
+      description: "Meta's best open chat model. Needs serious headroom.",
+      pull: "ollama",
+      backend: "ollama",
+      tier: "flagship",
+    },
+    {
+      id: "qwen3-coder:30b",
+      label: "Qwen3 Coder 30B",
+      size: "~18 GB",
+      approxGb: 18,
+      description: "Alibaba's top coding model with thinking mode.",
+      pull: "ollama",
+      backend: "ollama",
+      tier: "flagship",
     },
   ],
 };
 
-const SAMPLE_PROMPTS: { title: string; text: string }[] = [
+// Step-3 sample prompts, branched by what was actually downloaded.
+//
+// The agent-TOOL prompts assume App will arm agent mode on send — and App
+// only does that for ollama/mlx (see onDone in App.tsx). The native backend
+// can't run agent tools, so handing a fresh native user "What's in my current
+// directory?" made the model HALLUCINATE a directory listing as the literal
+// first reply (product review 2026-06-11). Native — and the skipped-download
+// path, where the backend is unknown — get pure-chat prompts instead.
+const AGENT_SAMPLE_PROMPTS: { title: string; text: string }[] = [
   {
     title: "Summarize the README",
     text: "Summarize the README in this repo.",
@@ -115,6 +206,21 @@ const SAMPLE_PROMPTS: { title: string; text: string }[] = [
   {
     title: "Show recent git history",
     text: "Show me the latest git log.",
+  },
+];
+
+const CHAT_SAMPLE_PROMPTS: { title: string; text: string }[] = [
+  {
+    title: "Explain a concept",
+    text: "Explain how async/await works in JavaScript, with a small example.",
+  },
+  {
+    title: "Draft something",
+    text: "Draft a concise commit message for a bug fix in the login flow.",
+  },
+  {
+    title: "Debug an error",
+    text: "Help me debug this error: ",
   },
 ];
 
@@ -589,92 +695,118 @@ export function SetupWizard({ onDone }: Props) {
               </div>
             )}
 
-            <div className="setup-wizard-cards">
-              {(() => {
-                const starters = availableStarters();
-                const { recommended, fit } = recommendStarter(
-                  starters,
-                  ramGb ?? 16,
-                );
-                return starters.map((m) => {
-                  const isDownloading = downloading?.id === m.id;
-                  const isDone = downloaded?.id === m.id;
-                  const isRecommended = recommended?.id === m.id;
-                  const tier = fit.get(m.id);
-                  return (
-                    <button
-                      key={`${m.backend}:${m.id}`}
-                      className={`setup-wizard-card ${isDone ? "done" : ""}${isRecommended ? " is-recommended" : ""}`}
-                      data-testid={`setup-wizard-card-${m.id}`}
-                      onClick={() => {
-                        if (!isDownloading && !isDone) void downloadModel(m);
-                      }}
-                      disabled={isDownloading || downloading !== null}
+            {(() => {
+              const starters = availableStarters();
+              // Lead with the tier sized for this machine's RAM (small ≤16,
+              // mid ≤36, large ≤64, flagship above); everything else follows
+              // so power users can still go bigger/smaller. If no available
+              // starter matches the tier (e.g. native-only lists), fall back
+              // to the plain catalog order.
+              const machineTier = ramTier(ramGb ?? 16);
+              const lead = starters.filter((m) => m.tier === machineTier);
+              const ordered =
+                lead.length > 0
+                  ? [...lead, ...starters.filter((m) => m.tier !== machineTier)]
+                  : starters;
+              const { recommended, fit } = recommendStarter(
+                ordered,
+                ramGb ?? 16,
+              );
+              return (
+                <>
+                  {ramGb != null && lead.length > 0 && (
+                    <p
+                      className="setup-wizard-pitch"
+                      data-testid="setup-wizard-tier-label"
                     >
-                      {isRecommended && (
-                        <div className="setup-wizard-rec-ribbon">
-                          {ramGb
-                            ? `Recommended for your ${fmtGb(ramGb)} Mac`
-                            : "Recommended"}
-                        </div>
-                      )}
-                      <div className="setup-wizard-card-label">{m.label}</div>
-                      <div className="setup-wizard-card-meta">
-                        {m.size} · {m.backend}
-                        {tier && (
-                          <span className="headroom-badge" data-tier={tier}>
-                            {tier === "comfortable"
-                              ? "Fits"
-                              : tier === "tight"
-                                ? "Tight"
-                                : tier === "thrash"
-                                  ? "Heavy"
-                                  : "Too big"}
-                          </span>
-                        )}
-                      </div>
-                      <div className="setup-wizard-card-desc">
-                        {m.description}
-                      </div>
-                      {isDownloading && (
-                        <div className="setup-wizard-card-state">
-                          {pullProgress && pullProgress.name === m.id ? (
-                            <>
-                              <span className="setup-wizard-dl-status">
-                                {pullProgress.status}
-                              </span>
-                              {pullProgress.percent != null && (
-                                <span
-                                  className="setup-wizard-dl-bar"
-                                  role="progressbar"
-                                  aria-valuenow={Math.round(
-                                    pullProgress.percent,
-                                  )}
-                                >
-                                  <span
-                                    className="setup-wizard-dl-fill"
-                                    style={{
-                                      width: `${pullProgress.percent}%`,
-                                    }}
-                                  />
-                                </span>
-                              )}
-                            </>
-                          ) : (
-                            "Downloading…"
+                      Fits your {fmtGb(ramGb)} Mac:
+                    </p>
+                  )}
+                  <div className="setup-wizard-cards">
+                    {ordered.map((m) => {
+                      const isDownloading = downloading?.id === m.id;
+                      const isDone = downloaded?.id === m.id;
+                      const isRecommended = recommended?.id === m.id;
+                      const tier = fit.get(m.id);
+                      return (
+                        <button
+                          key={`${m.backend}:${m.id}`}
+                          className={`setup-wizard-card ${isDone ? "done" : ""}${isRecommended ? " is-recommended" : ""}`}
+                          data-testid={`setup-wizard-card-${m.id}`}
+                          onClick={() => {
+                            if (!isDownloading && !isDone)
+                              void downloadModel(m);
+                          }}
+                          disabled={isDownloading || downloading !== null}
+                        >
+                          {isRecommended && (
+                            <div className="setup-wizard-rec-ribbon">
+                              {ramGb
+                                ? `Recommended for your ${fmtGb(ramGb)} Mac`
+                                : "Recommended"}
+                            </div>
                           )}
-                        </div>
-                      )}
-                      {isDone && (
-                        <div className="setup-wizard-card-state done">
-                          Downloaded <Check size={14} />
-                        </div>
-                      )}
-                    </button>
-                  );
-                });
-              })()}
-            </div>
+                          <div className="setup-wizard-card-label">
+                            {m.label}
+                          </div>
+                          <div className="setup-wizard-card-meta">
+                            {m.size} · {m.backend}
+                            {tier && (
+                              <span className="headroom-badge" data-tier={tier}>
+                                {tier === "comfortable"
+                                  ? "Fits"
+                                  : tier === "tight"
+                                    ? "Tight"
+                                    : tier === "thrash"
+                                      ? "Heavy"
+                                      : "Too big"}
+                              </span>
+                            )}
+                          </div>
+                          <div className="setup-wizard-card-desc">
+                            {m.description}
+                          </div>
+                          {isDownloading && (
+                            <div className="setup-wizard-card-state">
+                              {pullProgress && pullProgress.name === m.id ? (
+                                <>
+                                  <span className="setup-wizard-dl-status">
+                                    {pullProgress.status}
+                                  </span>
+                                  {pullProgress.percent != null && (
+                                    <span
+                                      className="setup-wizard-dl-bar"
+                                      role="progressbar"
+                                      aria-valuenow={Math.round(
+                                        pullProgress.percent,
+                                      )}
+                                    >
+                                      <span
+                                        className="setup-wizard-dl-fill"
+                                        style={{
+                                          width: `${pullProgress.percent}%`,
+                                        }}
+                                      />
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                "Downloading…"
+                              )}
+                            </div>
+                          )}
+                          {isDone && (
+                            <div className="setup-wizard-card-state done">
+                              Downloaded <Check size={14} />
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })()}
 
             {downloadErr && (
               <div
@@ -731,7 +863,14 @@ export function SetupWizard({ onDone }: Props) {
             </p>
 
             <div className="setup-wizard-cards">
-              {SAMPLE_PROMPTS.map((p) => (
+              {/* Tool prompts only when App will actually arm agent mode
+                  (ollama/mlx download). Native / skipped → chat prompts,
+                  so the first reply is never a hallucinated tool result. */}
+              {(downloaded?.backend === "ollama" ||
+              downloaded?.backend === "mlx"
+                ? AGENT_SAMPLE_PROMPTS
+                : CHAT_SAMPLE_PROMPTS
+              ).map((p) => (
                 <button
                   key={p.title}
                   className="setup-wizard-card"

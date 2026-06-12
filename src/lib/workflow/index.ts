@@ -9,8 +9,5 @@ export type {
   WorkflowHooks,
   WorkflowRunResult,
 } from "./runner";
-export {
-  handleWorkflowTrigger,
-  parseWorkflowTrigger,
-} from "./schedule";
+export { handleWorkflowTrigger, parseWorkflowTrigger } from "./schedule";
 export type { WorkflowTriggerPayload } from "./schedule";

@@ -45,7 +45,9 @@ describe("parseDetachedParams", () => {
 
   it("rejects ids outside safe-integer range", () => {
     const tooBig = "999999999999999999999";
-    expect(parseDetachedParams(`?detached=1&conversation_id=${tooBig}`)).toBeNull();
+    expect(
+      parseDetachedParams(`?detached=1&conversation_id=${tooBig}`),
+    ).toBeNull();
   });
 
   it("returns null for an empty search string", () => {

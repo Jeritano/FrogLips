@@ -7,10 +7,14 @@
  */
 import { useState } from "react";
 import {
-  TASKS_TOP, TASKS_MORE,
-  LIBRARIES_TOP, LIBRARIES_MORE,
-  APPS_TOP, APPS_MORE,
-  PROVIDERS_TOP, PROVIDERS_MORE,
+  TASKS_TOP,
+  TASKS_MORE,
+  LIBRARIES_TOP,
+  LIBRARIES_MORE,
+  APPS_TOP,
+  APPS_MORE,
+  PROVIDERS_TOP,
+  PROVIDERS_MORE,
   PARAM_TICKS,
   type FilterEntry,
 } from "./constants";
@@ -22,14 +26,16 @@ interface Props {
   providers: string[];
   paramMin: number;
   paramMax: number;
-  onChange: (next: Partial<{
-    tasks: string[];
-    libraries: string[];
-    apps: string[];
-    providers: string[];
-    paramMin: number;
-    paramMax: number;
-  }>) => void;
+  onChange: (
+    next: Partial<{
+      tasks: string[];
+      libraries: string[];
+      apps: string[];
+      providers: string[];
+      paramMin: number;
+      paramMax: number;
+    }>,
+  ) => void;
 }
 
 /** A single pill — used inside both the top-N row and the "more" popover. */
@@ -85,7 +91,12 @@ function Section({
       {!collapsed && (
         <div className="hfl-pill-list">
           {top.map((e) => (
-            <Pill key={e.slug} entry={e} selected={selected.includes(e.slug)} onToggle={() => onToggle(e.slug)} />
+            <Pill
+              key={e.slug}
+              entry={e}
+              selected={selected.includes(e.slug)}
+              onToggle={() => onToggle(e.slug)}
+            />
           ))}
           {more.length > 0 && (
             <button
@@ -100,7 +111,12 @@ function Section({
           {showMore && (
             <div className="hfl-more-popover">
               {more.map((e) => (
-                <Pill key={`${e.slug}-${e.label}`} entry={e} selected={selected.includes(e.slug)} onToggle={() => onToggle(e.slug)} />
+                <Pill
+                  key={`${e.slug}-${e.label}`}
+                  entry={e}
+                  selected={selected.includes(e.slug)}
+                  onToggle={() => onToggle(e.slug)}
+                />
               ))}
             </div>
           )}
@@ -164,7 +180,9 @@ function ParamSlider({
       </div>
       <div className="hfl-param-marks">
         {PARAM_TICKS.map((t) => (
-          <span key={t.label} className="hfl-param-mark">{t.label}</span>
+          <span key={t.label} className="hfl-param-mark">
+            {t.label}
+          </span>
         ))}
       </div>
     </div>
@@ -172,9 +190,14 @@ function ParamSlider({
 }
 
 export function Sidebar(props: Props) {
-  const toggle = (key: "tasks" | "libraries" | "apps" | "providers", slug: string) => {
+  const toggle = (
+    key: "tasks" | "libraries" | "apps" | "providers",
+    slug: string,
+  ) => {
     const cur = props[key];
-    const next = cur.includes(slug) ? cur.filter((s) => s !== slug) : [...cur, slug];
+    const next = cur.includes(slug)
+      ? cur.filter((s) => s !== slug)
+      : [...cur, slug];
     props.onChange({ [key]: next });
   };
   return (

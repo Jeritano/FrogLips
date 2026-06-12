@@ -3,19 +3,44 @@ import type { Message, ToolCall } from "../../../types";
 import { stripUnpairedToolCalls } from "../runner";
 
 const CONV = 1;
-const sys = (c: string): Message => ({ conversation_id: CONV, role: "system", content: c });
-const user = (c: string): Message => ({ conversation_id: CONV, role: "user", content: c });
-const asst = (c: string): Message => ({ conversation_id: CONV, role: "assistant", content: c });
+const sys = (c: string): Message => ({
+  conversation_id: CONV,
+  role: "system",
+  content: c,
+});
+const user = (c: string): Message => ({
+  conversation_id: CONV,
+  role: "user",
+  content: c,
+});
+const asst = (c: string): Message => ({
+  conversation_id: CONV,
+  role: "assistant",
+  content: c,
+});
 function call(id: string, content = ""): Message {
-  const tc: ToolCall = { id, type: "function", function: { name: "run_shell", arguments: "{}" } };
-  return { conversation_id: CONV, role: "assistant", content, tool_calls: [tc] };
+  const tc: ToolCall = {
+    id,
+    type: "function",
+    function: { name: "run_shell", arguments: "{}" },
+  };
+  return {
+    conversation_id: CONV,
+    role: "assistant",
+    content,
+    tool_calls: [tc],
+  };
 }
 function multiCall(ids: string[]): Message {
   return {
     conversation_id: CONV,
     role: "assistant",
     content: "",
-    tool_calls: ids.map((id) => ({ id, type: "function", function: { name: "run_shell", arguments: "{}" } })),
+    tool_calls: ids.map((id) => ({
+      id,
+      type: "function",
+      function: { name: "run_shell", arguments: "{}" },
+    })),
   };
 }
 const toolRes = (id: string, c = "ok"): Message => ({
@@ -27,7 +52,11 @@ const toolRes = (id: string, c = "ok"): Message => ({
 });
 
 function ids(ms: Message[]) {
-  return ms.map((m) => (m.role === "assistant" && m.tool_calls?.length ? `asst[${m.tool_calls.map((t) => t.id)}]` : m.role));
+  return ms.map((m) =>
+    m.role === "assistant" && m.tool_calls?.length
+      ? `asst[${m.tool_calls.map((t) => t.id)}]`
+      : m.role,
+  );
 }
 
 describe("stripUnpairedToolCalls", () => {
@@ -42,7 +71,11 @@ describe("stripUnpairedToolCalls", () => {
   });
 
   it("keeps assistant prose but drops the unpaired tool_calls", () => {
-    const out = stripUnpairedToolCalls([sys("s"), user("u"), call("a", "thinking…")]);
+    const out = stripUnpairedToolCalls([
+      sys("s"),
+      user("u"),
+      call("a", "thinking…"),
+    ]);
     expect(out).toHaveLength(3);
     const last = out[2];
     expect(last.role).toBe("assistant");
@@ -52,7 +85,12 @@ describe("stripUnpairedToolCalls", () => {
 
   it("drops a mid-array orphan when the user has already re-sent", () => {
     // The exact regression: abort left an orphan, user sends again.
-    const out = stripUnpairedToolCalls([sys("s"), user("u1"), call("a"), user("u2")]);
+    const out = stripUnpairedToolCalls([
+      sys("s"),
+      user("u1"),
+      call("a"),
+      user("u2"),
+    ]);
     expect(ids(out)).toEqual(["system", "user", "user"]);
   });
 
@@ -62,7 +100,11 @@ describe("stripUnpairedToolCalls", () => {
   });
 
   it("drops a partially-paired multi-call turn and its partial result", () => {
-    const out = stripUnpairedToolCalls([user("u"), multiCall(["a", "b"]), toolRes("a")]);
+    const out = stripUnpairedToolCalls([
+      user("u"),
+      multiCall(["a", "b"]),
+      toolRes("a"),
+    ]);
     expect(ids(out)).toEqual(["user"]);
   });
 });

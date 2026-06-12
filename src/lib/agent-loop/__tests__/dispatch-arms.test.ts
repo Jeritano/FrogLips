@@ -32,13 +32,26 @@ vi.mock("../../tauri-api", () => ({
     agentScreenshot: vi.fn(async () => ({ path: "/tmp/x.png" })),
     agentClipboardGet: vi.fn(async () => "clip-text"),
     agentClipboardSet: vi.fn(async () => undefined),
-    agentRunShell: vi.fn(async () => ({ stdout: "", stderr: "", exit_code: 0 })),
+    agentRunShell: vi.fn(async () => ({
+      stdout: "",
+      stderr: "",
+      exit_code: 0,
+    })),
     agentWriteFile: vi.fn(async () => undefined),
     agentBrowserNavigate: vi.fn(async (url: string) => ({ url, title: "" })),
     taskCreate: vi.fn(async () => ({ id: "t1" })),
     agentListUndo: vi.fn(async () => []),
-    agentUndoLast: vi.fn(async () => ({ path: "/tmp", kind: "x", restored_bytes: 0, was_absent: false })),
-    agentHashFile: vi.fn(async () => ({ algorithm: "sha256", hex: "ab", size_bytes: 0 })),
+    agentUndoLast: vi.fn(async () => ({
+      path: "/tmp",
+      kind: "x",
+      restored_bytes: 0,
+      was_absent: false,
+    })),
+    agentHashFile: vi.fn(async () => ({
+      algorithm: "sha256",
+      hex: "ab",
+      size_bytes: 0,
+    })),
     agentDeletePath: vi.fn(async () => ({ path: "/x", was_dir: false })),
     agentMultiEdit: vi.fn(async () => ({})),
     agentGitDiff: vi.fn(async () => ({})),
@@ -95,15 +108,17 @@ describe("DANGEROUS_TOOLS gate completeness (sec audit round 4)", () => {
   // the user a confirmation modal (the Rust token is minted inline by tauri-api).
   it.each([
     // round 4
-    "format_code", "screenshot", "show_notification",
+    "format_code",
+    "screenshot",
+    "show_notification",
     // round 5: remember = memory poisoning; the others tamper with runtime state
-    "remember", "watch_path", "stop_watch", "task_cancel",
-  ])(
-    "%s requires confirmation (is in DANGEROUS_TOOLS)",
-    (tool) => {
-      expect(DANGEROUS_TOOLS.has(tool)).toBe(true);
-    },
-  );
+    "remember",
+    "watch_path",
+    "stop_watch",
+    "task_cancel",
+  ])("%s requires confirmation (is in DANGEROUS_TOOLS)", (tool) => {
+    expect(DANGEROUS_TOOLS.has(tool)).toBe(true);
+  });
   it("recall_memory stays UNGATED (read-only — no consent needed)", () => {
     expect(DANGEROUS_TOOLS.has("recall_memory")).toBe(false);
   });
@@ -142,8 +157,17 @@ describe("executeTool: arm routing (sample one per category)", () => {
   });
 
   it("'search_files' routes to api.agentSearchFiles", async () => {
-    await executeTool("search_files", { path: "/x", pattern: "TODO", regex: true });
-    expect(api.agentSearchFiles).toHaveBeenCalledWith("/x", "TODO", undefined, true);
+    await executeTool("search_files", {
+      path: "/x",
+      pattern: "TODO",
+      regex: true,
+    });
+    expect(api.agentSearchFiles).toHaveBeenCalledWith(
+      "/x",
+      "TODO",
+      undefined,
+      true,
+    );
   });
 
   it("'git_status' routes to api.agentGitStatus", async () => {
@@ -209,20 +233,32 @@ describe("executeTool: dry-run default-deny (sec audit round 3)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("suppresses run_code (RCE) instead of executing it", async () => {
-    const out = await executeTool("run_code", { language: "python", code: "x" }, { dryRun: true });
+    const out = await executeTool(
+      "run_code",
+      { language: "python", code: "x" },
+      { dryRun: true },
+    );
     const parsed = JSON.parse(out);
     expect(parsed.dry_run).toBe(true);
     expect(parsed.suppressed).toBe(true);
   });
 
   it("suppresses delete_path without calling api.agentDeletePath", async () => {
-    const out = await executeTool("delete_path", { path: "/tmp/x", recursive: true }, { dryRun: true });
+    const out = await executeTool(
+      "delete_path",
+      { path: "/tmp/x", recursive: true },
+      { dryRun: true },
+    );
     expect(JSON.parse(out).suppressed).toBe(true);
     expect(api.agentDeletePath).not.toHaveBeenCalled();
   });
 
   it("suppresses task_create (backgrounded sh -c) without calling api.taskCreate", async () => {
-    const out = await executeTool("task_create", { command: "rm -rf ~" }, { dryRun: true });
+    const out = await executeTool(
+      "task_create",
+      { command: "rm -rf ~" },
+      { dryRun: true },
+    );
     expect(JSON.parse(out).suppressed).toBe(true);
     expect(api.taskCreate).not.toHaveBeenCalled();
   });
@@ -234,13 +270,21 @@ describe("executeTool: dry-run default-deny (sec audit round 3)", () => {
   });
 
   it("suppresses format_code (in-place file rewrite) — not in DANGEROUS_TOOLS", async () => {
-    const out = await executeTool("format_code", { path: "/tmp/x.ts" }, { dryRun: true });
+    const out = await executeTool(
+      "format_code",
+      { path: "/tmp/x.ts" },
+      { dryRun: true },
+    );
     expect(JSON.parse(out).suppressed).toBe(true);
     expect(api.agentFormatCode).not.toHaveBeenCalled();
   });
 
   it("suppresses screenshot (writes a PNG) — not in DANGEROUS_TOOLS", async () => {
-    const out = await executeTool("screenshot", { out_path: "/tmp/s.png" }, { dryRun: true });
+    const out = await executeTool(
+      "screenshot",
+      { out_path: "/tmp/s.png" },
+      { dryRun: true },
+    );
     expect(JSON.parse(out).suppressed).toBe(true);
     expect(api.agentScreenshot).not.toHaveBeenCalled();
   });
@@ -256,7 +300,11 @@ describe("executeTool: dry-run default-deny (sec audit round 3)", () => {
   });
 
   it("write_file gets a rich preview, never a real write", async () => {
-    const out = await executeTool("write_file", { path: "/tmp/x", content: "hi" }, { dryRun: true });
+    const out = await executeTool(
+      "write_file",
+      { path: "/tmp/x", content: "hi" },
+      { dryRun: true },
+    );
     const parsed = JSON.parse(out);
     expect(parsed.dry_run).toBe(true);
     expect(parsed.would_write).toBeTruthy();

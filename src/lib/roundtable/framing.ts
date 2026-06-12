@@ -14,7 +14,12 @@ import type { RoundtableConfig, Seat, Turn } from "./types";
 
 /** Render one transcript turn as `Speaker: text`. */
 function renderTurn(t: Turn): string {
-  const who = t.kind === "moderator" ? "Moderator" : t.kind === "director" ? "Director" : t.speaker;
+  const who =
+    t.kind === "moderator"
+      ? "Moderator"
+      : t.kind === "director"
+        ? "Director"
+        : t.speaker;
   return `${who}: ${t.text.trim()}`;
 }
 
@@ -25,19 +30,27 @@ function renderTurn(t: Turn): string {
  * planned enhancement; v1 keeps it simple + honest (recent = a hard window).
  */
 export function visibleTurns(config: RoundtableConfig, turns: Turn[]): Turn[] {
-  const usable = turns.filter((t) => t.status === "done" && t.text.trim().length > 0);
+  const usable = turns.filter(
+    (t) => t.status === "done" && t.text.trim().length > 0,
+  );
   if (config.memoryMode === "full") return usable;
   const k = Math.max(1, config.recentWindow);
   return usable.slice(-k);
 }
 
 /** Build the system prompt for `seat` (persona + table rules). */
-export function buildSystemPrompt(config: RoundtableConfig, seat: Seat): string {
+export function buildSystemPrompt(
+  config: RoundtableConfig,
+  seat: Seat,
+): string {
   const others = config.seats
     .filter((s) => s.id !== seat.id)
     .map((s) => s.name)
     .join(", ");
-  const self = seat.modelLabel && seat.modelLabel !== seat.name ? `${seat.name} (${seat.modelLabel})` : seat.name;
+  const self =
+    seat.modelLabel && seat.modelLabel !== seat.name
+      ? `${seat.name} (${seat.modelLabel})`
+      : seat.name;
   const rules = [
     `You are ${self}, a participant in a live multi-model roundtable.`,
     others ? `Other participants: ${others}.` : `You are the sole participant.`,
@@ -67,7 +80,11 @@ export function buildMessages(
     ? `You are opening the roundtable. Give your initial position on the topic, as ${seat.name}.`
     : `Conversation so far:\n\n${transcript}\n\nNow respond as ${seat.name}.`;
   return [
-    { conversation_id: conversationId, role: "system", content: buildSystemPrompt(config, seat) },
+    {
+      conversation_id: conversationId,
+      role: "system",
+      content: buildSystemPrompt(config, seat),
+    },
     { conversation_id: conversationId, role: "user", content: userBody },
   ];
 }
@@ -86,7 +103,11 @@ function escapeRe(s: string): string {
  *     isn't truncated).
  * Conservative by design: when unsure, keep the text.
  */
-export function sanitizeTurn(raw: string, seat: Seat, allSeats: Seat[]): string {
+export function sanitizeTurn(
+  raw: string,
+  seat: Seat,
+  allSeats: Seat[],
+): string {
   const original = raw.trim();
   let text = original;
   // 1. Strip a leading self-prefix the model added despite the rule.

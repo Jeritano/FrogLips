@@ -9,7 +9,11 @@
  * a serviceable replace-block diff (one `-`/`+` chunk per change). Enough
  * for the agent to see what the dry-run would have written.
  */
-export function makeUnifiedDiff(path: string, before: string, after: string): string {
+export function makeUnifiedDiff(
+  path: string,
+  before: string,
+  after: string,
+): string {
   if (before === after) {
     return `--- a/${path}\n+++ b/${path}\n@@ (no changes) @@\n`;
   }
@@ -20,7 +24,8 @@ export function makeUnifiedDiff(path: string, before: string, after: string): st
   let tailA = a.length - 1;
   let tailB = b.length - 1;
   while (tailA >= head && tailB >= head && a[tailA] === b[tailB]) {
-    tailA--; tailB--;
+    tailA--;
+    tailB--;
   }
   const context = 3;
   const ctxStart = Math.max(0, head - context);

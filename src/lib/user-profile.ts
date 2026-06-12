@@ -25,7 +25,9 @@ function clean(value: string | null | undefined, max: number): string {
  * not to parrot it back — matching how ChatGPT/Claude surface custom
  * instructions.
  */
-export function formatUserProfile(profile: UserProfile | null | undefined): string | null {
+export function formatUserProfile(
+  profile: UserProfile | null | undefined,
+): string | null {
   if (!profile || !profile.enabled) return null;
 
   const name = clean(profile.name, SHORT_MAX);
@@ -33,7 +35,9 @@ export function formatUserProfile(profile: UserProfile | null | undefined): stri
   const location = clean(profile.location, SHORT_MAX);
   // `about` / `response_style` may legitimately contain newlines; only cap.
   const about = (profile.about ?? "").trim().slice(0, LONG_MAX);
-  const responseStyle = (profile.response_style ?? "").trim().slice(0, LONG_MAX);
+  const responseStyle = (profile.response_style ?? "")
+    .trim()
+    .slice(0, LONG_MAX);
 
   const facts: string[] = [];
   if (name) facts.push(`- Name: ${name}`);

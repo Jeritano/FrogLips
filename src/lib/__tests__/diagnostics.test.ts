@@ -6,11 +6,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // prompt-templates.test.ts.
 const storeMap = new Map<string, string>();
 const fakeStorage: Storage = {
-  get length() { return storeMap.size; },
-  clear: () => { storeMap.clear(); },
-  getItem: (k: string) => (storeMap.has(k) ? (storeMap.get(k) as string) : null),
-  setItem: (k: string, v: string) => { storeMap.set(k, String(v)); },
-  removeItem: (k: string) => { storeMap.delete(k); },
+  get length() {
+    return storeMap.size;
+  },
+  clear: () => {
+    storeMap.clear();
+  },
+  getItem: (k: string) =>
+    storeMap.has(k) ? (storeMap.get(k) as string) : null,
+  setItem: (k: string, v: string) => {
+    storeMap.set(k, String(v));
+  },
+  removeItem: (k: string) => {
+    storeMap.delete(k);
+  },
   key: (i: number) => Array.from(storeMap.keys())[i] ?? null,
 };
 Object.defineProperty(globalThis, "localStorage", {
@@ -110,7 +119,12 @@ describe("diagnostics ring buffer", () => {
 
   it("normalises Error instances in detail so they JSON-serialise", () => {
     const err = new Error("boom");
-    logDiag({ level: "warn", source: "norm", message: "see detail", detail: err });
+    logDiag({
+      level: "warn",
+      source: "norm",
+      message: "see detail",
+      detail: err,
+    });
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
     expect(stored).toHaveLength(1);
     expect(stored[0].detail).toMatchObject({ message: "boom", name: "Error" });
@@ -120,9 +134,13 @@ describe("diagnostics ring buffer", () => {
     // Simulate a broken setItem (quota exceeded). The push must still land
     // in memory.
     const original = fakeStorage.setItem;
-    fakeStorage.setItem = vi.fn(() => { throw new Error("quota"); });
+    fakeStorage.setItem = vi.fn(() => {
+      throw new Error("quota");
+    });
     try {
-      expect(() => logDiag({ level: "warn", source: "quota", message: "y" })).not.toThrow();
+      expect(() =>
+        logDiag({ level: "warn", source: "quota", message: "y" }),
+      ).not.toThrow();
       expect(listDiag()).toHaveLength(1);
     } finally {
       fakeStorage.setItem = original;

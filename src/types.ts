@@ -856,12 +856,31 @@ export interface WorkflowNodeConfig {
   routerBackend?: string | null;
   /** blackboard: operation to run against the shared scratchpad. */
   blackboardOp?: "summarize" | "snapshot" | "clear";
-  /** budget: output-token ceiling for the sub-run. Null = unlimited. */
+  /** any node: output-token ceiling per sub-run. Null = unlimited. */
   maxTokens?: number | null;
-  /** budget: wall-clock ceiling (ms) for the sub-run. Null = unlimited. */
+  /** any node: wall-clock ceiling (ms) for the whole card. Null = unlimited. */
   maxMs?: number | null;
-  /** budget: behavior when a cap is hit — "stop" (error) or "best" (return partial). */
+  /** any node: behavior when a cap is hit — "stop" (error) or "best" (return partial). */
   onExceed?: "stop" | "best";
+  /**
+   * critic: shell command executed before each critique pass (same confined
+   * `agent_run_shell` path the run_shell tool uses). Exit code + output tail
+   * are injected into the critic prompt as a VERIFICATION RESULT block so the
+   * score is grounded in real execution, not vibes. Null = no verification.
+   */
+  verifyCmd?: string | null;
+  /**
+   * critic: system prompt for the CRITIQUE pass only. Replaces the generator
+   * card's persona so the critic can judge from a different stance. Null =
+   * inherit the card persona (legacy behavior).
+   */
+  criticSystemPrompt?: string | null;
+  /**
+   * any node: gate/halt. After the card completes, if the shared scratchpad
+   * entry at `key` equals `equals` the flow stops CLEANLY (downstream cards
+   * skipped, run still records ok). Null = never halt.
+   */
+  haltWhen?: { key: string; equals: string } | null;
 }
 
 /** Node types selectable in the CardForm UI, with human labels + blurbs. */
@@ -1209,6 +1228,17 @@ function normalizeNodeConfig(raw: unknown): WorkflowNodeConfig | null {
   const maxMs = intIn(r.maxMs, 1000, 3_600_000);
   if (maxMs != null) out.maxMs = maxMs;
   if (r.onExceed === "stop" || r.onExceed === "best") out.onExceed = r.onExceed;
+  out.verifyCmd = str(r.verifyCmd);
+  out.criticSystemPrompt = str(r.criticSystemPrompt);
+  if (r.haltWhen && typeof r.haltWhen === "object") {
+    const h = r.haltWhen as Record<string, unknown>;
+    const key = str(h.key);
+    // `equals` may legitimately be the empty string (matching a card that
+    // wrote "" to the pad), so it skips the trim-non-empty rule `str` applies.
+    const equals =
+      typeof h.equals === "string" ? h.equals.slice(0, STR_CAP) : null;
+    if (key && equals != null) out.haltWhen = { key, equals };
+  }
   // Drop null-only string fields to keep the object lean, then bail if empty.
   for (const k of Object.keys(out) as (keyof WorkflowNodeConfig)[]) {
     if (out[k] == null) delete out[k];

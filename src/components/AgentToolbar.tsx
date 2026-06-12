@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { History, Settings, RotateCcw } from "lucide-react";
 import { ExportMenu } from "./ExportMenu";
 import { api } from "../lib/tauri-api";
@@ -6,7 +6,12 @@ import { classifyToolFitness } from "../lib/model-capabilities";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import type { AgentSettings } from "../hooks/useAgentSettings";
 import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
-import type { Conversation, ConversationParams, Message, ProjectPolicy } from "../types";
+import type {
+  Conversation,
+  ConversationParams,
+  Message,
+  ProjectPolicy,
+} from "../types";
 import { paramsAreEmpty } from "../lib/conversation-params";
 
 const COACH_KEY = "agent.coachSeen";
@@ -53,7 +58,10 @@ interface Props {
  * human-facing gate.
  */
 function AgentUndoButton() {
-  const [topEntry, setTopEntry] = useState<{ path: string; kind: string } | null>(null);
+  const [topEntry, setTopEntry] = useState<{
+    path: string;
+    kind: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const confirmer = useTwoClickConfirm();
   const refresh = useCallback(async () => {
@@ -76,7 +84,9 @@ function AgentUndoButton() {
     // — deferred to a future pass; the 30s tick is the practical floor
     // since the undo button is a passive informational chip, not a
     // primary affordance.
-    const onVisChange = () => { if (document.visibilityState === "visible") void refresh(); };
+    const onVisChange = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
     document.addEventListener("visibilitychange", onVisChange);
     const id = setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
@@ -128,28 +138,161 @@ function AgentUndoButton() {
         });
       }}
     >
-      {busy
-        ? "Reverting…"
-        : armed
-          ? "Click again to confirm"
-          : <><RotateCcw size={16} /> Undo {base}</>}
+      {busy ? (
+        "Reverting…"
+      ) : armed ? (
+        "Click again to confirm"
+      ) : (
+        <>
+          <RotateCcw size={16} /> Undo {base}
+        </>
+      )}
     </button>
+  );
+}
+
+/** Mirrors `MAX_ITERATIONS` in lib/agent-loop/runner.ts (module-private
+ *  there). Display-only — the runner still enforces the real budget, this
+ *  just labels the denominator in "iter 12/40". */
+const MAX_AGENT_ITERATIONS = 40;
+
+/** mm:ss for the live run clock. Minutes don't wrap at an hour (90:12). */
+function formatRunClock(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+}
+
+/**
+ * Best-effort "which tool is executing right now". The runner pushes the
+ * assistant turn (with its tool_calls) via onUpdate BEFORE flipping status
+ * to "tool", then appends one role:"tool" result per call as each finishes —
+ * so walking back from the tail and counting settled results indexes the
+ * call currently in flight. Returns null when the tail isn't a tool turn
+ * (e.g. a plain assistant reply landed but status hasn't flipped yet).
+ */
+function currentToolName(messages: Message[]): string | null {
+  let settled = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "tool") {
+      settled++;
+      continue;
+    }
+    if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+      // Clamp: between "last result landed" and "status flips back to
+      // thinking" settled can equal the call count — keep showing the last.
+      const idx = Math.min(settled, m.tool_calls.length - 1);
+      return m.tool_calls[idx]?.function?.name ?? null;
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Live run-status pill. Was a static "Thinking…/Running tool…" label — on a
+ * 40-iteration run that's zero signal of progress. Now shows the executing
+ * tool's name, "iter N/40" from the streamed metrics, and an elapsed mm:ss
+ * clock; hover lists per-tool call counts for the run (runner aggregates
+ * them in `metrics.toolStats`, reset at run start by useChatSend).
+ */
+function AgentRunPill({
+  status,
+  metrics,
+  messages,
+}: {
+  status: AgentStatus;
+  metrics: AgentMetrics | null;
+  messages: Message[];
+}) {
+  const running = status === "thinking" || status === "tool";
+  const [elapsedMs, setElapsedMs] = useState(0);
+  // Run start, mount-scoped. Null while not running so the next run (status
+  // re-enters thinking/tool without an unmount) restarts the clock at 00:00.
+  const startRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!running) {
+      startRef.current = null;
+      return;
+    }
+    if (startRef.current == null) {
+      startRef.current = Date.now();
+      setElapsedMs(0);
+    }
+    const id = setInterval(() => {
+      if (startRef.current != null) setElapsedMs(Date.now() - startRef.current);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [running]);
+
+  const toolName = status === "tool" ? currentToolName(messages) : null;
+  const label =
+    status === "thinking"
+      ? "Thinking…"
+      : status === "tool"
+        ? (toolName ?? "Running tool…")
+        : status === "done"
+          ? "Done"
+          : "Error";
+
+  // Per-tool breakdown for the hover tooltip, busiest tool first.
+  const stats = metrics?.toolStats ?? {};
+  const statLines = Object.entries(stats)
+    .sort((a, b) => b[1].count - a[1].count)
+    .map(
+      ([name, s]) =>
+        `${name} ×${s.count}${s.errors > 0 ? ` (${s.errors} err)` : ""}`,
+    );
+  const title =
+    statLines.length > 0
+      ? `Tool calls this run:\n${statLines.join("\n")}`
+      : "No tool calls yet this run";
+
+  return (
+    <span
+      className={`agent-status-pill status-${status}`}
+      data-testid="agent-run-pill"
+      title={title}
+    >
+      {label}
+      {metrics && ` · iter ${metrics.iterations}/${MAX_AGENT_ITERATIONS}`}
+      {` · ${formatRunClock(elapsedMs)}`}
+    </span>
   );
 }
 
 export function AgentToolbar(props: Props) {
   const {
-    conversation, messages, agent, agentMode, agentAvailable, agentStatus,
-    agentMetrics, activeModel, isWorking, workspaceRoot, projectPolicy, convParams,
-    showParamsPanel, showAgentSettings, showExportMenu, onToggleAgent,
-    onToggleParams, onToggleAgentSettings, onToggleToolHistory,
-    onToggleExportMenu, onCloseExportMenu,
+    conversation,
+    messages,
+    agent,
+    agentMode,
+    agentAvailable,
+    agentStatus,
+    agentMetrics,
+    activeModel,
+    isWorking,
+    workspaceRoot,
+    projectPolicy,
+    convParams,
+    showParamsPanel,
+    showAgentSettings,
+    showExportMenu,
+    onToggleAgent,
+    onToggleParams,
+    onToggleAgentSettings,
+    onToggleToolHistory,
+    onToggleExportMenu,
+    onCloseExportMenu,
   } = props;
 
   // Only surface a hint when the active model is KNOWN-WEAK at tool calling —
   // good/untested stay silent (calm, no false alarms). Steers the user toward a
   // model that will succeed before they hit a wall.
-  const toolFitnessWeak = agentMode && classifyToolFitness(activeModel) === "weak";
+  const toolFitnessWeak =
+    agentMode && classifyToolFitness(activeModel) === "weak";
 
   const [coachSeen, setCoachSeen] = useState(() => {
     try {
@@ -163,12 +306,16 @@ export function AgentToolbar(props: Props) {
   useEffect(() => {
     if (agentMode && !coachSeen) {
       setCoachSeen(true);
-      try { localStorage.setItem(COACH_KEY, "true"); } catch { /* ignore */ }
+      try {
+        localStorage.setItem(COACH_KEY, "true");
+      } catch {
+        /* ignore */
+      }
     }
   }, [agentMode, coachSeen]);
 
   const workspaceLabel = workspaceRoot
-    ? workspaceRoot.split(/[\\/]/).filter(Boolean).pop() ?? workspaceRoot
+    ? (workspaceRoot.split(/[\\/]/).filter(Boolean).pop() ?? workspaceRoot)
     : "full filesystem";
 
   return (
@@ -210,10 +357,23 @@ export function AgentToolbar(props: Props) {
         className={`agent-toggle ${agentMode ? "active" : ""}`}
         onClick={onToggleAgent}
         disabled={isWorking || !agentAvailable}
-        title={agentAvailable ? "Toggle agent mode (tool calling)" : "Agent mode requires the Ollama or MLX backend"}
+        title={
+          agentAvailable
+            ? "Toggle agent mode (tool calling)"
+            : "Agent mode requires the Ollama or MLX backend"
+        }
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-          <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14" />
         </svg>
         Agent
       </button>
@@ -232,7 +392,9 @@ export function AgentToolbar(props: Props) {
           title={agent.activePreset?.description ?? ""}
         >
           {agent.presets.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
           ))}
         </select>
       )}
@@ -255,7 +417,10 @@ export function AgentToolbar(props: Props) {
         <span
           className="agent-status-pill agent-workspace-chip"
           data-testid="agent-workspace-chip"
-          title={workspaceRoot ?? "Agent can reach the full filesystem — set a workspace to confine it"}
+          title={
+            workspaceRoot ??
+            "Agent can reach the full filesystem — set a workspace to confine it"
+          }
         >
           Workspace: {workspaceLabel}
         </span>
@@ -270,38 +435,44 @@ export function AgentToolbar(props: Props) {
         </span>
       )}
       {agentMode && agentStatus !== "idle" && (
-        <span className={`agent-status-pill status-${agentStatus}`}>
-          {agentStatus === "thinking" && "Thinking…"}
-          {agentStatus === "tool" && "Running tool…"}
-        </span>
+        <AgentRunPill
+          status={agentStatus}
+          metrics={agentMetrics}
+          messages={messages}
+        />
       )}
       {agentMode && projectPolicy && (
         <span
           className="agent-status-pill policy-pill"
           data-testid="agent-policy-chip"
-          title={
-            `Project policy active${projectPolicy.source_path ? ` (${projectPolicy.source_path})` : ""}${
-              projectPolicy.notes ? `\n\n${projectPolicy.notes}` : ""
-            }`
-          }
+          title={`Project policy active${projectPolicy.source_path ? ` (${projectPolicy.source_path})` : ""}${
+            projectPolicy.notes ? `\n\n${projectPolicy.notes}` : ""
+          }`}
         >
-          Policy: project{projectPolicy.notes ? ` — ${projectPolicy.notes.slice(0, 40)}${projectPolicy.notes.length > 40 ? "…" : ""}` : ""}
+          Policy: project
+          {projectPolicy.notes
+            ? ` — ${projectPolicy.notes.slice(0, 40)}${projectPolicy.notes.length > 40 ? "…" : ""}`
+            : ""}
         </span>
       )}
-      {agentMetrics && agentMode && (() => {
-        const fmt = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`);
-        const tok = agentMetrics.promptTokens + agentMetrics.completionTokens;
-        return (
-          <span
-            className="agent-metrics"
-            title={`${agentMetrics.iterations} iterations · ${agentMetrics.toolCalls} tool calls · ${Math.round(agentMetrics.totalLlmMs)}ms LLM · ${Math.round(agentMetrics.totalToolMs)}ms tools · ${agentMetrics.retries} retries · ${agentMetrics.promptTokens} prompt + ${agentMetrics.completionTokens} completion tokens`}
-          >
-            {agentMetrics.iterations} iter · {agentMetrics.toolCalls} tools · {fmt(agentMetrics.totalLlmMs)} llm
-            {agentMetrics.retries > 0 && ` · ${agentMetrics.retries} retries`}
-            {tok > 0 && ` · ${tok.toLocaleString()} tok`}
-          </span>
-        );
-      })()}
+      {agentMetrics &&
+        agentMode &&
+        (() => {
+          const fmt = (ms: number) =>
+            ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+          const tok = agentMetrics.promptTokens + agentMetrics.completionTokens;
+          return (
+            <span
+              className="agent-metrics"
+              title={`${agentMetrics.iterations} iterations · ${agentMetrics.toolCalls} tool calls · ${Math.round(agentMetrics.totalLlmMs)}ms LLM · ${Math.round(agentMetrics.totalToolMs)}ms tools · ${agentMetrics.retries} retries · ${agentMetrics.promptTokens} prompt + ${agentMetrics.completionTokens} completion tokens`}
+            >
+              {agentMetrics.iterations} iter · {agentMetrics.toolCalls} tools ·{" "}
+              {fmt(agentMetrics.totalLlmMs)} llm
+              {agentMetrics.retries > 0 && ` · ${agentMetrics.retries} retries`}
+              {tok > 0 && ` · ${tok.toLocaleString()} tok`}
+            </span>
+          );
+        })()}
       {/* UX re-review M1: agent_undo had no UI surface — only the model
           could revert its own writes. This button lets the user pop the
           most-recent agent file-write off the snapshot stack without

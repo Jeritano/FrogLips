@@ -1,11 +1,23 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { formatSizeParen as formatSize } from "../lib/format";
 import { api } from "../lib/tauri-api";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import { useHardwareProfile } from "../hooks/useHardwareProfile";
 import type { HeadroomTier } from "../lib/hardware-profile";
 import { HardwareWarningBanner } from "./HardwareWarningBanner";
-import type { AllModels, CustomBackend, ModelEntry, ServerStatus } from "../types";
+import type {
+  AllModels,
+  CustomBackend,
+  ModelEntry,
+  ServerStatus,
+} from "../types";
 
 /** Compact label for the inline headroom badge (full verdict on hover). */
 const HEADROOM_SHORT: Record<HeadroomTier, string> = {
@@ -32,9 +44,21 @@ interface Props {
    * model is no longer installed we silently fall back (no-op).
    */
   desiredModel?: string | null;
+  /**
+   * Self-healing send (2026-06-11): registers an imperative "start whatever
+   * is selected" handle with the parent so the composer can warm the model
+   * on first send instead of sitting disabled behind the Start ceremony.
+   * Resolves true when the backend came up.
+   */
+  exposeStart?: (fn: () => Promise<boolean>) => void;
 }
 
-export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
+export function ModelPicker({
+  status,
+  onStatusChange,
+  desiredModel,
+  exposeStart,
+}: Props) {
   const [models, setModels] = useState<AllModels>({ mlx: [], ollama: [] });
   const [selected, setSelected] = useState<ModelEntry | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -47,7 +71,9 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   // Loaded from settings; selecting one synthesizes a status (no local
   // process) and routes chat through `streamCustomChat`.
   const [customBackends, setCustomBackends] = useState<CustomBackend[]>([]);
-  const [selectedCustom, setSelectedCustom] = useState<CustomBackend | null>(null);
+  const [selectedCustom, setSelectedCustom] = useState<CustomBackend | null>(
+    null,
+  );
 
   // Hardware-aware sizing: classify the picked model against this Mac's RAM so
   // the user sees an honest "fits / tight / too big" verdict BEFORE Start.
@@ -63,7 +89,9 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   const lastLoadRef = useRef<number>(0);
   const LIST_STALE_MS = 30_000;
 
-  useEffect(() => { void loadModels(true); }, []);
+  useEffect(() => {
+    void loadModels(true);
+  }, []);
 
   // Load configured custom backends + refresh when settings change (the
   // settings panel emits `settings-changed` after a save).
@@ -75,12 +103,25 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
       setCustomBackends([]);
     }
   }, []);
-  useEffect(() => { void loadCustomBackends(); }, [loadCustomBackends]);
-  useTauriEvent<unknown>("settings-changed", useCallback(() => { void loadCustomBackends(); }, [loadCustomBackends]));
+  useEffect(() => {
+    void loadCustomBackends();
+  }, [loadCustomBackends]);
+  useTauriEvent<unknown>(
+    "settings-changed",
+    useCallback(() => {
+      void loadCustomBackends();
+    }, [loadCustomBackends]),
+  );
 
   // Native models load in-process: progress only surfaces via Tauri events.
-  useTauriEvent<string>("native-loading", useCallback((e) => setNativeLoading(e.payload), []));
-  useTauriEvent<string>("native-loaded", useCallback(() => setNativeLoading(null), []));
+  useTauriEvent<string>(
+    "native-loading",
+    useCallback((e) => setNativeLoading(e.payload), []),
+  );
+  useTauriEvent<string>(
+    "native-loaded",
+    useCallback(() => setNativeLoading(null), []),
+  );
   // The backend emits `native-error` when an in-process load fails. Without a
   // listener the spinner sat on "loading · native" forever (only a later
   // SUCCESSFUL load cleared it). Clear it here too. MED (2026-05-29).
@@ -88,7 +129,8 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
     "native-error",
     useCallback((e) => {
       setNativeLoading(null);
-      if (e.payload?.error) setErr(`Could not load native model: ${e.payload.error}`);
+      if (e.payload?.error)
+        setErr(`Could not load native model: ${e.payload.error}`);
     }, []),
   );
 
@@ -116,7 +158,9 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
   useEffect(() => {
     if (status?.model && status?.backend && !selected) {
       const all = [...models.mlx, ...models.ollama];
-      const match = all.find(m => m.id === status.model && m.backend === status.backend);
+      const match = all.find(
+        (m) => m.id === status.model && m.backend === status.backend,
+      );
       if (match) setSelected(match);
     }
   }, [status, models]);
@@ -162,7 +206,10 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
 
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const v = e.target.value;
-    if (v === "__browse__") { setBrowserOpen(true); return; }
+    if (v === "__browse__") {
+      setBrowserOpen(true);
+      return;
+    }
     // Custom cloud backend: value is `__custom__:<id>`. These aren't
     // ModelEntry rows; track them separately and clear the normal pick.
     if (v.startsWith("__custom__:")) {
@@ -170,69 +217,105 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
       const cb = customBackends.find((b) => b.id === id) ?? null;
       setSelectedCustom(cb);
       setSelected(null);
+      // Live switch (self-healing send, 2026-06-11): picking a different
+      // model while one runs swaps it in place — no Stop ceremony.
+      if (cb && status?.running) void liveSwitch(null, cb);
       return;
     }
     const [backend, ...rest] = v.split(":");
     const id = rest.join(":");
     const all = [...models.mlx, ...models.ollama];
-    const entry = all.find(m => m.id === id && m.backend === backend);
+    const entry = all.find((m) => m.id === id && m.backend === backend);
     setSelected(entry ?? null);
     setSelectedCustom(null);
+    if (entry && status?.running && entry.id !== status.model) {
+      void liveSwitch(entry, null);
+    }
   }
 
-  async function start() {
+  /** Stop whatever runs, then start the given pick — one user gesture. */
+  async function liveSwitch(
+    entry: ModelEntry | null,
+    cb: CustomBackend | null,
+  ) {
+    await stop();
+    await start(entry ?? undefined, cb ?? undefined);
+  }
+
+  /**
+   * Start the given (or currently-selected) pick. Returns true when the
+   * backend actually came up — the contract `exposeStart` consumers rely on.
+   */
+  async function start(
+    entryArg?: ModelEntry,
+    customArg?: CustomBackend,
+  ): Promise<boolean> {
+    const custom = customArg ?? selectedCustom;
+    const entry = entryArg ?? selected;
     // Custom cloud backend: no local process to start — synthesize a
     // ready status. `model` carries the backend id so `useChatSend`'s
     // custom dispatch can resolve it; the chat header shows the friendly
     // name via the running pill text below.
-    if (selectedCustom) {
+    if (custom) {
       onStatusChange({
         running: true,
         ready: true,
-        model: selectedCustom.id,
+        model: custom.id,
         backend: "custom",
         host: "",
         port: 0,
         last_error: null,
       });
-      return;
+      return true;
     }
-    if (!selected) return;
-    setBusy(true); setErr(null);
+    if (!entry) return false;
+    setBusy(true);
+    setErr(null);
     try {
-      if (selected.backend === "native") {
-        await api.nativeLoadModel(selected.id);
+      if (entry.backend === "native") {
+        await api.nativeLoadModel(entry.id);
         // Synthesize a status object — native runs in-process, no host:port.
         onStatusChange({
           running: true,
           ready: true,
-          model: selected.id,
+          model: entry.id,
           backend: "native",
           host: "",
           port: 0,
           last_error: null,
         });
-      } else {
-        const s = await api.startServer(selected.id, selected.backend);
-        onStatusChange(s);
-        // startServer can resolve with a non-running status when the backend
-        // process failed to come up — surface last_error so the user sees why.
-        if (!s.running) {
-          setErr(
-            s.last_error
-              ? `Could not start ${selected.backend}: ${s.last_error}`
-              : `${selected.backend} did not start. Check that the backend is installed and the model "${selected.id}" exists.`,
-          );
-        }
+        return true;
       }
+      const s = await api.startServer(entry.id, entry.backend);
+      onStatusChange(s);
+      // startServer can resolve with a non-running status when the backend
+      // process failed to come up — surface last_error so the user sees why.
+      if (!s.running) {
+        setErr(
+          s.last_error
+            ? `Could not start ${entry.backend}: ${s.last_error}`
+            : `${entry.backend} did not start. Check that the backend is installed and the model "${entry.id}" exists.`,
+        );
+      }
+      return !!s.running;
     } catch (e) {
-      setErr(`Could not start "${selected.id}" on ${selected.backend}: ${e}. Press Start to retry.`);
+      setErr(
+        `Could not start "${entry.id}" on ${entry.backend}: ${e}. Press Start to retry.`,
+      );
       // A failed native load rejects here; clear the in-process loading
       // spinner so it doesn't hang on "loading · native". MED (2026-05-29).
       setNativeLoading(null);
+      return false;
+    } finally {
+      setBusy(false);
     }
-    finally { setBusy(false); }
   }
+
+  // Hand the parent a fresh start handle every render so the closure always
+  // sees the current selection (self-healing send).
+  useEffect(() => {
+    exposeStart?.(() => start());
+  });
 
   async function stop() {
     setBusy(true);
@@ -241,8 +324,13 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
         // No local process — just clear the synthesized status.
         setSelectedCustom(null);
         onStatusChange({
-          running: false, ready: false, model: null, backend: null,
-          host: "", port: 0, last_error: null,
+          running: false,
+          ready: false,
+          model: null,
+          backend: null,
+          host: "",
+          port: 0,
+          last_error: null,
         });
       } else if (status?.backend === "native") {
         await api.nativeUnloadModel();
@@ -261,14 +349,16 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
       }
     } catch (e) {
       setErr(`Could not stop the model: ${e}`);
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   }
 
   const selValue = selectedCustom
     ? `__custom__:${selectedCustom.id}`
     : selected
-    ? `${selected.backend}:${selected.id}`
-    : "";
+      ? `${selected.backend}:${selected.id}`
+      : "";
 
   // Headroom verdict for the picked local model (cloud/custom have no size).
   const headroom = selected ? headroomFor(selected) : null;
@@ -289,15 +379,21 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
           data-shortcut="focus-model"
           value={selValue}
           onChange={onChange}
-          onMouseDown={() => { void loadModels(); }}
-          onFocus={() => { void loadModels(); }}
-          disabled={busy || !!status?.running}
+          onMouseDown={() => {
+            void loadModels();
+          }}
+          onFocus={() => {
+            void loadModels();
+          }}
+          disabled={busy}
         >
           <option value="">— pick a model —</option>
           {models.ollama.length > 0 && (
             <optgroup label="Ollama (local)">
               {models.ollama.map((m) => (
-                <option key={`ollama:${m.id}`} value={`ollama:${m.id}`}>{m.id}</option>
+                <option key={`ollama:${m.id}`} value={`ollama:${m.id}`}>
+                  {m.id}
+                </option>
               ))}
             </optgroup>
           )}
@@ -305,7 +401,8 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
             <optgroup label="MLX / HuggingFace">
               {models.mlx.map((m) => (
                 <option key={`mlx:${m.id}`} value={`mlx:${m.id}`}>
-                  {m.id}{formatSize(m.size_bytes)}
+                  {m.id}
+                  {formatSize(m.size_bytes)}
                 </option>
               ))}
             </optgroup>
@@ -325,9 +422,17 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
         </select>
 
         {status?.running ? (
-          <button onClick={stop} disabled={busy}>Stop</button>
+          <button onClick={stop} disabled={busy}>
+            Stop
+          </button>
         ) : (
-          <button onClick={start} disabled={busy || (!selected && !selectedCustom)} className="start-btn">Start</button>
+          <button
+            onClick={() => void start()}
+            disabled={busy || (!selected && !selectedCustom)}
+            className="start-btn"
+          >
+            Start
+          </button>
         )}
         <span
           className={`status-dot ${status?.running ? "on" : "off"}`}
@@ -358,7 +463,10 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
             <button
               type="button"
               className="error-retry"
-              onClick={() => { setErr(null); void loadModels(true); }}
+              onClick={() => {
+                setErr(null);
+                void loadModels(true);
+              }}
             >
               Retry
             </button>
@@ -369,14 +477,22 @@ export function ModelPicker({ status, onStatusChange, desiredModel }: Props) {
       {!status?.running && <HardwareWarningBanner headroom={headroom} />}
 
       {browserOpen && (
-        <Suspense fallback={<div className="lazy-loading">Loading model browser…</div>}>
+        <Suspense
+          fallback={<div className="lazy-loading">Loading model browser…</div>}
+        >
           <ModelBrowser
             // Always re-list on close: the user may have pulled / removed
             // models via a path that didn't fire onPulled (e.g. CLI alongside
             // the app, or a remove). Cheaper than missing freshly-installed
             // entries.
-            onClose={() => { setBrowserOpen(false); void loadModels(true); }}
-            onPulled={() => { void loadModels(true); setBrowserOpen(false); }}
+            onClose={() => {
+              setBrowserOpen(false);
+              void loadModels(true);
+            }}
+            onPulled={() => {
+              void loadModels(true);
+              setBrowserOpen(false);
+            }}
             onSelectOpenRouter={(modelId) => {
               // Cloud model — no local process. Activate immediately and
               // close the library; chat routes through the OpenRouter

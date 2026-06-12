@@ -6,7 +6,10 @@
  * property and falls back to the app accent.
  */
 
-export const BUBBLE_COLORS: ReadonlyArray<{ name: string; value: string | null }> = [
+export const BUBBLE_COLORS: ReadonlyArray<{
+  name: string;
+  value: string | null;
+}> = [
   { name: "Default", value: null }, // falls back to --accent
   { name: "Indigo", value: "#6366f1" },
   { name: "Blue", value: "#3b82f6" },
@@ -48,7 +51,9 @@ export function setBubbleColor(value: string | null): void {
 }
 
 /** Write (or clear) the `--user-bubble` property. Call once on app start. */
-export function applyBubbleColor(value: string | null = getBubbleColor()): void {
+export function applyBubbleColor(
+  value: string | null = getBubbleColor(),
+): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
   if (value == null) root.style.removeProperty("--user-bubble");

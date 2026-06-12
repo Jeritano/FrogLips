@@ -48,7 +48,9 @@ const fixtures: Memory[] = [
 vi.mock("../../lib/tauri-api", () => {
   return {
     api: {
-      listMemories: vi.fn(async (status?: string) => (status === "pending" ? [] : fixtures)),
+      listMemories: vi.fn(async (status?: string) =>
+        status === "pending" ? [] : fixtures,
+      ),
       deleteMemory: vi.fn(async () => undefined),
       updateMemoryStatus: vi.fn(async () => undefined),
       memoryPromote: vi.fn(async () => undefined),
@@ -65,7 +67,9 @@ vi.mock("../../lib/tauri-api", () => {
 // Also stub getMemoryMode/setMemoryMode so we don't depend on localStorage
 // being present in the test environment.
 vi.mock("../../lib/memory-client", async (orig) => {
-  const real = await (orig() as Promise<typeof import("../../lib/memory-client")>);
+  const real = await (orig() as Promise<
+    typeof import("../../lib/memory-client")
+  >);
   return {
     ...real,
     embed: vi.fn(async () => null),
@@ -76,7 +80,9 @@ vi.mock("../../lib/memory-client", async (orig) => {
 
 // React 19's act warning is benign here — we wrap state updates in act
 // already, but a few microtask awaits trip the dev guard. Mark the env.
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { MemoryPanel } from "../MemoryPanel";
 
@@ -91,7 +97,9 @@ async function openPanel(container: HTMLElement) {
   const toggle = container.querySelector(
     '[data-testid="memories-toggle"]',
   ) as HTMLButtonElement;
-  await act(async () => { toggle.click(); });
+  await act(async () => {
+    toggle.click();
+  });
   await flush();
 }
 
@@ -101,7 +109,9 @@ describe("MemoryPanel scope UI", () => {
     document.body.appendChild(container);
     const root = createRoot(container);
     await act(async () => {
-      root.render(<MemoryPanel workspaceRoot="/tmp/proj" conversationId={42} />);
+      root.render(
+        <MemoryPanel workspaceRoot="/tmp/proj" conversationId={42} />,
+      );
     });
     await flush();
     await openPanel(container);
@@ -124,14 +134,20 @@ describe("MemoryPanel scope UI", () => {
     const projectChip = container.querySelector(
       '[data-testid="scope-chip-project"]',
     ) as HTMLButtonElement;
-    await act(async () => { projectChip.click(); });
+    await act(async () => {
+      projectChip.click();
+    });
     await flush();
 
     expect(container.querySelector('[data-testid="memory-item-1"]')).toBeNull();
-    expect(container.querySelector('[data-testid="memory-item-2"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="memory-item-2"]'),
+    ).not.toBeNull();
     expect(container.querySelector('[data-testid="memory-item-3"]')).toBeNull();
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 
@@ -141,14 +157,18 @@ describe("MemoryPanel scope UI", () => {
     document.body.appendChild(container);
     const root = createRoot(container);
     await act(async () => {
-      root.render(<MemoryPanel workspaceRoot="/tmp/proj" conversationId={42} />);
+      root.render(
+        <MemoryPanel workspaceRoot="/tmp/proj" conversationId={42} />,
+      );
     });
     await flush();
     await openPanel(container);
 
     // The conversation row (id=3) has both up + delete buttons; pick the up
     // button via aria-label so we're not coupled to button ordering.
-    const row3 = container.querySelector('[data-testid="memory-item-3"]') as HTMLElement;
+    const row3 = container.querySelector(
+      '[data-testid="memory-item-3"]',
+    ) as HTMLElement;
     expect(row3).not.toBeNull();
     const upBtn = row3.querySelector(
       'button[aria-label="Promote memory"]',
@@ -156,7 +176,9 @@ describe("MemoryPanel scope UI", () => {
     expect(upBtn).not.toBeNull();
     expect(upBtn.disabled).toBe(false);
 
-    await act(async () => { upBtn.click(); });
+    await act(async () => {
+      upBtn.click();
+    });
     await flush();
 
     // Conversation → project requires a project_root binding when missing —
@@ -164,7 +186,9 @@ describe("MemoryPanel scope UI", () => {
     expect(api.memorySetContext).toHaveBeenCalledWith(3, "/tmp/proj", null);
     expect(api.memoryPromote).toHaveBeenCalledWith(3);
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 });

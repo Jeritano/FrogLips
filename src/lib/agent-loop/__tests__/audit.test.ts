@@ -43,7 +43,10 @@ describe("redactArgsForAudit", () => {
       old_string: big,
       new_string: big,
     });
-    const parsed = JSON.parse(out) as { old_string: string; new_string: string };
+    const parsed = JSON.parse(out) as {
+      old_string: string;
+      new_string: string;
+    };
     expect(parsed.old_string.length).toBe(259);
     expect(parsed.new_string.length).toBe(259);
   });

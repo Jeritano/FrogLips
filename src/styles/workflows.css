@@ -17,11 +17,18 @@
   animation: workflows-running-pulse 1.6s ease-in-out infinite;
 }
 @keyframes workflows-running-pulse {
-  0%, 100% { opacity: 1.0; }
-  50%      { opacity: 0.35; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .workflows-running-badge { animation: none; }
+  .workflows-running-badge {
+    animation: none;
+  }
 }
 
 /* ── Page shell ── */
@@ -34,15 +41,29 @@
   color: var(--text);
 }
 
-.wf-picker { padding: var(--space-6); gap: var(--space-4); overflow-y: auto; }
+.wf-picker {
+  padding: var(--space-6);
+  gap: var(--space-4);
+  overflow-y: auto;
+}
 .wf-picker-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
-.wf-picker-head h2 { margin: 0; font-size: var(--fs-xl); }
+.wf-picker-head h2 {
+  margin: 0;
+  font-size: var(--fs-xl);
+}
 
-.wf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.wf-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
 .wf-list-item {
   display: flex;
   align-items: stretch;
@@ -51,7 +72,8 @@
   overflow: hidden;
   background: var(--surface);
   box-shadow: var(--elev-1);
-  transition: box-shadow var(--dur-fast) var(--ease-standard),
+  transition:
+    box-shadow var(--dur-fast) var(--ease-standard),
     border-color var(--dur-fast) var(--ease-standard),
     transform var(--dur-fast) var(--ease-standard);
 }
@@ -72,8 +94,12 @@
   cursor: pointer;
   font-size: var(--fs-base);
 }
-.wf-list-open:hover { background: var(--surface-hover); }
-.wf-list-name { font-weight: var(--fw-medium); }
+.wf-list-open:hover {
+  background: var(--surface-hover);
+}
+.wf-list-name {
+  font-weight: var(--fw-medium);
+}
 /* Metadata reads as a pill, not bare grey text. */
 .wf-list-meta {
   color: var(--text-2);
@@ -93,7 +119,10 @@
   cursor: pointer;
   font-size: var(--fs-lg);
 }
-.wf-list-del:hover { background: var(--danger-bg); color: var(--danger-fg); }
+.wf-list-del:hover {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
 
 /* ── Editor ──
    The editor top-bar (back button, name input, warnings) lives in the
@@ -122,7 +151,11 @@
   line-height: 1.4;
 }
 
-.wf-editor-body { flex: 1; display: flex; min-height: 0; }
+.wf-editor-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
 
 .wf-error {
   margin: var(--space-2) var(--space-4);
@@ -136,9 +169,17 @@
 }
 
 /* ── Canvas (the table-top) ── */
-.wf-canvas { flex: 1; min-width: 0; position: relative; }
-.wf-canvas .react-flow { background: var(--bg); }
-.wf-canvas .react-flow__background { color: var(--border-subtle); }
+.wf-canvas {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
+.wf-canvas .react-flow {
+  background: var(--bg);
+}
+.wf-canvas .react-flow__background {
+  color: var(--border-subtle);
+}
 .wf-canvas .react-flow__edge .react-flow__edge-path {
   stroke: var(--text-2);
   stroke-width: 1.5;
@@ -167,8 +208,12 @@
   border-bottom: 1px solid var(--border);
   color: var(--text);
 }
-.wf-canvas .react-flow__controls-button:hover { background: var(--surface-hover); }
-.wf-canvas .react-flow__controls-button svg { fill: var(--text); }
+.wf-canvas .react-flow__controls-button:hover {
+  background: var(--surface-hover);
+}
+.wf-canvas .react-flow__controls-button svg {
+  fill: var(--text);
+}
 
 /* ── Agent card node ── */
 .wf-node {
@@ -181,18 +226,32 @@
   flex-direction: column;
   gap: var(--space-2);
   box-shadow: var(--elev-2);
-  transition: box-shadow var(--dur-fast) var(--ease-standard),
+  transition:
+    box-shadow var(--dur-fast) var(--ease-standard),
     border-color var(--dur-fast) var(--ease-standard);
 }
-.wf-node:hover { box-shadow: var(--elev-3); }
+.wf-node:hover {
+  box-shadow: var(--elev-3);
+}
 .wf-node.selected,
 .react-flow__node.selected .wf-node {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), var(--elev-3);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    var(--elev-3);
 }
-.wf-node[data-state="running"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--elev-3); }
-.wf-node[data-state="done"] { border-color: var(--green-border); }
-.wf-node[data-state="failed"] { border-color: var(--danger-border); }
+.wf-node[data-state="running"] {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    var(--elev-3);
+}
+.wf-node[data-state="done"] {
+  border-color: var(--green-border);
+}
+.wf-node[data-state="failed"] {
+  border-color: var(--danger-border);
+}
 
 /* User-chosen accent (2026-05-28): a thick left rail + a faint top-edge
    wash tinted by `--wf-card-accent`, plus a tinted preset chip. Scoped
@@ -218,7 +277,12 @@
   background: color-mix(in srgb, var(--wf-card-accent) 16%, transparent);
 }
 
-.wf-node-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.wf-node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
 .wf-node-name {
   font-size: var(--fs-base);
   font-weight: 600;
@@ -226,7 +290,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.wf-node-meta { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.wf-node-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
 .wf-node-preset {
   font-size: var(--fs-2xs);
   text-transform: uppercase;
@@ -250,8 +318,8 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: var(--violet, #a855f7);
-  background: color-mix(in srgb, var(--violet, #a855f7) 16%, transparent);
+  color: var(--mb-tag-mlx-fg);
+  background: color-mix(in srgb, var(--mb-tag-mlx-fg) 16%, transparent);
   padding: 2px 6px;
   border-radius: var(--radius-xs);
 }
@@ -263,19 +331,35 @@
   border: 1px solid transparent;
   white-space: nowrap;
 }
-.wf-badge-idle { color: var(--text-2); background: var(--surface-2); }
+.wf-badge-idle {
+  color: var(--text-2);
+  background: var(--surface-2);
+}
 .wf-badge-running {
   color: var(--accent);
   background: var(--accent-bg);
   border-color: var(--accent);
   animation: wfPulse 1.4s ease-in-out infinite;
 }
-.wf-badge-done { color: var(--green-fg); background: var(--green-bg); border-color: var(--green-border); }
-.wf-badge-failed { color: var(--danger-fg); background: var(--danger-bg); border-color: var(--danger-border); }
+.wf-badge-done {
+  color: var(--green-fg);
+  background: var(--green-bg);
+  border-color: var(--green-border);
+}
+.wf-badge-failed {
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
 
 @keyframes wfPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
 }
 
 /* Card body is a button — clicking it opens the centered edit form. */
@@ -293,7 +377,10 @@
   width: 100%;
 }
 
-.wf-node-actions { display: flex; gap: var(--space-1); }
+.wf-node-actions {
+  display: flex;
+  gap: var(--space-1);
+}
 .wf-node-btn {
   flex: 1;
   padding: var(--space-1) var(--space-2);
@@ -304,9 +391,16 @@
   font-size: var(--fs-xs);
   cursor: pointer;
 }
-.wf-node-btn:hover:not(:disabled) { background: var(--surface-hover); }
-.wf-node-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.wf-node-btn-danger { flex: 0 0 28px; }
+.wf-node-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.wf-node-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.wf-node-btn-danger {
+  flex: 0 0 28px;
+}
 .wf-node-btn-danger:hover:not(:disabled) {
   background: var(--danger-bg);
   color: var(--danger-fg);
@@ -319,7 +413,8 @@
   background: var(--accent);
   border: 2px solid var(--surface);
   box-shadow: var(--elev-1);
-  transition: transform var(--dur-fast) var(--ease-out),
+  transition:
+    transform var(--dur-fast) var(--ease-out),
     box-shadow var(--dur-fast) var(--ease-out);
 }
 .wf-handle:hover {
@@ -346,20 +441,47 @@
   border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
-.wf-run-list { flex: 1; overflow-y: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
-.wf-run-empty { color: var(--text-2); font-size: var(--fs-sm); text-align: center; margin: var(--space-5) 0; }
+.wf-run-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.wf-run-empty {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  text-align: center;
+  margin: var(--space-5) 0;
+}
 .wf-run-item {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: var(--space-2);
   background: var(--surface-2);
 }
-.wf-run-item-head { display: flex; align-items: center; gap: var(--space-2); }
-.wf-run-item-name { font-size: var(--fs-sm); font-weight: 500; }
-.wf-run-icon-idle { color: var(--text-2); }
-.wf-run-icon-running { color: var(--accent); }
-.wf-run-icon-done { color: var(--green-fg); }
-.wf-run-icon-failed { color: var(--danger-fg); }
+.wf-run-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.wf-run-item-name {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.wf-run-icon-idle {
+  color: var(--text-2);
+}
+.wf-run-icon-running {
+  color: var(--accent);
+}
+.wf-run-icon-done {
+  color: var(--green-fg);
+}
+.wf-run-icon-failed {
+  color: var(--danger-fg);
+}
 .wf-run-output {
   margin: var(--space-2) 0 0;
   padding: var(--space-2);
@@ -372,7 +494,9 @@
   max-height: 160px;
   overflow-y: auto;
 }
-.wf-run-error { color: var(--danger-fg); }
+.wf-run-error {
+  color: var(--danger-fg);
+}
 
 /* ── Shared buttons ── */
 .wf-btn {
@@ -384,22 +508,39 @@
   font-size: var(--fs-sm);
   cursor: pointer;
 }
-.wf-btn:hover:not(:disabled) { background: var(--surface-hover); }
-.wf-btn:active:not(:disabled) { transform: scale(0.97); }
-.wf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.wf-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.wf-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.wf-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .wf-btn-primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-  box-shadow: var(--elev-1), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  box-shadow:
+    var(--elev-1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 .wf-btn-primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 88%, #000);
-  box-shadow: var(--elev-2), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  box-shadow:
+    var(--elev-2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
   filter: none;
 }
-.wf-btn-danger { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-fg); }
-.wf-btn-danger:hover:not(:disabled) { background: var(--danger-bg-strong); }
+.wf-btn-danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
+}
+.wf-btn-danger:hover:not(:disabled) {
+  background: var(--danger-bg-strong);
+}
 
 /* ── Card deck (corner of the table) ── */
 .wf-deck {
@@ -410,7 +551,10 @@
   height: 168px;
   z-index: 6;
 }
-.wf-deck-stack { position: absolute; inset: 0; }
+.wf-deck-stack {
+  position: absolute;
+  inset: 0;
+}
 .wf-deck-card {
   position: absolute;
   width: 124px;
@@ -421,8 +565,16 @@
   box-shadow: var(--shadow-toast);
 }
 /* The two cards under the top card — offset to read as a stack. */
-.wf-deck-card-3 { left: 8px; top: 8px; opacity: 0.55; }
-.wf-deck-card-2 { left: 4px; top: 4px; opacity: 0.8; }
+.wf-deck-card-3 {
+  left: 8px;
+  top: 8px;
+  opacity: 0.55;
+}
+.wf-deck-card-2 {
+  left: 4px;
+  top: 4px;
+  opacity: 0.8;
+}
 .wf-deck-top {
   left: 0;
   top: 0;
@@ -434,17 +586,31 @@
   cursor: grab;
   color: var(--text-2);
   background: var(--surface);
-  transition: transform 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  transition:
+    transform 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
 }
 .wf-deck-top:hover {
   transform: translateY(-3px);
   border-color: var(--accent);
   color: var(--text);
 }
-.wf-deck-top:active { cursor: grabbing; }
-.wf-deck-top:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.wf-deck-plus { font-size: var(--fs-2xl); line-height: 1; font-weight: 300; }
-.wf-deck-label { font-size: var(--fs-sm); }
+.wf-deck-top:active {
+  cursor: grabbing;
+}
+.wf-deck-top:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.wf-deck-plus {
+  font-size: var(--fs-2xl);
+  line-height: 1;
+  font-weight: 300;
+}
+.wf-deck-label {
+  font-size: var(--fs-sm);
+}
 
 /* ── Centered card form (supersedes the old config drawer) ── */
 .wf-form-overlay {
@@ -474,14 +640,15 @@
   display: flex;
   /* Fly transform: from the deck/node origin to the resting centered state. */
   transform-origin: center center;
-  transition: transform 0.26s cubic-bezier(0.2, 0.7, 0.3, 1), opacity 0.2s ease;
+  transition:
+    transform 0.26s cubic-bezier(0.2, 0.7, 0.3, 1),
+    opacity 0.2s ease;
 }
 /* The card starts shrunk + translated toward its origin, then settles. */
 .wf-form-card.is-entering,
 .wf-form-card.is-leaving {
   opacity: 0;
-  transform:
-    translate(
+  transform: translate(
       calc(var(--wf-fly-x, 50vw) - 50vw),
       calc(var(--wf-fly-y, 50vh) - 50vh)
     )
@@ -510,7 +677,10 @@
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
 }
-.wf-form-title { font-weight: 600; font-size: var(--fs-lg); }
+.wf-form-title {
+  font-weight: 600;
+  font-size: var(--fs-lg);
+}
 .wf-form-close {
   background: transparent;
   border: none;
@@ -519,7 +689,9 @@
   cursor: pointer;
   line-height: 1;
 }
-.wf-form-close:hover { color: var(--text); }
+.wf-form-close:hover {
+  color: var(--text);
+}
 .wf-form-body {
   flex: 1;
   overflow-y: auto;
@@ -536,8 +708,14 @@
   border-top: 1px solid var(--border);
 }
 
-.wf-name-row { display: flex; gap: var(--space-2); align-items: stretch; }
-.wf-name-row input { flex: 1; }
+.wf-name-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: stretch;
+}
+.wf-name-row input {
+  flex: 1;
+}
 .wf-reroll {
   flex: 0 0 auto;
   padding: var(--space-2);
@@ -548,22 +726,47 @@
   font-size: var(--fs-base);
   line-height: 1;
 }
-.wf-reroll:hover { background: var(--surface-hover); }
+.wf-reroll:hover {
+  background: var(--surface-hover);
+}
 
-.wf-field-error { margin: var(--space-1) 0 0; font-size: var(--fs-xs); color: var(--danger-fg); }
-.wf-field-check { flex-direction: row; align-items: flex-start; gap: var(--space-2); }
-.wf-field-check span { font-size: var(--fs-sm); color: var(--text); }
+.wf-field-error {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--danger-fg);
+}
+.wf-field-check {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.wf-field-check span {
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .wf-deck-top,
-  .wf-form-card { transition: none; }
+  .wf-form-card {
+    transition: none;
+  }
   .wf-form-card.is-entering,
   .wf-form-card.is-leaving,
-  .wf-form-card.is-leaving-fade { opacity: 1; transform: translate(0, 0) scale(1); }
+  .wf-form-card.is-leaving-fade {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
 }
 
-.wf-field { display: flex; flex-direction: column; gap: var(--space-1); }
-.wf-field > span { font-size: var(--fs-sm); color: var(--text-2); }
+.wf-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.wf-field > span {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
 .wf-field input,
 .wf-field select,
 .wf-field textarea {
@@ -601,13 +804,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.wf-field textarea { resize: vertical; }
-.wf-field-hint { margin: var(--space-1) 0 0; font-size: var(--fs-xs); color: var(--text-2); }
+.wf-field textarea {
+  resize: vertical;
+}
+.wf-field-hint {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
 
 /* Collapsible field (System prompt / Instructions) — native <details>.
    The summary mimics a `.wf-field > span` label + a disclosure caret so
    it reads as part of the form, not a generic OS twisty. (2026-05-28) */
-.wf-collapse { gap: 0; }
+.wf-collapse {
+  gap: 0;
+}
 .wf-collapse-summary {
   display: flex;
   align-items: center;
@@ -619,7 +830,9 @@
   padding: var(--space-1) 0;
   user-select: none;
 }
-.wf-collapse-summary::-webkit-details-marker { display: none; }
+.wf-collapse-summary::-webkit-details-marker {
+  display: none;
+}
 /* Caret rotates when open. */
 .wf-collapse-summary::before {
   content: "▸";
@@ -628,8 +841,12 @@
   color: var(--text-3);
   transition: transform 0.12s ease;
 }
-.wf-collapse[open] > .wf-collapse-summary::before { transform: rotate(90deg); }
-.wf-collapse-summary:hover { color: var(--text); }
+.wf-collapse[open] > .wf-collapse-summary::before {
+  transform: rotate(90deg);
+}
+.wf-collapse-summary:hover {
+  color: var(--text);
+}
 .wf-collapse-badge {
   font-size: var(--fs-2xs);
   color: var(--accent);
@@ -645,7 +862,11 @@
 }
 
 /* Card-color swatch chooser. */
-.wf-color-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.wf-color-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
 .wf-color-swatch {
   width: 22px;
   height: 22px;
@@ -653,18 +874,30 @@
   border: 2px solid var(--border);
   cursor: pointer;
   padding: 0;
-  transition: transform 0.1s ease, border-color 0.1s ease, box-shadow 0.1s ease;
+  transition:
+    transform 0.1s ease,
+    border-color 0.1s ease,
+    box-shadow 0.1s ease;
 }
-.wf-color-swatch:hover { transform: scale(1.12); }
+.wf-color-swatch:hover {
+  transform: scale(1.12);
+}
 .wf-color-swatch.selected {
   border-color: var(--text);
-  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text-3);
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--text-3);
 }
 /* The "Default" (null) swatch shows a neutral surface + a slash so it
    reads as "no accent" rather than a real colour. */
 .wf-color-swatch.wf-color-default {
-  background:
-    linear-gradient(135deg, var(--surface-2) 46%, var(--danger) 46%, var(--danger) 54%, var(--surface-2) 54%);
+  background: linear-gradient(
+    135deg,
+    var(--surface-2) 46%,
+    var(--danger) 46%,
+    var(--danger) 54%,
+    var(--surface-2) 54%
+  );
 }
 .wf-color-swatch:focus-visible {
   outline: 2px solid var(--accent);
@@ -742,12 +975,17 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.wf-tool-cat-master-glyph { font-size: 14px; line-height: 1; }
+.wf-tool-cat-master-glyph {
+  font-size: 14px;
+  line-height: 1;
+}
 .wf-tool-cat-master[data-state="all"] .wf-tool-cat-master-glyph,
 .wf-tool-cat-master[data-state="some"] .wf-tool-cat-master-glyph {
   color: var(--accent, #4f9eed);
 }
-.wf-tool-cat-count { font-variant-numeric: tabular-nums; }
+.wf-tool-cat-count {
+  font-variant-numeric: tabular-nums;
+}
 .wf-tool-cat-body {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -916,24 +1154,41 @@
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
-.skills-table tbody tr:last-child td { border-bottom: none; }
+.skills-table tbody tr:last-child td {
+  border-bottom: none;
+}
 .skills-table-loading {
   text-align: center;
   color: var(--text-2);
   padding: var(--space-4);
 }
-.skills-col-name { width: 22%; }
-.skills-col-desc { width: auto; }
-.skills-col-num { width: 70px; text-align: right; }
-.skills-col-time { width: 110px; }
-.skills-col-actions { width: 180px; text-align: right; white-space: nowrap; }
+.skills-col-name {
+  width: 22%;
+}
+.skills-col-desc {
+  width: auto;
+}
+.skills-col-num {
+  width: 70px;
+  text-align: right;
+}
+.skills-col-time {
+  width: 110px;
+}
+.skills-col-actions {
+  width: 180px;
+  text-align: right;
+  white-space: nowrap;
+}
 .skills-cell-name {
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: var(--fs-sm, 13px);
   color: var(--text);
   word-break: break-word;
 }
-.skills-cell-desc { color: var(--text); }
+.skills-cell-desc {
+  color: var(--text);
+}
 .skills-cell-desc-clamp {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -956,7 +1211,9 @@
   text-align: right;
   white-space: nowrap;
 }
-.skills-cell-actions .skills-btn + .skills-btn { margin-left: var(--space-1); }
+.skills-cell-actions .skills-btn + .skills-btn {
+  margin-left: var(--space-1);
+}
 .skills-btn {
   background: var(--surface-2);
   color: var(--text);
@@ -967,7 +1224,9 @@
   cursor: pointer;
   font-family: inherit;
 }
-.skills-btn:hover { background: var(--surface-hover); }
+.skills-btn:hover {
+  background: var(--surface-hover);
+}
 .skills-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -1041,17 +1300,21 @@
 }
 
 /* ── Flows hub: template gallery (Phase 3a) — tokens only ────────────────── */
-.wf-templates { margin-bottom: var(--space-5, 24px); }
+.wf-templates {
+  margin-bottom: var(--space-5, 24px);
+}
 .wf-templates-title {
   margin: 0 0 var(--space-1);
   font-size: var(--fs-md, 14px);
   font-weight: 600;
 }
-.wf-your-flows { margin-top: var(--space-5, 24px); }
+.wf-your-flows {
+  margin-top: var(--space-5, 24px);
+}
 .wf-templates-sub {
   margin: 0 0 var(--space-3);
   font-size: var(--fs-sm);
-  color: var(--text-muted, var(--fg-dim, #888));
+  color: var(--text-muted);
   line-height: 1.4;
   max-width: 60ch;
 }
@@ -1069,9 +1332,12 @@
   padding: var(--space-3);
   border-radius: var(--radius-md, 10px);
   border: 1px solid var(--border, rgba(127, 127, 127, 0.2));
-  background: var(--panel, transparent);
+  background: transparent;
   cursor: pointer;
-  transition: border-color 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+  transition:
+    border-color 0.12s ease,
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
 }
 .wf-template-card:hover {
   border-color: var(--accent);
@@ -1079,7 +1345,7 @@
   box-shadow: var(--shadow-toast, 0 4px 14px rgba(0, 0, 0, 0.18));
 }
 .wf-template-card:focus-visible {
-  outline: var(--focus-ring-width, 2px) solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 2px;
 }
 .wf-template-cat {
@@ -1089,46 +1355,58 @@
   text-transform: uppercase;
   color: var(--accent);
 }
-.wf-template-name { font-size: var(--fs-sm); font-weight: 600; }
+.wf-template-name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
 .wf-template-summary {
   font-size: var(--fs-xs);
-  color: var(--text-muted, var(--fg-dim, #888));
+  color: var(--text-muted);
   line-height: 1.4;
 }
 .wf-template-meta {
   margin-top: var(--space-1);
   font-size: var(--fs-2xs);
-  color: var(--text-muted, var(--fg-dim, #888));
+  color: var(--text-muted);
 }
 @media (prefers-reduced-motion: reduce) {
   .wf-template-card,
-  .wf-template-card:hover { transition: none; transform: none; }
+  .wf-template-card:hover {
+    transition: none;
+    transform: none;
+  }
 }
 
 /* ── Shareable Flows: import paste modal (Phase 3b) — tokens only ─────────── */
-.wf-import-modal { max-width: 560px; }
-.wf-import-title { margin: 0 0 var(--space-1); font-size: var(--fs-md, 14px); font-weight: 600; }
+.wf-import-modal {
+  max-width: 560px;
+}
+.wf-import-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--fs-md, 14px);
+  font-weight: 600;
+}
 .wf-import-sub {
   margin: 0 0 var(--space-3);
   font-size: var(--fs-sm);
-  color: var(--text-muted, var(--fg-dim, #888));
+  color: var(--text-muted);
   line-height: 1.4;
 }
 .wf-import-textarea {
   width: 100%;
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--mono);
   font-size: var(--fs-xs);
   line-height: 1.4;
   padding: var(--space-2);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
-  background: var(--input-bg, var(--panel, transparent));
+  background: transparent;
   color: inherit;
   resize: vertical;
   box-sizing: border-box;
 }
 .wf-import-textarea:focus-visible {
-  outline: var(--focus-ring-width, 2px) solid var(--accent);
+  outline: var(--focus-ring);
   outline-offset: 1px;
 }
 .wf-import-actions {

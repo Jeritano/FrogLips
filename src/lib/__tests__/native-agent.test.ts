@@ -21,7 +21,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const nativeChatStream = vi.fn();
-vi.mock("../tauri-api", () => ({ api: { nativeChatStream: (...a: unknown[]) => nativeChatStream(...a) } }));
+vi.mock("../tauri-api", () => ({
+  api: { nativeChatStream: (...a: unknown[]) => nativeChatStream(...a) },
+}));
 
 import { streamNativeAgentChat } from "../native-client";
 
@@ -30,7 +32,9 @@ afterEach(() => {
   nativeChatStream.mockReset();
 });
 
-const MSGS: Message[] = [{ conversation_id: 1, role: "user", content: "list files" }];
+const MSGS: Message[] = [
+  { conversation_id: 1, role: "user", content: "list files" },
+];
 
 function emit(suffix: string, payload: unknown) {
   for (const [event, cb] of handlers) {
@@ -60,13 +64,19 @@ describe("streamNativeAgentChat", () => {
     expect(chunks).toEqual(["Hello ", "world"]);
     expect(result.content).toBe("Hello world");
     expect(result.tool_calls).toEqual([
-      { id: "call-1", type: "function", function: { name: "list_dir", arguments: { path: "/tmp" } } },
+      {
+        id: "call-1",
+        type: "function",
+        function: { name: "list_dir", arguments: { path: "/tmp" } },
+      },
     ]);
   });
 
   it("keeps non-JSON tool arguments as a raw string", async () => {
     nativeChatStream.mockImplementation(async () => {
-      emit("native-toolcalls:", [{ id: "c2", name: "noop", arguments: "not-json" }]);
+      emit("native-toolcalls:", [
+        { id: "c2", name: "noop", arguments: "not-json" },
+      ]);
       return "";
     });
 
@@ -107,13 +117,28 @@ describe("streamNativeAgentChat", () => {
         role: "assistant",
         content: "",
         tool_calls: [
-          { id: "c1", type: "function", function: { name: "list_dir", arguments: { path: "/" } } },
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "list_dir", arguments: { path: "/" } },
+          },
         ],
       },
-      { conversation_id: 1, role: "tool", content: "a.txt", tool_call_id: "c1", tool_name: "list_dir" },
+      {
+        conversation_id: 1,
+        role: "tool",
+        content: "a.txt",
+        tool_call_id: "c1",
+        tool_name: "list_dir",
+      },
     ];
 
-    await streamNativeAgentChat(convo, [], new AbortController().signal, () => {});
+    await streamNativeAgentChat(
+      convo,
+      [],
+      new AbortController().signal,
+      () => {},
+    );
 
     const sent = nativeChatStream.mock.calls[0][0] as {
       messages: Array<Record<string, unknown>>;
@@ -121,7 +146,11 @@ describe("streamNativeAgentChat", () => {
     expect(sent.messages[1]).toMatchObject({
       role: "assistant",
       tool_calls: [
-        { id: "c1", type: "function", function: { name: "list_dir", arguments: '{"path":"/"}' } },
+        {
+          id: "c1",
+          type: "function",
+          function: { name: "list_dir", arguments: '{"path":"/"}' },
+        },
       ],
     });
     expect(sent.messages[2]).toMatchObject({

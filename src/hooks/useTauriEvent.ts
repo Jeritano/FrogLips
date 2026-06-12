@@ -1,5 +1,9 @@
 import { useEffect, useRef } from "react";
-import { listen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  listen,
+  type EventCallback,
+  type UnlistenFn,
+} from "@tauri-apps/api/event";
 import { logDiag } from "../lib/diagnostics";
 
 /**

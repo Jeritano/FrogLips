@@ -33,7 +33,12 @@ const AUTO_FIRE_DELAY_S = 5;
  * a fresh conversation seeded with that summary, then calls `onContinued`
  * so the App can switch to the new thread.
  */
-export function ContextRolloverBanner({ messages, status, conversation, onContinued }: Props) {
+export function ContextRolloverBanner({
+  messages,
+  status,
+  conversation,
+  onContinued,
+}: Props) {
   const due = useMemo(
     () => shouldAutoContinue(messages, status?.model ?? null, status),
     [messages, status],
@@ -103,7 +108,9 @@ export function ContextRolloverBanner({ messages, status, conversation, onContin
     announce("Summarizing this conversation and continuing in a new chat…");
     runContinuation(conversation, messages, status, ctrl.signal)
       .then((newId) => {
-        announce("Continued in a new chat. Older history is kept in the previous thread.");
+        announce(
+          "Continued in a new chat. Older history is kept in the previous thread.",
+        );
         onContinued(newId);
       })
       .catch((e) => {
@@ -133,7 +140,9 @@ export function ContextRolloverBanner({ messages, status, conversation, onContin
   return (
     <div className="ctx-rollover" role="status" aria-live="polite">
       {rolling ? (
-        <span className="ctx-rollover-msg">Summarizing & continuing in a new chat…</span>
+        <span className="ctx-rollover-msg">
+          Summarizing & continuing in a new chat…
+        </span>
       ) : err ? (
         <>
           <span className="ctx-rollover-msg">⚠ {err}</span>
@@ -159,11 +168,7 @@ export function ContextRolloverBanner({ messages, status, conversation, onContin
             >
               Continue now
             </button>
-            <button
-              type="button"
-              className="ctx-rollover-btn"
-              onClick={cancel}
-            >
+            <button type="button" className="ctx-rollover-btn" onClick={cancel}>
               Not yet
             </button>
           </div>

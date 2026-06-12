@@ -41,7 +41,9 @@ vi.mock("../../lib/memory-client", () => ({
 import { useChatSend, type ChatSendConfig } from "../useChatSend";
 import type { AgentSettings } from "../useAgentSettings";
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const STATUS: ServerStatus = {
   running: true,
@@ -52,8 +54,12 @@ const STATUS: ServerStatus = {
 const CONV: Conversation = { id: 7, title: "t", model: null, created_at: 1 };
 
 const AGENT_STUB = {
-  allowlist: [], activePreset: undefined, approveAllShell: false,
-  approveAllWrite: false, dryRun: false, approvedShellPrefixes: [],
+  allowlist: [],
+  activePreset: undefined,
+  approveAllShell: false,
+  approveAllWrite: false,
+  dryRun: false,
+  approvedShellPrefixes: [],
   setApprovedShellPrefixes: vi.fn(),
 } as unknown as AgentSettings;
 
@@ -65,7 +71,12 @@ function makeConfig(over: Partial<ChatSendConfig> = {}): ChatSendConfig {
     agentAvailable: true,
     workspaceRoot: null,
     projectPolicy: null,
-    convParams: { temperature: null, top_p: null, max_tokens: null, system_prompt: null },
+    convParams: {
+      temperature: null,
+      top_p: null,
+      max_tokens: null,
+      system_prompt: null,
+    },
     agent: AGENT_STUB,
     messages: [],
     ensureConversation: async () => CONV,
@@ -92,7 +103,9 @@ let container: HTMLElement;
 async function render(config: ChatSendConfig) {
   container = document.createElement("div");
   root = createRoot(container);
-  await act(async () => { root.render(<Harness config={config} />); });
+  await act(async () => {
+    root.render(<Harness config={config} />);
+  });
 }
 
 afterEach(() => {
@@ -111,7 +124,9 @@ describe("useChatSend", () => {
   it("errors out without persisting when no model is running", async () => {
     const setErr = vi.fn();
     await render(makeConfig({ status: null, setErr }));
-    await act(async () => { await captured!.send("hi"); });
+    await act(async () => {
+      await captured!.send("hi");
+    });
     expect(setErr).toHaveBeenCalledWith("Start a model first");
     expect(addMessage).not.toHaveBeenCalled();
   });
@@ -119,15 +134,24 @@ describe("useChatSend", () => {
   it("plain-streaming send persists the user turn and the assistant reply", async () => {
     const setMessages = vi.fn();
     await render(makeConfig({ setMessages }));
-    await act(async () => { await captured!.send("hi"); });
+    await act(async () => {
+      await captured!.send("hi");
+    });
     // user turn + assistant turn both persisted.
     expect(addMessage).toHaveBeenCalledWith(7, "user", "hi", null, undefined);
-    expect(addMessage).toHaveBeenCalledWith(7, "assistant", "hello world", "test-model");
+    expect(addMessage).toHaveBeenCalledWith(
+      7,
+      "assistant",
+      "hello world",
+      "test-model",
+    );
     // assistant message appended to state.
     const appended = setMessages.mock.calls.some(([arg]) => {
       if (typeof arg !== "function") return false;
       const out = (arg as (m: Message[]) => Message[])([]);
-      return out.some((m) => m.role === "assistant" && m.content === "hello world");
+      return out.some(
+        (m) => m.role === "assistant" && m.content === "hello world",
+      );
     });
     expect(appended).toBe(true);
   });

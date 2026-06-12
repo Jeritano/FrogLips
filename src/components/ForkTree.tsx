@@ -99,13 +99,26 @@ function ForkTreeOverlay({
       role="dialog"
       aria-modal="true"
       aria-label="Branches"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
       ref={ref}
     >
       <div className="fork-tree-panel" onClick={(e) => e.stopPropagation()}>
         <div className="fork-tree-header">
-          <strong style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><GitBranch size={16} /> Branches</strong>
-          <button type="button" onClick={onClose} aria-label="Close" className="fork-tree-close"><X size={16} /></button>
+          <strong
+            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+          >
+            <GitBranch size={16} /> Branches
+          </strong>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="fork-tree-close"
+          >
+            <X size={16} />
+          </button>
         </div>
         {loading && <div>Loading…</div>}
         <ErrorBar
@@ -124,7 +137,15 @@ function ForkTreeOverlay({
   );
 }
 
-function ForkNodeView({ node, depth, onSelect }: { node: ForkTree; depth: number; onSelect: (id: number) => void }) {
+function ForkNodeView({
+  node,
+  depth,
+  onSelect,
+}: {
+  node: ForkTree;
+  depth: number;
+  onSelect: (id: number) => void;
+}) {
   // Cap depth-driven indentation so a long-branched conversation can't push
   // the row text off the right edge of the modal.
   const capped = Math.min(depth, 6);
@@ -141,7 +162,12 @@ function ForkNodeView({ node, depth, onSelect }: { node: ForkTree; depth: number
         {node.title}
       </button>
       {node.children.map((c) => (
-        <ForkNodeView key={c.id} node={c} depth={depth + 1} onSelect={onSelect} />
+        <ForkNodeView
+          key={c.id}
+          node={c}
+          depth={depth + 1}
+          onSelect={onSelect}
+        />
       ))}
     </div>
   );

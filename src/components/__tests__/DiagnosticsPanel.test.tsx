@@ -7,11 +7,20 @@ import { createRoot } from "react-dom/client";
 // localStorage at import-time.
 const storeMap = new Map<string, string>();
 const fakeStorage: Storage = {
-  get length() { return storeMap.size; },
-  clear: () => { storeMap.clear(); },
-  getItem: (k: string) => (storeMap.has(k) ? (storeMap.get(k) as string) : null),
-  setItem: (k: string, v: string) => { storeMap.set(k, String(v)); },
-  removeItem: (k: string) => { storeMap.delete(k); },
+  get length() {
+    return storeMap.size;
+  },
+  clear: () => {
+    storeMap.clear();
+  },
+  getItem: (k: string) =>
+    storeMap.has(k) ? (storeMap.get(k) as string) : null,
+  setItem: (k: string, v: string) => {
+    storeMap.set(k, String(v));
+  },
+  removeItem: (k: string) => {
+    storeMap.delete(k);
+  },
   key: (i: number) => Array.from(storeMap.keys())[i] ?? null,
 };
 Object.defineProperty(globalThis, "localStorage", {
@@ -47,13 +56,21 @@ describe("DiagnosticsPanel", () => {
     await act(async () => {
       root.render(<DiagnosticsPanel open={false} onClose={() => {}} />);
     });
-    expect(container.querySelector('[data-testid="diagnostics-panel"]')).toBeNull();
-    await act(async () => { root.unmount(); });
+    expect(
+      container.querySelector('[data-testid="diagnostics-panel"]'),
+    ).toBeNull();
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 
   it("renders recorded entries with level + source + message", async () => {
-    logDiag({ level: "warn", source: "memory-recall", message: "vector search failed" });
+    logDiag({
+      level: "warn",
+      source: "memory-recall",
+      message: "vector search failed",
+    });
     logDiag({ level: "error", source: "ollama-client", message: "Ollama 500" });
     logDiag({ level: "info", source: "mcp", message: "server restarted" });
 
@@ -82,7 +99,9 @@ describe("DiagnosticsPanel", () => {
     expect(text).toContain("Ollama 500");
     expect(text).toContain("server restarted");
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 
@@ -99,9 +118,13 @@ describe("DiagnosticsPanel", () => {
     });
     await flush();
 
-    expect(container.querySelectorAll('[data-testid="diag-row"]').length).toBe(3);
+    expect(container.querySelectorAll('[data-testid="diag-row"]').length).toBe(
+      3,
+    );
 
-    const levelSel = container.querySelector('[data-testid="diag-level"]') as HTMLSelectElement;
+    const levelSel = container.querySelector(
+      '[data-testid="diag-level"]',
+    ) as HTMLSelectElement;
     expect(levelSel).toBeTruthy();
     await act(async () => {
       const proto = Object.getPrototypeOf(levelSel);
@@ -116,7 +139,9 @@ describe("DiagnosticsPanel", () => {
     expect(rows[0].getAttribute("data-level")).toBe("error");
     expect(rows[0].textContent).toContain("error-entry");
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 
@@ -131,24 +156,38 @@ describe("DiagnosticsPanel", () => {
     });
     await flush();
 
-    const clearBtn = container.querySelector('[data-testid="diag-clear"]') as HTMLButtonElement;
+    const clearBtn = container.querySelector(
+      '[data-testid="diag-clear"]',
+    ) as HTMLButtonElement;
     expect(clearBtn).toBeTruthy();
     expect(clearBtn.textContent).toBe("Clear");
-    expect(container.querySelectorAll('[data-testid="diag-row"]').length).toBe(1);
+    expect(container.querySelectorAll('[data-testid="diag-row"]').length).toBe(
+      1,
+    );
 
     // First click arms.
-    await act(async () => { clearBtn.click(); });
+    await act(async () => {
+      clearBtn.click();
+    });
     await flush();
     expect(clearBtn.textContent).toContain("Click again to confirm");
     // Entries still present.
-    expect(container.querySelectorAll('[data-testid="diag-row"]').length).toBe(1);
+    expect(container.querySelectorAll('[data-testid="diag-row"]').length).toBe(
+      1,
+    );
 
     // Second click clears.
-    await act(async () => { clearBtn.click(); });
+    await act(async () => {
+      clearBtn.click();
+    });
     await flush();
-    expect(container.querySelectorAll('[data-testid="diag-row"]').length).toBe(0);
+    expect(container.querySelectorAll('[data-testid="diag-row"]').length).toBe(
+      0,
+    );
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
   });
 });

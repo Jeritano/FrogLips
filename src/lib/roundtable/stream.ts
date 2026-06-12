@@ -36,7 +36,11 @@ export interface TurnStreamOpts {
  * Stream one seat's turn to completion. Returns the accumulated text.
  * Throws on transport error / abort (the engine catches → skip-and-continue).
  */
-export async function streamSeatTurn(seat: Seat, messages: Message[], opts: TurnStreamOpts): Promise<string> {
+export async function streamSeatTurn(
+  seat: Seat,
+  messages: Message[],
+  opts: TurnStreamOpts,
+): Promise<string> {
   const { temperature, maxTokens, signal, onDelta } = opts;
   let stream: AsyncGenerator<{ delta: string; done: boolean }>;
 
@@ -52,10 +56,18 @@ export async function streamSeatTurn(seat: Seat, messages: Message[], opts: Turn
     case "custom":
       // seat.model holds the CustomBackend id; the Rust side resolves
       // base_url + key from the Keychain by that id.
-      stream = streamCustomChat(seat.model, messages, { temperature, maxTokens, signal });
+      stream = streamCustomChat(seat.model, messages, {
+        temperature,
+        maxTokens,
+        signal,
+      });
       break;
     case "ollama":
-      stream = streamChat(ollamaStatus(seat.model), messages, { temperature, maxTokens, signal });
+      stream = streamChat(ollamaStatus(seat.model), messages, {
+        temperature,
+        maxTokens,
+        signal,
+      });
       break;
     default: {
       const _exhaustive: never = seat.backend;

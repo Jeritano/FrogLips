@@ -17,7 +17,13 @@ import { AuditLog } from "./AuditLog";
 
 const LOCAL_BACKENDS = new Set(["ollama", "mlx", "native"]);
 
-export function PrivacyPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function PrivacyPanel({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useModalA11y({ open, onClose, containerRef: ref });
 
@@ -61,7 +67,11 @@ export function PrivacyPanel({ open, onClose }: { open: boolean; onClose: () => 
           <h2 className="privacy-title">
             <ShieldCheck size={18} aria-hidden="true" /> Privacy &amp; safety
           </h2>
-          <button className="dashboard-close" onClick={onClose} aria-label="Close">
+          <button
+            className="dashboard-close"
+            onClick={onClose}
+            aria-label="Close"
+          >
             <X size={18} />
           </button>
         </div>
@@ -71,16 +81,17 @@ export function PrivacyPanel({ open, onClose }: { open: boolean; onClose: () => 
             <>
               <Lock size={16} aria-hidden="true" />
               <span>
-                <strong>100% local.</strong> Your prompts, files, memory, and chat history
-                never leave this Mac. No accounts, no telemetry.
+                <strong>100% local.</strong> Your prompts, files, memory, and
+                chat history never leave this Mac. No accounts, no telemetry.
               </span>
             </>
           ) : (
             <>
               <Cloud size={16} aria-hidden="true" />
               <span>
-                <strong>Cloud model active ({backend}).</strong> Only the messages you send to
-                it leave your Mac — your files, memory, and history stay local.
+                <strong>Cloud model active ({backend}).</strong> Only the
+                messages you send to it leave your Mac — your files, memory, and
+                history stay local.
               </span>
             </>
           )}
@@ -89,40 +100,49 @@ export function PrivacyPanel({ open, onClose }: { open: boolean; onClose: () => 
         <section className="privacy-section">
           <h3>What the agent can touch</h3>
           <p className="privacy-scope">
-            Workspace: <code>{workspace ?? "full filesystem (no workspace set)"}</code>
+            Workspace:{" "}
+            <code>{workspace ?? "full filesystem (no workspace set)"}</code>
             {workspace
               ? " — file reads and writes are confined to this folder."
               : " — set a workspace to confine file access to one folder."}
           </p>
           <p className="privacy-muted">
-            Every write, delete, shell command, and outbound network call is gated behind an
-            explicit confirmation before it runs.
+            Every write, delete, shell command, and outbound network call is
+            gated behind an explicit confirmation before it runs.
           </p>
         </section>
 
         <section className="privacy-section">
           <h3>Always blocked — even with your approval</h3>
           <ul className="privacy-list">
-            <li>SSH / GPG / AWS keys, the macOS Keychain, and browser-saved credentials</li>
             <li>
-              <code>.env</code> files, <code>credentials</code>, and Froglips' own secret store
+              SSH / GPG / AWS keys, the macOS Keychain, and browser-saved
+              credentials
             </li>
             <li>
-              System dirs (<code>/etc</code>, <code>/System</code>), launch agents, and shell
-              startup files
+              <code>.env</code> files, <code>credentials</code>, and Froglips'
+              own secret store
             </li>
-            <li>Internal / loopback / cloud-metadata network addresses (SSRF-pinned)</li>
+            <li>
+              System dirs (<code>/etc</code>, <code>/System</code>), launch
+              agents, and shell startup files
+            </li>
+            <li>
+              Internal / loopback / cloud-metadata network addresses
+              (SSRF-pinned)
+            </li>
           </ul>
           <p className="privacy-muted">
-            Path checks are case-insensitive, and untrusted text from the web, files, and tools
-            is fenced as DATA so it can't hijack the agent.
+            Path checks are case-insensitive, and untrusted text from the web,
+            files, and tools is fenced as DATA so it can't hijack the agent.
           </p>
         </section>
 
         <section className="privacy-section">
           <h3>Agent activity</h3>
           <p className="privacy-muted">
-            Every tool call the agent has made — stored locally, never sent anywhere.
+            Every tool call the agent has made — stored locally, never sent
+            anywhere.
           </p>
           <AuditLog />
         </section>

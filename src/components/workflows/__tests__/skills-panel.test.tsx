@@ -19,7 +19,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { SkillSummary, SkillFull } from "../../../types";
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const fixtures: SkillSummary[] = [
   {
@@ -33,7 +35,8 @@ const fixtures: SkillSummary[] = [
   {
     id: 2,
     name: "lint_then_test",
-    description: "Run npm lint and npm test sequentially, surfacing any failures.",
+    description:
+      "Run npm lint and npm test sequentially, surfacing any failures.",
     last_used_at: null,
     invocation_count: 0,
   },
@@ -86,7 +89,9 @@ interface Harness {
   cleanup: () => Promise<void>;
 }
 
-async function mount(props: Partial<Parameters<typeof SkillsPanel>[0]> = {}): Promise<Harness> {
+async function mount(
+  props: Partial<Parameters<typeof SkillsPanel>[0]> = {},
+): Promise<Harness> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -106,7 +111,9 @@ async function mount(props: Partial<Parameters<typeof SkillsPanel>[0]> = {}): Pr
     container,
     root,
     cleanup: async () => {
-      await act(async () => { root.unmount(); });
+      await act(async () => {
+        root.unmount();
+      });
       container.remove();
     },
   };
@@ -116,9 +123,13 @@ describe("SkillsPanel", () => {
   beforeEach(async () => {
     const { api } = await import("../../../lib/tauri-api");
     (api.workflowSkillList as ReturnType<typeof vi.fn>).mockClear();
-    (api.workflowSkillList as ReturnType<typeof vi.fn>).mockResolvedValue(fixtures);
+    (api.workflowSkillList as ReturnType<typeof vi.fn>).mockResolvedValue(
+      fixtures,
+    );
     (api.workflowSkillGet as ReturnType<typeof vi.fn>).mockClear();
-    (api.workflowSkillGet as ReturnType<typeof vi.fn>).mockResolvedValue(fullFixture);
+    (api.workflowSkillGet as ReturnType<typeof vi.fn>).mockResolvedValue(
+      fullFixture,
+    );
     (api.workflowSkillDelete as ReturnType<typeof vi.fn>).mockClear();
   });
 
@@ -129,11 +140,15 @@ describe("SkillsPanel", () => {
 
   it("renders the empty state when the workflow has no skills", async () => {
     const { api } = await import("../../../lib/tauri-api");
-    (api.workflowSkillList as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
+    (api.workflowSkillList as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      [],
+    );
 
     const h = await mount();
 
-    const empty = h.container.querySelector('[data-testid="skills-panel-empty"]');
+    const empty = h.container.querySelector(
+      '[data-testid="skills-panel-empty"]',
+    );
     expect(empty).not.toBeNull();
     // Exact copy from the spec.
     expect(empty?.textContent).toContain("No skills saved");
@@ -147,8 +162,12 @@ describe("SkillsPanel", () => {
     const table = h.container.querySelector('[data-testid="skills-table"]');
     expect(table).not.toBeNull();
 
-    const row1 = h.container.querySelector('[data-testid="skills-row-summarize_docs"]') as HTMLElement;
-    const row2 = h.container.querySelector('[data-testid="skills-row-lint_then_test"]') as HTMLElement;
+    const row1 = h.container.querySelector(
+      '[data-testid="skills-row-summarize_docs"]',
+    ) as HTMLElement;
+    const row2 = h.container.querySelector(
+      '[data-testid="skills-row-lint_then_test"]',
+    ) as HTMLElement;
     expect(row1).not.toBeNull();
     expect(row2).not.toBeNull();
 
@@ -171,7 +190,9 @@ describe("SkillsPanel", () => {
       '[data-testid="skills-view-summarize_docs"]',
     ) as HTMLButtonElement;
     expect(viewBtn).not.toBeNull();
-    await act(async () => { viewBtn.click(); });
+    await act(async () => {
+      viewBtn.click();
+    });
     await flush();
 
     // workflowSkillGet was called with workflowId + name.
@@ -197,17 +218,23 @@ describe("SkillsPanel", () => {
       '[data-testid="skills-delete-lint_then_test"]',
     ) as HTMLButtonElement;
     expect(deleteBtn).not.toBeNull();
-    await act(async () => { deleteBtn.click(); });
+    await act(async () => {
+      deleteBtn.click();
+    });
     await flush();
 
     // ConfirmDialog mounted.
-    const confirm = h.container.querySelector('[data-testid="skills-delete-confirm"]');
+    const confirm = h.container.querySelector(
+      '[data-testid="skills-delete-confirm"]',
+    );
     expect(confirm).not.toBeNull();
 
     const allow = h.container.querySelector(
       '[data-testid="skills-delete-confirm-allow"]',
     ) as HTMLButtonElement;
-    await act(async () => { allow.click(); });
+    await act(async () => {
+      allow.click();
+    });
     await flush();
 
     expect(api.workflowSkillDelete).toHaveBeenCalledWith(99, "lint_then_test");
@@ -220,18 +247,26 @@ describe("SkillsPanel", () => {
     const h = await mount({ workflowId: 1 });
 
     expect(api.workflowSkillList).toHaveBeenCalledWith(1);
-    const firstCallCount = (api.workflowSkillList as ReturnType<typeof vi.fn>).mock.calls.length;
+    const firstCallCount = (api.workflowSkillList as ReturnType<typeof vi.fn>)
+      .mock.calls.length;
 
     // Re-render with a new id. The panel's useEffect should refetch.
     await act(async () => {
       h.root.render(
-        <SkillsPanel workflowId={2} workflowName="Test Workflow" open={true} onClose={() => undefined} />,
+        <SkillsPanel
+          workflowId={2}
+          workflowName="Test Workflow"
+          open={true}
+          onClose={() => undefined}
+        />,
       );
     });
     await flush();
 
     expect(api.workflowSkillList).toHaveBeenCalledWith(2);
-    expect((api.workflowSkillList as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(firstCallCount);
+    expect(
+      (api.workflowSkillList as ReturnType<typeof vi.fn>).mock.calls.length,
+    ).toBeGreaterThan(firstCallCount);
 
     await h.cleanup();
   });
@@ -264,17 +299,28 @@ describe("SkillsPanel feature detection", () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <FreshPanel workflowId={1} workflowName="WF" open={true} onClose={() => undefined} />,
+        <FreshPanel
+          workflowId={1}
+          workflowName="WF"
+          open={true}
+          onClose={() => undefined}
+        />,
       );
     });
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      await Promise.resolve();
+    });
 
-    const hint = container.querySelector('[data-testid="skills-panel-unsupported"]');
+    const hint = container.querySelector(
+      '[data-testid="skills-panel-unsupported"]',
+    );
     expect(hint).not.toBeNull();
     expect(hint?.textContent).toContain("not yet available");
     expect(listSpy).not.toHaveBeenCalled();
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
 
     vi.doUnmock("../../../lib/tauri-api");

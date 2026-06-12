@@ -20,7 +20,12 @@ const {
   writeFileMock: vi.fn(async () => undefined),
   editFileMock: vi.fn(async () => ({ ok: true })),
   multiEditMock: vi.fn(async () => ({ ok: true })),
-  runShellMock: vi.fn(async () => ({ ok: true, stdout: "", stderr: "", code: 0 })),
+  runShellMock: vi.fn(async () => ({
+    ok: true,
+    stdout: "",
+    stderr: "",
+    code: 0,
+  })),
   applescriptMock: vi.fn(async () => ({ ok: true, output: "" })),
   browserNavigateMock: vi.fn(async () => ({ status: 200, title: "", url: "" })),
   browserClickMock: vi.fn(async () => ({ ok: true })),
@@ -109,7 +114,9 @@ describe("dry-run mode: write-side tools short-circuit", () => {
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(true);
     expect(parsed.dry_run).toBe(true);
-    expect(parsed.would_run_applescript.startsWith("x".repeat(2048))).toBe(true);
+    expect(parsed.would_run_applescript.startsWith("x".repeat(2048))).toBe(
+      true,
+    );
     expect(parsed.would_run_applescript).toContain("truncated");
   });
 
@@ -217,7 +224,10 @@ describe("dry-run mode: write-side tools short-circuit", () => {
     );
     expect(browserFillMock).not.toHaveBeenCalled();
     const fillParsed = JSON.parse(fill);
-    expect(fillParsed.would_fill).toEqual({ selector: "input[name=q]", value: "hello" });
+    expect(fillParsed.would_fill).toEqual({
+      selector: "input[name=q]",
+      value: "hello",
+    });
   });
 });
 
@@ -251,7 +261,9 @@ describe("dryRunValidateUrl: SSRF preflight", () => {
   });
 
   it("accepts data:image/* URLs but rejects non-image data: URLs", () => {
-    expect(dryRunValidateUrl("data:image/png;base64,iVBORw0KGgo=").ok).toBe(true);
+    expect(dryRunValidateUrl("data:image/png;base64,iVBORw0KGgo=").ok).toBe(
+      true,
+    );
     expect(dryRunValidateUrl("data:text/html,<h1>hi</h1>").ok).toBe(false);
   });
 });

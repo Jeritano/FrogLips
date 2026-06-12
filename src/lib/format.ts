@@ -12,7 +12,8 @@
 /** Abbreviate a count: 1_500_000 → "1.5M", 2_400 → "2k". Falsy → "0". */
 export function abbrev(n?: number): string {
   if (!n) return "0";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2).replace(/\.?0+$/, "")}M`;
+  if (n >= 1_000_000)
+    return `${(n / 1_000_000).toFixed(2).replace(/\.?0+$/, "")}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
   return String(n);
 }
@@ -22,7 +23,9 @@ export function paramPill(n: number | null): string | null {
   if (n === null) return null;
   if (n >= 1_000_000_000) {
     const v = n / 1_000_000_000;
-    return v >= 100 ? `${Math.round(v)}B` : `${v.toFixed(v >= 10 ? 0 : 1).replace(/\.0$/, "")}B`;
+    return v >= 100
+      ? `${Math.round(v)}B`
+      : `${v.toFixed(v >= 10 ? 0 : 1).replace(/\.0$/, "")}B`;
   }
   if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`;
   return null;

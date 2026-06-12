@@ -22,12 +22,21 @@ describe("formatUserProfile", () => {
 
   it("returns null when enabled but every field is blank", () => {
     expect(
-      formatUserProfile({ enabled: true, name: "  ", about: "", response_style: null }),
+      formatUserProfile({
+        enabled: true,
+        name: "  ",
+        about: "",
+        response_style: null,
+      }),
     ).toBeNull();
   });
 
   it("renders only the fields that are present", () => {
-    const out = formatUserProfile({ enabled: true, name: "Alice", occupation: "Engineer" });
+    const out = formatUserProfile({
+      enabled: true,
+      name: "Alice",
+      occupation: "Engineer",
+    });
     expect(out).toContain("- Name: Alice");
     expect(out).toContain("- Occupation: Engineer");
     expect(out).not.toContain("Location");
@@ -35,7 +44,10 @@ describe("formatUserProfile", () => {
   });
 
   it("includes the response-style line when set", () => {
-    const out = formatUserProfile({ enabled: true, response_style: "Be concise" });
+    const out = formatUserProfile({
+      enabled: true,
+      response_style: "Be concise",
+    });
     expect(out).toContain("How they want you to respond: Be concise");
   });
 

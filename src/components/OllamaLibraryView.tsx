@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, Tag, Clock, Cloud, Trash2, Check } from "lucide-react";
 import { api } from "../lib/tauri-api";
-import type { ModelEntry, OllamaLibraryEntry, OllamaPullProgress } from "../types";
+import type {
+  ModelEntry,
+  OllamaLibraryEntry,
+  OllamaPullProgress,
+} from "../types";
 
 /* ── color palette ──────────────────────────────────────────────────────
    Matches the colored chips on ollama.com/library:
@@ -14,11 +18,11 @@ import type { ModelEntry, OllamaLibraryEntry, OllamaPullProgress } from "../type
      size    → slate
    Background is the color at ~22% opacity, foreground at 100%. */
 export const CAP_COLORS: Record<string, string> = {
-  vision:    "#f97316",
-  tools:     "#3b82f6",
-  thinking:  "#a855f7",
-  audio:     "#06b6d4",
-  cloud:     "#22c55e",
+  vision: "#f97316",
+  tools: "#3b82f6",
+  thinking: "#a855f7",
+  audio: "#06b6d4",
+  cloud: "#22c55e",
   embedding: "#eab308",
 };
 const SIZE_COLOR = "#475569";
@@ -52,7 +56,13 @@ interface OllamaLibraryViewProps {
   /** id currently armed for two-click delete confirm. */
   confirmDelete: string | null;
   /** Fallback dataset shown when ollama.com/library can't be reached. */
-  fallback: { id: string; label: string; desc: string; tags: string[]; size: string }[];
+  fallback: {
+    id: string;
+    label: string;
+    desc: string;
+    tags: string[];
+    size: string;
+  }[];
   /** Filter text from the parent search box (existing styling). */
   query: string;
 }
@@ -126,10 +136,22 @@ function SkeletonCard() {
   return (
     <div className="mb-card mb-ollama-card mb-ollama-skel" aria-busy="true">
       <div className="mb-card-info">
-        <div className="mb-ollama-skel-line" style={{ width: "32%", height: 14 }} />
-        <div className="mb-ollama-skel-line" style={{ width: "92%", height: 10, marginTop: 8 }} />
-        <div className="mb-ollama-skel-line" style={{ width: "78%", height: 10, marginTop: 4 }} />
-        <div className="mb-ollama-skel-line" style={{ width: "40%", height: 10, marginTop: 10 }} />
+        <div
+          className="mb-ollama-skel-line"
+          style={{ width: "32%", height: 14 }}
+        />
+        <div
+          className="mb-ollama-skel-line"
+          style={{ width: "92%", height: 10, marginTop: 8 }}
+        />
+        <div
+          className="mb-ollama-skel-line"
+          style={{ width: "78%", height: 10, marginTop: 4 }}
+        />
+        <div
+          className="mb-ollama-skel-line"
+          style={{ width: "40%", height: 10, marginTop: 10 }}
+        />
       </div>
     </div>
   );
@@ -183,12 +205,13 @@ export function OllamaLibraryView({
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
     // `fallback` is a stable prop reference from the parent (the `OLLAMA`
     // const). Re-running on every render would thrash the request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
 
   const toggleFilter = (f: string) => {
     setFilters((prev) => {
@@ -219,13 +242,17 @@ export function OllamaLibraryView({
     if (sort === "popular") {
       out = [...out].sort((a, b) => b.pulls - a.pulls);
     } else if (sort === "newest") {
-      out = [...out].sort((a, b) =>
-        daysAgoEstimate(a.updated_relative) - daysAgoEstimate(b.updated_relative),
+      out = [...out].sort(
+        (a, b) =>
+          daysAgoEstimate(a.updated_relative) -
+          daysAgoEstimate(b.updated_relative),
       );
     } else {
       // "updated" = alpha by updated_relative; matches the screenshot's
       // ordering for rarely-touched models.
-      out = [...out].sort((a, b) => a.updated_relative.localeCompare(b.updated_relative));
+      out = [...out].sort((a, b) =>
+        a.updated_relative.localeCompare(b.updated_relative),
+      );
     }
     return out;
   }, [entries, filters, sort, query]);
@@ -234,7 +261,11 @@ export function OllamaLibraryView({
     <div className="mb-ollama-view" data-testid="ollama-library-view">
       {/* Filter chips + sort dropdown — top toolbar (matches ollama.com). */}
       <div className="mb-ollama-toolbar">
-        <div className="mb-ollama-chips" role="group" aria-label="Filter by capability">
+        <div
+          className="mb-ollama-chips"
+          role="group"
+          aria-label="Filter by capability"
+        >
           {ALL_FILTERS.map((label) => {
             const key = label.toLowerCase();
             const active = filters.has(key);
@@ -247,7 +278,11 @@ export function OllamaLibraryView({
                 onClick={() => toggleFilter(label)}
                 style={
                   active
-                    ? { background: `${color}33`, color, borderColor: `${color}88` }
+                    ? {
+                        background: `${color}33`,
+                        color,
+                        borderColor: `${color}88`,
+                      }
                     : undefined
                 }
                 aria-pressed={active}
@@ -286,9 +321,7 @@ export function OllamaLibraryView({
       )}
 
       {!loading && filteredSorted.length === 0 && (
-        <div className="mb-empty">
-          No models match your filters.
-        </div>
+        <div className="mb-empty">No models match your filters.</div>
       )}
 
       {!loading &&
@@ -298,7 +331,10 @@ export function OllamaLibraryView({
           // Pull/track the suffixed id so a bare `ollama pull <name>` doesn't
           // 404 on a missing local manifest ("file does not exist").
           const isCloud = entry.capabilities.includes("cloud");
-          const pullId = isCloud && !entry.name.includes(":") ? `${entry.name}:cloud` : entry.name;
+          const pullId =
+            isCloud && !entry.name.includes(":")
+              ? `${entry.name}:cloud`
+              : entry.name;
           // Installed-match: a catalog row names a model FAMILY ("gemma4"), but
           // a local install carries a tag ("gemma4:latest"). Match the exact
           // pull id, the bare name, OR any installed variant whose base name
@@ -338,13 +374,24 @@ export function OllamaLibraryView({
                   ))}
                 </div>
                 <div className="mb-ollama-meta">
-                  <span><Download size={12} /> {fmtPulls(entry.pulls)} Pulls</span>
-                  <span>· <Tag size={12} /> {entry.tag_count} Tag{entry.tag_count === 1 ? "" : "s"}</span>
-                  {entry.updated_relative && <span>· <Clock size={12} /> Updated {entry.updated_relative}</span>}
+                  <span>
+                    <Download size={12} /> {fmtPulls(entry.pulls)} Pulls
+                  </span>
+                  <span>
+                    · <Tag size={12} /> {entry.tag_count} Tag
+                    {entry.tag_count === 1 ? "" : "s"}
+                  </span>
+                  {entry.updated_relative && (
+                    <span>
+                      · <Clock size={12} /> Updated {entry.updated_relative}
+                    </span>
+                  )}
                 </div>
                 {isCloud && !isInstalled && (
                   <div className="mb-ollama-cloudhint">
-                    <Cloud size={16} /> Cloud model — runs on Ollama's servers, no local download. First pull opens Ollama sign-in in your browser automatically.
+                    <Cloud size={16} /> Cloud model — runs on Ollama's servers,
+                    no local download. First pull opens Ollama sign-in in your
+                    browser automatically.
                   </div>
                 )}
                 {err && <div className="mb-card-err">{err}</div>}
@@ -371,11 +418,15 @@ export function OllamaLibraryView({
                     onClick={() => requestRemove(removeId)}
                     disabled={isDeleting || !!deleting}
                   >
-                    {isDeleting
-                      ? <span className="mb-spinner" />
-                      : confirmDelete === removeId
-                        ? "Click again to confirm"
-                        : <><Trash2 size={14} /> Remove</>}
+                    {isDeleting ? (
+                      <span className="mb-spinner" />
+                    ) : confirmDelete === removeId ? (
+                      "Click again to confirm"
+                    ) : (
+                      <>
+                        <Trash2 size={14} /> Remove
+                      </>
+                    )}
                   </button>
                 ) : (
                   <button
@@ -384,19 +435,27 @@ export function OllamaLibraryView({
                     disabled={isPulling || !!pulling}
                     data-testid="ollama-pull-btn"
                   >
-                    {isPulling
-                      ? <span className="mb-spinner" />
-                      : isDone
-                        ? <><Check size={14} /> Done</>
-                        : isInstalled
-                          ? <><Check size={14} /> Installed</>
-                          : isCloud
-                            ? "Get cloud"
-                            : "Pull"}
+                    {isPulling ? (
+                      <span className="mb-spinner" />
+                    ) : isDone ? (
+                      <>
+                        <Check size={14} /> Done
+                      </>
+                    ) : isInstalled ? (
+                      <>
+                        <Check size={14} /> Installed
+                      </>
+                    ) : isCloud ? (
+                      "Get cloud"
+                    ) : (
+                      "Pull"
+                    )}
                   </button>
                 )}
                 {isInstalled && (
-                  <span className="mb-tag mb-installed-tag"><Check size={12} /> installed</span>
+                  <span className="mb-tag mb-installed-tag">
+                    <Check size={12} /> installed
+                  </span>
                 )}
               </div>
             </article>

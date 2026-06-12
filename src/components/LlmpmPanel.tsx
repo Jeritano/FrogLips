@@ -10,7 +10,6 @@ import { extractParams, type HfModel } from "./hf-library/loader";
 
 const LLMPM_BACKEND_ID = "llmpm-local";
 
-
 /** One catalog card — matches the HF library's `.hfl-card` layout (avatar,
  *  id, pipeline + param + library chips, updated/downloads/likes), with an
  *  llmpm Install/Serve action. */
@@ -35,29 +34,47 @@ function LlmpmCard({
 }) {
   const initial = (m.id.split("/")[0]?.[0] ?? m.id[0] ?? "?").toUpperCase();
   const pipeline = m.pipeline_tag ?? null;
-  const pColor = pipeline ? PIPELINE_COLOR[pipeline] ?? "#6b7280" : null;
+  const pColor = pipeline ? (PIPELINE_COLOR[pipeline] ?? "#6b7280") : null;
   const params = paramPill(extractParams(m));
   const updated = relTime(m.lastModified);
   return (
     <div className="hfl-card">
       <div className="hfl-card-head">
-        <div className="hfl-avatar" aria-hidden>{initial}</div>
-        <div className="hfl-card-id" title={m.id}>{m.id}</div>
+        <div className="hfl-avatar" aria-hidden>
+          {initial}
+        </div>
+        <div className="hfl-card-id" title={m.id}>
+          {m.id}
+        </div>
       </div>
       <div className="hfl-card-chips">
         {pipeline && (
-          <span className="hfl-pipeline" style={{ borderColor: pColor ?? undefined, color: pColor ?? undefined }}>
+          <span
+            className="hfl-pipeline"
+            style={{
+              borderColor: pColor ?? undefined,
+              color: pColor ?? undefined,
+            }}
+          >
             {pipeline.replace(/-/g, " ")}
           </span>
         )}
         {params && <span className="hfl-param-pill">{params}</span>}
-        {m.library_name && <span className="hfl-lib-pill">{m.library_name}</span>}
+        {m.library_name && (
+          <span className="hfl-lib-pill">{m.library_name}</span>
+        )}
       </div>
       <div className="hfl-card-foot">
-        <span className="hfl-updated">{updated ? `Updated ${updated}` : "—"}</span>
+        <span className="hfl-updated">
+          {updated ? `Updated ${updated}` : "—"}
+        </span>
         <span className="hfl-stats">
-          <span title="Downloads"><Download size={12} /> {abbrev(m.downloads)}</span>
-          <span title="Likes" style={{ marginLeft: 8 }}><Heart size={12} /> {abbrev(m.likes)}</span>
+          <span title="Downloads">
+            <Download size={12} /> {abbrev(m.downloads)}
+          </span>
+          <span title="Likes" style={{ marginLeft: 8 }}>
+            <Heart size={12} /> {abbrev(m.likes)}
+          </span>
         </span>
       </div>
       <div className="hfl-card-actions">
@@ -66,11 +83,22 @@ function LlmpmCard({
             Serving
           </Button>
         ) : installed ? (
-          <Button size="sm" variant="primary" onClick={onServe} disabled={anyBusy} aria-busy={busy}>
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={onServe}
+            disabled={anyBusy}
+            aria-busy={busy}
+          >
             {busy ? <Spinner label="Serving" /> : "Serve"}
           </Button>
         ) : (
-          <Button size="sm" onClick={onInstall} disabled={anyBusy} aria-busy={busy}>
+          <Button
+            size="sm"
+            onClick={onInstall}
+            disabled={anyBusy}
+            aria-busy={busy}
+          >
             {busy ? <Spinner label="Installing" /> : "Install"}
           </Button>
         )}
@@ -85,9 +113,15 @@ function LlmpmCard({
  * Froglips spawns `llmpm serve`, waits for the OpenAI endpoint, and
  * auto-registers it as a custom backend so it appears in the chat picker.
  */
-export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => void }) {
+export function LlmpmPanel({
+  onBackendsChanged,
+}: {
+  onBackendsChanged?: () => void;
+}) {
   const [available, setAvailable] = useState<boolean | null>(null);
-  const [installed, setInstalled] = useState<{ repo: string; backend: string }[]>([]);
+  const [installed, setInstalled] = useState<
+    { repo: string; backend: string }[]
+  >([]);
   const [serveStatus, setServeStatus] = useState<LlmpmServeStatus | null>(null);
 
   const [query, setQuery] = useState("");
@@ -115,7 +149,10 @@ export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => vo
   }, []);
 
   useEffect(() => {
-    api.llmpmAvailable().then((a) => setAvailable(a.available)).catch(() => setAvailable(false));
+    api
+      .llmpmAvailable()
+      .then((a) => setAvailable(a.available))
+      .catch(() => setAvailable(false));
     void refreshInstalled();
     void refreshServe();
   }, [refreshInstalled, refreshServe]);
@@ -155,7 +192,9 @@ export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => vo
       const data: HfModel[] = await res.json();
       setHits(data);
     } catch (err) {
-      setSearchErr(err instanceof Error ? err.message : "couldn't reach HuggingFace");
+      setSearchErr(
+        err instanceof Error ? err.message : "couldn't reach HuggingFace",
+      );
       setHits([]);
     } finally {
       setSearching(false);
@@ -204,7 +243,10 @@ export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => vo
             api_key: null,
           };
           await api.settingsSet({
-            custom_backends: [...existing.filter((b) => b.id !== LLMPM_BACKEND_ID), cb],
+            custom_backends: [
+              ...existing.filter((b) => b.id !== LLMPM_BACKEND_ID),
+              cb,
+            ],
           });
           onBackendsChanged?.();
         }
@@ -237,19 +279,25 @@ export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => vo
 
   const installedRef = useRef(installed);
   installedRef.current = installed;
-  const isInstalled = (repo: string) => installedRef.current.some((m) => m.repo === repo);
+  const isInstalled = (repo: string) =>
+    installedRef.current.some((m) => m.repo === repo);
 
   if (available === false) {
     return (
-      <div className="llmpm-panel" data-testid="llmpm-panel" style={{ padding: "var(--space-4)" }}>
+      <div
+        className="llmpm-panel"
+        data-testid="llmpm-panel"
+        style={{ padding: "var(--space-4)" }}
+      >
         <p style={{ color: "var(--text-2)" }}>
           <strong>llmpm not found.</strong> Install it, then reopen:
         </p>
         <pre className="ui-input" style={{ padding: "var(--space-3)" }}>
-          pip install llmpm   # or: npm install -g llmpm
+          pip install llmpm # or: npm install -g llmpm
         </pre>
         <p style={{ color: "var(--text-3)", fontSize: "var(--fs-xs)" }}>
-          Installed but not detected? Set the <code>LLMPM_BIN</code> env var to its path.
+          Installed but not detected? Set the <code>LLMPM_BIN</code> env var to
+          its path.
         </p>
       </div>
     );
@@ -259,7 +307,12 @@ export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => vo
     <div
       className="llmpm-panel"
       data-testid="llmpm-panel"
-      style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        minHeight: 0,
+      }}
     >
       {/* Toolbar */}
       <div
@@ -308,7 +361,14 @@ export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => vo
           role="status"
           aria-live="polite"
         >
-          <span style={{ color: "var(--green-fg)", fontWeight: "var(--fw-semibold)" }}>● Serving</span>
+          <span
+            style={{
+              color: "var(--green-fg)",
+              fontWeight: "var(--fw-semibold)",
+            }}
+          >
+            ● Serving
+          </span>
           <span style={{ color: "var(--text)" }}>{serveStatus.repo}</span>
           <span style={{ color: "var(--text-3)" }}>{serveStatus.base_url}</span>
           <span style={{ flex: 1 }} />
@@ -319,14 +379,25 @@ export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => vo
       )}
 
       {searchErr && (
-        <div style={{ padding: "var(--space-2) var(--space-3)", color: "var(--warn-fg)", fontSize: "var(--fs-xs)" }}>
-          {searchErr} — paste an exact <code>org/model</code> above to install directly.
+        <div
+          style={{
+            padding: "var(--space-2) var(--space-3)",
+            color: "var(--warn-fg)",
+            fontSize: "var(--fs-xs)",
+          }}
+        >
+          {searchErr} — paste an exact <code>org/model</code> above to install
+          directly.
         </div>
       )}
 
       {/* Card grid — reuses the HF library's .hfl-grid / .hfl-card styling. */}
       {searching && hits.length === 0 ? (
-        <div className="skeleton-list" aria-busy="true" aria-label="Loading catalog">
+        <div
+          className="skeleton-list"
+          aria-busy="true"
+          aria-label="Loading catalog"
+        >
           <div className="skeleton-row" />
           <div className="skeleton-row" />
           <div className="skeleton-row" />
@@ -351,14 +422,30 @@ export function LlmpmPanel({ onBackendsChanged }: { onBackendsChanged?: () => vo
       )}
 
       {(progress || error) && (
-        <div style={{ padding: "var(--space-2) var(--space-3)", borderTop: "1px solid var(--border-subtle)" }}>
+        <div
+          style={{
+            padding: "var(--space-2) var(--space-3)",
+            borderTop: "1px solid var(--border-subtle)",
+          }}
+        >
           {progress && (
-            <div style={{ fontSize: "var(--fs-xs)", color: "var(--text-2)", fontFamily: "var(--mono)" }} data-testid="llmpm-progress">
+            <div
+              style={{
+                fontSize: "var(--fs-xs)",
+                color: "var(--text-2)",
+                fontFamily: "var(--mono)",
+              }}
+              data-testid="llmpm-progress"
+            >
               {progress}
             </div>
           )}
           {error && (
-            <div className="image-error-row" role="alert" data-testid="llmpm-error">
+            <div
+              className="image-error-row"
+              role="alert"
+              data-testid="llmpm-error"
+            >
               {error}
             </div>
           )}

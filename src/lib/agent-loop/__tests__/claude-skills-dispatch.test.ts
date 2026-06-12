@@ -12,10 +12,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  claudeSkillList: vi.fn(async (_enabledOnly?: boolean) =>
-    [] as Array<Record<string, unknown>>),
-  claudeSkillGet: vi.fn(async (_name: string) =>
-    null as Record<string, unknown> | null),
+  claudeSkillList: vi.fn(
+    async (_enabledOnly?: boolean) => [] as Array<Record<string, unknown>>,
+  ),
+  claudeSkillGet: vi.fn(
+    async (_name: string) => null as Record<string, unknown> | null,
+  ),
 }));
 
 vi.mock("../../tauri-api", () => ({
@@ -38,12 +40,20 @@ describe("list_claude_skills", () => {
   it("requests enabled-only and returns name+description summaries", async () => {
     mocks.claudeSkillList.mockResolvedValue([
       {
-        id: 1, name: "pdf-extractor", description: "Extract PDF tables",
-        source_path: "/sk/pdf", enabled: true, pinned: false,
+        id: 1,
+        name: "pdf-extractor",
+        description: "Extract PDF tables",
+        source_path: "/sk/pdf",
+        enabled: true,
+        pinned: false,
       },
       {
-        id: 2, name: "react-helper", description: "React patterns reference",
-        source_path: "/sk/react", enabled: true, pinned: true,
+        id: 2,
+        name: "react-helper",
+        description: "React patterns reference",
+        source_path: "/sk/react",
+        enabled: true,
+        pinned: true,
       },
     ]);
     const out = await executeTool("list_claude_skills", {});
@@ -83,7 +93,9 @@ describe("load_claude_skill", () => {
 
   it("returns the body and parses allowed_tools_json into an array", async () => {
     mocks.claudeSkillGet.mockResolvedValue(row());
-    const out = await executeTool("load_claude_skill", { name: "pdf-extractor" });
+    const out = await executeTool("load_claude_skill", {
+      name: "pdf-extractor",
+    });
     expect(mocks.claudeSkillGet).toHaveBeenCalledWith("pdf-extractor");
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(true);
@@ -113,7 +125,9 @@ describe("load_claude_skill", () => {
 
   it("returns disabled when the row's enabled flag is false", async () => {
     mocks.claudeSkillGet.mockResolvedValue(row({ enabled: false }));
-    const out = await executeTool("load_claude_skill", { name: "pdf-extractor" });
+    const out = await executeTool("load_claude_skill", {
+      name: "pdf-extractor",
+    });
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(false);
     expect(parsed.kind).toBe("disabled");
@@ -121,7 +135,9 @@ describe("load_claude_skill", () => {
 
   it("leaves allowed_tools undefined when allowed_tools_json is null", async () => {
     mocks.claudeSkillGet.mockResolvedValue(row({ allowed_tools_json: null }));
-    const out = await executeTool("load_claude_skill", { name: "pdf-extractor" });
+    const out = await executeTool("load_claude_skill", {
+      name: "pdf-extractor",
+    });
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(true);
     expect(parsed.allowed_tools).toBeUndefined();
@@ -129,8 +145,12 @@ describe("load_claude_skill", () => {
   });
 
   it("leaves allowed_tools undefined when allowed_tools_json is unparseable", async () => {
-    mocks.claudeSkillGet.mockResolvedValue(row({ allowed_tools_json: "not json {" }));
-    const out = await executeTool("load_claude_skill", { name: "pdf-extractor" });
+    mocks.claudeSkillGet.mockResolvedValue(
+      row({ allowed_tools_json: "not json {" }),
+    );
+    const out = await executeTool("load_claude_skill", {
+      name: "pdf-extractor",
+    });
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(true);
     expect(parsed.allowed_tools).toBeUndefined();
@@ -140,7 +160,9 @@ describe("load_claude_skill", () => {
     mocks.claudeSkillGet.mockResolvedValue(
       row({ allowed_tools_json: JSON.stringify({ Read: true }) }),
     );
-    const out = await executeTool("load_claude_skill", { name: "pdf-extractor" });
+    const out = await executeTool("load_claude_skill", {
+      name: "pdf-extractor",
+    });
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(true);
     expect(parsed.allowed_tools).toBeUndefined();

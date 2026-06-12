@@ -25,7 +25,12 @@ describe("streamOllamaChat", () => {
     const lines = [
       JSON.stringify({ message: { content: "Hello, " } }) + "\n",
       JSON.stringify({ message: { content: "world" } }) + "\n",
-      JSON.stringify({ message: { content: "!" }, done: true, prompt_eval_count: 5, eval_count: 3 }) + "\n",
+      JSON.stringify({
+        message: { content: "!" },
+        done: true,
+        prompt_eval_count: 5,
+        eval_count: 3,
+      }) + "\n",
     ];
     const fetchMock = vi.fn(async () => streamingResponse(lines));
     vi.stubGlobal("fetch", fetchMock);
@@ -55,7 +60,12 @@ describe("streamOllamaChat", () => {
         message: {
           content: "",
           tool_calls: [
-            { index: 0, id: "tc-1", type: "function", function: { name: "read_file", arguments: "" } },
+            {
+              index: 0,
+              id: "tc-1",
+              type: "function",
+              function: { name: "read_file", arguments: "" },
+            },
           ],
         },
       }) + "\n",

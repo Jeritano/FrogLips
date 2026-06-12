@@ -36,7 +36,12 @@ export function Toast({
   // toast contents (e.g. "Undo delete · Restore") aren't always
   // announced through that path.
   return (
-    <div className="toast" role="status" aria-live="polite" aria-label="Notification">
+    <div
+      className="toast"
+      role="status"
+      aria-live="polite"
+      aria-label="Notification"
+    >
       <span className="toast-msg">{message}</span>
       {actionLabel && onAction && (
         <button

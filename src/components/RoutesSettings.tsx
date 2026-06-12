@@ -34,7 +34,9 @@ export function RoutesSettings({
   onClose: () => void;
 }) {
   const [configs, setConfigs] = useState(() => loadConfigs());
-  const [activeId, setActiveId] = useState<string | null>(() => getActiveConfigId());
+  const [activeId, setActiveId] = useState<string | null>(() =>
+    getActiveConfigId(),
+  );
   const [models, setModels] = useState<ModelEntry[]>([]);
   const presets = loadAllPresets();
 
@@ -50,7 +52,9 @@ export function RoutesSettings({
       .then((m) => {
         if (!cancelled) setModels([...m.mlx, ...m.ollama]);
       })
-      .catch(() => {/* dropdowns fall back to a free-text pin */});
+      .catch(() => {
+        /* dropdowns fall back to a free-text pin */
+      });
     return () => {
       cancelled = true;
     };
@@ -72,7 +76,9 @@ export function RoutesSettings({
     refresh();
   }
 
-  function patchActive(patch: Partial<{ label: string; notes: string; routes: ChatRoute[] }>) {
+  function patchActive(
+    patch: Partial<{ label: string; notes: string; routes: ChatRoute[] }>,
+  ) {
     if (!active) return;
     updateConfig(active.id, patch);
     refresh();
@@ -80,7 +86,11 @@ export function RoutesSettings({
 
   function updateRoute(routeId: string, patch: Partial<ChatRoute>) {
     if (!active) return;
-    patchActive({ routes: active.routes.map((r) => (r.id === routeId ? { ...r, ...patch } : r)) });
+    patchActive({
+      routes: active.routes.map((r) =>
+        r.id === routeId ? { ...r, ...patch } : r,
+      ),
+    });
   }
 
   function addRoute() {
@@ -103,14 +113,21 @@ export function RoutesSettings({
 
   function setDefaultRoute(routeId: string) {
     if (!active) return;
-    patchActive({ routes: active.routes.map((r) => ({ ...r, isDefault: r.id === routeId })) });
+    patchActive({
+      routes: active.routes.map((r) => ({ ...r, isDefault: r.id === routeId })),
+    });
   }
 
   return (
     <div className="routes-panel">
       <div className="routes-panel-head">
         <span className="routes-panel-title">Router configurations</span>
-        <button type="button" className="wf-form-close" onClick={onClose} aria-label="Close">
+        <button
+          type="button"
+          className="wf-form-close"
+          onClick={onClose}
+          aria-label="Close"
+        >
           <X size={16} />
         </button>
       </div>
@@ -125,16 +142,28 @@ export function RoutesSettings({
         >
           {configs.length === 0 && <option value="">No configurations</option>}
           {configs.map((c) => (
-            <option key={c.id} value={c.id}>{c.label}</option>
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
           ))}
         </select>
-        <button type="button" className="routes-config-action" onClick={newConfig} title="New configuration">
+        <button
+          type="button"
+          className="routes-config-action"
+          onClick={newConfig}
+          title="New configuration"
+        >
           <Plus size={14} /> New
         </button>
         <button
           type="button"
           className="routes-config-action"
-          onClick={() => { if (active) { duplicateConfig(active.id); refresh(); } }}
+          onClick={() => {
+            if (active) {
+              duplicateConfig(active.id);
+              refresh();
+            }
+          }}
           disabled={!active}
           title="Duplicate this configuration"
         >
@@ -143,7 +172,12 @@ export function RoutesSettings({
         <button
           type="button"
           className="routes-config-action danger"
-          onClick={() => { if (active) { deleteConfig(active.id); refresh(); } }}
+          onClick={() => {
+            if (active) {
+              deleteConfig(active.id);
+              refresh();
+            }
+          }}
           disabled={!active}
           title="Delete this configuration"
         >
@@ -152,7 +186,9 @@ export function RoutesSettings({
       </div>
 
       {!active ? (
-        <p className="routes-empty">No configurations yet — click <strong>New</strong> to create one.</p>
+        <p className="routes-empty">
+          No configurations yet — click <strong>New</strong> to create one.
+        </p>
       ) : (
         <>
           {/* Rename + notes for the active config */}
@@ -175,12 +211,14 @@ export function RoutesSettings({
           <p className="routes-panel-hint">
             Auto-route picks the best-fit route per message: keyword fast-path →
             semantic match (from utterances) → LLM classifier → default. Fast
-            multi-model routing works best with Ollama (loads on demand) and cloud
-            backends. Mark one route as the default fallback.
+            multi-model routing works best with Ollama (loads on demand) and
+            cloud backends. Mark one route as the default fallback.
           </p>
 
           {active.routes.length === 0 && (
-            <p className="routes-empty">No routes yet — add one to start auto-routing.</p>
+            <p className="routes-empty">
+              No routes yet — add one to start auto-routing.
+            </p>
           )}
 
           <div className="routes-list">
@@ -191,7 +229,9 @@ export function RoutesSettings({
                     className="route-label-input"
                     value={r.label}
                     placeholder="Label (e.g. Coder)"
-                    onChange={(e) => updateRoute(r.id, { label: e.target.value })}
+                    onChange={(e) =>
+                      updateRoute(r.id, { label: e.target.value })
+                    }
                   />
                   <label className="route-default">
                     <input
@@ -202,7 +242,12 @@ export function RoutesSettings({
                     />
                     default
                   </label>
-                  <button type="button" className="wf-btn" onClick={() => removeRoute(r.id)} title="Remove route">
+                  <button
+                    type="button"
+                    className="wf-btn"
+                    onClick={() => removeRoute(r.id)}
+                    title="Remove route"
+                  >
                     <X size={14} />
                   </button>
                 </div>
@@ -211,7 +256,9 @@ export function RoutesSettings({
                   rows={2}
                   value={r.whenToUse}
                   placeholder="When to use… (e.g. questions about code, debugging, programming)"
-                  onChange={(e) => updateRoute(r.id, { whenToUse: e.target.value })}
+                  onChange={(e) =>
+                    updateRoute(r.id, { whenToUse: e.target.value })
+                  }
                 />
                 <input
                   className="route-kw-input"
@@ -219,7 +266,10 @@ export function RoutesSettings({
                   placeholder="Keywords for instant routing (comma-separated, optional)"
                   onChange={(e) =>
                     updateRoute(r.id, {
-                      keywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                      keywords: e.target.value
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean),
                     })
                   }
                 />
@@ -230,7 +280,10 @@ export function RoutesSettings({
                   placeholder="Example messages for semantic routing — one per line (e.g. 'fix this stack trace')"
                   onChange={(e) =>
                     updateRoute(r.id, {
-                      utterances: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean),
+                      utterances: e.target.value
+                        .split("\n")
+                        .map((s) => s.trim())
+                        .filter(Boolean),
                     })
                   }
                 />
@@ -242,28 +295,38 @@ export function RoutesSettings({
                       const v = e.target.value;
                       const sep = v.indexOf("::");
                       if (sep < 0) return;
-                      const backend = (v.slice(0, sep) || "ollama") as ChatRoute["backend"];
+                      const backend = (v.slice(0, sep) ||
+                        "ollama") as ChatRoute["backend"];
                       updateRoute(r.id, { backend, model: v.slice(sep + 2) });
                     }}
                   >
                     <option value="">Pick a model…</option>
                     {models.map((m) => (
-                      <option key={`${m.backend}::${m.id}`} value={`${m.backend}::${m.id}`}>
+                      <option
+                        key={`${m.backend}::${m.id}`}
+                        value={`${m.backend}::${m.id}`}
+                      >
                         {m.id} ({m.backend})
                       </option>
                     ))}
                     {r.model && !models.some((m) => m.id === r.model) && (
-                      <option value={`${r.backend}::${r.model}`}>{r.model} ({r.backend})</option>
+                      <option value={`${r.backend}::${r.model}`}>
+                        {r.model} ({r.backend})
+                      </option>
                     )}
                   </select>
                   <select
                     className="route-preset-select"
                     value={r.preset ?? ""}
-                    onChange={(e) => updateRoute(r.id, { preset: e.target.value || null })}
+                    onChange={(e) =>
+                      updateRoute(r.id, { preset: e.target.value || null })
+                    }
                   >
                     <option value="">No role</option>
                     {presets.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -271,7 +334,12 @@ export function RoutesSettings({
             ))}
           </div>
 
-          <button type="button" className="wf-btn wf-btn-primary" onClick={addRoute} style={{ marginTop: 8 }}>
+          <button
+            type="button"
+            className="wf-btn wf-btn-primary"
+            onClick={addRoute}
+            style={{ marginTop: 8 }}
+          >
             + Add route
           </button>
 
@@ -284,7 +352,13 @@ export function RoutesSettings({
 }
 
 /** Live "what would this route to?" tester for the active config. */
-function RouteTester({ status, routes }: { status: ServerStatus | null; routes: ChatRoute[] }) {
+function RouteTester({
+  status,
+  routes,
+}: {
+  status: ServerStatus | null;
+  routes: ChatRoute[];
+}) {
   const [q, setQ] = useState("");
   const [result, setResult] = useState<RouteDecision | "none" | null>(null);
   const [busy, setBusy] = useState(false);
@@ -294,9 +368,18 @@ function RouteTester({ status, routes }: { status: ServerStatus | null; routes: 
     setBusy(true);
     setResult(null);
     try {
-      const st: ServerStatus =
-        status ?? { running: false, ready: false, model: null, backend: "ollama", host: "127.0.0.1", port: 11434 };
-      const d = await routeChatMessage(q, routes, { status: st, stickyRouteId: null });
+      const st: ServerStatus = status ?? {
+        running: false,
+        ready: false,
+        model: null,
+        backend: "ollama",
+        host: "127.0.0.1",
+        port: 11434,
+      };
+      const d = await routeChatMessage(q, routes, {
+        status: st,
+        stickyRouteId: null,
+      });
       setResult(d ?? "none");
     } catch {
       setResult("none");
@@ -313,18 +396,29 @@ function RouteTester({ status, routes }: { status: ServerStatus | null; routes: 
           value={q}
           placeholder="Type a message to see which route it takes…"
           onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") void run(); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void run();
+          }}
         />
-        <button type="button" className="wf-btn" onClick={run} disabled={busy || !q.trim() || routes.length === 0}>
+        <button
+          type="button"
+          className="wf-btn"
+          onClick={run}
+          disabled={busy || !q.trim() || routes.length === 0}
+        >
           {busy ? "Testing…" : "Test"}
         </button>
       </div>
-      {result === "none" && <div className="routes-tester-result none">No route matched.</div>}
+      {result === "none" && (
+        <div className="routes-tester-result none">No route matched.</div>
+      )}
       {result && result !== "none" && (
         <div className="routes-tester-result">
           → <strong>{result.label}</strong> · <code>{result.model}</code>
           <span className="route-method"> · {result.method}</span>
-          {result.reason && <span className="routes-tester-reason"> — {result.reason}</span>}
+          {result.reason && (
+            <span className="routes-tester-reason"> — {result.reason}</span>
+          )}
         </div>
       )}
     </div>

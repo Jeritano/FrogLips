@@ -17,9 +17,14 @@ import { makeUnifiedDiff } from "./diff";
 import { dryRunValidateUrl } from "./url-safety";
 
 export const DRY_RUN_TOOLS = new Set([
-  "write_file", "edit_file", "multi_edit",
-  "run_shell", "applescript_run",
-  "browser_navigate", "browser_click", "browser_fill",
+  "write_file",
+  "edit_file",
+  "multi_edit",
+  "run_shell",
+  "applescript_run",
+  "browser_navigate",
+  "browser_click",
+  "browser_fill",
 ]);
 
 /**
@@ -37,16 +42,40 @@ export const DRY_RUN_TOOLS = new Set([
  * here. A denylist would silently execute it.
  */
 export const DRY_RUN_READ_ONLY = new Set([
-  "read_file", "list_dir", "search_files", "file_exists", "hash_file", "diff_files",
-  "git_status", "git_diff", "git_log", "git_show", "git_branches",
-  "web_fetch", "web_search", "read_pdf", "clipboard_get",
-  "find_definition", "find_references", "calculate",
-  "recall_memory", "search_project_knowledge",
-  "list_processes", "list_undo", "task_status", "task_list",
-  "list_watches", "poll_watch", "ask_user",
-  "workflow_get", "workflow_keys", "workflow_get_prior_run",
-  "workflow_list_skills", "workflow_get_skill",
-  "list_claude_skills", "load_claude_skill",
+  "read_file",
+  "list_dir",
+  "search_files",
+  "file_exists",
+  "hash_file",
+  "diff_files",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "git_branches",
+  "web_fetch",
+  "web_search",
+  "read_pdf",
+  "clipboard_get",
+  "find_definition",
+  "find_references",
+  "calculate",
+  "recall_memory",
+  "search_project_knowledge",
+  "list_processes",
+  "list_undo",
+  "task_status",
+  "task_list",
+  "list_watches",
+  "poll_watch",
+  "ask_user",
+  "workflow_get",
+  "workflow_keys",
+  "workflow_get_prior_run",
+  "workflow_list_skills",
+  "workflow_get_skill",
+  "list_claude_skills",
+  "load_claude_skill",
 ]);
 
 function truncForDryRun(s: string, max: number): string {
@@ -58,8 +87,9 @@ function truncForDryRun(s: string, max: number): string {
  * lacking SubtleCrypto (test runner, etc.). */
 async function sha256First16(text: string): Promise<string> {
   try {
-    const subtle: SubtleCrypto | undefined = (globalThis as { crypto?: { subtle?: SubtleCrypto } })
-      .crypto?.subtle;
+    const subtle: SubtleCrypto | undefined = (
+      globalThis as { crypto?: { subtle?: SubtleCrypto } }
+    ).crypto?.subtle;
     if (!subtle) return "";
     const buf = new TextEncoder().encode(text);
     const digest = await subtle.digest("SHA-256", buf);
@@ -72,7 +102,10 @@ async function sha256First16(text: string): Promise<string> {
   }
 }
 
-export async function dryRunExecute(name: string, args: Record<string, unknown>): Promise<string> {
+export async function dryRunExecute(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<string> {
   switch (name) {
     case "write_file": {
       const path = String(args.path ?? "");
@@ -107,7 +140,9 @@ export async function dryRunExecute(name: string, args: Record<string, unknown>)
           message: `dry-run: could not read '${path}' for diff: ${(e as Error).message ?? e}`,
         });
       }
-      const after = replaceAll ? before.split(oldStr).join(newStr) : before.replace(oldStr, newStr);
+      const after = replaceAll
+        ? before.split(oldStr).join(newStr)
+        : before.replace(oldStr, newStr);
       const diff = makeUnifiedDiff(path, before, after);
       return JSON.stringify({
         ok: true,
@@ -118,7 +153,11 @@ export async function dryRunExecute(name: string, args: Record<string, unknown>)
     case "multi_edit": {
       const path = String(args.path ?? "");
       const edits = Array.isArray(args.edits)
-        ? (args.edits as Array<{ old_string?: unknown; new_string?: unknown; replace_all?: unknown }>)
+        ? (args.edits as Array<{
+            old_string?: unknown;
+            new_string?: unknown;
+            replace_all?: unknown;
+          }>)
         : [];
       let before = "";
       try {
@@ -207,6 +246,10 @@ export async function dryRunExecute(name: string, args: Record<string, unknown>)
     }
     default:
       // Should never hit — DRY_RUN_TOOLS is the gate.
-      return JSON.stringify({ ok: false, kind: "unknown_dry_run_tool", message: name });
+      return JSON.stringify({
+        ok: false,
+        kind: "unknown_dry_run_tool",
+        message: name,
+      });
   }
 }

@@ -25,18 +25,22 @@ import type { AgentMetrics } from "../types";
  * sequence — the same approach `runner-integration.test.ts` already uses.
  */
 
-const { auditMock, metricsMock, listDirMock, webSearchMock } = vi.hoisted(() => ({
-  auditMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
-    async () => undefined,
-  ),
-  metricsMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
-    async () => undefined,
-  ),
-  listDirMock: vi.fn(async () => ({ entries: ["a.txt"], truncated: false })),
-  webSearchMock: vi.fn(async () => ({
-    results: [{ title: "stub", url: "https://example.test/", snippet: "stub" }],
-  })),
-}));
+const { auditMock, metricsMock, listDirMock, webSearchMock } = vi.hoisted(
+  () => ({
+    auditMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
+      async () => undefined,
+    ),
+    metricsMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
+      async () => undefined,
+    ),
+    listDirMock: vi.fn(async () => ({ entries: ["a.txt"], truncated: false })),
+    webSearchMock: vi.fn(async () => ({
+      results: [
+        { title: "stub", url: "https://example.test/", snippet: "stub" },
+      ],
+    })),
+  }),
+);
 
 vi.mock("../../tauri-api", () => {
   return {

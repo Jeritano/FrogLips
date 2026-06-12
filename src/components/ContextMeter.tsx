@@ -42,7 +42,9 @@ export function ContextMeter({ messages, model, status }: Props) {
     prefetchContextLength(model, status).then((v) => {
       if (!cancelled && v != null) setLookupTick((t) => t + 1);
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [model, status]);
 
   const { used, total, pct } = useMemo(() => {
@@ -51,7 +53,8 @@ export function ContextMeter({ messages, model, status }: Props) {
     // Audit M-F5: when `resolveContextTokens` returns 0 (unknown backend),
     // u/t produces NaN → CSS renders "NaN%" width which collapses the bar
     // and surfaces as a console warning. Clamp the denominator.
-    const pct = t > 0 ? Math.min(100, Math.max(0, Math.round((u / t) * 100))) : 0;
+    const pct =
+      t > 0 ? Math.min(100, Math.max(0, Math.round((u / t) * 100))) : 0;
     return { used: u, total: t, pct };
     // lookupTick is in the dep array even though it's not read directly:
     // it forces a memo re-run when prefetch lands so resolveContextTokens

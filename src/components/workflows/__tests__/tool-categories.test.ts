@@ -12,7 +12,10 @@ describe("TOOL_CATEGORIES invariants", () => {
     const seen = new Map<string, string>();
     for (const cat of TOOL_CATEGORIES) {
       for (const t of cat.tools) {
-        expect(seen.has(t), `'${t}' is in both '${seen.get(t)}' and '${cat.id}'`).toBe(false);
+        expect(
+          seen.has(t),
+          `'${t}' is in both '${seen.get(t)}' and '${cat.id}'`,
+        ).toBe(false);
         seen.set(t, cat.id);
       }
     }
@@ -34,7 +37,11 @@ describe("resolveToolGroups", () => {
 
   it("appends an Other bucket when ALL_TOOLS has uncategorized tools", () => {
     const known = TOOL_CATEGORIES.flatMap((c) => c.tools);
-    const groups = resolveToolGroups([...known, "totally_new_tool", "another_one"]);
+    const groups = resolveToolGroups([
+      ...known,
+      "totally_new_tool",
+      "another_one",
+    ]);
     const other = groups.find((g) => g.id === "other");
     expect(other).toBeDefined();
     expect(other!.tools).toEqual(["totally_new_tool", "another_one"]);

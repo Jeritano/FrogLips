@@ -9,7 +9,11 @@ import {
   setSyntaxTheme,
   type SyntaxThemeId,
 } from "../lib/syntax-theme";
-import { BUBBLE_COLORS, getBubbleColor, setBubbleColor } from "../lib/bubble-color";
+import {
+  BUBBLE_COLORS,
+  getBubbleColor,
+  setBubbleColor,
+} from "../lib/bubble-color";
 
 // AuditLog only renders inside the agent-settings disclosure (gear icon
 // while agent mode is on). Lazy-loaded so first paint of the chat
@@ -24,15 +28,41 @@ const AuditLog = lazy(() =>
 );
 
 const ALL_TOOL_NAMES = [
-  "read_file", "list_dir", "search_files", "file_exists",
-  "run_shell", "write_file", "edit_file", "multi_edit",
-  "git_status", "git_diff", "git_log", "git_show", "git_branches", "git_commit",
-  "web_fetch", "web_search", "read_pdf", "screenshot",
-  "clipboard_get", "clipboard_set", "open_app", "show_notification",
-  "applescript_run", "http_request",
-  "find_definition", "find_references", "format_code",
-  "task_create", "task_status", "task_list", "task_cancel",
-  "ask_user", "spawn_subagent", "await_subagents", "list_subagents",
+  "read_file",
+  "list_dir",
+  "search_files",
+  "file_exists",
+  "run_shell",
+  "write_file",
+  "edit_file",
+  "multi_edit",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "git_branches",
+  "git_commit",
+  "web_fetch",
+  "web_search",
+  "read_pdf",
+  "screenshot",
+  "clipboard_get",
+  "clipboard_set",
+  "open_app",
+  "show_notification",
+  "applescript_run",
+  "http_request",
+  "find_definition",
+  "find_references",
+  "format_code",
+  "task_create",
+  "task_status",
+  "task_list",
+  "task_cancel",
+  "ask_user",
+  "spawn_subagent",
+  "await_subagents",
+  "list_subagents",
 ] as const;
 
 interface Props {
@@ -62,14 +92,22 @@ export function AgentSettingsPanel({
   onChooseWorkspace,
   onCheckUpdates,
 }: Props) {
-  const [syntaxTheme, setSyntaxThemeState] = useState<SyntaxThemeId>(() => getSyntaxTheme());
-  const [bubbleColor, setBubbleColorState] = useState<string | null>(() => getBubbleColor());
+  const [syntaxTheme, setSyntaxThemeState] = useState<SyntaxThemeId>(() =>
+    getSyntaxTheme(),
+  );
+  const [bubbleColor, setBubbleColorState] = useState<string | null>(() =>
+    getBubbleColor(),
+  );
   return (
     <div className="agent-settings" data-testid="agent-settings-panel">
       <div className="agent-settings-row">
         <span className="agent-settings-label">Workspace:</span>
-        <code className="agent-settings-value">{workspaceRoot ?? "(full filesystem)"}</code>
-        <button className="agent-settings-btn" onClick={onChooseWorkspace}>Set…</button>
+        <code className="agent-settings-value">
+          {workspaceRoot ?? "(full filesystem)"}
+        </code>
+        <button className="agent-settings-btn" onClick={onChooseWorkspace}>
+          Set…
+        </button>
       </div>
       <ErrorBar
         message={workspaceErr}
@@ -78,13 +116,19 @@ export function AgentSettingsPanel({
       <div className="agent-settings-row">
         <span className="agent-settings-label">Approve all this session:</span>
         <label>
-          <input type="checkbox" checked={agent.approveAllShell}
-                 onChange={(e) => agent.setApproveAllShell(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={agent.approveAllShell}
+            onChange={(e) => agent.setApproveAllShell(e.target.checked)}
+          />
           shell (normal-risk only)
         </label>
         <label>
-          <input type="checkbox" checked={agent.approveAllWrite}
-                 onChange={(e) => agent.setApproveAllWrite(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={agent.approveAllWrite}
+            onChange={(e) => agent.setApproveAllWrite(e.target.checked)}
+          />
           writes/edits
         </label>
       </div>
@@ -105,16 +149,25 @@ export function AgentSettingsPanel({
       <div className="agent-settings-row">
         <span className="agent-settings-label">Allowed tools:</span>
         <span className="agent-settings-hint">
-          {agent.allowlist.length === 0 ? "(all enabled)" : `${agent.allowlist.length} selected`}
+          {agent.allowlist.length === 0
+            ? "(all enabled)"
+            : `${agent.allowlist.length} selected`}
         </span>
       </div>
       <div className="agent-tool-grid">
         {ALL_TOOL_NAMES.map((n) => {
-          const enabled = agent.allowlist.length === 0 || agent.allowlist.includes(n);
+          const enabled =
+            agent.allowlist.length === 0 || agent.allowlist.includes(n);
           return (
-            <label key={n} className={`agent-tool-pill ${enabled ? "on" : "off"}`}>
-              <input type="checkbox" checked={enabled}
-                     onChange={() => agent.toggleAllowed(n)} />
+            <label
+              key={n}
+              className={`agent-tool-pill ${enabled ? "on" : "off"}`}
+            >
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={() => agent.toggleAllowed(n)}
+              />
               {n}
             </label>
           );
@@ -128,15 +181,22 @@ export function AgentSettingsPanel({
       {agent.approvedShellPrefixes.length > 0 && (
         <div className="agent-settings-row">
           <span className="agent-settings-label">Approved shell prefixes:</span>
-          <span className="agent-settings-value">{agent.approvedShellPrefixes.join(", ")}</span>
-          <button className="agent-settings-btn" onClick={() => agent.setApprovedShellPrefixes([])}>
+          <span className="agent-settings-value">
+            {agent.approvedShellPrefixes.join(", ")}
+          </span>
+          <button
+            className="agent-settings-btn"
+            onClick={() => agent.setApprovedShellPrefixes([])}
+          >
             Clear
           </button>
         </div>
       )}
       <div className="agent-settings-row">
         <span className="agent-settings-label">Updates:</span>
-        <button className="agent-settings-btn" onClick={onCheckUpdates}>Check now</button>
+        <button className="agent-settings-btn" onClick={onCheckUpdates}>
+          Check now
+        </button>
         {updateMsg && <span className="agent-settings-hint">{updateMsg}</span>}
       </div>
       <div className="agent-settings-row">
@@ -152,7 +212,9 @@ export function AgentSettingsPanel({
           }}
         >
           {SYNTAX_THEMES.map((t) => (
-            <option key={t.id} value={t.id}>{t.label}</option>
+            <option key={t.id} value={t.id}>
+              {t.label}
+            </option>
           ))}
         </select>
         <span className="agent-settings-hint">
@@ -161,7 +223,11 @@ export function AgentSettingsPanel({
       </div>
       <div className="agent-settings-row">
         <span className="agent-settings-label">Chat bubble:</span>
-        <div className="wf-color-row" role="radiogroup" aria-label="User chat bubble color">
+        <div
+          className="wf-color-row"
+          role="radiogroup"
+          aria-label="User chat bubble color"
+        >
           {BUBBLE_COLORS.map((c) => {
             const selected = (bubbleColor ?? null) === c.value;
             return (
@@ -174,7 +240,10 @@ export function AgentSettingsPanel({
                 style={c.value ? { background: c.value } : undefined}
                 title={c.name}
                 aria-label={c.name}
-                onClick={() => { setBubbleColorState(c.value); setBubbleColor(c.value); }}
+                onClick={() => {
+                  setBubbleColorState(c.value);
+                  setBubbleColor(c.value);
+                }}
               />
             );
           })}

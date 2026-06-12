@@ -11,7 +11,6 @@ import type { GgufFile, ModelEntry } from "../../types";
  * props, since the Ollama / HF tabs share that delete flow.
  */
 
-
 interface Props {
   installedOllama: ModelEntry[];
   installedMlx: ModelEntry[];
@@ -44,14 +43,17 @@ export function InstalledModelsTab({
   requestRemoveGguf,
   onRetry,
 }: Props) {
-  const total = installedOllama.length + installedMlx.length + ggufInstalled.length;
+  const total =
+    installedOllama.length + installedMlx.length + ggufInstalled.length;
 
   return (
     <>
       {installedErr && (
         <div className="mb-empty mb-empty-err" role="alert">
           <div>Could not list installed models: {installedErr}</div>
-          <button type="button" className="mb-retry-btn" onClick={onRetry}>Retry</button>
+          <button type="button" className="mb-retry-btn" onClick={onRetry}>
+            Retry
+          </button>
         </div>
       )}
       {total === 0 && (
@@ -63,20 +65,27 @@ export function InstalledModelsTab({
       )}
       {total > 0 && (
         <div className="mb-disk-summary">
-          Total: <strong>
+          Total:{" "}
+          <strong>
             {fmtBytes(
               installedOllama.reduce((s, m) => s + (m.size_bytes || 0), 0) +
-              installedMlx.reduce((s, m) => s + (m.size_bytes || 0), 0) +
-              ggufInstalled.reduce((s, f) => s + (f.size_bytes || 0), 0),
+                installedMlx.reduce((s, m) => s + (m.size_bytes || 0), 0) +
+                ggufInstalled.reduce((s, f) => s + (f.size_bytes || 0), 0),
             )}
-          </strong> across {total} models
+          </strong>{" "}
+          across {total} models
         </div>
       )}
       {installedOllama.length > 0 && (
-        <div className="mb-section-title">Ollama ({installedOllama.length})</div>
+        <div className="mb-section-title">
+          Ollama ({installedOllama.length})
+        </div>
       )}
       {installedOllama
-        .filter((m) => !query.trim() || m.id.toLowerCase().includes(query.toLowerCase()))
+        .filter(
+          (m) =>
+            !query.trim() || m.id.toLowerCase().includes(query.toLowerCase()),
+        )
         .map((m) => {
           const isDeleting = deleting === m.id;
           const err = errors.get(m.id);
@@ -112,24 +121,43 @@ export function InstalledModelsTab({
                 {err && <div className="mb-card-err">{err}</div>}
               </div>
               <div className="mb-card-actions">
-                <span className="mb-card-size">{m.size_bytes > 0 ? fmtBytes(m.size_bytes) : (isCloud ? "cloud" : "—")}</span>
+                <span className="mb-card-size">
+                  {m.size_bytes > 0
+                    ? fmtBytes(m.size_bytes)
+                    : isCloud
+                      ? "cloud"
+                      : "—"}
+                </span>
                 <button
                   className="mb-delete-btn"
                   onClick={() => requestRemove(m.id, "ollama")}
                   disabled={isDeleting || !!deleting}
                   title="Delete from disk"
                 >
-                  {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : <><Trash2 size={14} /> Remove</>)}
+                  {isDeleting ? (
+                    <span className="mb-spinner" />
+                  ) : confirmDelete === m.id ? (
+                    "Click again to confirm"
+                  ) : (
+                    <>
+                      <Trash2 size={14} /> Remove
+                    </>
+                  )}
                 </button>
               </div>
             </div>
           );
         })}
       {installedMlx.length > 0 && (
-        <div className="mb-section-title">MLX / HuggingFace ({installedMlx.length})</div>
+        <div className="mb-section-title">
+          MLX / HuggingFace ({installedMlx.length})
+        </div>
       )}
       {installedMlx
-        .filter((m) => !query.trim() || m.id.toLowerCase().includes(query.toLowerCase()))
+        .filter(
+          (m) =>
+            !query.trim() || m.id.toLowerCase().includes(query.toLowerCase()),
+        )
         .map((m) => {
           const isDeleting = deleting === m.id;
           const err = errors.get(m.id);
@@ -160,7 +188,15 @@ export function InstalledModelsTab({
                   disabled={isDeleting || !!deleting}
                   title="Delete from disk"
                 >
-                  {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === m.id ? "Click again to confirm" : <><Trash2 size={14} /> Remove</>)}
+                  {isDeleting ? (
+                    <span className="mb-spinner" />
+                  ) : confirmDelete === m.id ? (
+                    "Click again to confirm"
+                  ) : (
+                    <>
+                      <Trash2 size={14} /> Remove
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -174,14 +210,17 @@ export function InstalledModelsTab({
       {ggufInstalledErr && (
         <div className="mb-empty mb-empty-err" role="alert">
           <div>Could not list local GGUF files: {ggufInstalledErr}</div>
-          <button type="button" className="mb-retry-btn" onClick={onRetry}>Retry</button>
+          <button type="button" className="mb-retry-btn" onClick={onRetry}>
+            Retry
+          </button>
         </div>
       )}
       {ggufInstalled
-        .filter((f) =>
-          !query.trim() ||
-          f.filename.toLowerCase().includes(query.toLowerCase()) ||
-          f.repo.toLowerCase().includes(query.toLowerCase()),
+        .filter(
+          (f) =>
+            !query.trim() ||
+            f.filename.toLowerCase().includes(query.toLowerCase()) ||
+            f.repo.toLowerCase().includes(query.toLowerCase()),
         )
         .map((f) => {
           const id = `gguf:${f.repo}/${f.filename}`;
@@ -189,7 +228,11 @@ export function InstalledModelsTab({
           const err = errors.get(id);
           const quant = parseGgufQuant(f.filename);
           return (
-            <div key={id} className="mb-card" data-testid={`installed-gguf-card-${f.repo}-${f.filename}`}>
+            <div
+              key={id}
+              className="mb-card"
+              data-testid={`installed-gguf-card-${f.repo}-${f.filename}`}
+            >
               <div className="mb-card-info">
                 <div className="mb-card-top">
                   <span className="mb-card-label">{f.filename}</span>
@@ -203,10 +246,17 @@ export function InstalledModelsTab({
                     >
                       gguf
                     </span>
-                    {quant && <span className="mb-tag mb-tag-quant">{quant}</span>}
+                    {quant && (
+                      <span className="mb-tag mb-tag-quant">{quant}</span>
+                    )}
                   </div>
                 </div>
-                <div className="mb-card-desc" style={{ fontSize: 11, opacity: 0.7 }}>{f.repo}</div>
+                <div
+                  className="mb-card-desc"
+                  style={{ fontSize: 11, opacity: 0.7 }}
+                >
+                  {f.repo}
+                </div>
                 {err && <div className="mb-card-err">{err}</div>}
               </div>
               <div className="mb-card-actions">
@@ -217,7 +267,15 @@ export function InstalledModelsTab({
                   disabled={isDeleting || !!deleting}
                   title="Delete GGUF from disk"
                 >
-                  {isDeleting ? <span className="mb-spinner" /> : (confirmDelete === id ? "Click again to confirm" : <><Trash2 size={14} /> Remove</>)}
+                  {isDeleting ? (
+                    <span className="mb-spinner" />
+                  ) : confirmDelete === id ? (
+                    "Click again to confirm"
+                  ) : (
+                    <>
+                      <Trash2 size={14} /> Remove
+                    </>
+                  )}
                 </button>
               </div>
             </div>

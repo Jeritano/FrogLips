@@ -46,7 +46,10 @@ describe("async subagent spawn", () => {
     // Make the inner runAgentLoop hang until we release it.
     let release: (v: string) => void = () => {};
     runAgentLoopMock.mockImplementation(
-      () => new Promise<string>((resolve) => { release = resolve; }),
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
     );
 
     const t0 = Date.now();
@@ -78,10 +81,16 @@ describe("async subagent spawn", () => {
       .mockImplementationOnce(async () => "answer-1")
       .mockImplementationOnce(async () => "answer-2");
 
-    const a = JSON.parse(await spawnSubagentAsync({ prompt: "task A" }, makeParent()));
-    const b = JSON.parse(await spawnSubagentAsync({ prompt: "task B" }, makeParent()));
+    const a = JSON.parse(
+      await spawnSubagentAsync({ prompt: "task A" }, makeParent()),
+    );
+    const b = JSON.parse(
+      await spawnSubagentAsync({ prompt: "task B" }, makeParent()),
+    );
 
-    const joined = JSON.parse(await awaitSubagents([a.subagent_id, b.subagent_id], 5_000));
+    const joined = JSON.parse(
+      await awaitSubagents([a.subagent_id, b.subagent_id], 5_000),
+    );
     expect(joined.ok).toBe(true);
     expect(joined.timed_out).toBe(false);
     expect(joined.results).toHaveLength(2);
@@ -107,16 +116,25 @@ describe("async subagent spawn", () => {
     runAgentLoopMock
       .mockImplementationOnce(async () => "fast")
       .mockImplementationOnce(
-        () => new Promise<string>((resolve) => { releaseSlow = resolve; }),
+        () =>
+          new Promise<string>((resolve) => {
+            releaseSlow = resolve;
+          }),
       );
 
-    const fast = JSON.parse(await spawnSubagentAsync({ prompt: "quick" }, makeParent()));
-    const slow = JSON.parse(await spawnSubagentAsync({ prompt: "slow" }, makeParent()));
+    const fast = JSON.parse(
+      await spawnSubagentAsync({ prompt: "quick" }, makeParent()),
+    );
+    const slow = JSON.parse(
+      await spawnSubagentAsync({ prompt: "slow" }, makeParent()),
+    );
 
     // Let the fast one finish before we await.
     await new Promise((r) => setTimeout(r, 10));
 
-    const joined = JSON.parse(await awaitSubagents([fast.subagent_id, slow.subagent_id], 50));
+    const joined = JSON.parse(
+      await awaitSubagents([fast.subagent_id, slow.subagent_id], 50),
+    );
     expect(joined.timed_out).toBe(true);
 
     const byId = Object.fromEntries(
@@ -155,12 +173,16 @@ describe("async subagent spawn", () => {
       receivedSignal = opts.signal;
       // Wait for abort.
       return new Promise<string>((_resolve, reject) => {
-        opts.signal.addEventListener("abort", () => reject(new Error("aborted")));
+        opts.signal.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
       });
     });
 
     const ctrl = new AbortController();
-    const sa = JSON.parse(await spawnSubagentAsync({ prompt: "long" }, makeParent(ctrl.signal)));
+    const sa = JSON.parse(
+      await spawnSubagentAsync({ prompt: "long" }, makeParent(ctrl.signal)),
+    );
 
     expect(receivedSignal).toBeDefined();
     expect(receivedSignal!.aborted).toBe(false);

@@ -26,7 +26,12 @@ interface Props {
   onClose: () => void;
 }
 
-const LEVEL_FILTERS: readonly ("all" | DiagLevel)[] = ["all", "info", "warn", "error"] as const;
+const LEVEL_FILTERS: readonly ("all" | DiagLevel)[] = [
+  "all",
+  "info",
+  "warn",
+  "error",
+] as const;
 
 const LEVEL_COLORS: Record<DiagLevel, string> = {
   info: "var(--text-muted, #888)",
@@ -50,7 +55,11 @@ function detailToString(d: unknown): string {
   try {
     return JSON.stringify(d, null, 2);
   } catch {
-    try { return String(d); } catch { return "[unserialisable]"; }
+    try {
+      return String(d);
+    } catch {
+      return "[unserialisable]";
+    }
   }
 }
 
@@ -71,9 +80,10 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
 
   // Data section — backup / export / import. `dataStatus` carries the inline
   // success/failure line; `dataBusy` flags the in-flight op so buttons lock.
-  const [dataStatus, setDataStatus] = useState<
-    { kind: "ok" | "err"; text: string } | null
-  >(null);
+  const [dataStatus, setDataStatus] = useState<{
+    kind: "ok" | "err";
+    text: string;
+  } | null>(null);
   const [dataBusy, setDataBusy] = useState(false);
   // App version (shown in the header + useful when a user files a bug).
   const [appVersion, setAppVersion] = useState<string>("");
@@ -81,9 +91,13 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     let alive = true;
     void import("@tauri-apps/api/app")
       .then((m) => m.getVersion())
-      .then((v) => { if (alive) setAppVersion(v); })
+      .then((v) => {
+        if (alive) setAppVersion(v);
+      })
       .catch(() => {});
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
   // Import adds data — give it a two-click confirm before the file picker.
   const importConfirm = useTwoClickConfirm();
@@ -153,7 +167,9 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     const json = JSON.stringify(tail, null, 2);
     try {
       await navigator.clipboard.writeText(json);
-      setCopyStatus(`Copied ${tail.length} entr${tail.length === 1 ? "y" : "ies"}`);
+      setCopyStatus(
+        `Copied ${tail.length} entr${tail.length === 1 ? "y" : "ies"}`,
+      );
     } catch {
       // Fallback: select-and-copy via a hidden textarea so the user still
       // gets something usable when the clipboard API is blocked.
@@ -166,7 +182,9 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
         ta.select();
         document.execCommand("copy");
         ta.remove();
-        setCopyStatus(`Copied ${tail.length} entr${tail.length === 1 ? "y" : "ies"} (fallback)`);
+        setCopyStatus(
+          `Copied ${tail.length} entr${tail.length === 1 ? "y" : "ies"} (fallback)`,
+        );
       } catch {
         setCopyStatus("Copy failed — see console");
         // eslint-disable-next-line no-console
@@ -293,7 +311,12 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     <DiagnosticsOverlay open={open} onClose={onClose}>
       <div className="dashboard-modal diag-modal">
         <header className="dashboard-header">
-          <h2>Diagnostics{appVersion && <span className="diag-version"> · Froglips v{appVersion}</span>}</h2>
+          <h2>
+            Diagnostics
+            {appVersion && (
+              <span className="diag-version"> · Froglips v{appVersion}</span>
+            )}
+          </h2>
           <div className="dashboard-controls diag-controls">
             <label className="diag-field">
               Level:&nbsp;
@@ -361,7 +384,11 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
         </header>
 
         {copyStatus && (
-          <div className="dashboard-error diag-copy-status" data-testid="diag-copy-status" role="status">
+          <div
+            className="dashboard-error diag-copy-status"
+            data-testid="diag-copy-status"
+            role="status"
+          >
             {copyStatus}
           </div>
         )}
@@ -394,15 +421,13 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
                       data-source={e.source}
                     >
                       <td className="diag-cell-nowrap">{fmtTs(e.ts)}</td>
-                      <td style={{ color: LEVEL_COLORS[e.level] }}>{e.level}</td>
+                      <td style={{ color: LEVEL_COLORS[e.level] }}>
+                        {e.level}
+                      </td>
                       <td className="diag-cell-nowrap">{e.source}</td>
                       <td>
                         <div>{e.message}</div>
-                        {detail && (
-                          <pre className="diag-detail">
-                            {detail}
-                          </pre>
-                        )}
+                        {detail && <pre className="diag-detail">{detail}</pre>}
                       </td>
                     </tr>
                   );
@@ -441,7 +466,11 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
               onClick={handleImport}
               disabled={dataBusy}
               title="Additively import a JSON data export (two-click confirm)"
-              className={importConfirm.armed === "import" ? "diag-clear-armed" : undefined}
+              className={
+                importConfirm.armed === "import"
+                  ? "diag-clear-armed"
+                  : undefined
+              }
             >
               {importConfirm.labelFor("import", "Import data")}
             </button>
@@ -467,7 +496,9 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
           {dataStatus && (
             <div
               className={
-                dataStatus.kind === "err" ? "dashboard-error diag-data-status" : "diag-data-status"
+                dataStatus.kind === "err"
+                  ? "dashboard-error diag-data-status"
+                  : "diag-data-status"
               }
               data-testid="diag-data-status"
               role="status"
@@ -498,7 +529,10 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
               data-testid="diag-crash-empty"
             />
           ) : (
-            <pre className="diag-detail diag-crash-log" data-testid="diag-crash-log">
+            <pre
+              className="diag-detail diag-crash-log"
+              data-testid="diag-crash-log"
+            >
               {crashLog}
             </pre>
           )}
@@ -510,8 +544,9 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
         </section>
 
         <footer className="dashboard-empty diag-footer">
-          {entries.length} entr{entries.length === 1 ? "y" : "ies"} held in ring buffer (cap 500).
-          Persisted across reloads via localStorage (last 100).
+          {entries.length} entr{entries.length === 1 ? "y" : "ies"} held in ring
+          buffer (cap 500). Persisted across reloads via localStorage (last
+          100).
         </footer>
       </div>
     </DiagnosticsOverlay>

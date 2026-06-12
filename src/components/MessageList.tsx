@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { Check, RotateCw, GitBranch } from "lucide-react";
 import type { Message, MemoryScope } from "../types";
@@ -653,6 +654,29 @@ export function MessageList({
   onFork,
 }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
+  // Delegated handler for the post-sanitize code-block copy buttons (see
+  // wrapCodeBlocks in lib/markdown.ts). The buttons live inside
+  // dangerouslySetInnerHTML markup so they can't carry React handlers — one
+  // listener on the list container covers every rendered block. The
+  // "Copied" flash is plain classList/textContent (no state) for the same
+  // reason.
+  const onListClick = useCallback(
+    async (e: ReactMouseEvent<HTMLDivElement>) => {
+      const btn = (e.target as HTMLElement).closest?.(".code-copy-btn");
+      if (!(btn instanceof HTMLElement)) return;
+      const code = btn.closest(".code-block")?.querySelector("pre code");
+      if (!code) return;
+      const ok = await copyText(code.textContent ?? "");
+      if (!ok) return;
+      btn.classList.add("copied");
+      btn.textContent = "Copied";
+      setTimeout(() => {
+        btn.classList.remove("copied");
+        btn.textContent = "Copy";
+      }, 1200);
+    },
+    [],
+  );
   const scrollRafRef = useRef<number | null>(null);
   // Autoscroll "sticks" to the bottom only while the user is already there.
   // Scrolling up to read pauses it; scrolling back near the bottom resumes.
@@ -753,7 +777,7 @@ export function MessageList({
     currentModel && lastAsstModel && currentModel === lastAsstModel;
 
   return (
-    <div className="message-list" ref={listRef}>
+    <div className="message-list" ref={listRef} onClick={onListClick}>
       <MessageHistory
         messages={messages}
         conversationId={conversationId}

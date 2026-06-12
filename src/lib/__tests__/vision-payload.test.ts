@@ -77,7 +77,8 @@ describe("streamOllamaChat — request body carries images", () => {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
       capturedBody = JSON.parse(String(init.body));
       return streamingResponse([
-        JSON.stringify({ message: { content: "I see a pixel." }, done: true }) + "\n",
+        JSON.stringify({ message: { content: "I see a pixel." }, done: true }) +
+          "\n",
       ]);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -127,14 +128,18 @@ describe("streamChat (MLX/OpenAI-compat) — multi-content image payload", () =>
 
     const gen = streamChat(status, [visionMsg("describe this")], {});
     // Drain so the request fires
-    for await (const _ of gen) { /* noop */ }
+    for await (const _ of gen) {
+      /* noop */
+    }
 
     expect(capturedBody).not.toBeNull();
     const content = capturedBody.messages[0].content;
     expect(Array.isArray(content)).toBe(true);
     expect(content[0]).toEqual({ type: "text", text: "describe this" });
     expect(content[1].type).toBe("image_url");
-    expect(content[1].image_url.url).toBe(`data:image/png;base64,${PIXEL_PNG_B64}`);
+    expect(content[1].image_url.url).toBe(
+      `data:image/png;base64,${PIXEL_PNG_B64}`,
+    );
     vi.unstubAllGlobals();
   });
 
@@ -154,15 +159,21 @@ describe("streamChat (MLX/OpenAI-compat) — multi-content image payload", () =>
     vi.stubGlobal("fetch", fetchMock);
 
     const status: ServerStatus = {
-      running: true, ready: true, model: "qwen2:7b",
-      backend: "mlx", host: "127.0.0.1", port: 18080,
+      running: true,
+      ready: true,
+      model: "qwen2:7b",
+      backend: "mlx",
+      host: "127.0.0.1",
+      port: 18080,
     };
     const gen = streamChat(
       status,
       [{ conversation_id: 1, role: "user", content: "plain" }],
       {},
     );
-    for await (const _ of gen) { /* noop */ }
+    for await (const _ of gen) {
+      /* noop */
+    }
 
     expect(capturedBody.messages[0].content).toBe("plain");
     vi.unstubAllGlobals();

@@ -6,13 +6,16 @@ import type { AgentRunOptions } from "../../agent-loop";
 /* ─────────────────────────────────────────────────────────────────────────
  * Hoisted mocks (mirror runner.test.ts style).
  * ───────────────────────────────────────────────────────────────────────── */
-const { runAgentLoopMock, workflowRunRecordMock, workflowGetMock } = vi.hoisted(() => ({
-  runAgentLoopMock: vi.fn<(opts: AgentRunOptions) => Promise<string | null>>(),
-  workflowRunRecordMock: vi.fn<
-    (id: number, status: string, json: string) => Promise<number>
-  >(async () => 1),
-  workflowGetMock: vi.fn<(id: number) => Promise<RawWorkflow | null>>(),
-}));
+const { runAgentLoopMock, workflowRunRecordMock, workflowGetMock } = vi.hoisted(
+  () => ({
+    runAgentLoopMock:
+      vi.fn<(opts: AgentRunOptions) => Promise<string | null>>(),
+    workflowRunRecordMock: vi.fn<
+      (id: number, status: string, json: string) => Promise<number>
+    >(async () => 1),
+    workflowGetMock: vi.fn<(id: number) => Promise<RawWorkflow | null>>(),
+  }),
+);
 
 vi.mock("../../agent-loop", () => ({
   runAgentLoop: runAgentLoopMock,
@@ -31,7 +34,11 @@ vi.mock("../../agent-presets", () => ({
   ],
 }));
 
-import { resolveLinearOrder, validateGraph, WorkflowGraphError } from "../graph";
+import {
+  resolveLinearOrder,
+  validateGraph,
+  WorkflowGraphError,
+} from "../graph";
 import { runWorkflow } from "../runner";
 import { handleWorkflowTrigger, parseWorkflowTrigger } from "../schedule";
 
@@ -70,12 +77,18 @@ describe("graph edge cases — structural", () => {
   });
 
   it("single placed card with no edges returns just that card", () => {
-    const g: WorkflowGraph = { cards: [card("a", { placed: true })], edges: [] };
+    const g: WorkflowGraph = {
+      cards: [card("a", { placed: true })],
+      edges: [],
+    };
     expect(resolveLinearOrder(g).map((c) => c.id)).toEqual(["a"]);
   });
 
   it("single unplaced card returns []", () => {
-    const g: WorkflowGraph = { cards: [card("a", { placed: false })], edges: [] };
+    const g: WorkflowGraph = {
+      cards: [card("a", { placed: false })],
+      edges: [],
+    };
     expect(resolveLinearOrder(g)).toEqual([]);
   });
 
@@ -161,7 +174,9 @@ describe("graph edge cases — structural", () => {
         { from: "c", to: "d" },
       ],
     };
-    expect(() => resolveLinearOrder(g)).toThrow(/single linear chain|multiple/i);
+    expect(() => resolveLinearOrder(g)).toThrow(
+      /single linear chain|multiple/i,
+    );
   });
 
   it("chain interrupted by an isolated card is rejected", () => {
@@ -169,7 +184,9 @@ describe("graph edge cases — structural", () => {
       cards: [card("a"), card("b"), card("orphan")],
       edges: [{ from: "a", to: "b" }],
     };
-    expect(() => resolveLinearOrder(g)).toThrow(/single linear chain|multiple/i);
+    expect(() => resolveLinearOrder(g)).toThrow(
+      /single linear chain|multiple/i,
+    );
   });
 
   it("branching: A→B and A→C → multiple outgoing rejection", () => {
@@ -216,7 +233,7 @@ describe("graph edge cases — structural", () => {
     expect(() => resolveLinearOrder(g)).not.toThrow();
   });
 
-  it("numeric-string id (\"0\") works in a chain", () => {
+  it('numeric-string id ("0") works in a chain', () => {
     const g: WorkflowGraph = {
       cards: [card("0"), card("1")],
       edges: [{ from: "0", to: "1" }],
@@ -226,29 +243,32 @@ describe("graph edge cases — structural", () => {
 });
 
 describe("graph edge cases — duplicate card IDs", () => {
-  it("duplicate card IDs produce a chain that contains both card instances but " +
-     "the resolver MAY mis-handle them — document the behavior", () => {
-    // Two cards share id "a". The resolver indexes by id (Map collapses), so
-    // the second "a" is lost from byId but still counted by cards.length. The
-    // disconnect check should catch this.
-    const a1 = card("a", { name: "first A" });
-    const a2 = card("a", { name: "second A" });
-    const g: WorkflowGraph = {
-      cards: [a1, a2, card("b")],
-      edges: [{ from: "a", to: "b" }],
-    };
-    // Either it throws "single linear chain" because cards.length=3 but the
-    // chain only walks 2, OR it accidentally succeeds. Document whichever.
-    let threw = false;
-    try {
-      resolveLinearOrder(g);
-    } catch (e) {
-      threw = true;
-      expect(e).toBeInstanceOf(WorkflowGraphError);
-    }
-    // Detection through length mismatch is the expected behavior.
-    expect(threw).toBe(true);
-  });
+  it(
+    "duplicate card IDs produce a chain that contains both card instances but " +
+      "the resolver MAY mis-handle them — document the behavior",
+    () => {
+      // Two cards share id "a". The resolver indexes by id (Map collapses), so
+      // the second "a" is lost from byId but still counted by cards.length. The
+      // disconnect check should catch this.
+      const a1 = card("a", { name: "first A" });
+      const a2 = card("a", { name: "second A" });
+      const g: WorkflowGraph = {
+        cards: [a1, a2, card("b")],
+        edges: [{ from: "a", to: "b" }],
+      };
+      // Either it throws "single linear chain" because cards.length=3 but the
+      // chain only walks 2, OR it accidentally succeeds. Document whichever.
+      let threw = false;
+      try {
+        resolveLinearOrder(g);
+      } catch (e) {
+        threw = true;
+        expect(e).toBeInstanceOf(WorkflowGraphError);
+      }
+      // Detection through length mismatch is the expected behavior.
+      expect(threw).toBe(true);
+    },
+  );
 });
 
 describe("validateGraph wrapper", () => {
@@ -298,12 +318,23 @@ describe("parseWorkflow", () => {
 
   it("tolerates extra fields (forward-compat for hypothetical v2)", () => {
     const json = JSON.stringify({
-      cards: [{
-        id: "a", name: "A", preset: "general", prompt: "p",
-        tools: [], schedule: null, backend: null, x: 0, y: 0,
-        // hypothetical v2 fields:
-        retries: 3, fanout: ["x"], notes: "future",
-      }],
+      cards: [
+        {
+          id: "a",
+          name: "A",
+          preset: "general",
+          prompt: "p",
+          tools: [],
+          schedule: null,
+          backend: null,
+          x: 0,
+          y: 0,
+          // hypothetical v2 fields:
+          retries: 3,
+          fanout: ["x"],
+          notes: "future",
+        },
+      ],
       edges: [],
       version: 2,
     });
@@ -315,7 +346,17 @@ describe("parseWorkflow", () => {
   it("drops cards missing required string fields", () => {
     const json = JSON.stringify({
       cards: [
-        { id: "good", name: "G", preset: "general", prompt: "p", tools: [], schedule: null, backend: null, x: 0, y: 0 },
+        {
+          id: "good",
+          name: "G",
+          preset: "general",
+          prompt: "p",
+          tools: [],
+          schedule: null,
+          backend: null,
+          x: 0,
+          y: 0,
+        },
         { name: "no-id" },
         null,
         "not an object",
@@ -329,7 +370,17 @@ describe("parseWorkflow", () => {
   it("drops edges referencing unknown cards during parse", () => {
     const json = JSON.stringify({
       cards: [
-        { id: "a", name: "A", preset: "general", prompt: "p", tools: [], schedule: null, backend: null, x: 0, y: 0 },
+        {
+          id: "a",
+          name: "A",
+          preset: "general",
+          prompt: "p",
+          tools: [],
+          schedule: null,
+          backend: null,
+          x: 0,
+          y: 0,
+        },
       ],
       edges: [
         { from: "a", to: "ghost" },
@@ -343,7 +394,19 @@ describe("parseWorkflow", () => {
 
   it("missing `placed` defaults to true (legacy graphs)", () => {
     const json = JSON.stringify({
-      cards: [{ id: "a", name: "A", preset: "general", prompt: "p", tools: [], schedule: null, backend: null, x: 0, y: 0 }],
+      cards: [
+        {
+          id: "a",
+          name: "A",
+          preset: "general",
+          prompt: "p",
+          tools: [],
+          schedule: null,
+          backend: null,
+          x: 0,
+          y: 0,
+        },
+      ],
       edges: [],
     });
     const wf = parseWorkflow(makeRaw(json));
@@ -352,7 +415,20 @@ describe("parseWorkflow", () => {
 
   it("placed:false sticks", () => {
     const json = JSON.stringify({
-      cards: [{ id: "a", name: "A", preset: "general", prompt: "p", tools: [], schedule: null, backend: null, x: 0, y: 0, placed: false }],
+      cards: [
+        {
+          id: "a",
+          name: "A",
+          preset: "general",
+          prompt: "p",
+          tools: [],
+          schedule: null,
+          backend: null,
+          x: 0,
+          y: 0,
+          placed: false,
+        },
+      ],
       edges: [],
     });
     const wf = parseWorkflow(makeRaw(json));
@@ -371,7 +447,11 @@ describe("parseWorkflow", () => {
 
 describe("runner — empty / start-card", () => {
   it("empty graph returns ok with no cards and never calls the agent", async () => {
-    const result = await runWorkflow({ cards: [], edges: [] }, {}, { model: "m" });
+    const result = await runWorkflow(
+      { cards: [], edges: [] },
+      {},
+      { model: "m" },
+    );
     expect(result.status).toBe("ok");
     expect(result.cards).toEqual([]);
     expect(runAgentLoopMock).not.toHaveBeenCalled();
@@ -379,10 +459,14 @@ describe("runner — empty / start-card", () => {
 
   it("startCardId not in the graph throws", async () => {
     await expect(
-      runWorkflow({ cards: [card("a")], edges: [] }, {}, {
-        model: "m",
-        startCardId: "bogus",
-      }),
+      runWorkflow(
+        { cards: [card("a")], edges: [] },
+        {},
+        {
+          model: "m",
+          startCardId: "bogus",
+        },
+      ),
     ).rejects.toThrow(/not in the workflow graph/i);
   });
 
@@ -425,14 +509,21 @@ describe("runner — abort", () => {
       return "unreachable";
     });
     const result = await runWorkflow(
-      { cards: [card("a"), card("b"), card("c")], edges: [
-        { from: "a", to: "b" },
-        { from: "b", to: "c" },
-      ]},
+      {
+        cards: [card("a"), card("b"), card("c")],
+        edges: [
+          { from: "a", to: "b" },
+          { from: "b", to: "c" },
+        ],
+      },
       {},
       { model: "m", signal: controller.signal },
     );
-    expect(result.cards.map((c) => c.status)).toEqual(["aborted", "skipped", "skipped"]);
+    expect(result.cards.map((c) => c.status)).toEqual([
+      "aborted",
+      "skipped",
+      "skipped",
+    ]);
   });
 });
 
@@ -493,7 +584,9 @@ describe("runner — handoff content rules", () => {
     const seen: AgentRunOptions["messages"][] = [];
     runAgentLoopMock.mockImplementation(async (opts) => {
       seen.push(opts.messages);
-      return opts.messages.some((m) => m.content.includes("prompt a")) ? "" : "card-b";
+      return opts.messages.some((m) => m.content.includes("prompt a"))
+        ? ""
+        : "card-b";
     });
 
     await runWorkflow(
@@ -511,7 +604,9 @@ describe("runner — handoff content rules", () => {
     const seen: AgentRunOptions["messages"][] = [];
     runAgentLoopMock.mockImplementation(async (opts) => {
       seen.push(opts.messages);
-      return opts.messages.some((m) => m.content.includes("prompt a")) ? "   \n  " : "card-b";
+      return opts.messages.some((m) => m.content.includes("prompt a"))
+        ? "   \n  "
+        : "card-b";
     });
 
     await runWorkflow(
@@ -529,7 +624,9 @@ describe("runner — handoff content rules", () => {
     const seen: AgentRunOptions["messages"][] = [];
     runAgentLoopMock.mockImplementation(async (opts) => {
       seen.push(opts.messages);
-      return opts.messages.some((m) => m.content.includes("prompt a")) ? null : "x";
+      return opts.messages.some((m) => m.content.includes("prompt a"))
+        ? null
+        : "x";
     });
 
     await runWorkflow(
@@ -637,7 +734,9 @@ describe("runner — handoff content rules", () => {
     const seen: AgentRunOptions["messages"][] = [];
     runAgentLoopMock.mockImplementation(async (opts) => {
       seen.push(opts.messages);
-      return opts.messages.some((m) => m.content.includes("prompt a")) ? big : "x";
+      return opts.messages.some((m) => m.content.includes("prompt a"))
+        ? big
+        : "x";
     });
 
     await runWorkflow(
@@ -695,7 +794,11 @@ describe("runner — hook safety", () => {
     runAgentLoopMock.mockResolvedValue("out");
     const result = await runWorkflow(
       { cards: [card("a")], edges: [] },
-      { onCardStart: () => { throw new Error("hook boom"); } },
+      {
+        onCardStart: () => {
+          throw new Error("hook boom");
+        },
+      },
       { model: "m" },
     );
     expect(result.status).toBe("ok");
@@ -706,7 +809,11 @@ describe("runner — hook safety", () => {
     runAgentLoopMock.mockResolvedValue("out");
     const result = await runWorkflow(
       { cards: [card("a")], edges: [] },
-      { onCardDone: () => { throw new Error("done boom"); } },
+      {
+        onCardDone: () => {
+          throw new Error("done boom");
+        },
+      },
       { model: "m" },
     );
     expect(result.status).toBe("ok");
@@ -719,7 +826,10 @@ describe("runner — hook safety", () => {
     await runWorkflow(
       { cards: [card("a"), card("b")], edges: [{ from: "a", to: "b" }] },
       {
-        onWorkflowDone: (r) => { count++; received = r; },
+        onWorkflowDone: (r) => {
+          count++;
+          received = r;
+        },
       },
       { model: "m" },
     );
@@ -782,11 +892,7 @@ describe("runner — buildCardOptions paths", () => {
       seen = opts.backend as string;
       return "x";
     });
-    await runWorkflow(
-      { cards: [card("a")], edges: [] },
-      {},
-      { model: "m" },
-    );
+    await runWorkflow({ cards: [card("a")], edges: [] }, {}, { model: "m" });
     expect(seen).toBe("ollama");
   });
 
@@ -819,11 +925,7 @@ describe("runner — buildCardOptions paths", () => {
       gate = opts.requestConfirmation;
       return "x";
     });
-    await runWorkflow(
-      { cards: [card("a")], edges: [] },
-      {},
-      { model: "m" },
-    );
+    await runWorkflow({ cards: [card("a")], edges: [] }, {}, { model: "m" });
     const r = await gate!("read_file", {}, "normal");
     expect(r.approve).toBe(false);
     expect(r.reason).toBe("unattended_denied");
@@ -839,7 +941,11 @@ describe("runner — buildCardOptions paths", () => {
       gate = opts.requestConfirmation;
       return "x";
     });
-    const c = { ...card("a"), tools: ["run_shell", "read_file"], unattended: true };
+    const c = {
+      ...card("a"),
+      tools: ["run_shell", "read_file"],
+      unattended: true,
+    };
     await runWorkflow(
       { cards: [c], edges: [] },
       {},
@@ -905,7 +1011,9 @@ describe("parseWorkflowTrigger", () => {
   // rowids. Same for empty-string card_id, which surfaces as a misleading
   // "Start card "" is not in the workflow graph" error downstream.
   it("rejects NaN workflow_id", () => {
-    expect(parseWorkflowTrigger({ workflow_id: Number.NaN, card_id: "x" })).toBeNull();
+    expect(
+      parseWorkflowTrigger({ workflow_id: Number.NaN, card_id: "x" }),
+    ).toBeNull();
   });
 
   it("rejects float workflow_id (1.5)", () => {
@@ -921,7 +1029,12 @@ describe("parseWorkflowTrigger", () => {
   });
 
   it("rejects Infinity workflow_id", () => {
-    expect(parseWorkflowTrigger({ workflow_id: Number.POSITIVE_INFINITY, card_id: "x" })).toBeNull();
+    expect(
+      parseWorkflowTrigger({
+        workflow_id: Number.POSITIVE_INFINITY,
+        card_id: "x",
+      }),
+    ).toBeNull();
   });
 
   it("rejects empty-string card_id", () => {
@@ -954,7 +1067,17 @@ describe("handleWorkflowTrigger", () => {
       name: "wf",
       graph_json: JSON.stringify({
         cards: [
-          { id: "real", name: "R", preset: "general", prompt: "p", tools: [], schedule: null, backend: null, x: 0, y: 0 },
+          {
+            id: "real",
+            name: "R",
+            preset: "general",
+            prompt: "p",
+            tools: [],
+            schedule: null,
+            backend: null,
+            x: 0,
+            y: 0,
+          },
         ],
         edges: [],
       }),
@@ -977,8 +1100,28 @@ describe("handleWorkflowTrigger", () => {
       name: "wf",
       graph_json: JSON.stringify({
         cards: [
-          { id: "a", name: "A", preset: "general", prompt: "p", tools: [], schedule: null, backend: null, x: 0, y: 0 },
-          { id: "b", name: "B", preset: "general", prompt: "p", tools: [], schedule: null, backend: null, x: 0, y: 0 },
+          {
+            id: "a",
+            name: "A",
+            preset: "general",
+            prompt: "p",
+            tools: [],
+            schedule: null,
+            backend: null,
+            x: 0,
+            y: 0,
+          },
+          {
+            id: "b",
+            name: "B",
+            preset: "general",
+            prompt: "p",
+            tools: [],
+            schedule: null,
+            backend: null,
+            x: 0,
+            y: 0,
+          },
         ],
         edges: [{ from: "a", to: "b" }],
       }),

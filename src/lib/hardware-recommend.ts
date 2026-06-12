@@ -31,7 +31,11 @@ export function recommendStarter<T extends StarterCandidate>(
 ): StarterRecommendation<T> {
   const fit = new Map<string, HeadroomTier>();
   for (const c of candidates) {
-    fit.set(c.id, classify({ size_bytes: c.approxGb * GB }, { total_ram_gb: totalRamGb }).tier);
+    fit.set(
+      c.id,
+      classify({ size_bytes: c.approxGb * GB }, { total_ram_gb: totalRamGb })
+        .tier,
+    );
   }
   const largestFirst = [...candidates].sort((a, b) => b.approxGb - a.approxGb);
   const recommended =

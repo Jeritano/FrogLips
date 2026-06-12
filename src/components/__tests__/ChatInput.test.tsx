@@ -6,11 +6,20 @@ import { createRoot, type Root } from "react-dom/client";
 // Map-backed shim before the component pulls in prompt-templates.
 const storeMap = new Map<string, string>();
 const fakeStorage: Storage = {
-  get length() { return storeMap.size; },
-  clear: () => { storeMap.clear(); },
-  getItem: (k: string) => (storeMap.has(k) ? (storeMap.get(k) as string) : null),
-  setItem: (k: string, v: string) => { storeMap.set(k, String(v)); },
-  removeItem: (k: string) => { storeMap.delete(k); },
+  get length() {
+    return storeMap.size;
+  },
+  clear: () => {
+    storeMap.clear();
+  },
+  getItem: (k: string) =>
+    storeMap.has(k) ? (storeMap.get(k) as string) : null,
+  setItem: (k: string, v: string) => {
+    storeMap.set(k, String(v));
+  },
+  removeItem: (k: string) => {
+    storeMap.delete(k);
+  },
   key: (i: number) => Array.from(storeMap.keys())[i] ?? null,
 };
 Object.defineProperty(globalThis, "localStorage", {
@@ -20,7 +29,9 @@ Object.defineProperty(globalThis, "localStorage", {
 
 import { ChatInput } from "../ChatInput";
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function flush() {
   await act(async () => {
@@ -48,12 +59,16 @@ async function mount(): Promise<Harness> {
 }
 
 async function teardown(h: Harness) {
-  await act(async () => { h.root.unmount(); });
+  await act(async () => {
+    h.root.unmount();
+  });
   h.container.remove();
 }
 
 function getTextarea(h: Harness): HTMLTextAreaElement {
-  return h.container.querySelector('[data-testid="chat-input"]') as HTMLTextAreaElement;
+  return h.container.querySelector(
+    '[data-testid="chat-input"]',
+  ) as HTMLTextAreaElement;
 }
 
 async function typeInto(h: Harness, value: string) {
@@ -65,7 +80,8 @@ async function typeInto(h: Harness, value: string) {
     "value",
   )?.set;
   await act(async () => {
-    if (setter) setter.call(ta, value); else ta.value = value;
+    if (setter) setter.call(ta, value);
+    else ta.value = value;
     ta.selectionStart = value.length;
     ta.selectionEnd = value.length;
     ta.dispatchEvent(new Event("input", { bubbles: true }));
@@ -90,9 +106,13 @@ describe("ChatInput slash autocomplete", () => {
     const h = await mount();
     await typeInto(h, "/expl");
 
-    const menu = h.container.querySelector('[data-testid="prompt-autocomplete"]');
+    const menu = h.container.querySelector(
+      '[data-testid="prompt-autocomplete"]',
+    );
     expect(menu).not.toBeNull();
-    const option = h.container.querySelector('[data-testid="prompt-option-explain"]');
+    const option = h.container.querySelector(
+      '[data-testid="prompt-option-explain"]',
+    );
     expect(option).not.toBeNull();
     expect(option?.textContent).toContain("explain");
 
@@ -102,15 +122,21 @@ describe("ChatInput slash autocomplete", () => {
   it("Escape dismisses the dropdown without sending", async () => {
     const h = await mount();
     await typeInto(h, "/expl");
-    expect(h.container.querySelector('[data-testid="prompt-autocomplete"]')).not.toBeNull();
+    expect(
+      h.container.querySelector('[data-testid="prompt-autocomplete"]'),
+    ).not.toBeNull();
 
     const ta = getTextarea(h);
     await act(async () => {
-      ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      ta.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
     });
     await flush();
 
-    expect(h.container.querySelector('[data-testid="prompt-autocomplete"]')).toBeNull();
+    expect(
+      h.container.querySelector('[data-testid="prompt-autocomplete"]'),
+    ).toBeNull();
     expect(h.onSend).not.toHaveBeenCalled();
 
     await teardown(h);
@@ -122,14 +148,18 @@ describe("ChatInput slash autocomplete", () => {
 
     const ta = getTextarea(h);
     await act(async () => {
-      ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      ta.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
     });
     await flush();
 
     // Template body for `summarize` starts with "Summarize the conversation".
     expect(ta.value.startsWith("Summarize the conversation")).toBe(true);
     // Menu is dismissed.
-    expect(h.container.querySelector('[data-testid="prompt-autocomplete"]')).toBeNull();
+    expect(
+      h.container.querySelector('[data-testid="prompt-autocomplete"]'),
+    ).toBeNull();
     // Send wasn't fired by the expansion-Enter.
     expect(h.onSend).not.toHaveBeenCalled();
 
@@ -141,7 +171,9 @@ describe("ChatInput slash autocomplete", () => {
     await typeInto(h, "hello world");
     const ta = getTextarea(h);
     await act(async () => {
-      ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      ta.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
     });
     await flush();
 

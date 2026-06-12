@@ -54,11 +54,15 @@ describe("classify", () => {
 
   it("no honest verdict when size or machine is unknown", () => {
     expect(classify({ size_bytes: 0 }, mac18).label).toBe("");
-    expect(classify({ size_bytes: 4 * GB }, { total_ram_gb: 0 }).label).toBe("");
+    expect(classify({ size_bytes: 4 * GB }, { total_ram_gb: 0 }).label).toBe(
+      "",
+    );
   });
 
   it("estimates a cold-load ETA for a sized model", () => {
-    expect(classify({ size_bytes: 10 * GB }, mac18).etaFirstTokenSec).toBeGreaterThan(0);
+    expect(
+      classify({ size_bytes: 10 * GB }, mac18).etaFirstTokenSec,
+    ).toBeGreaterThan(0);
   });
 });
 

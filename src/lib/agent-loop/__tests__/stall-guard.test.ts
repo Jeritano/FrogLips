@@ -56,7 +56,11 @@ describe("stall guard", () => {
     // Vary the tool_call id so the dedupe path isn't triggered first.
     for (let i = 0; i < 7; i++) {
       responses.push(
-        ollamaToolCallResponse(`tc-${i}`, "read_file", { path: "/tmp/foo.txt", offset: i * 1024, limit: 1024 }),
+        ollamaToolCallResponse(`tc-${i}`, "read_file", {
+          path: "/tmp/foo.txt",
+          offset: i * 1024,
+          limit: 1024,
+        }),
       );
     }
     // After the 7th tool call result is returned, the model says "done".

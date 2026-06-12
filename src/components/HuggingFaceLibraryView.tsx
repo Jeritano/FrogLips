@@ -134,19 +134,22 @@ const PAGE_SIZE = 100;
 const SKELETON_COUNT = 6;
 const BUCKET_MAXES = PARAM_TICKS.map((t) => t.max);
 
-
 /** Build the collapsed "8 quants · 1.2-7.5 GB" summary for a repo card.
  *  Returns null when the tree hasn't been fetched yet (so the card falls
  *  back to the plain "View files ▾" label). */
-function ggufRepoSummary(tree: HfTreeEntry[] | "loading" | { error: string } | undefined): string | null {
+function ggufRepoSummary(
+  tree: HfTreeEntry[] | "loading" | { error: string } | undefined,
+): string | null {
   if (!Array.isArray(tree) || tree.length === 0) return null;
   const sizes = tree
     .map((f) => f.lfs?.size ?? f.size ?? 0)
     .filter((s) => s > 0);
-  if (sizes.length === 0) return `${tree.length} quant${tree.length === 1 ? "" : "s"}`;
+  if (sizes.length === 0)
+    return `${tree.length} quant${tree.length === 1 ? "" : "s"}`;
   const min = Math.min(...sizes);
   const max = Math.max(...sizes);
-  const range = min === max ? fmtBytes(min) : `${fmtBytes(min)}-${fmtBytes(max)}`;
+  const range =
+    min === max ? fmtBytes(min) : `${fmtBytes(min)}-${fmtBytes(max)}`;
   return `${tree.length} quant${tree.length === 1 ? "" : "s"} · ${range}`;
 }
 
@@ -160,7 +163,9 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
     if (!props.ggufMode) return seed;
     return seed.includes("gguf") ? seed : ["gguf", ...seed];
   }, [props.initialLibraries, props.ggufMode]);
-  const [filters, setFilters] = useState<FilterState>(() => DEFAULT_FILTERS(initialLibs));
+  const [filters, setFilters] = useState<FilterState>(() =>
+    DEFAULT_FILTERS(initialLibs),
+  );
   // ggufMode follows the live "gguf" library chip. Falls back to the prop
   // for back-compat (older call sites that pass it explicitly).
   const ggufMode = filters.libraries.includes("gguf") || !!props.ggufMode;
@@ -189,7 +194,10 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
   // the legacy HF tabs in ModelBrowser.
   useEffect(() => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => setDebouncedQuery(query), 250);
+    debounceRef.current = window.setTimeout(
+      () => setDebouncedQuery(query),
+      250,
+    );
     return () => {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
@@ -235,7 +243,14 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
       }
     })();
     return () => ctrl.abort();
-  }, [debouncedQuery, filters.tasks, filters.libraries, sort, inference, reloadTick]);
+  }, [
+    debouncedQuery,
+    filters.tasks,
+    filters.libraries,
+    sort,
+    inference,
+    reloadTick,
+  ]);
 
   /** Fetch the next page and append. We don't reset the abort controller
    *  here so a paginated load doesn't kill the visible list. */
@@ -283,10 +298,19 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
         matchesProviders(m, filters.providers) &&
         matchesParams(m, filters.paramMin, filters.paramMax, BUCKET_MAXES),
     );
-  }, [models, filters.apps, filters.providers, filters.paramMin, filters.paramMax]);
+  }, [
+    models,
+    filters.apps,
+    filters.providers,
+    filters.paramMin,
+    filters.paramMax,
+  ]);
 
   const clientFiltering =
-    filters.apps.length > 0 || filters.providers.length > 0 || filters.paramMin > 0 || filters.paramMax < PARAM_TICKS.length - 1;
+    filters.apps.length > 0 ||
+    filters.providers.length > 0 ||
+    filters.paramMin > 0 ||
+    filters.paramMax < PARAM_TICKS.length - 1;
 
   return (
     <div className="hfl-root" data-testid="hfl-root">
@@ -303,7 +327,10 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
       <main className="hfl-main">
         <div className="hfl-toolbar">
           <div className="hfl-toolbar-title">
-            Models · <strong>{totalCount !== null ? totalCount.toLocaleString() : "—"}</strong>
+            Models ·{" "}
+            <strong>
+              {totalCount !== null ? totalCount.toLocaleString() : "—"}
+            </strong>
           </div>
           <input
             type="text"
@@ -313,14 +340,19 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
             onChange={(e) => setQuery(e.target.value)}
             data-testid="model-search"
           />
-          <label className="hfl-inference-toggle" title="Show only repos with warm inference">
+          <label
+            className="hfl-inference-toggle"
+            title="Show only repos with warm inference"
+          >
             <input
               type="checkbox"
               checked={inference}
               onChange={(e) => setInference(e.target.checked)}
               data-testid="hfl-inference-toggle"
             />
-            <span className="hfl-bolt" aria-hidden><Zap size={16} /></span>
+            <span className="hfl-bolt" aria-hidden>
+              <Zap size={16} />
+            </span>
             <span>Inference Available</span>
           </label>
           <select
@@ -330,15 +362,17 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
             data-testid="hfl-sort"
           >
             {SORT_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>Sort: {o.label}</option>
+              <option key={o.value} value={o.value}>
+                Sort: {o.label}
+              </option>
             ))}
           </select>
         </div>
 
         {clientFiltering && (
           <div className="hfl-note">
-            Apps, providers, and parameter filters are applied client-side to the
-            loaded page — the count above is a server-side total.
+            Apps, providers, and parameter filters are applied client-side to
+            the loaded page — the count above is a server-side total.
           </div>
         )}
         {err && (
@@ -348,7 +382,10 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
               type="button"
               className="mcp-link"
               style={{ marginLeft: 8 }}
-              onClick={() => { setErr(null); setReloadTick((t) => t + 1); }}
+              onClick={() => {
+                setErr(null);
+                setReloadTick((t) => t + 1);
+              }}
             >
               Retry
             </button>
@@ -356,9 +393,15 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
         )}
 
         <div className="hfl-grid" data-testid="hfl-grid">
-          {loading && models.length === 0 &&
+          {loading &&
+            models.length === 0 &&
             Array.from({ length: SKELETON_COUNT }).map((_, i) => (
-              <div key={`sk-${i}`} className="hfl-card hfl-skeleton" data-testid="hfl-skeleton" aria-hidden />
+              <div
+                key={`sk-${i}`}
+                className="hfl-card hfl-skeleton"
+                data-testid="hfl-skeleton"
+                aria-hidden
+              />
             ))}
           {!loading && visibleModels.length === 0 && !err && (
             <div className="hfl-empty">
@@ -395,13 +438,17 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
             const isExpanded = tree !== undefined;
             const summary = ggufRepoSummary(tree);
             const installedKeys = new Set(
-              ctx.installed.filter((f) => f.repo === m.id).map((f) => f.filename),
+              ctx.installed
+                .filter((f) => f.repo === m.id)
+                .map((f) => f.filename),
             );
             return (
               <ModelCard
                 key={m.id}
                 model={m}
-                installed={false} /* repo-level install is meaningless for GGUF */
+                installed={
+                  false
+                } /* repo-level install is meaningless for GGUF */
                 pulling={false}
                 done={false}
                 err={undefined}
@@ -423,77 +470,105 @@ export function HuggingFaceLibraryView(props: HuggingFaceLibraryViewProps) {
                     <span className="mb-spinner" /> Loading file tree…
                   </div>
                 )}
-                {tree && typeof tree === "object" && !Array.isArray(tree) && "error" in tree && (
-                  <div className="hfl-gguf-err">{tree.error}</div>
-                )}
+                {tree &&
+                  typeof tree === "object" &&
+                  !Array.isArray(tree) &&
+                  "error" in tree && (
+                    <div className="hfl-gguf-err">{tree.error}</div>
+                  )}
                 {Array.isArray(tree) && tree.length === 0 && (
-                  <div className="hfl-gguf-empty">No .gguf files at repo root.</div>
+                  <div className="hfl-gguf-empty">
+                    No .gguf files at repo root.
+                  </div>
                 )}
-                {Array.isArray(tree) && tree.map((f) => {
-                  const key = `${m.id}/${f.path}`;
-                  const isDownloading = ctx.downloads.has(key);
-                  const isInstalled = installedKeys.has(f.path);
-                  const prog = ctx.progress.get(key);
-                  const fileDelKey = `gguf:${m.id}/${f.path}`;
-                  const isDeleting = ctx.deleting === fileDelKey;
-                  const err = ctx.errors.get(key);
-                  const quant = parseGgufQuant(f.path);
-                  const sizeBytes = f.lfs?.size ?? f.size ?? 0;
-                  const pct = prog && prog.total_bytes > 0
-                    ? Math.min(100, Math.round((prog.bytes_downloaded / prog.total_bytes) * 100))
-                    : 0;
-                  return (
-                    <div
-                      key={key}
-                      className="hfl-gguf-file"
-                      data-testid={`gguf-file-${m.id}-${f.path}`}
-                    >
-                      <div className="hfl-gguf-file-info">
-                        <div className="hfl-gguf-file-name">{f.path}</div>
-                        <div className="hfl-gguf-file-meta">
-                          {quant && <span className="hfl-gguf-quant">{quant}</span>}
-                          <span className="hfl-gguf-size">
-                            {sizeBytes > 0 ? fmtBytes(sizeBytes) : "—"}
-                          </span>
-                          {isInstalled && (
-                            <span className="mb-tag mb-installed-tag" title="Already downloaded"><Check size={12} /> installed</span>
+                {Array.isArray(tree) &&
+                  tree.map((f) => {
+                    const key = `${m.id}/${f.path}`;
+                    const isDownloading = ctx.downloads.has(key);
+                    const isInstalled = installedKeys.has(f.path);
+                    const prog = ctx.progress.get(key);
+                    const fileDelKey = `gguf:${m.id}/${f.path}`;
+                    const isDeleting = ctx.deleting === fileDelKey;
+                    const err = ctx.errors.get(key);
+                    const quant = parseGgufQuant(f.path);
+                    const sizeBytes = f.lfs?.size ?? f.size ?? 0;
+                    const pct =
+                      prog && prog.total_bytes > 0
+                        ? Math.min(
+                            100,
+                            Math.round(
+                              (prog.bytes_downloaded / prog.total_bytes) * 100,
+                            ),
+                          )
+                        : 0;
+                    return (
+                      <div
+                        key={key}
+                        className="hfl-gguf-file"
+                        data-testid={`gguf-file-${m.id}-${f.path}`}
+                      >
+                        <div className="hfl-gguf-file-info">
+                          <div className="hfl-gguf-file-name">{f.path}</div>
+                          <div className="hfl-gguf-file-meta">
+                            {quant && (
+                              <span className="hfl-gguf-quant">{quant}</span>
+                            )}
+                            <span className="hfl-gguf-size">
+                              {sizeBytes > 0 ? fmtBytes(sizeBytes) : "—"}
+                            </span>
+                            {isInstalled && (
+                              <span
+                                className="mb-tag mb-installed-tag"
+                                title="Already downloaded"
+                              >
+                                <Check size={12} /> installed
+                              </span>
+                            )}
+                          </div>
+                          {isDownloading && prog && (
+                            <div className="hfl-gguf-progress">
+                              {fmtBytes(prog.bytes_downloaded)}
+                              {prog.total_bytes > 0 && (
+                                <>
+                                  {" "}
+                                  / {fmtBytes(prog.total_bytes)} · {pct}%
+                                </>
+                              )}
+                            </div>
+                          )}
+                          {err && <div className="hfl-card-err">{err}</div>}
+                        </div>
+                        <div className="hfl-gguf-file-actions">
+                          {isInstalled ? (
+                            <button
+                              type="button"
+                              className="hfl-btn hfl-btn-delete"
+                              onClick={() => ctx.onDeleteFile(m.id, f.path)}
+                              disabled={isDeleting || !!ctx.deleting}
+                            >
+                              {ctx.confirmDelete === fileDelKey
+                                ? "Click again to confirm"
+                                : "Remove"}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="hfl-btn"
+                              onClick={() => ctx.onDownloadFile(m.id, f.path)}
+                              disabled={isDownloading}
+                              data-testid={`gguf-download-${m.id}-${f.path}`}
+                            >
+                              {isDownloading
+                                ? prog && prog.total_bytes > 0
+                                  ? `Downloading… ${pct}%`
+                                  : "Downloading…"
+                                : "Download"}
+                            </button>
                           )}
                         </div>
-                        {isDownloading && prog && (
-                          <div className="hfl-gguf-progress">
-                            {fmtBytes(prog.bytes_downloaded)}
-                            {prog.total_bytes > 0 && <> / {fmtBytes(prog.total_bytes)} · {pct}%</>}
-                          </div>
-                        )}
-                        {err && <div className="hfl-card-err">{err}</div>}
                       </div>
-                      <div className="hfl-gguf-file-actions">
-                        {isInstalled ? (
-                          <button
-                            type="button"
-                            className="hfl-btn hfl-btn-delete"
-                            onClick={() => ctx.onDeleteFile(m.id, f.path)}
-                            disabled={isDeleting || !!ctx.deleting}
-                          >
-                            {ctx.confirmDelete === fileDelKey ? "Click again to confirm" : "Remove"}
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="hfl-btn"
-                            onClick={() => ctx.onDownloadFile(m.id, f.path)}
-                            disabled={isDownloading}
-                            data-testid={`gguf-download-${m.id}-${f.path}`}
-                          >
-                            {isDownloading
-                              ? (prog && prog.total_bytes > 0 ? `Downloading… ${pct}%` : "Downloading…")
-                              : "Download"}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
               </ModelCard>
             );
           })}

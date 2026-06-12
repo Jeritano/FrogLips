@@ -83,7 +83,11 @@ export async function prefetchContextLength(
     // Ollama exposes context length under an architecture-prefixed key like
     // `llama.context_length`, `qwen3.context_length`, etc. Match by suffix.
     for (const [name, value] of Object.entries(info)) {
-      if (name.endsWith(".context_length") && typeof value === "number" && value > 0) {
+      if (
+        name.endsWith(".context_length") &&
+        typeof value === "number" &&
+        value > 0
+      ) {
         cache.set(k, value);
         return value;
       }
@@ -99,4 +103,3 @@ export async function prefetchContextLength(
     return null;
   }
 }
-

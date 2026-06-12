@@ -22,9 +22,7 @@ export function normalizeIntegerHost(host: string): string | null {
   if (mappedHex) {
     const hi = parseInt(mappedHex[1], 16);
     const lo = parseInt(mappedHex[2], 16);
-    return [
-      (hi >>> 8) & 255, hi & 255, (lo >>> 8) & 255, lo & 255,
-    ].join(".");
+    return [(hi >>> 8) & 255, hi & 255, (lo >>> 8) & 255, lo & 255].join(".");
   }
 
   // Dotted-quad with octal/hex octets, or a single integer host.
@@ -42,8 +40,11 @@ export function normalizeIntegerHost(host: string): string | null {
     nums.push(n);
   }
   // A plain dotted-quad of decimal 0-255 octets isn't "integer-encoded".
-  if (nums.length === 4 && parts.every((p) => /^[0-9]+$/.test(p)) &&
-      nums.every((n) => n <= 255)) {
+  if (
+    nums.length === 4 &&
+    parts.every((p) => /^[0-9]+$/.test(p)) &&
+    nums.every((n) => n <= 255)
+  ) {
     return null;
   }
   // Collapse per RFC 3986 / inet_aton: last part fills remaining low octets.
@@ -70,7 +71,9 @@ export function normalizeIntegerHost(host: string): string | null {
   ].join(".");
 }
 
-export function dryRunValidateUrl(urlStr: string): { ok: true; url: URL } | { ok: false; reason: string } {
+export function dryRunValidateUrl(
+  urlStr: string,
+): { ok: true; url: URL } | { ok: false; reason: string } {
   let u: URL;
   try {
     u = new URL(urlStr);
@@ -79,7 +82,10 @@ export function dryRunValidateUrl(urlStr: string): { ok: true; url: URL } | { ok
   }
   const scheme = u.protocol.replace(/:$/, "");
   if (scheme !== "http" && scheme !== "https" && scheme !== "data") {
-    return { ok: false, reason: `scheme '${scheme}' not allowed (use http/https/data:)` };
+    return {
+      ok: false,
+      reason: `scheme '${scheme}' not allowed (use http/https/data:)`,
+    };
   }
   // data: URLs may only carry inline images — never text/html or other types
   // that the browser would execute or render as a document.
@@ -106,7 +112,11 @@ export function dryRunValidateUrl(urlStr: string): { ok: true; url: URL } | { ok
   // strip them so the checks below operate on the bare address.
   let host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (!host) return { ok: false, reason: "missing host" };
-  if (host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) {
+  if (
+    host === "localhost" ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal")
+  ) {
     return {
       ok: false,
       reason: `host '${host}' is private/loopback/link-local — blocked to prevent SSRF`,
@@ -119,7 +129,10 @@ export function dryRunValidateUrl(urlStr: string): { ok: true; url: URL } | { ok
     if (normalized) host = normalized;
     else if (/^0x/i.test(host) || /^[0-9]+$/.test(host)) {
       // All-numeric / hex host we could not normalize — never claim allowed.
-      return { ok: false, reason: `host '${host}' is a non-verifiable numeric address — blocked` };
+      return {
+        ok: false,
+        reason: `host '${host}' is a non-verifiable numeric address — blocked`,
+      };
     }
   }
   // IPv4 literal check
@@ -139,8 +152,14 @@ export function dryRunValidateUrl(urlStr: string): { ok: true; url: URL } | { ok
     const isMulticast = a >= 224 && a <= 239;
     const isBroadcast = a === 255 && b === 255 && c === 255 && oct[3] === 255;
     if (
-      isLoopback || isPrivate10 || isPrivate172 || isPrivate192 ||
-      isLinkLocal || isUnspecified || isMulticast || isBroadcast
+      isLoopback ||
+      isPrivate10 ||
+      isPrivate172 ||
+      isPrivate192 ||
+      isLinkLocal ||
+      isUnspecified ||
+      isMulticast ||
+      isBroadcast
     ) {
       return {
         ok: false,
@@ -150,8 +169,14 @@ export function dryRunValidateUrl(urlStr: string): { ok: true; url: URL } | { ok
   }
   // IPv6 literal check (bracketed in hostname per URL spec → already stripped)
   if (host.includes(":")) {
-    if (host === "::" || host === "::1" || host.startsWith("fe80:") ||
-        host.startsWith("fc") || host.startsWith("fd") || host.startsWith("ff")) {
+    if (
+      host === "::" ||
+      host === "::1" ||
+      host.startsWith("fe80:") ||
+      host.startsWith("fc") ||
+      host.startsWith("fd") ||
+      host.startsWith("ff")
+    ) {
       return {
         ok: false,
         reason: `host '${host}' is private/loopback/link-local — blocked to prevent SSRF`,

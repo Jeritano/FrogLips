@@ -28,7 +28,8 @@ describe("renderMarkdown — link handling regression (v0.10.5)", () => {
   });
 
   it("handles multiple links + mixed content without crashing", () => {
-    const md = "First [a](https://a.com) and second [b](https://b.com), plus `code` and **bold**.";
+    const md =
+      "First [a](https://a.com) and second [b](https://b.com), plus `code` and **bold**.";
     expect(() => renderMarkdown(md)).not.toThrow();
     const out = renderMarkdown(md);
     expect(out).toContain("a.com");

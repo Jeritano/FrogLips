@@ -36,7 +36,9 @@ import { TOOLS } from "../tools";
 
 describe("search_project_knowledge tool", () => {
   it("appears in the TOOLS registry with required parameters", () => {
-    const tool = TOOLS.find((t) => t.function.name === "search_project_knowledge");
+    const tool = TOOLS.find(
+      (t) => t.function.name === "search_project_knowledge",
+    );
     expect(tool).toBeDefined();
     expect(tool?.function.parameters).toMatchObject({
       type: "object",

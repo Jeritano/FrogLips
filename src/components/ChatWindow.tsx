@@ -49,6 +49,12 @@ interface Props {
    * host can refresh the sidebar and switch the active selection to it.
    */
   onForked?: (newConvId: number) => void;
+  /**
+   * Self-healing send (2026-06-11): starts the model currently selected in
+   * the ModelPicker. Called when the user sends with no backend running so
+   * the composer never has to sit disabled. Resolves true once running.
+   */
+  ensureModel?: () => Promise<boolean>;
 }
 
 interface ConfirmState {
@@ -63,6 +69,7 @@ export function ChatWindow({
   onConversationCreated,
   onMemoriesChanged,
   onForked,
+  ensureModel,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streaming, setStreaming] = useState<string | undefined>();
@@ -344,6 +351,10 @@ export function ChatWindow({
     status?.backend === "ollama" || status?.backend === "mlx";
 
   /* ── Send pipeline ── */
+  // Self-healing send: when nothing is running, the first send warms the
+  // selected model (via ModelPicker's exposed start) and then dispatches.
+  // The composer is never disabled behind the Start ceremony.
+  const [warming, setWarming] = useState(false);
   const { send, resend, abort } = useChatSend({
     status,
     agentMode,
@@ -686,8 +697,27 @@ export function ChatWindow({
 
         <div className="composer-row">
           <ChatInput
-            disabled={!status?.running}
-            onSend={send}
+            // Without an ensureModel handle (detached windows) keep the old
+            // disabled-until-running behavior.
+            disabled={warming || (!status?.running && !ensureModel)}
+            onSend={(text, images) => {
+              if (status?.running || !ensureModel) {
+                send(text, images);
+                return;
+              }
+              // Warm the selected model, then dispatch. On failure the
+              // ModelPicker surfaces its own error; the message is not lost
+              // because ChatInput restores it when we report false.
+              setWarming(true);
+              return ensureModel()
+                .then((ok) => {
+                  if (ok) send(text, images);
+                  return ok;
+                })
+                .catch(() => false)
+                .finally(() => setWarming(false));
+            }}
+            warming={warming}
             onAbort={abortWithConfirm}
             streaming={isWorking}
             currentModel={status?.running ? status.model : null}

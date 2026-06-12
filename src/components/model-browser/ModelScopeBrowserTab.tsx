@@ -24,13 +24,22 @@ interface MsModel {
 function MsAvatar({ src, initial }: { src: string | null; initial: string }) {
   const [broken, setBroken] = useState(false);
   if (!src || broken) {
-    return <div className="hfl-avatar" aria-hidden>{initial}</div>;
+    return (
+      <div className="hfl-avatar" aria-hidden>
+        {initial}
+      </div>
+    );
   }
   return (
-    <img className="hfl-avatar-img" src={src} alt="" loading="lazy" onError={() => setBroken(true)} />
+    <img
+      className="hfl-avatar-img"
+      src={src}
+      alt=""
+      loading="lazy"
+      onError={() => setBroken(true)}
+    />
   );
 }
-
 
 /**
  * ModelScope source for the Model Browser. Browses ModelScope's text-gen
@@ -78,7 +87,9 @@ export function ModelScopeBrowserTab({
     async (m: MsModel) => {
       const repo = m.repo;
       if (!token.trim()) {
-        setErr("Enter your ModelScope API token first (modelscope.cn → Access Tokens).");
+        setErr(
+          "Enter your ModelScope API token first (modelscope.cn → Access Tokens).",
+        );
         return;
       }
       setBusy(repo);
@@ -108,9 +119,25 @@ export function ModelScopeBrowserTab({
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }} data-testid="modelscope-tab">
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        minHeight: 0,
+      }}
+      data-testid="modelscope-tab"
+    >
       {/* Token row */}
-      <div style={{ display: "flex", gap: "var(--space-2)", padding: "var(--space-3)", borderBottom: "1px solid var(--border-subtle)", alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: "var(--space-2)",
+          padding: "var(--space-3)",
+          borderBottom: "1px solid var(--border-subtle)",
+          alignItems: "center",
+        }}
+      >
         <Input
           type="password"
           placeholder="ModelScope API token (modelscope.cn → Access Tokens)"
@@ -118,19 +145,39 @@ export function ModelScopeBrowserTab({
           onChange={(e) => setToken(e.target.value)}
           data-testid="modelscope-token"
         />
-        <span style={{ fontSize: "var(--fs-2xs)", color: "var(--text-3)", whiteSpace: "nowrap" }}>
+        <span
+          style={{
+            fontSize: "var(--fs-2xs)",
+            color: "var(--text-3)",
+            whiteSpace: "nowrap",
+          }}
+        >
           stored in Keychain on connect
         </span>
       </div>
 
       {err && (
-        <div style={{ padding: "var(--space-2) var(--space-3)", color: "var(--warn-fg)", fontSize: "var(--fs-xs)" }}>
+        <div
+          style={{
+            padding: "var(--space-2) var(--space-3)",
+            color: "var(--warn-fg)",
+            fontSize: "var(--fs-xs)",
+          }}
+        >
           {err}
         </div>
       )}
 
       {loading && models.length === 0 ? (
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", color: "var(--text-2)", padding: "var(--space-5)" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-2)",
+            color: "var(--text-2)",
+            padding: "var(--space-5)",
+          }}
+        >
           <Spinner /> Loading ModelScope catalog…
         </div>
       ) : (
@@ -144,21 +191,40 @@ export function ModelScopeBrowserTab({
             return (
               <div className="hfl-card" key={repo}>
                 {m.cover && (
-                  <img className="hfl-cover" src={m.cover} alt="" loading="lazy" />
+                  <img
+                    className="hfl-cover"
+                    src={m.cover}
+                    alt=""
+                    loading="lazy"
+                  />
                 )}
                 <div className="hfl-card-head">
                   <MsAvatar src={m.avatar} initial={initial} />
-                  <div className="hfl-card-id" title={repo}>{repo}</div>
+                  <div className="hfl-card-id" title={repo}>
+                    {repo}
+                  </div>
                 </div>
                 <div className="hfl-card-chips">
-                  {task && <span className="hfl-pipeline">{task.replace(/-/g, " ")}</span>}
-                  {m.support_api_inference && <span className="hfl-lib-pill">API</span>}
+                  {task && (
+                    <span className="hfl-pipeline">
+                      {task.replace(/-/g, " ")}
+                    </span>
+                  )}
+                  {m.support_api_inference && (
+                    <span className="hfl-lib-pill">API</span>
+                  )}
                 </div>
                 <div className="hfl-card-foot">
-                  <span className="hfl-updated">{updated ? `Updated ${updated}` : "—"}</span>
+                  <span className="hfl-updated">
+                    {updated ? `Updated ${updated}` : "—"}
+                  </span>
                   <span className="hfl-stats">
-                    <span title="Downloads"><Download size={12} /> {abbrev(m.downloads)}</span>
-                    <span title="Stars" style={{ marginLeft: 8 }}><Heart size={12} /> {abbrev(m.stars)}</span>
+                    <span title="Downloads">
+                      <Download size={12} /> {abbrev(m.downloads)}
+                    </span>
+                    <span title="Stars" style={{ marginLeft: 8 }}>
+                      <Heart size={12} /> {abbrev(m.stars)}
+                    </span>
                   </span>
                 </div>
                 <div className="hfl-card-actions">
@@ -167,14 +233,28 @@ export function ModelScopeBrowserTab({
                       In chat <Check size={14} />
                     </Button>
                   ) : m.support_api_inference ? (
-                    <Button size="sm" variant="primary" onClick={() => void connect(m)} disabled={busy !== null} aria-busy={busy === repo}>
-                      {busy === repo ? <Spinner label="Connecting" /> : "Use in chat"}
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => void connect(m)}
+                      disabled={busy !== null}
+                      aria-busy={busy === repo}
+                    >
+                      {busy === repo ? (
+                        <Spinner label="Connecting" />
+                      ) : (
+                        "Use in chat"
+                      )}
                     </Button>
                   ) : (
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => void api.openExternal(`https://modelscope.cn/models/${repo}`)}
+                      onClick={() =>
+                        void api.openExternal(
+                          `https://modelscope.cn/models/${repo}`,
+                        )
+                      }
                     >
                       Open ↗
                     </Button>
@@ -192,8 +272,17 @@ export function ModelScopeBrowserTab({
       )}
 
       {connected && (
-        <div style={{ padding: "var(--space-2) var(--space-3)", borderTop: "1px solid var(--border-subtle)", fontSize: "var(--fs-xs)", color: "var(--text-2)" }} role="status">
-          <Badge tone="success">connected</Badge> {connected} — pick it in the chat model picker.
+        <div
+          style={{
+            padding: "var(--space-2) var(--space-3)",
+            borderTop: "1px solid var(--border-subtle)",
+            fontSize: "var(--fs-xs)",
+            color: "var(--text-2)",
+          }}
+          role="status"
+        >
+          <Badge tone="success">connected</Badge> {connected} — pick it in the
+          chat model picker.
         </div>
       )}
     </div>

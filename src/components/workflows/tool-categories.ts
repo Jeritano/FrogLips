@@ -96,7 +96,8 @@ export const TOOL_CATEGORIES: readonly ToolCategory[] = [
   {
     id: "web",
     label: "Web",
-    description: "Fetch URLs, run web searches, and make arbitrary HTTP requests.",
+    description:
+      "Fetch URLs, run web searches, and make arbitrary HTTP requests.",
     tools: ["web_fetch", "web_search", "http_request"],
   },
   {

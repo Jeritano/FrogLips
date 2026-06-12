@@ -31,7 +31,8 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
           logDiag({
             level: "warn",
             source: "updater",
-            message: "relaunch after install failed — restart manually to finish updating",
+            message:
+              "relaunch after install failed — restart manually to finish updating",
             detail: e,
           });
         }

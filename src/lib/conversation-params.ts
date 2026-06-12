@@ -14,7 +14,12 @@ import type { ConversationParams } from "../types";
 
 /** All-null params — equivalent to "no overrides". */
 export function emptyParams(): ConversationParams {
-  return { temperature: null, top_p: null, max_tokens: null, system_prompt: null };
+  return {
+    temperature: null,
+    top_p: null,
+    max_tokens: null,
+    system_prompt: null,
+  };
 }
 
 function clampNum(v: unknown, lo: number, hi: number): number | null {

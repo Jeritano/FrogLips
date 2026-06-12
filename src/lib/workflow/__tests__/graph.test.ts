@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { WorkflowCard, WorkflowGraph } from "../../../types";
-import { resolveLinearOrder, validateGraph, WorkflowGraphError } from "../graph";
+import {
+  resolveLinearOrder,
+  validateGraph,
+  WorkflowGraphError,
+} from "../graph";
 
 function card(id: string): WorkflowCard {
   return {
@@ -33,8 +37,9 @@ describe("resolveLinearOrder", () => {
   });
 
   it("accepts a single card with no edges", () => {
-    expect(resolveLinearOrder({ cards: [card("a")], edges: [] }).map((c) => c.id))
-      .toEqual(["a"]);
+    expect(
+      resolveLinearOrder({ cards: [card("a")], edges: [] }).map((c) => c.id),
+    ).toEqual(["a"]);
   });
 
   it("rejects a cycle", () => {
@@ -120,7 +125,10 @@ describe("placed filtering", () => {
 
 describe("multiple placed cards", () => {
   it("keeps every placed card in a connected chain", () => {
-    const cards = ["a", "b", "c", "d"].map((id) => ({ ...card(id), placed: true }));
+    const cards = ["a", "b", "c", "d"].map((id) => ({
+      ...card(id),
+      placed: true,
+    }));
     const graph: WorkflowGraph = {
       cards,
       edges: [
@@ -134,7 +142,10 @@ describe("multiple placed cards", () => {
   });
 
   it("validates a four-card chain as a runnable workflow", () => {
-    const cards = ["a", "b", "c", "d"].map((id) => ({ ...card(id), placed: true }));
+    const cards = ["a", "b", "c", "d"].map((id) => ({
+      ...card(id),
+      placed: true,
+    }));
     const res = validateGraph({
       cards,
       edges: [

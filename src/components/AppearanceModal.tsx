@@ -17,7 +17,11 @@ import {
   getHighContrast,
   setHighContrast,
 } from "../lib/appearance";
-import { BUBBLE_COLORS, getBubbleColor, setBubbleColor } from "../lib/bubble-color";
+import {
+  BUBBLE_COLORS,
+  getBubbleColor,
+  setBubbleColor,
+} from "../lib/bubble-color";
 
 interface Props {
   open: boolean;
@@ -31,9 +35,20 @@ interface Props {
 /** A tiny syntax-highlighted snippet so each palette is previewed live. The
  *  `data-cv-*` attributes scope `--hl-*` per pane (see appearance.css), so a
  *  light pane and a dark pane render their own palettes simultaneously. */
-function CodePreview({ mode, palette }: { mode: "light" | "dark"; palette: SyntaxThemeId }) {
+function CodePreview({
+  mode,
+  palette,
+}: {
+  mode: "light" | "dark";
+  palette: SyntaxThemeId;
+}) {
   return (
-    <div className="cv" data-cv-theme={mode} data-cv-pal={palette} aria-hidden="true">
+    <div
+      className="cv"
+      data-cv-theme={mode}
+      data-cv-pal={palette}
+      aria-hidden="true"
+    >
       <pre className="cv-pre">
         <code className="hljs">
           <span className="cv-ln">1</span>
@@ -44,8 +59,7 @@ function CodePreview({ mode, palette }: { mode: "light" | "dark"; palette: Synta
           <span className="cv-ln">2</span>
           {"  "}
           <span className="hljs-keyword">return</span>{" "}
-          <span className="hljs-string">{"`Hello, ${name}!`"}</span>;
-          {"\n"}
+          <span className="hljs-string">{"`Hello, ${name}!`"}</span>;{"\n"}
           <span className="cv-ln">3</span>
           {"}"}
         </code>
@@ -62,24 +76,39 @@ function CodePreview({ mode, palette }: { mode: "light" | "dark"; palette: Synta
  * extras (app theme toggle, chat-bubble color) live below. All prefs are
  * device-local (localStorage).
  */
-export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) {
+export function AppearanceModal({
+  open,
+  onClose,
+  theme,
+  onToggleTheme,
+}: Props) {
   const ref = useRef<HTMLDivElement>(null);
   useModalA11y({ open, onClose, containerRef: ref });
 
-  const [lightPal, setLightPal] = useState<SyntaxThemeId>(() => getCodeTheme("light"));
-  const [darkPal, setDarkPal] = useState<SyntaxThemeId>(() => getCodeTheme("dark"));
+  const [lightPal, setLightPal] = useState<SyntaxThemeId>(() =>
+    getCodeTheme("light"),
+  );
+  const [darkPal, setDarkPal] = useState<SyntaxThemeId>(() =>
+    getCodeTheme("dark"),
+  );
   const [codeFont, setCodeFontState] = useState<string>(() => getCodeFont());
   const [uiFont, setUiFontState] = useState<UiFont>(() => getUiFont());
-  const [txtSize, setTxtSize] = useState<TranscriptSize>(() => getTranscriptSize());
+  const [txtSize, setTxtSize] = useState<TranscriptSize>(() =>
+    getTranscriptSize(),
+  );
   const [highContrast, setHC] = useState<boolean>(() => getHighContrast());
-  const [bubbleColor, setBubbleColorState] = useState<string | null>(() => getBubbleColor());
+  const [bubbleColor, setBubbleColorState] = useState<string | null>(() =>
+    getBubbleColor(),
+  );
 
   if (!open) return null;
 
   return (
     <div
       className="memories-overlay"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
       role="dialog"
       aria-modal="true"
       aria-label="Appearance settings"
@@ -87,7 +116,13 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
       <div ref={ref} className="memories-modal appearance-modal">
         <div className="memories-modal-header">
           <span>Appearance</span>
-          <button onClick={onClose} aria-label="Close" className="memories-close"><X size={16} /></button>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="memories-close"
+          >
+            <X size={16} />
+          </button>
         </div>
 
         <div className="appearance-body">
@@ -107,7 +142,9 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
                 }}
               >
                 {SYNTAX_THEMES.map((t) => (
-                  <option key={t.id} value={t.id}>Light · {t.label}</option>
+                  <option key={t.id} value={t.id}>
+                    Light · {t.label}
+                  </option>
                 ))}
               </select>
               <CodePreview mode="light" palette={lightPal} />
@@ -125,7 +162,9 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
                 }}
               >
                 {SYNTAX_THEMES.map((t) => (
-                  <option key={t.id} value={t.id}>Dark · {t.label}</option>
+                  <option key={t.id} value={t.id}>
+                    Dark · {t.label}
+                  </option>
                 ))}
               </select>
               <CodePreview mode="dark" palette={darkPal} />
@@ -135,7 +174,9 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
           <div className="appr-row">
             <div className="appr-row-text">
               <span className="appr-row-title">Code font</span>
-              <span className="appr-row-desc">Set a custom monospace font for code and terminal.</span>
+              <span className="appr-row-desc">
+                Set a custom monospace font for code and terminal.
+              </span>
             </div>
             <input
               className="appr-input"
@@ -156,7 +197,9 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
           <div className="appr-row">
             <div className="appr-row-text">
               <span className="appr-row-title">High-contrast dark theme</span>
-              <span className="appr-row-desc">Use a darker, near-black background when dark mode is on.</span>
+              <span className="appr-row-desc">
+                Use a darker, near-black background when dark mode is on.
+              </span>
             </div>
             <button
               type="button"
@@ -177,9 +220,15 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
           <div className="appr-row">
             <div className="appr-row-text">
               <span className="appr-row-title">Interface font</span>
-              <span className="appr-row-desc">Font for the Froglips interface — menus, sidebar, and chat.</span>
+              <span className="appr-row-desc">
+                Font for the Froglips interface — menus, sidebar, and chat.
+              </span>
             </div>
-            <div className="appr-seg" role="radiogroup" aria-label="Interface font">
+            <div
+              className="appr-seg"
+              role="radiogroup"
+              aria-label="Interface font"
+            >
               {(["froglips", "system"] as UiFont[]).map((v) => (
                 <button
                   key={v}
@@ -187,7 +236,10 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
                   role="radio"
                   aria-checked={uiFont === v}
                   className={`appr-seg-btn${uiFont === v ? " on" : ""}`}
-                  onClick={() => { setUiFontState(v); setUiFont(v); }}
+                  onClick={() => {
+                    setUiFontState(v);
+                    setUiFont(v);
+                  }}
                 >
                   {v === "froglips" ? "Froglips Sans" : "System"}
                 </button>
@@ -198,9 +250,15 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
           <div className="appr-row">
             <div className="appr-row-text">
               <span className="appr-row-title">Transcript text size</span>
-              <span className="appr-row-desc">Size of the conversation transcript text.</span>
+              <span className="appr-row-desc">
+                Size of the conversation transcript text.
+              </span>
             </div>
-            <div className="appr-seg" role="radiogroup" aria-label="Transcript text size">
+            <div
+              className="appr-seg"
+              role="radiogroup"
+              aria-label="Transcript text size"
+            >
               {(["small", "medium", "large"] as TranscriptSize[]).map((v) => (
                 <button
                   key={v}
@@ -208,7 +266,10 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
                   role="radio"
                   aria-checked={txtSize === v}
                   className={`appr-seg-btn${txtSize === v ? " on" : ""}`}
-                  onClick={() => { setTxtSize(v); setTranscriptSize(v); }}
+                  onClick={() => {
+                    setTxtSize(v);
+                    setTranscriptSize(v);
+                  }}
                 >
                   {v[0].toUpperCase() + v.slice(1)}
                 </button>
@@ -222,19 +283,40 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
           <div className="appr-row">
             <div className="appr-row-text">
               <span className="appr-row-title">App theme</span>
-              <span className="appr-row-desc">Switch the whole interface between light and dark.</span>
+              <span className="appr-row-desc">
+                Switch the whole interface between light and dark.
+              </span>
             </div>
-            <button className="agent-settings-btn" onClick={onToggleTheme} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-              {theme === "dark" ? <><Moon size={14} /> Dark</> : <><Sun size={14} /> Light</>} — switch to {theme === "dark" ? "light" : "dark"}
+            <button
+              className="agent-settings-btn"
+              onClick={onToggleTheme}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+            >
+              {theme === "dark" ? (
+                <>
+                  <Moon size={14} /> Dark
+                </>
+              ) : (
+                <>
+                  <Sun size={14} /> Light
+                </>
+              )}{" "}
+              — switch to {theme === "dark" ? "light" : "dark"}
             </button>
           </div>
 
           <div className="appr-row">
             <div className="appr-row-text">
               <span className="appr-row-title">Chat bubble color</span>
-              <span className="appr-row-desc">Accent color for your own messages.</span>
+              <span className="appr-row-desc">
+                Accent color for your own messages.
+              </span>
             </div>
-            <div className="wf-color-row" role="radiogroup" aria-label="User chat bubble color">
+            <div
+              className="wf-color-row"
+              role="radiogroup"
+              aria-label="User chat bubble color"
+            >
               {BUBBLE_COLORS.map((c) => {
                 const selected = (bubbleColor ?? null) === c.value;
                 return (
@@ -247,7 +329,10 @@ export function AppearanceModal({ open, onClose, theme, onToggleTheme }: Props) 
                     style={c.value ? { background: c.value } : undefined}
                     title={c.name}
                     aria-label={c.name}
-                    onClick={() => { setBubbleColorState(c.value); setBubbleColor(c.value); }}
+                    onClick={() => {
+                      setBubbleColorState(c.value);
+                      setBubbleColor(c.value);
+                    }}
                   />
                 );
               })}

@@ -31,11 +31,13 @@ const REDACTED = "__keychain__";
  *  status.model value readable instead of a uuid. Collisions are guarded
  *  against in `addOrUpdate`. */
 function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "backend";
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "backend"
+  );
 }
 
 export function CustomBackendsSettings({ onChanged }: Props) {
@@ -58,7 +60,9 @@ export function CustomBackendsSettings({ onChanged }: Props) {
     }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   async function persist(next: CustomBackend[]) {
     setBackends(next);
@@ -72,8 +76,12 @@ export function CustomBackendsSettings({ onChanged }: Props) {
   }
 
   function resetDraft() {
-    setDraftName(""); setDraftUrl(""); setDraftModel(""); setDraftKey("");
-    setShowKey(false); setAdding(false);
+    setDraftName("");
+    setDraftUrl("");
+    setDraftModel("");
+    setDraftKey("");
+    setShowKey(false);
+    setAdding(false);
   }
 
   function addBackend() {
@@ -120,21 +128,23 @@ export function CustomBackendsSettings({ onChanged }: Props) {
       <div className="agent-settings-row">
         <span className="agent-settings-label">Custom cloud backends:</span>
         <span className="agent-settings-hint">
-          Any OpenAI-compatible endpoint (OpenRouter, Groq, Cerebras, Together…).
-          The API key is stored in the macOS Keychain, never on disk.
+          Any OpenAI-compatible endpoint (OpenRouter, Groq, Cerebras,
+          Together…). The API key is stored in the macOS Keychain, never on
+          disk.
         </span>
       </div>
 
       {backends.length === 0 && (
         <div className="agent-settings-hint" style={{ padding: "4px 0 8px 0" }}>
-          None configured. Example: name <code>OpenRouter</code>, URL
-          {" "}<code>https://openrouter.ai/api</code>, model
-          {" "}<code>meta-llama/llama-3.3-70b-instruct</code>.
+          None configured. Example: name <code>OpenRouter</code>, URL{" "}
+          <code>https://openrouter.ai/api</code>, model{" "}
+          <code>meta-llama/llama-3.3-70b-instruct</code>.
         </div>
       )}
 
       {backends.map((b) => {
-        const hasKey = b.api_key === REDACTED || (b.api_key != null && b.api_key.length > 0);
+        const hasKey =
+          b.api_key === REDACTED || (b.api_key != null && b.api_key.length > 0);
         return (
           <div
             key={b.id}
@@ -146,29 +156,49 @@ export function CustomBackendsSettings({ onChanged }: Props) {
               background: "var(--surface)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <strong style={{ fontSize: 13 }}><Cloud size={16} /> {b.name}</strong>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <strong style={{ fontSize: 13 }}>
+                <Cloud size={16} /> {b.name}
+              </strong>
               <span className="agent-settings-hint" style={{ fontSize: 11 }}>
                 {hasKey ? "key set" : "no key"}
               </span>
               <div style={{ marginLeft: "auto" }}>
                 <button
                   className="agent-settings-btn"
-                  onClick={() => removeConfirm.request(b.id, (id) => removeBackend(id))}
+                  onClick={() =>
+                    removeConfirm.request(b.id, (id) => removeBackend(id))
+                  }
                 >
                   {removeConfirm.labelFor(b.id, "Remove")}
                 </button>
               </div>
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "4px 0" }}>
-              <code>{b.base_url}/v1/chat/completions</code> · model <code>{b.model}</code>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--text-muted)",
+                padding: "4px 0",
+              }}
+            >
+              <code>{b.base_url}/v1/chat/completions</code> · model{" "}
+              <code>{b.model}</code>
             </div>
           </div>
         );
       })}
 
       {!adding ? (
-        <button className="agent-settings-btn" onClick={() => setAdding(true)}>+ Add cloud backend</button>
+        <button className="agent-settings-btn" onClick={() => setAdding(true)}>
+          + Add cloud backend
+        </button>
       ) : (
         <div
           style={{
@@ -223,11 +253,22 @@ export function CustomBackendsSettings({ onChanged }: Props) {
             </button>
           </div>
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-            The base URL must NOT include <code>/v1/chat/completions</code> — that's appended automatically.
+            The base URL must NOT include <code>/v1/chat/completions</code> —
+            that's appended automatically.
           </div>
           <div style={{ display: "flex", gap: 4 }}>
-            <button className="agent-settings-btn" onClick={addBackend}>Add</button>
-            <button className="agent-settings-btn" onClick={() => { resetDraft(); setErr(null); }}>Cancel</button>
+            <button className="agent-settings-btn" onClick={addBackend}>
+              Add
+            </button>
+            <button
+              className="agent-settings-btn"
+              onClick={() => {
+                resetDraft();
+                setErr(null);
+              }}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}

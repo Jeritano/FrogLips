@@ -16,7 +16,11 @@ const step = (role: string, n = 1) => ({
 
 describe("buildLinearFlow — happy path", () => {
   it("builds a valid linear graph with chained edges", () => {
-    const r = buildLinearFlow("My Flow", [step("coder", 1), step("critic", 2), step("summarizer", 3)]);
+    const r = buildLinearFlow("My Flow", [
+      step("coder", 1),
+      step("critic", 2),
+      step("summarizer", 3),
+    ]);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.name).toBe("My Flow");
@@ -43,7 +47,16 @@ describe("buildLinearFlow — happy path", () => {
       expect(c.tools.length).toBeGreaterThan(0);
       expect(c.id.startsWith("card-")).toBe(true);
       // no egress / mutation tool in any card
-      for (const banned of ["web_fetch", "web_search", "http_request", "run_shell", "run_code", "write_file", "edit_file", "delete_path"]) {
+      for (const banned of [
+        "web_fetch",
+        "web_search",
+        "http_request",
+        "run_shell",
+        "run_code",
+        "write_file",
+        "edit_file",
+        "delete_path",
+      ]) {
         expect(c.tools).not.toContain(banned);
       }
     }
@@ -69,7 +82,9 @@ describe("buildLinearFlow — rejects", () => {
   });
 
   it("too many steps", () => {
-    const many = Array.from({ length: MAX_FLOW_STEPS + 1 }, (_, i) => step("coder", i));
+    const many = Array.from({ length: MAX_FLOW_STEPS + 1 }, (_, i) =>
+      step("coder", i),
+    );
     const r = buildLinearFlow("F", many);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.kind).toBe("too_many_steps");
@@ -86,13 +101,22 @@ describe("buildLinearFlow — rejects", () => {
   });
 
   it("empty instructions", () => {
-    const r = buildLinearFlow("F", [{ title: "T", role: "coder", instructions: "   " }]);
+    const r = buildLinearFlow("F", [
+      { title: "T", role: "coder", instructions: "   " },
+    ]);
     expect(r.ok).toBe(false);
   });
 
   it("does not spread the model's step object (no field injection)", () => {
     const r = buildLinearFlow("F", [
-      { title: "T", role: "coder", instructions: "x", unattended: true, schedule: "every 1m", nodeType: "moa" } as unknown,
+      {
+        title: "T",
+        role: "coder",
+        instructions: "x",
+        unattended: true,
+        schedule: "every 1m",
+        nodeType: "moa",
+      } as unknown,
     ]);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -126,7 +150,16 @@ describe("assertFlowSafe", () => {
   it("every curated role's tools are egress-free", () => {
     for (const tools of Object.values(CURATED_TOOLS_FOR_ROLE)) {
       for (const t of tools) {
-        expect(["web_fetch", "web_search", "http_request", "run_shell", "run_code", "write_file", "edit_file", "delete_path"]).not.toContain(t);
+        expect([
+          "web_fetch",
+          "web_search",
+          "http_request",
+          "run_shell",
+          "run_code",
+          "write_file",
+          "edit_file",
+          "delete_path",
+        ]).not.toContain(t);
       }
     }
   });

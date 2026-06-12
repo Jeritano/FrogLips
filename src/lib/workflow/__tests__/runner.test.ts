@@ -24,6 +24,9 @@ vi.mock("../../agent-presets", () => ({
 }));
 
 import { runWorkflow } from "../runner";
+// Real (unmocked) scratchpad — the same module instance the runner drives, so
+// a mocked card run can write entries the haltWhen gate then reads.
+import { __resetForTests as resetScratchpad, setEntry } from "../scratchpad";
 
 function card(id: string): WorkflowCard {
   return {
@@ -48,6 +51,7 @@ beforeEach(() => {
   runAgentLoopMock.mockReset();
   workflowRunRecordMock.mockClear();
   workflowRunRecordMock.mockResolvedValue(1);
+  resetScratchpad();
 });
 
 describe("runWorkflow — handoff", () => {
@@ -60,10 +64,14 @@ describe("runWorkflow — handoff", () => {
         : "card-a-final";
     });
 
-    const result = await runWorkflow(twoCardGraph, {}, {
-      model: "m",
-      workflowId: 7,
-    });
+    const result = await runWorkflow(
+      twoCardGraph,
+      {},
+      {
+        model: "m",
+        workflowId: 7,
+      },
+    );
 
     expect(result.status).toBe("ok");
     expect(result.cards.map((c) => c.status)).toEqual(["ok", "ok"]);
@@ -79,20 +87,32 @@ describe("runWorkflow — handoff", () => {
     expect(seenMessages[1][1].content).toBe("prompt b");
 
     // The run was recorded as ok.
-    expect(workflowRunRecordMock).toHaveBeenCalledWith(7, "ok", expect.any(String));
+    expect(workflowRunRecordMock).toHaveBeenCalledWith(
+      7,
+      "ok",
+      expect.any(String),
+    );
   });
 
   it("emits per-card lifecycle hooks", async () => {
     runAgentLoopMock.mockResolvedValue("out");
     const events: string[] = [];
-    await runWorkflow(twoCardGraph, {
-      onCardStart: (id) => events.push(`start:${id}`),
-      onCardDone: (id) => events.push(`done:${id}`),
-      onWorkflowDone: () => events.push("workflow-done"),
-    }, { model: "m" });
+    await runWorkflow(
+      twoCardGraph,
+      {
+        onCardStart: (id) => events.push(`start:${id}`),
+        onCardDone: (id) => events.push(`done:${id}`),
+        onWorkflowDone: () => events.push("workflow-done"),
+      },
+      { model: "m" },
+    );
 
     expect(events).toEqual([
-      "start:a", "done:a", "start:b", "done:b", "workflow-done",
+      "start:a",
+      "done:a",
+      "start:b",
+      "done:b",
+      "workflow-done",
     ]);
   });
 });
@@ -106,17 +126,25 @@ describe("runWorkflow — failure", () => {
       return "unreachable";
     });
 
-    const result = await runWorkflow(twoCardGraph, {}, {
-      model: "m",
-      workflowId: 9,
-    });
+    const result = await runWorkflow(
+      twoCardGraph,
+      {},
+      {
+        model: "m",
+        workflowId: 9,
+      },
+    );
 
     expect(result.status).toBe("failed");
     expect(result.cards[0].status).toBe("error");
     expect(result.cards[0].error).toMatch(/blew up/);
     expect(result.cards[1].status).toBe("skipped");
     expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
-    expect(workflowRunRecordMock).toHaveBeenCalledWith(9, "failed", expect.any(String));
+    expect(workflowRunRecordMock).toHaveBeenCalledWith(
+      9,
+      "failed",
+      expect.any(String),
+    );
   });
 });
 
@@ -131,10 +159,14 @@ describe("runWorkflow — abort", () => {
       return "card-b-final";
     });
 
-    const result = await runWorkflow(twoCardGraph, {}, {
-      model: "m",
-      signal: controller.signal,
-    });
+    const result = await runWorkflow(
+      twoCardGraph,
+      {},
+      {
+        model: "m",
+        signal: controller.signal,
+      },
+    );
 
     expect(result.status).toBe("failed");
     // Card a's run was aborted right after returning → marked aborted (not
@@ -149,10 +181,14 @@ describe("runWorkflow — abort", () => {
   it("skips every card when aborted before the run starts", async () => {
     const controller = new AbortController();
     controller.abort();
-    const result = await runWorkflow(twoCardGraph, {}, {
-      model: "m",
-      signal: controller.signal,
-    });
+    const result = await runWorkflow(
+      twoCardGraph,
+      {},
+      {
+        model: "m",
+        signal: controller.signal,
+      },
+    );
     expect(result.status).toBe("failed");
     expect(result.cards.every((c) => c.status === "skipped")).toBe(true);
     expect(runAgentLoopMock).not.toHaveBeenCalled();
@@ -163,7 +199,10 @@ describe("runWorkflow — unattended opt-in", () => {
   function unattendedCard(): WorkflowCard {
     return { ...card("u"), tools: ["read_file"], unattended: true };
   }
-  const single = (c: WorkflowCard): WorkflowGraph => ({ cards: [c], edges: [] });
+  const single = (c: WorkflowCard): WorkflowGraph => ({
+    cards: [c],
+    edges: [],
+  });
 
   // Approval-surface unification (2026-05-25, commit 53fca1c + follow-ups):
   // `card.unattended` is now a BLANKET approval bypass for that card,
@@ -179,7 +218,11 @@ describe("runWorkflow — unattended opt-in", () => {
       return "ok";
     });
 
-    await runWorkflow(single(unattendedCard()), {}, { model: "m", scheduled: true });
+    await runWorkflow(
+      single(unattendedCard()),
+      {},
+      { model: "m", scheduled: true },
+    );
 
     expect(gate).toBeDefined();
     // Tool in allowlist → approved.
@@ -219,8 +262,135 @@ describe("runWorkflow — unattended opt-in", () => {
   });
 });
 
+describe("runWorkflow — haltWhen gate", () => {
+  it("stops the chain cleanly when the scratchpad entry matches", async () => {
+    const a: WorkflowCard = {
+      ...card("a"),
+      nodeConfig: { haltWhen: { key: "stop", equals: "yes" } },
+    };
+    const graph: WorkflowGraph = {
+      cards: [a, card("b")],
+      edges: [{ from: "a", to: "b" }],
+    };
+    runAgentLoopMock.mockImplementation(async (opts) => {
+      if (opts.messages.some((m) => m.content.includes("prompt a"))) {
+        // Simulates the card calling the workflow_set tool mid-run.
+        setEntry("stop", "yes");
+        return "a-out";
+      }
+      return "b-out";
+    });
+
+    const outputs: string[] = [];
+    const result = await runWorkflow(
+      graph,
+      { onCardOutput: (_id, text) => outputs.push(text) },
+      { model: "m", workflowId: 11 },
+    );
+
+    // Clean stop: run is ok, the halting card is ok, downstream skipped.
+    expect(result.status).toBe("ok");
+    expect(result.cards[0].status).toBe("ok");
+    expect(result.cards[1].status).toBe("skipped");
+    expect(result.halted).toEqual({
+      cardId: "a",
+      cardName: "Card a",
+      key: "stop",
+      value: "yes",
+    });
+    expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+    // Visible status surfaces through the halting card's output stream.
+    expect(outputs.join("")).toContain("halted by Card a: stop=yes");
+    // Recorded as ok WITH the halt marker.
+    expect(workflowRunRecordMock).toHaveBeenCalledWith(
+      11,
+      "ok",
+      expect.stringContaining('"halted"'),
+    );
+  });
+
+  it("does not halt when the entry value differs", async () => {
+    const a: WorkflowCard = {
+      ...card("a"),
+      nodeConfig: { haltWhen: { key: "stop", equals: "yes" } },
+    };
+    const graph: WorkflowGraph = {
+      cards: [a, card("b")],
+      edges: [{ from: "a", to: "b" }],
+    };
+    runAgentLoopMock.mockImplementation(async (opts) => {
+      if (opts.messages.some((m) => m.content.includes("prompt a"))) {
+        setEntry("stop", "no");
+        return "a-out";
+      }
+      return "b-out";
+    });
+
+    const result = await runWorkflow(graph, {}, { model: "m", workflowId: 12 });
+
+    expect(result.status).toBe("ok");
+    expect(result.cards.map((c) => c.status)).toEqual(["ok", "ok"]);
+    expect(result.halted).toBeUndefined();
+    expect(runAgentLoopMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not halt when the key was never written", async () => {
+    const a: WorkflowCard = {
+      ...card("a"),
+      nodeConfig: { haltWhen: { key: "stop", equals: "yes" } },
+    };
+    runAgentLoopMock.mockResolvedValue("out");
+    const result = await runWorkflow(
+      { cards: [a, card("b")], edges: [{ from: "a", to: "b" }] },
+      {},
+      { model: "m", workflowId: 13 },
+    );
+    expect(result.status).toBe("ok");
+    expect(result.halted).toBeUndefined();
+    expect(runAgentLoopMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("runWorkflow — universal budget on plain agent cards", () => {
+  const single = (c: WorkflowCard): WorkflowGraph => ({
+    cards: [c],
+    edges: [],
+  });
+
+  it("honors nodeConfig.maxTokens on a card with no nodeType (previously exempt)", async () => {
+    let seen: number | null | undefined;
+    runAgentLoopMock.mockImplementation(async (opts) => {
+      seen = opts.params?.max_tokens;
+      return "ok";
+    });
+
+    const budgeted: WorkflowCard = {
+      ...card("a"),
+      nodeConfig: { maxTokens: 64 },
+    };
+    const result = await runWorkflow(single(budgeted), {}, { model: "m" });
+
+    expect(result.status).toBe("ok");
+    expect(seen).toBe(64);
+  });
+
+  it("keeps the no-limit default when ceilings are unset", async () => {
+    let seenParams: unknown = "sentinel";
+    runAgentLoopMock.mockImplementation(async (opts) => {
+      seenParams = opts.params;
+      return "ok";
+    });
+
+    await runWorkflow(single(card("a")), {}, { model: "m" });
+    expect(seenParams).toBeUndefined(); // plain agent path, no params injected
+  });
+});
+
 describe("runWorkflow — per-card model pin", () => {
-  const single = (c: WorkflowCard): WorkflowGraph => ({ cards: [c], edges: [] });
+  const single = (c: WorkflowCard): WorkflowGraph => ({
+    cards: [c],
+    edges: [],
+  });
 
   it("uses the run default model when the card pins none", async () => {
     let seen: string | undefined;

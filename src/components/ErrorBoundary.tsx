@@ -46,7 +46,8 @@ export class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (!this.state.err) return this.props.children;
-    if (this.props.fallback) return this.props.fallback(this.state.err, this.reset);
+    if (this.props.fallback)
+      return this.props.fallback(this.state.err, this.reset);
     return (
       <div role="alert" className="error-boundary-card">
         <div className="error-boundary-title">
@@ -55,7 +56,9 @@ export class ErrorBoundary extends Component<Props, State> {
         <code className="error-boundary-msg">{this.state.err.message}</code>
         <div className="error-boundary-actions">
           <button onClick={this.reset}>Retry</button>
-          <button onClick={() => window.location.reload()}>Reload window</button>
+          <button onClick={() => window.location.reload()}>
+            Reload window
+          </button>
         </div>
       </div>
     );

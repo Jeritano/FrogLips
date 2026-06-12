@@ -1,7 +1,11 @@
 import { parseWorkflow } from "../../types";
 import { api } from "../tauri-api";
 import { runWorkflow } from "./runner";
-import type { RunWorkflowOptions, WorkflowHooks, WorkflowRunResult } from "./runner";
+import type {
+  RunWorkflowOptions,
+  WorkflowHooks,
+  WorkflowRunResult,
+} from "./runner";
 
 /** Payload of the `workflow-trigger` Tauri event emitted by the scheduler. */
 export interface WorkflowTriggerPayload {
@@ -10,7 +14,9 @@ export interface WorkflowTriggerPayload {
 }
 
 /** Narrow an arbitrary event payload to a `WorkflowTriggerPayload`. */
-export function parseWorkflowTrigger(payload: unknown): WorkflowTriggerPayload | null {
+export function parseWorkflowTrigger(
+  payload: unknown,
+): WorkflowTriggerPayload | null {
   if (!payload || typeof payload !== "object") return null;
   const p = payload as Record<string, unknown>;
   // `typeof number` is true for NaN, ±Infinity, floats, and negatives — none

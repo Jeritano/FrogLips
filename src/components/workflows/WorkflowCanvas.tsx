@@ -16,7 +16,11 @@ import {
   type EdgeChange,
   type NodeTypes,
 } from "@xyflow/react";
-import { AgentCardNode, type AgentCardNodeData, type CardRunState } from "./AgentCardNode";
+import {
+  AgentCardNode,
+  type AgentCardNodeData,
+  type CardRunState,
+} from "./AgentCardNode";
 import { CardDeck } from "./CardDeck";
 import type { WorkflowCard, WorkflowEdge } from "../../types";
 
@@ -35,7 +39,10 @@ interface Props {
    * visible canvas area, so the new card always lands where the user can see
    * it rather than off-screen.
    */
-  onCreateFromDeck: (origin: DOMRect, position: { x: number; y: number }) => void;
+  onCreateFromDeck: (
+    origin: DOMRect,
+    position: { x: number; y: number },
+  ) => void;
   runningCardId: string | null;
 }
 
@@ -57,7 +64,10 @@ export function reconcileNodeChanges(
 ): WorkflowCard[] {
   const removed = new Set(
     changes
-      .filter((c): c is Extract<NodeChange, { type: "remove" }> => c.type === "remove")
+      .filter(
+        (c): c is Extract<NodeChange, { type: "remove" }> =>
+          c.type === "remove",
+      )
       .map((c) => c.id),
   );
   const next = applyNodeChanges(changes, nodes) as Node<AgentCardNodeData>[];
@@ -145,10 +155,7 @@ export function WorkflowCanvas({
 
   // Cards with an incoming edge are mid-chain: a single-card run gives them
   // no upstream input, so the per-card Run button is disabled for them.
-  const hasUpstream = useMemo(
-    () => new Set(edges.map((e) => e.to)),
-    [edges],
-  );
+  const hasUpstream = useMemo(() => new Set(edges.map((e) => e.to)), [edges]);
 
   // Only placed cards appear on the table-top; unplaced cards live in the
   // deck and are kept in `cards` for persistence and the run list.
@@ -160,7 +167,9 @@ export function WorkflowCanvas({
   // on the next derive, leaving every node `nodeHasDimensions()===false` and
   // therefore `visibility:hidden` forever. Cache measured sizes in a ref and
   // re-attach them so created cards actually paint on the canvas.
-  const measuredRef = useRef<Map<string, { width: number; height: number }>>(new Map());
+  const measuredRef = useRef<Map<string, { width: number; height: number }>>(
+    new Map(),
+  );
 
   // When a card is deleted via the AgentCardNode "×" button (state-side
   // delete from WorkflowsPage), React Flow doesn't emit a `remove` change —
@@ -202,7 +211,14 @@ export function WorkflowCanvas({
           onDelete: () => onDeleteCard(c.id),
         },
       })),
-    [placedCards, cardStates, hasUpstream, onConfigure, onRunCard, onDeleteCard],
+    [
+      placedCards,
+      cardStates,
+      hasUpstream,
+      onConfigure,
+      onRunCard,
+      onDeleteCard,
+    ],
   );
 
   // Two-click edge-disconnect armed state — declared above flowEdges so
@@ -325,7 +341,12 @@ export function WorkflowCanvas({
           markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
         }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={16} size={1} className="wf-bg" />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={16}
+          size={1}
+          className="wf-bg"
+        />
         <Controls className="wf-controls" showInteractive={false} />
       </ReactFlow>
       <CardDeck onCreate={handleCreateFromDeck} />

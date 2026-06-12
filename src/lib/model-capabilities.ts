@@ -40,7 +40,9 @@ const VISION_MODEL_PATTERNS: RegExp[] = [
 ];
 
 /** Returns true if the given model id matches a known vision-capable family. */
-export function modelSupportsVision(modelId: string | null | undefined): boolean {
+export function modelSupportsVision(
+  modelId: string | null | undefined,
+): boolean {
   if (!modelId) return false;
   return VISION_MODEL_PATTERNS.some((re) => re.test(modelId));
 }
@@ -100,7 +102,9 @@ const TOOL_WEAK_PATTERNS: RegExp[] = [
  * qwen) is correctly flagged weak. Unknown families → "untested" (no warning,
  * no false confidence).
  */
-export function classifyToolFitness(modelId: string | null | undefined): ToolFitness {
+export function classifyToolFitness(
+  modelId: string | null | undefined,
+): ToolFitness {
   if (!modelId) return "untested";
   if (TOOL_WEAK_PATTERNS.some((re) => re.test(modelId))) return "weak";
   if (TOOL_GOOD_PATTERNS.some((re) => re.test(modelId))) return "good";

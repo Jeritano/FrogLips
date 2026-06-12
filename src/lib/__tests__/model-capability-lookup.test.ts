@@ -26,9 +26,13 @@ afterEach(() => {
 describe("resolveVisionSupport (sync, cache-first)", () => {
   it("falls back to the name heuristic before any prefetch", () => {
     // llava matches the heuristic → true.
-    expect(resolveVisionSupport("llava:13b", ollamaStatus("llava:13b"))).toBe(true);
+    expect(resolveVisionSupport("llava:13b", ollamaStatus("llava:13b"))).toBe(
+      true,
+    );
     // plain text model → false.
-    expect(resolveVisionSupport("llama3:8b", ollamaStatus("llama3:8b"))).toBe(false);
+    expect(resolveVisionSupport("llama3:8b", ollamaStatus("llama3:8b"))).toBe(
+      false,
+    );
   });
 
   it("returns false for null model", () => {
@@ -45,11 +49,15 @@ describe("prefetchVisionSupport (authoritative via /api/show)", () => {
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(JSON.stringify({ capabilities: ["completion", "vision"] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ capabilities: ["completion", "vision"] }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
       ),
     );
 
@@ -66,11 +74,15 @@ describe("prefetchVisionSupport (authoritative via /api/show)", () => {
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(JSON.stringify({ capabilities: ["completion", "tools"] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ capabilities: ["completion", "tools"] }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
       ),
     );
 
@@ -80,7 +92,10 @@ describe("prefetchVisionSupport (authoritative via /api/show)", () => {
   });
 
   it("returns null and does not cache on non-Ollama backends", async () => {
-    const status: ServerStatus = { ...ollamaStatus("qwen2-vl"), backend: "mlx" };
+    const status: ServerStatus = {
+      ...ollamaStatus("qwen2-vl"),
+      backend: "mlx",
+    };
     const got = await prefetchVisionSupport("qwen2-vl", status);
     expect(got).toBeNull();
     // Heuristic still covers (qwen2-vl matches) — no cache poisoning.
@@ -89,7 +104,12 @@ describe("prefetchVisionSupport (authoritative via /api/show)", () => {
 
   it("returns null on fetch failure without caching (lets a later retry win)", async () => {
     const status = ollamaStatus("flaky-model");
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("ECONNREFUSED"); }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+    );
     const got = await prefetchVisionSupport("flaky-model", status);
     expect(got).toBeNull();
     // No cache entry → heuristic still in play.

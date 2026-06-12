@@ -203,6 +203,40 @@ jobs:
       - name: TypeScript check
         run: npx tsc --noEmit
 
+      # CSS hygiene gates (2026-06-11). Stylelint catches structural errors
+      # (bad selectors, unknown properties, custom property used without
+      # var()); config lives in .stylelintrc.json. Invoked via npx — no
+      # package.json script on purpose, the gate is CI-owned.
+      - name: Stylelint
+        run: npx stylelint "src/styles/*.css"
+
+      # Stylelint cannot verify that a var(--x) reference points at a token
+      # that actually exists — an undeclared token resolves to the fallback
+      # or to `unset` at runtime and the style silently drops (this shipped
+      # real bugs: --fg-dim, --surface-1, --border-hairline-as-color).
+      # Declared set = custom properties declared in src/styles/*.css plus
+      # tokens set at runtime from TS/TSX (style.setProperty / inline style
+      # objects, e.g. --seat, --ui-font, --user-bubble, --wf-fly-*).
+      - name: CSS token integrity
+        run: |
+          set -euo pipefail
+          declared=$(mktemp)
+          used=$(mktemp)
+          grep -hoE -- '--[A-Za-z0-9_-]+[[:space:]]*:' src/styles/*.css \
+            | sed -E 's/[[:space:]]*:$//' | sort -u > "$declared"
+          { grep -rhoE "[\"']--[A-Za-z0-9_-]+[\"']" src --include='*.ts' --include='*.tsx' || true; } \
+            | tr -d "\"'" >> "$declared"
+          sort -u -o "$declared" "$declared"
+          grep -hoE 'var\([[:space:]]*--[A-Za-z0-9_-]+' src/styles/*.css \
+            | sed -E 's/var\([[:space:]]*//' | sort -u > "$used"
+          missing=$(comm -13 "$declared" "$used")
+          if [ -n "$missing" ]; then
+            echo "::error::var() references to undeclared CSS custom properties:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "CSS token integrity OK: $(wc -l < "$used") referenced tokens, all declared."
+
       - name: Vitest
         if: hashFiles('vitest.config.ts') != ''
         run: npm test

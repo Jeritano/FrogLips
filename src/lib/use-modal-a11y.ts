@@ -65,7 +65,7 @@ export function useModalA11y(opts: {
         if (!root) return;
         const first = root.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
         if (first) first.focus();
-        else root.setAttribute("tabindex", "-1"), root.focus();
+        else (root.setAttribute("tabindex", "-1"), root.focus());
       });
     }
 
@@ -80,7 +80,9 @@ export function useModalA11y(opts: {
       if (!root) return;
       const focusables = Array.from(
         root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-      ).filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
+      ).filter(
+        (el) => !el.hasAttribute("disabled") && el.offsetParent !== null,
+      );
       if (focusables.length === 0) {
         e.preventDefault();
         return;

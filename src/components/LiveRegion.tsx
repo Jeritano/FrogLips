@@ -26,7 +26,12 @@ export function LiveRegion() {
   }, []);
 
   return (
-    <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+    <div
+      className="sr-only"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
       {message}
     </div>
   );

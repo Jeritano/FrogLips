@@ -61,7 +61,9 @@ const SUMMARY_SYSTEM_PROMPT =
 function flattenHistory(messages: Message[]): string {
   return messages
     .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content.trim()}`)
+    .map(
+      (m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content.trim()}`,
+    )
     .join("\n\n");
 }
 
@@ -83,7 +85,10 @@ export async function summarizeConversation(
       body: JSON.stringify({
         model: status.model,
         stream: false,
-        messages: summaryMessages.map((m) => ({ role: m.role, content: m.content })),
+        messages: summaryMessages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
       }),
       signal,
     });
@@ -97,7 +102,10 @@ export async function summarizeConversation(
 
   if (status.backend === "mlx") {
     let out = "";
-    for await (const c of streamChat(status, summaryMessages, { maxTokens: 700, signal })) {
+    for await (const c of streamChat(status, summaryMessages, {
+      maxTokens: 700,
+      signal,
+    })) {
       out += c.delta;
       if (c.done) break;
     }
@@ -106,7 +114,10 @@ export async function summarizeConversation(
 
   if (status.backend === "native") {
     let out = "";
-    for await (const c of streamNativeChat(summaryMessages, { maxTokens: 700, signal })) {
+    for await (const c of streamNativeChat(summaryMessages, {
+      maxTokens: 700,
+      signal,
+    })) {
       out += c.delta;
       if (c.done) break;
     }
@@ -137,7 +148,9 @@ export async function createContinuationConv(
   await api.addMessage(newId, "system", summary, model);
   await api.updateConversationParams(
     newId,
-    JSON.stringify({ system_prompt: `Earlier conversation summary:\n${summary}` }),
+    JSON.stringify({
+      system_prompt: `Earlier conversation summary:\n${summary}`,
+    }),
   );
   logDiag({
     level: "info",
