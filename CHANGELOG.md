@@ -4,6 +4,24 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.4] — 2026-06-12
+
+### Performance — Flows
+- **The canvas no longer re-renders 60×/sec during a run.** A streamed token
+  used to rebuild the whole React Flow node array — every node's data object +
+  3 closures each — and re-diff all nodes every 16ms for the entire run,
+  stealing frames from the output you're actually watching. The per-card
+  status map is now referentially stable across output-only updates, the
+  canvas is memoized, so a streaming token is a no-op for the graph; only the
+  one card whose text grew repaints.
+- **The run panel repaints one row, not all of them.** Each status row is
+  memoized on its visible fields, so a streaming card no longer reconciles
+  every other card's row on every token.
+- **The scheduler stops reading every workflow's full graph each tick.** The
+  30-second scan now reads only `(id, updated_at)` and fetches a workflow's
+  graph blob only when it actually changed — in steady state, zero blob reads
+  per tick instead of one per workflow.
+
 ## [0.13.3] — 2026-06-12
 
 ### Fixed

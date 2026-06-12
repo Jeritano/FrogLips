@@ -1206,14 +1206,30 @@ function RunSurface({
 }: RunSurfaceProps) {
   const { cardStates: snapshot } = useWorkflowRunCards();
 
-  // Provider's per-card snapshot → the legacy `state` map the canvas badges
-  // and run panel consume. Derived (not duplicated) so an in-flight run paints
-  // the instant the user returns to the Workflows view.
+  // Provider's per-card snapshot → the status-only `state` map the canvas
+  // badges + node graph consume. Derived (not duplicated) so an in-flight run
+  // paints the instant the user returns to the Workflows view.
+  //
+  // Perf (2026-06-12): the snapshot gets a fresh object identity on EVERY
+  // 16ms streaming flush (its `output` text grows), but the canvas only cares
+  // about each card's `state`. Returning a NEW map each flush forced the
+  // (now-memoized) WorkflowCanvas + its `nodes` memo to rebuild every node's
+  // data + React Flow's internal diff 60×/sec for the whole run. So compare
+  // the state VALUES against the previous map and return the SAME reference on
+  // an output-only flush — the canvas then skips entirely; only the RunPanel
+  // (which legitimately renders the streaming output) re-renders.
+  const prevCardStatesRef = useRef<Record<string, CardRunState>>({});
   const cardStates: Record<string, CardRunState> = useMemo(() => {
+    const prev = prevCardStatesRef.current;
     const out: Record<string, CardRunState> = {};
-    for (const [id, snap] of Object.entries(snapshot)) {
-      out[id] = snap.state;
+    const ids = Object.keys(snapshot);
+    let changed = ids.length !== Object.keys(prev).length;
+    for (const id of ids) {
+      out[id] = snapshot[id].state;
+      if (prev[id] !== out[id]) changed = true;
     }
+    if (!changed) return prev;
+    prevCardStatesRef.current = out;
     return out;
   }, [snapshot]);
 

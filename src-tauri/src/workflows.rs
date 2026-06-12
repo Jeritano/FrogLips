@@ -415,27 +415,25 @@ pub fn list_workflows() -> Result<Vec<Workflow>> {
     Ok(out)
 }
 
-/// A scheduler-only view of a workflow: its id, its `updated_at` (the cache
-/// invalidation key), and the raw `graph_json`. Deliberately narrower than the
-/// full [`Workflow`] — the scheduler does not need `name`/`created_at`, so the
-/// hot 30s scan query does not select them.
+/// The scheduler's per-workflow cache key: id + `updated_at`. Deliberately
+/// carries NO `graph_json` — the hot 30s scan only needs to know WHICH
+/// workflows changed since last tick; the heavy blob is fetched (via
+/// [`fetch_workflow_graph_json`]) ONLY for the rows whose cache entry missed.
+/// In steady state (nothing edited) every row is a cache hit and not one blob
+/// leaves SQLite, vs. the prior scan that re-read every full graph_json each
+/// tick (perf review 2026-06-12).
 pub(crate) struct WorkflowScheduleRow {
     pub id: i64,
     pub updated_at: i64,
-    pub graph_json: String,
 }
 
-/// List the lightweight schedule rows for every workflow. Selects only the
-/// columns the scheduler needs (id, updated_at, graph_json) so the hot scan
-/// query does not drag `name`/`created_at` along. Mirrors `list_workflows`'
-/// per-row resilience: one unreadable row is skipped + logged, never blanks the
-/// whole scan.
+/// List just (id, updated_at) for every workflow — two integers per row, no
+/// blob. Per-row resilient like `list_workflows`: one unreadable row is skipped
+/// + logged, never blanks the whole scan.
 pub(crate) fn list_workflow_schedule_rows() -> Result<Vec<WorkflowScheduleRow>> {
     let conn = get_db()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, updated_at, graph_json
-         FROM workflows ORDER BY updated_at DESC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id, updated_at FROM workflows ORDER BY updated_at DESC")?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();
     while let Some(r) = rows.next()? {
@@ -443,7 +441,6 @@ pub(crate) fn list_workflow_schedule_rows() -> Result<Vec<WorkflowScheduleRow>> 
             Ok(WorkflowScheduleRow {
                 id: r.get(0)?,
                 updated_at: r.get(1)?,
-                graph_json: r.get(2)?,
             })
         })();
         match parsed {
@@ -456,6 +453,19 @@ pub(crate) fn list_workflow_schedule_rows() -> Result<Vec<WorkflowScheduleRow>> 
         }
     }
     Ok(out)
+}
+
+/// Fetch one workflow's `graph_json` blob — called only on a scheduler cache
+/// miss (a workflow whose `updated_at` changed), so the cost scales with EDITS,
+/// not with workflow count × tick rate.
+fn fetch_workflow_graph_json(id: i64) -> Result<String> {
+    let conn = get_db()?;
+    conn.query_row(
+        "SELECT graph_json FROM workflows WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .context("workflow graph_json not found")
 }
 
 pub fn get_workflow(id: i64) -> Result<Workflow> {
@@ -939,21 +949,30 @@ fn scheduler_scan(
         // `updated_at` (in `save_workflow`) and forces a re-parse, so a newly
         // edited schedule takes effect on the next scan without re-parsing every
         // unchanged blob every tick.
-        let entry = match cache.get(&row.id) {
-            Some(c) if c.updated_at == row.updated_at => c,
-            _ => {
-                let cards = extract_schedules(&row.graph_json);
-                cache.insert(
-                    row.id,
-                    CachedSchedules {
-                        updated_at: row.updated_at,
-                        cards,
-                    },
-                );
-                // `insert` returned the old value; re-borrow the fresh entry.
-                cache.get(&row.id).expect("just inserted")
-            }
-        };
+        let hit = matches!(cache.get(&row.id), Some(c) if c.updated_at == row.updated_at);
+        if !hit {
+            // Cache miss: this workflow was edited (or is new) since we last
+            // parsed it — only NOW do we pay to read + parse its graph_json.
+            let cards = match fetch_workflow_graph_json(row.id) {
+                Ok(json) => extract_schedules(&json),
+                Err(e) => {
+                    crate::diagnostics::warn_with(
+                        "workflows",
+                        "scheduler could not read workflow graph_json",
+                        serde_json::json!({ "id": row.id, "error": e.to_string() }),
+                    );
+                    Vec::new()
+                }
+            };
+            cache.insert(
+                row.id,
+                CachedSchedules {
+                    updated_at: row.updated_at,
+                    cards,
+                },
+            );
+        }
+        let entry = cache.get(&row.id).expect("inserted on miss / present on hit");
 
         for (card_id, sched) in &entry.cards {
             let sched = *sched;

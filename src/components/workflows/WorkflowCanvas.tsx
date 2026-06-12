@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -106,7 +106,7 @@ export function cascadeOffset(n: number): { dx: number; dy: number } {
  * per-card run state drives the live node badges. The corner deck's top card
  * opens the centered form; saving the form lands a node directly on the pane.
  */
-export function WorkflowCanvas({
+function WorkflowCanvasInner({
   cards,
   edges,
   cardStates,
@@ -381,3 +381,14 @@ export function WorkflowCanvas({
     </div>
   );
 }
+
+/**
+ * Memoized (perf 2026-06-12). During a run the parent RunSurface re-renders on
+ * every 16ms streaming flush, but the canvas only depends on `cardStates`
+ * (now a referentially-stable status map — see RunSurface), `runningCardId`,
+ * `cards`/`edges` (change only on edits), and useCallback-stable handlers. So
+ * an output-only flush is a shallow-equal no-op here: the canvas, its `nodes`
+ * memo, and React Flow's internal node diff all skip, instead of rebuilding
+ * every node 60×/sec for the whole run.
+ */
+export const WorkflowCanvas = memo(WorkflowCanvasInner);

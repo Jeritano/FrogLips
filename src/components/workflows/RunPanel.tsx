@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { memo, useEffect, useRef, type ReactNode } from "react";
 import { Circle, CircleDashed, CheckCircle2, XCircle } from "lucide-react";
 import type { CardRunState } from "./AgentCardNode";
 
@@ -33,6 +33,97 @@ const STATE_ICON: Record<CardRunState, ReactNode> = {
   done: <CheckCircle2 size={14} />,
   failed: <XCircle size={14} />,
 };
+
+/**
+ * One status row. Extracted + memoized (perf 2026-06-12) so a 16ms streaming
+ * flush — which rebuilds the whole `CardRunInfo[]` with fresh object refs even
+ * for unchanged cards — only reconciles the ONE row whose `output` grew. The
+ * comparator checks the visible fields; the parent's handlers are `useCallback`
+ * (stable), so non-streaming rows skip rendering entirely during a run.
+ */
+const RunPanelRow = memo(
+  function RunPanelRow({
+    card: c,
+    isRunning,
+    rowRef,
+    onFocusNode,
+    onRerunFromCard,
+  }: {
+    card: CardRunInfo;
+    isRunning: boolean;
+    rowRef?: React.Ref<HTMLDivElement>;
+    onFocusNode: (id: string) => void;
+    onRerunFromCard: (id: string) => void;
+  }) {
+    const isFailed = c.state === "failed";
+    return (
+      <div
+        className="wf-run-item"
+        data-state={c.state}
+        ref={isRunning ? rowRef : undefined}
+      >
+        <div className="wf-run-item-head">
+          <span
+            className={`wf-run-icon wf-run-icon-${c.state}`}
+            aria-hidden="true"
+          >
+            {STATE_ICON[c.state]}
+          </span>
+          {isFailed ? (
+            // A failed row jumps to the offending node on the canvas so the user
+            // can fix it without hunting for it on a busy graph. Inline reset
+            // keeps the button looking like the plain name text it replaces.
+            <button
+              type="button"
+              className="wf-run-item-name"
+              onClick={() => onFocusNode(c.id)}
+              title="Show this card on the canvas"
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+                textAlign: "left",
+                textDecoration: "underline",
+                textUnderlineOffset: "2px",
+                color: "inherit",
+                font: "inherit",
+              }}
+            >
+              {c.name}
+            </button>
+          ) : (
+            <span className="wf-run-item-name">{c.name}</span>
+          )}
+        </div>
+        {c.output && <pre className="wf-run-output">{c.output}</pre>}
+        {c.error && <pre className="wf-run-output wf-run-error">{c.error}</pre>}
+        {isFailed && (
+          <button
+            type="button"
+            className="wf-btn"
+            onClick={() => onRerunFromCard(c.id)}
+            title="Re-run the flow starting from this card"
+            style={{ marginTop: "var(--space-2)", width: "100%" }}
+          >
+            Re-run from here
+          </button>
+        )}
+      </div>
+    );
+  },
+  // `card` is a fresh object every flush, so compare its VISIBLE fields, not its
+  // ref — otherwise every row re-renders on every streamed token. Handlers are
+  // useCallback-stable so they're intentionally not compared.
+  (a, b) =>
+    a.isRunning === b.isRunning &&
+    a.rowRef === b.rowRef &&
+    a.card.id === b.card.id &&
+    a.card.name === b.card.name &&
+    a.card.state === b.card.state &&
+    a.card.output === b.card.output &&
+    a.card.error === b.card.error,
+);
 
 /**
  * Side panel: live per-card status and output.
@@ -100,70 +191,16 @@ export function RunPanel({
         {cards.length === 0 && (
           <p className="wf-run-empty">No cards on the canvas yet.</p>
         )}
-        {cards.map((c) => {
-          const isRunning = c.id === runningCardId;
-          const isFailed = c.state === "failed";
-          return (
-            <div
-              key={c.id}
-              className="wf-run-item"
-              data-state={c.state}
-              ref={isRunning ? runningRef : undefined}
-            >
-              <div className="wf-run-item-head">
-                <span
-                  className={`wf-run-icon wf-run-icon-${c.state}`}
-                  aria-hidden="true"
-                >
-                  {STATE_ICON[c.state]}
-                </span>
-                {isFailed ? (
-                  // A failed row jumps to the offending node on the canvas so
-                  // the user can fix it without hunting for it on a busy graph.
-                  // Inline reset keeps the button looking like the plain name
-                  // text it replaces (no dedicated CSS class lives in this
-                  // component's stylesheet scope).
-                  <button
-                    type="button"
-                    className="wf-run-item-name"
-                    onClick={() => onFocusNode(c.id)}
-                    title="Show this card on the canvas"
-                    style={{
-                      background: "none",
-                      border: "none",
-                      padding: 0,
-                      cursor: "pointer",
-                      textAlign: "left",
-                      textDecoration: "underline",
-                      textUnderlineOffset: "2px",
-                      color: "inherit",
-                      font: "inherit",
-                    }}
-                  >
-                    {c.name}
-                  </button>
-                ) : (
-                  <span className="wf-run-item-name">{c.name}</span>
-                )}
-              </div>
-              {c.output && <pre className="wf-run-output">{c.output}</pre>}
-              {c.error && (
-                <pre className="wf-run-output wf-run-error">{c.error}</pre>
-              )}
-              {isFailed && (
-                <button
-                  type="button"
-                  className="wf-btn"
-                  onClick={() => onRerunFromCard(c.id)}
-                  title="Re-run the flow starting from this card"
-                  style={{ marginTop: "var(--space-2)", width: "100%" }}
-                >
-                  Re-run from here
-                </button>
-              )}
-            </div>
-          );
-        })}
+        {cards.map((c) => (
+          <RunPanelRow
+            key={c.id}
+            card={c}
+            isRunning={c.id === runningCardId}
+            rowRef={c.id === runningCardId ? runningRef : undefined}
+            onFocusNode={onFocusNode}
+            onRerunFromCard={onRerunFromCard}
+          />
+        ))}
       </div>
     </aside>
   );
