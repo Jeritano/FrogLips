@@ -29,6 +29,7 @@ import {
   cloneTemplateGraph,
   type FlowTemplate,
 } from "../../lib/workflow/templates";
+import { healStaleTemplateClones } from "../../lib/workflow/heal-templates";
 import { flowToDoc, flowFromDoc } from "../../lib/workflow/export";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { CardForm, type FormOrigin } from "./CardForm";
@@ -112,6 +113,12 @@ export function WorkflowsPage({ status }: Props) {
   // Pre-formatted "About You" block, shared by every card's agent run so
   // workflow agents know who the user is. Refreshed on mount.
   const [userProfile, setUserProfile] = useState<string | null>(null);
+  // Active agent write-workspace, surfaced in the RunPanel so the user always
+  // knows where a flow's file-writing cards land. `undefined` = not yet loaded
+  // (render nothing); `null` = unset (warn: files scatter under ~).
+  const [workspace, setWorkspace] = useState<string | null | undefined>(
+    undefined,
+  );
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshList = useCallback(async () => {
@@ -172,6 +179,49 @@ export function WorkflowsPage({ status }: Props) {
     })();
   }, [refreshList]);
 
+  // Heal stale template clones once per load (v0.13.2). Workflows cloned from
+  // a gallery template BEFORE the v0.13.1 fix froze the old config — action
+  // cards with `unattended:false` (so write_file/run_shell silently deny-gated
+  // → the flow produced nothing) and a `verifyCmd:"npm test"` that exited 254
+  // and looped the critic. `healStaleTemplateClones` re-syncs the execution
+  // config of UNMODIFIED clones (same card ids + identical prompts) from their
+  // source template; user-customized clones are left untouched. Idempotent: a
+  // re-heal of an already-healed clone reports `changed:false`, so this is safe
+  // to run on every mount.
+  const healed = useRef(false);
+  useEffect(() => {
+    if (healed.current) return;
+    healed.current = true;
+    void (async () => {
+      try {
+        const loaded = (await api.workflowList()).map(parseWorkflow);
+        const results = healStaleTemplateClones(loaded);
+        const changed = results.filter((r) => r.changed);
+        if (changed.length === 0) return;
+        for (const { workflow } of changed) {
+          await api.workflowSave(
+            workflow.id,
+            workflow.name,
+            serializeWorkflowGraph(workflow.graph),
+          );
+        }
+        logDiag({
+          level: "info",
+          source: "workflows",
+          message: `healed ${changed.length} stale template clone(s) to current template config`,
+        });
+        await refreshList();
+      } catch (e) {
+        logDiag({
+          level: "warn",
+          source: "workflows",
+          message: "template-clone heal skipped",
+          detail: e,
+        });
+      }
+    })();
+  }, [refreshList]);
+
   // Load the "About You" profile once; a failed read just omits it.
   useEffect(() => {
     api
@@ -182,6 +232,23 @@ export function WorkflowsPage({ status }: Props) {
           level: "warn",
           source: "workflows",
           message: "settingsGet failed",
+          detail: e,
+        }),
+      );
+  }, []);
+
+  // Resolve the active agent write-workspace for the RunPanel indicator.
+  // Mirrors ChatWindow's mount fetch. A failed read must not block or error
+  // the page — leave it `undefined` so the indicator simply stays hidden.
+  useEffect(() => {
+    api
+      .agentGetWorkspace()
+      .then(setWorkspace)
+      .catch((e) =>
+        logDiag({
+          level: "warn",
+          source: "workflows",
+          message: "agentGetWorkspace failed — workspace indicator hidden",
           detail: e,
         }),
       );
@@ -1071,6 +1138,7 @@ export function WorkflowsPage({ status }: Props) {
           onFocusNode={focusNode}
           onRerunFromCard={runFromCard}
           onRegisterFocus={registerFocusNode}
+          workspace={workspace}
         />
       </div>
       {formCard && (
@@ -1110,6 +1178,8 @@ interface RunSurfaceProps {
   onRerunFromCard: (id: string) => void;
   /** Lets the canvas hand its imperative node-focuser up to the page. */
   onRegisterFocus: (fn: ((id: string) => void) | null) => void;
+  /** Active agent write-workspace for the RunPanel's "where do files go" chip. */
+  workspace?: string | null;
 }
 
 /**
@@ -1132,6 +1202,7 @@ function RunSurface({
   onFocusNode,
   onRerunFromCard,
   onRegisterFocus,
+  workspace,
 }: RunSurfaceProps) {
   const { cardStates: snapshot } = useWorkflowRunCards();
 
@@ -1188,6 +1259,7 @@ function RunSurface({
         runningCardId={runningCardId}
         onFocusNode={onFocusNode}
         onRerunFromCard={onRerunFromCard}
+        workspace={workspace}
       />
     </>
   );

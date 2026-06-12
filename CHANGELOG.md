@@ -4,6 +4,29 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.2] — 2026-06-12
+
+### Flows — fixes from a real end-to-end build test
+- **Stale template clones now self-heal.** Workflows you cloned from a gallery
+  template *before* v0.13.1 froze the old config (action cards not armed, so
+  their file/shell tools were silently denied, and a `npm test` verify command
+  that failed in non-Node projects). On load, an unmodified template clone is
+  re-synced to the current template — armed action cards + the safe
+  auto-detecting verify command. Customized workflows are left untouched.
+- **No more silent no-ops.** A flow card that needs a dangerous tool but isn’t
+  set to run unattended now stops the run with a clear message naming the card
+  and tool ("needs arming — open it and enable Unattended"), instead of looping
+  while producing nothing.
+- **Coder flows stay inside the project.** The Spec/Architect/Implementer and
+  Fixer cards now require workspace-relative paths (never `~`/absolute) and
+  must create files with `write_file`/`edit_file` — never shell redirection
+  (`cat > file`), which bypasses workspace confinement.
+- **"Where do files go" is visible.** The Flows run panel shows the active
+  project folder ("Files write to: …"), or warns when it’s defaulting to your
+  home folder. A failed workspace restore at startup is now logged instead of
+  silently swallowed.
+
+
 ## [0.13.1] — 2026-06-12
 
 ### Fixed — Flows

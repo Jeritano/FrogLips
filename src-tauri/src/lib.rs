@@ -112,10 +112,32 @@ pub fn run() {
 
     ensure_path_for_gui();
 
-    // Restore persisted workspace root, if any
+    // Restore persisted workspace root, if any. A failure here used to be
+    // swallowed (`let _ = ...`): the app would then silently fall back to the
+    // home-dir default, so file-writing agent/flow cards scattered files under
+    // `~` with no hint that the configured project folder was never applied
+    // (e.g. the directory was deleted/renamed/moved while the app was closed).
+    // Surface it loudly instead — name the path AND the error so the user can
+    // see why their workspace didn't take.
     let persisted = settings::load();
     if let Some(ws) = persisted.workspace_root.clone() {
-        let _ = agent::set_workspace_root(Some(ws));
+        match agent::set_workspace_root(Some(ws.clone())) {
+            Ok(resolved) => {
+                tracing::info!(
+                    target: "diagnostics",
+                    "Restored agent workspace root: {}",
+                    resolved.as_deref().unwrap_or("(none)")
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "diagnostics",
+                    "Failed to restore persisted workspace root {ws:?}: {e} — \
+                     falling back to home-dir default; file-writing cards may \
+                     scatter under ~ until a valid project folder is set"
+                );
+            }
+        }
     }
 
     // Auto-start configured MCP servers in the background. Failures are

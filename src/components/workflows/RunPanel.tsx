@@ -18,6 +18,13 @@ interface Props {
   onFocusNode: (id: string) => void;
   /** Re-run the graph resuming from this card (failed/partial recovery). */
   onRerunFromCard: (id: string) => void;
+  /**
+   * Active agent write-workspace (`api.agentGetWorkspace()` result). `null`
+   * means no project folder is set, so file-writing cards fall back to the
+   * home dir — we surface that as a warning chip so "where do files go?" is
+   * never a mystery during a run. `undefined` = not yet loaded (render nothing).
+   */
+  workspace?: string | null;
 }
 
 const STATE_ICON: Record<CardRunState, ReactNode> = {
@@ -44,6 +51,7 @@ export function RunPanel({
   runningCardId,
   onFocusNode,
   onRerunFromCard,
+  workspace,
 }: Props) {
   // Auto-scroll the running card into view. Keyed on the running id so it
   // fires once per card transition, not on every streamed output update.
@@ -62,6 +70,32 @@ export function RunPanel({
       <div className="wf-run-head">
         <span>Status</span>
       </div>
+      {/* Where-do-files-go indicator. A flow run never has an interactive
+          confirm handler, so file-writing cards write to the active agent
+          workspace — and an unset workspace silently scatters files under ~.
+          Surface the destination so it's never a mystery. `undefined` = the
+          workspace fetch hasn't resolved yet, so render nothing. */}
+      {workspace !== undefined &&
+        (workspace ? (
+          <div
+            className="wf-run-workspace"
+            data-testid="wf-run-workspace"
+            title={`Files write to: ${workspace}`}
+          >
+            <span className="wf-run-workspace-label">Files write to:</span>
+            <span className="wf-run-workspace-path">{workspace}</span>
+          </div>
+        ) : (
+          <div
+            className="wf-run-workspace wf-run-workspace-warn"
+            data-testid="wf-run-workspace-warn"
+            role="status"
+            title="No project folder is set — file-writing cards will write under your home folder. Set a workspace in Agent settings."
+          >
+            ⚠ Files write to your home folder — set a project folder in Agent
+            settings
+          </div>
+        ))}
       <div className="wf-run-list">
         {cards.length === 0 && (
           <p className="wf-run-empty">No cards on the canvas yet.</p>

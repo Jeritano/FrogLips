@@ -454,6 +454,34 @@
   border-bottom: 1px solid var(--border);
   font-weight: 600;
 }
+/* "Where do files go" indicator under the Status header. Compact and quiet
+   when a workspace is set; a warn-tinted chip when it is not (files scatter
+   under ~). */
+.wf-run-workspace {
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.wf-run-workspace-label {
+  font-weight: 600;
+}
+.wf-run-workspace-path {
+  font-family: var(--mono);
+  word-break: break-all;
+  color: var(--text);
+}
+.wf-run-workspace-warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-bottom-color: var(--warn-border);
+  font-weight: 500;
+  line-height: 1.4;
+}
 .wf-run-list {
   flex: 1;
   overflow-y: auto;

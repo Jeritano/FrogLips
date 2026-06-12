@@ -262,6 +262,90 @@ describe("runWorkflow — unattended opt-in", () => {
   });
 });
 
+describe("runWorkflow — arming gate (fail-loud)", () => {
+  const single = (c: WorkflowCard): WorkflowGraph => ({
+    cards: [c],
+    edges: [],
+  });
+
+  it("fails fast when an un-armed card lists a dangerous tool (no confirm handler)", async () => {
+    runAgentLoopMock.mockResolvedValue("unreachable");
+    const danger = {
+      ...card("d"),
+      name: "Writer",
+      tools: ["write_file"],
+      unattended: false,
+    };
+
+    // No requestConfirmation in opts (always the case for a Flow run) → the
+    // card would silently deny-gate every write_file and loop producing
+    // nothing. The runner must refuse before the card runs.
+    await expect(
+      runWorkflow(single(danger), {}, { model: "m" }),
+    ).rejects.toThrow(/Card "Writer" needs arming/);
+    // The offending tool name is named so the user knows what to arm.
+    await expect(
+      runWorkflow(single(danger), {}, { model: "m" }),
+    ).rejects.toThrow(/write_file/);
+    // The card's agent loop never ran — fail-fast, not a silent no-op.
+    expect(runAgentLoopMock).not.toHaveBeenCalled();
+  });
+
+  it("names every dangerous tool when a card lists more than one", async () => {
+    runAgentLoopMock.mockResolvedValue("unreachable");
+    const danger = {
+      ...card("d"),
+      name: "Coder",
+      tools: ["read_file", "run_shell", "write_file"],
+      unattended: false,
+    };
+    await expect(
+      runWorkflow(single(danger), {}, { model: "m" }),
+    ).rejects.toThrow(/run_shell, write_file/);
+  });
+
+  it("does NOT fire for an unattended card (it self-approves)", async () => {
+    runAgentLoopMock.mockResolvedValue("ok");
+    const armed = {
+      ...card("d"),
+      tools: ["write_file"],
+      unattended: true,
+    };
+    const res = await runWorkflow(single(armed), {}, { model: "m" });
+    expect(res.status).toBe("ok");
+    expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT fire when a caller wires a confirm handler (chat-mode parity)", async () => {
+    runAgentLoopMock.mockResolvedValue("ok");
+    const danger = {
+      ...card("d"),
+      tools: ["write_file"],
+      unattended: false,
+    };
+    // A caller that CAN prompt per call (e.g. chat agent mode) is unaffected —
+    // the gate only fires when there's no confirm handler to fall back on.
+    const res = await runWorkflow(
+      single(danger),
+      {},
+      {
+        model: "m",
+        requestConfirmation: async () => ({ approve: false }),
+      },
+    );
+    expect(res.status).toBe("ok");
+    expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT fire for a read-only card", async () => {
+    runAgentLoopMock.mockResolvedValue("ok");
+    const safe = { ...card("d"), tools: ["read_file"], unattended: false };
+    const res = await runWorkflow(single(safe), {}, { model: "m" });
+    expect(res.status).toBe("ok");
+    expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("runWorkflow — haltWhen gate", () => {
   it("stops the chain cleanly when the scratchpad entry matches", async () => {
     const a: WorkflowCard = {

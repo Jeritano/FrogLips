@@ -117,6 +117,28 @@ describe("dev-workforce templates", () => {
     });
   });
 
+  it("file-writing cards carry path-discipline guidance (workspace-relative, no shell redirects)", () => {
+    // The cards that plan or write files (Spec Writer, Architect, Implementer,
+    // Fixer) must steer the model away from `~`/absolute paths and shell
+    // redirects — run_shell heredocs escape workspace confinement, so a prompt
+    // that omits this guidance regresses to the demo bug (cat > ~/index.html).
+    const fileWriters = [
+      featureCrew.graph.cards.find((c) => c.id === "fc1")!,
+      featureCrew.graph.cards.find((c) => c.id === "fc2")!,
+      featureCrew.graph.cards.find((c) => c.id === "fc3")!,
+      bugHunter.graph.cards.find((c) => c.id === "bh3")!,
+    ];
+    for (const c of fileWriters) {
+      const p = c.prompt;
+      // Mandates the workspace-confined write tools.
+      expect(p, `${c.id} mentions write_file`).toMatch(/write_file/);
+      // Forbids shell-redirection file writes.
+      expect(p, `${c.id} forbids shell redirection`).toMatch(/cat > file/);
+      // Forbids `~` / absolute paths.
+      expect(p, `${c.id} forbids ~/absolute paths`).toMatch(/NEVER use `~`/);
+    }
+  });
+
   it("economy: cards run local (model unset); escalation is a :cloud tag on ollama", () => {
     for (const t of both) {
       for (const c of t.graph.cards) {

@@ -1,7 +1,7 @@
 import type { Message, WorkflowCard, WorkflowGraph } from "../../types";
 import type { AgentRunOptions } from "../agent-loop";
 import { runAgentLoop } from "../agent-loop";
-import { IRREVERSIBLE_TOOLS } from "../agent-loop/dispatch";
+import { DANGEROUS_TOOLS, IRREVERSIBLE_TOOLS } from "../agent-loop/dispatch";
 import { fenceUntrustedData } from "../agent-loop/untrusted-fence";
 import { loadAllPresets } from "../agent-presets";
 import { logDiag } from "../diagnostics";
@@ -218,6 +218,52 @@ function buildHandoffMessage(previousOutput: string): Message {
     role: "system",
     content: body,
   };
+}
+
+/**
+ * Resolve a card's effective tool allowlist exactly as {@link buildCardOptions}
+ * does: card-level `tools` win when non-empty, otherwise the preset's allowlist
+ * (an empty preset allowlist deliberately means "all tools", but for the
+ * arming gate below we only care about the explicitly-listed tools — an empty
+ * list lists no dangerous tool by name, so it can't be the source of a
+ * silently-denied action card).
+ */
+function effectiveAllowlist(
+  card: WorkflowCard,
+  presets: ReturnType<typeof loadAllPresets>,
+): string[] {
+  if (card.tools.length > 0) return card.tools;
+  const preset = presets.find((p) => p.id === card.preset);
+  return preset?.allowedTools ?? [];
+}
+
+/**
+ * Arming gate (fail-loud, v0.13.2). A card that needs a DANGEROUS tool but is
+ * NOT marked `unattended`, run with no interactive confirm handler (always the
+ * case for a Flow run — the runner passes no `requestConfirmation`), would hit
+ * the `denyAll` gate and silently produce nothing: write_file/run_shell calls
+ * are refused one by one and the agent loops until it gives up with an empty
+ * result. That looked like a hang to the user in the demo. Detect it up front
+ * and surface a clear, actionable error instead of the silent no-op.
+ *
+ * Returns the human-readable error message when the card is unarmed-dangerous,
+ * else null. Mirrors the needsReview fail-fast: only fires when there is no
+ * confirm handler to fall back on (`opts.requestConfirmation` absent) — a chat
+ * run that CAN prompt the user per call is unaffected.
+ */
+function unarmedDangerousError(
+  card: WorkflowCard,
+  allowlist: string[],
+): string | null {
+  if (card.unattended === true) return null;
+  const dangerous = allowlist.filter((t) => DANGEROUS_TOOLS.has(t));
+  if (dangerous.length === 0) return null;
+  const list = dangerous.join(", ");
+  return (
+    `Card "${card.name}" needs arming — it uses ${list} but isn’t set to run ` +
+    `unattended. Open it in the editor and enable Unattended, or run it from ` +
+    `chat where you can approve each call.`
+  );
 }
 
 /** Default confirmation gate for cards that have NOT opted into unattended: deny every dangerous call. */
@@ -496,6 +542,25 @@ export async function runWorkflow(
     // Hoist preset load once for the whole run (audit M8). Loaded inside
     // buildCardOptions previously — 10-card chain = 10 redundant loads.
     const presets = loadAllPresets();
+
+    // Arming gate (fail-loud, v0.13.2). Mirrors the needsReview fail-fast: a
+    // card that lists a DANGEROUS tool but is NOT `unattended`, run with no
+    // interactive confirm handler (always true for a Flow run — the runner
+    // passes no `requestConfirmation`), would silently hit `denyAll` for every
+    // dangerous call and loop producing nothing. Refuse to start instead of
+    // letting the user watch an inert run. Only fires when there is no confirm
+    // handler to fall back on; a caller that wires one (e.g. chat agent mode)
+    // can still approve per call. Checked against `cards` (post-startCardId
+    // slice) so only cards the run would execute gate it.
+    if (opts.requestConfirmation == null) {
+      for (const card of cards) {
+        const msg = unarmedDangerousError(
+          card,
+          effectiveAllowlist(card, presets),
+        );
+        if (msg) throw new Error(msg);
+      }
+    }
 
     const results: CardResult[] = [];
     let previousOutput: string | null = null;
