@@ -17,6 +17,13 @@ export interface AgentCardNodeData {
   midChain: boolean;
   /** Optional accent color (hex) for the card theme; null = neutral default. */
   color?: string | null;
+  /**
+   * True when the card was authored by the assistant with elevated tools and
+   * has not yet been armed in the CardForm. Surfaces a "Needs review" chip on
+   * the node so the unreviewed gate is visible on the canvas without opening
+   * the form. The runner + scheduler refuse to run the card while this holds.
+   */
+  needsReview?: boolean;
   /** Opens the centered form, flying from the clicked node's rect. */
   onConfigure: (rect: DOMRect) => void;
   onRun: () => void;
@@ -77,6 +84,14 @@ function AgentCardNodeImpl({ data }: NodeProps) {
         </div>
         <div className="wf-node-meta">
           <span className="wf-node-preset">{d.preset}</span>
+          {d.needsReview && (
+            <span
+              className="wf-node-review"
+              title="Authored by the assistant with elevated tools — open and Arm this card before it can run"
+            >
+              ⚠ Needs review
+            </span>
+          )}
           {d.nodeType && d.nodeType !== "agent" && (
             <span
               className="wf-node-nodetype"
@@ -159,6 +174,7 @@ function dataEqual(prev: NodeProps, next: NodeProps): boolean {
     a.state === b.state &&
     a.midChain === b.midChain &&
     a.color === b.color &&
+    a.needsReview === b.needsReview &&
     // ReactFlow's NodeProps carry position + selected + dimensions —
     // re-render on those because they map to visible chrome.
     prev.selected === next.selected &&

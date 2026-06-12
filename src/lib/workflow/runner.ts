@@ -463,6 +463,23 @@ export async function runWorkflow(
       cards = order.slice(idx);
     }
 
+    // needsReview gate (2026-06-12): a card the chat model authored with
+    // elevated capabilities carries `needsReview === true` until the user
+    // opens it in the editor and "Arm"s it (CardForm flips it to false). The
+    // runner REFUSES to execute ANY card while a reachable card in this run is
+    // unreviewed — fail fast at the start with the offending name(s) so the
+    // user can't accidentally run a powerful chat-authored Flow before vetting
+    // it. Only the UI clears the flag; the model can never set it false.
+    // Checked against `cards` (post-startCardId slice) so only cards the run
+    // would actually execute gate the run.
+    const unreviewed = cards.filter((c) => c.needsReview === true);
+    if (unreviewed.length > 0) {
+      const names = unreviewed.map((c) => `"${c.name}"`).join(", ");
+      throw new Error(
+        `Card ${names} needs review — open it in the editor and Arm it before running.`,
+      );
+    }
+
     // Hoist preset load once for the whole run (audit M8). Loaded inside
     // buildCardOptions previously — 10-card chain = 10 redundant loads.
     const presets = loadAllPresets();

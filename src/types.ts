@@ -776,6 +776,18 @@ export interface WorkflowCard {
    * handler default. Ignored entirely when `nodeType` is `"agent"`.
    */
   nodeConfig?: WorkflowNodeConfig | null;
+  /**
+   * Set true ONLY by the advanced `create_flow` builder (2026-06-12): a card
+   * the chat model authored with elevated capabilities (a non-agent nodeType,
+   * a verifyCmd, or network/edit/shell tools beyond the safe read-only set).
+   * The runner AND the scheduler REFUSE to execute a card with
+   * `needsReview === true` — the user must open it in the editor and "Arm" it
+   * (which flips this to false) after reviewing the tools it was granted.
+   * Only the UI can clear it; the model can never set it false. This is the
+   * gate that makes chat-authored powerful Flows safe: worst case is an inert
+   * Flow that will not run until a human reviews and arms each elevated card.
+   */
+  needsReview?: boolean;
 }
 
 /**
@@ -1083,6 +1095,10 @@ function normalizeWorkflowCard(raw: unknown): WorkflowCard | null {
     schedule: typeof c.schedule === "string" ? c.schedule : null,
     backend: typeof c.backend === "string" ? c.backend : null,
     unattended: c.unattended === true,
+    // Defaults false: a card is runnable unless an advanced create_flow build
+    // explicitly flagged it for human review. Persisted so the arm state
+    // survives reload; only the CardForm "Arm" action clears it.
+    needsReview: c.needsReview === true,
     model: typeof c.model === "string" ? c.model : null,
     // Legacy workflows pre-date the deck/canvas split — every card was on the
     // canvas. Missing `placed` therefore defaults to `true` so old workflows

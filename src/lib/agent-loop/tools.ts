@@ -1057,10 +1057,16 @@ export const TOOLS = [
         "Create a saved Flow — a linear multi-agent workflow — from a description. " +
         "The Flow is SAVED to the Flows view but NEVER run automatically; the user reviews and runs it. " +
         "Steps execute strictly top-to-bottom, each step's output handed to the next. " +
-        "Every step is built in ATTENDED mode and restricted to read-only, non-network tools, so a saved " +
-        "Flow cannot read-and-exfiltrate or modify the system on its own. " +
-        "Pick a `role` per step; the app assigns a curated, exfil-safe tool set. " +
-        "Use this when the user asks you to build/set up/save a workflow or pipeline.",
+        "Use this when the user asks you to build/set up/save a workflow or pipeline.\n" +
+        "Two modes:\n" +
+        "• mode='safe' (default): every step is an attended agent restricted to read-only, " +
+        "non-network tools, so the saved Flow cannot exfiltrate or modify the system on its own. " +
+        "Pick a `role` per step; the app assigns a curated, exfil-safe tool set.\n" +
+        "• mode='advanced': you may additionally set per-step nodeType (critic/cascade/moa/consistency loops), " +
+        "a verifyCmd (critic/cascade only), and a wider tools[] (web/edit/shell). Advanced Flows are SAVED DISABLED " +
+        "pending review — every elevated card is flagged for human review, and neither the runner nor the scheduler " +
+        "will run it until the USER opens the Flow editor and ARMS each elevated card. Use advanced only when the " +
+        "user explicitly wants a powerful Flow and accepts arming it before it can run.",
       parameters: {
         type: "object",
         properties: {
@@ -1069,10 +1075,16 @@ export const TOOLS = [
             description:
               "Short Flow name shown in the Flows list (max 80 chars).",
           },
+          mode: {
+            type: "string",
+            enum: ["safe", "advanced"],
+            description:
+              "'safe' (default) = read-only, non-network, attended agents only. 'advanced' = allow per-step nodeType/verifyCmd/tools, but the Flow is saved DISABLED and the user must arm each elevated card in the editor before it can run.",
+          },
           steps: {
             type: "array",
             description:
-              "Ordered steps; each becomes one agent card chained linearly. 1–12 steps.",
+              "Ordered steps; each becomes one card chained linearly. 1–12 steps.",
             items: {
               type: "object",
               properties: {
@@ -1082,14 +1094,39 @@ export const TOOLS = [
                 },
                 role: {
                   type: "string",
-                  enum: ["coder", "critic", "editor", "summarizer", "shell"],
+                  enum: [
+                    "coder",
+                    "critic",
+                    "editor",
+                    "summarizer",
+                    "shell",
+                    "researcher",
+                    "general",
+                  ],
                   description:
-                    "Built-in role for this step. The app assigns a curated read-only, non-network tool set; dangerous/network tools are never included.",
+                    "Built-in role for this step. In safe mode only coder/critic/editor/summarizer/shell are allowed and the app assigns a curated read-only, non-network tool set. researcher/general are advanced-only (they unlock web/edit tools) and require the card to be armed before it runs.",
                 },
                 instructions: {
                   type: "string",
                   description:
                     "What this step should do — becomes the card's prompt (max 4000 chars).",
+                },
+                nodeType: {
+                  type: "string",
+                  enum: ["agent", "moa", "consistency", "critic", "cascade"],
+                  description:
+                    "ADVANCED ONLY. Orchestration kind: agent (one pass, default), moa (N proposers → synthesis), consistency (N samples → vote), critic (generate→critique→revise loop), cascade (cheap then escalate). router/blackboard/budget are NOT available here. Ignored in safe mode.",
+                },
+                verifyCmd: {
+                  type: "string",
+                  description:
+                    "ADVANCED + critic/cascade ONLY. A shell command run before each critique pass so the score is grounded in real execution (e.g. 'npm test'). Ignored otherwise.",
+                },
+                tools: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "ADVANCED ONLY. Explicit tool allowlist for this card, intersected with the safe-but-wider advanced set (read-only local + scratchpad + web_fetch/web_search/http_request + edit_file/multi_edit/write_file/run_shell/git_commit + calculate). Forbidden tools (delete_path/kill_process/agent_undo/clipboard/applescript/open_app) are always stripped. Omit to inherit the role's default set. Ignored in safe mode.",
                 },
               },
               required: ["title", "role", "instructions"],

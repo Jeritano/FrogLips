@@ -544,6 +544,7 @@ pub fn list_runs(workflow_id: i64) -> Result<Vec<WorkflowRun>> {
 /// owns the format; the backend only understands enough to decide due-ness:
 ///   * `"every Nm"` / `"every Nh"` — fixed interval in seconds.
 ///   * `"daily HH:MM"` — once per day at the given UTC minute-of-day.
+///   * `"at YYYY-MM-DDTHH:MM"` — one-shot at a specific local wall-clock time.
 ///
 /// Anything else parses to `None` and is never triggered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,6 +553,9 @@ pub enum Schedule {
     Every(i64),
     /// Daily at this minute-of-day (0..1440), interpreted in UTC.
     Daily(i64),
+    /// One-shot absolute unix timestamp (seconds, UTC). Fires exactly once when
+    /// `now >= ts`, then never again.
+    At(i64),
 }
 
 /// Parse a card `schedule` string. Tolerant: case-insensitive, trims, returns
@@ -597,7 +601,75 @@ pub fn parse_schedule(raw: &str) -> Option<Schedule> {
         }
         return Some(Schedule::Daily(hh * 60 + mm));
     }
+    if let Some(rest) = s.strip_prefix("at ") {
+        // `at YYYY-MM-DDTHH:MM` (optionally `:SS`) — a LOCAL wall-clock instant.
+        // Parse the calendar components defensively, reject anything impossible,
+        // then interpret them as local time: build the UTC unix timestamp the
+        // components would have if they were UTC, then subtract the machine's
+        // local offset for that instant to land on the real UTC unix time.
+        let rest = rest.trim();
+        // `s` was lowercased at the top of the fn, so the ISO `T` separator is
+        // now `t`. Split on `t` to keep the tolerant case-insensitive contract.
+        let (date, time) = rest.split_once('t')?;
+        // Date: YYYY-MM-DD.
+        let mut date_parts = date.split('-');
+        let year: i64 = date_parts.next()?.trim().parse().ok()?;
+        let month: i64 = date_parts.next()?.trim().parse().ok()?;
+        let day: i64 = date_parts.next()?.trim().parse().ok()?;
+        if date_parts.next().is_some() {
+            return None;
+        }
+        // Time: HH:MM optionally :SS.
+        let mut time_parts = time.split(':');
+        let hh: i64 = time_parts.next()?.trim().parse().ok()?;
+        let mm: i64 = time_parts.next()?.trim().parse().ok()?;
+        let ss: i64 = match time_parts.next() {
+            Some(s) => s.trim().parse().ok()?,
+            None => 0,
+        };
+        if time_parts.next().is_some() {
+            return None;
+        }
+        // Reject impossible components. Day validity is checked against the
+        // month's real length (incl. leap-year February) below.
+        if !(1..=12).contains(&month) || day < 1 {
+            return None;
+        }
+        if !(0..24).contains(&hh) || !(0..60).contains(&mm) || !(0..60).contains(&ss) {
+            return None;
+        }
+        let local_unix = civil_to_local_unix(year, month, day, hh, mm, ss)?;
+        // Components are LOCAL wall-clock: subtract the machine offset at that
+        // instant to recover the true UTC unix timestamp.
+        let ts = local_unix - local_utc_offset_secs(local_unix);
+        return Some(Schedule::At(ts));
+    }
     None
+}
+
+/// Convert a Gregorian calendar date+time (interpreted as if it were UTC) to a
+/// unix timestamp in seconds, validating the day against the month's real
+/// length (incl. leap-year February). Returns `None` for an impossible date.
+/// Caller applies the local-offset correction for `at`'s wall-clock semantics.
+fn civil_to_local_unix(year: i64, month: i64, day: i64, hh: i64, mm: i64, ss: i64) -> Option<i64> {
+    // Days in each month for a common (non-leap) year, Jan..Dec.
+    const DAYS_IN_MONTH: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let mut max_day = DAYS_IN_MONTH[(month - 1) as usize];
+    if month == 2 && is_leap {
+        max_day = 29;
+    }
+    if day > max_day {
+        return None;
+    }
+    // days_from_civil (Howard Hinnant): days since 1970-01-01 for a y/m/d.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1; // [0,365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
 }
 
 /// Decide whether a schedule is due at `now` (unix seconds), given the unix
@@ -645,7 +717,8 @@ pub fn schedule_is_due(sched: Schedule, now: i64, last_fired: Option<i64>) -> bo
 /// wall clock shifted by `offset_secs` (seconds east of UTC). The scheduler
 /// passes the machine's current local offset so "daily 09:00" fires at 09:00
 /// LOCAL, not 09:00 UTC. `offset_secs == 0` reproduces the original UTC
-/// behavior. `Every` schedules are offset-independent (pure elapsed time).
+/// behavior. `Every` and `At` schedules are offset-independent (`At`'s
+/// wall-clock→UTC conversion already happened at parse time).
 pub fn schedule_is_due_at_offset(
     sched: Schedule,
     now: i64,
@@ -673,6 +746,26 @@ pub fn schedule_is_due_at_offset(
             // Due if we haven't already fired at/after today's target time.
             match last_fired {
                 Some(last) => last < target,
+                None => true,
+            }
+        }
+        Schedule::At(ts) => {
+            // One-shot: due once `now` reaches the target and it has not yet
+            // fired. `At` is offset-independent — `ts` is already a real UTC
+            // unix timestamp (the wall-clock→UTC conversion happened at parse).
+            if now < ts {
+                return false;
+            }
+            // Fire EXACTLY once: once last_fired >= ts it is never due again.
+            // A never-fired `At` whose ts is already in the PAST IS due — so a
+            // one-shot scheduled for a time the app was closed still runs once
+            // on the next launch (the reconcile loop is careful NOT to seed
+            // last_fired=now for `At`, which would otherwise swallow it). We
+            // accept the catch-up rather than a staleness cap: these are
+            // explicit user-set one-shots, so a missed reminder should still
+            // fire rather than vanish silently.
+            match last_fired {
+                Some(last) => last < ts,
                 None => true,
             }
         }
@@ -741,7 +834,10 @@ fn scheduler_scan(
 
             // Seed a never-seen interval card so its first fire lands one full
             // window from now rather than immediately. Persisted so a restart
-            // does not reset the window.
+            // does not reset the window. Gated to `Every` ON PURPOSE: `Daily`
+            // anchors to a wall-clock time, and `At` is a one-shot — seeding
+            // last_fired=now for an `At` whose ts is already past would make it
+            // satisfy `last_fired >= ts` and NEVER fire. Do not broaden this.
             if matches!(sched, Schedule::Every(_)) && !last_fired.contains_key(&key) {
                 last_fired.insert(key.clone(), now);
                 warn_if_persist_failed(&key, wf.id, now, "seed");
@@ -1293,6 +1389,80 @@ mod tests {
         // Sanity: with offset 0 the same 08:00 UTC instant is NOT yet due
         // (target is 09:00 UTC) — proves the offset is what shifted the fire.
         assert!(!schedule_is_due_at_offset(nine, day + 8 * 3600, None, 0));
+    }
+
+    #[test]
+    fn parse_schedule_handles_at_one_shot() {
+        // `at YYYY-MM-DDTHH:MM` is a LOCAL wall-clock instant. The parser
+        // subtracts the machine's local offset, so to assert an exact unix value
+        // we reconstruct it the same way the parser does (offset for that
+        // instant). civil_to_local_unix gives the components-as-UTC seconds.
+        let local = civil_to_local_unix(2027, 1, 15, 9, 30, 0).unwrap();
+        let expected = local - local_utc_offset_secs(local);
+        assert_eq!(
+            parse_schedule("at 2027-01-15T09:30"),
+            Some(Schedule::At(expected))
+        );
+        // Case-insensitive + trims, like the other branches.
+        assert_eq!(
+            parse_schedule("  AT 2027-01-15T09:30  "),
+            Some(Schedule::At(expected))
+        );
+
+        // Optional seconds.
+        let local_s = civil_to_local_unix(2027, 1, 15, 9, 30, 45).unwrap();
+        let expected_s = local_s - local_utc_offset_secs(local_s);
+        assert_eq!(
+            parse_schedule("at 2027-01-15T09:30:45"),
+            Some(Schedule::At(expected_s))
+        );
+
+        // Leap-year Feb 29 is valid.
+        assert!(parse_schedule("at 2028-02-29T00:00").is_some());
+    }
+
+    #[test]
+    fn parse_schedule_rejects_malformed_at() {
+        // Non-leap-year Feb 29, impossible month/day/hour/minute/second.
+        assert_eq!(parse_schedule("at 2027-02-29T00:00"), None);
+        assert_eq!(parse_schedule("at 2027-13-01T00:00"), None);
+        assert_eq!(parse_schedule("at 2027-00-01T00:00"), None);
+        assert_eq!(parse_schedule("at 2027-04-31T00:00"), None);
+        assert_eq!(parse_schedule("at 2027-01-00T00:00"), None);
+        assert_eq!(parse_schedule("at 2027-01-15T24:00"), None);
+        assert_eq!(parse_schedule("at 2027-01-15T09:60"), None);
+        assert_eq!(parse_schedule("at 2027-01-15T09:30:60"), None);
+        // Structurally broken: missing T, missing pieces, junk, extra parts.
+        assert_eq!(parse_schedule("at 2027-01-15 09:30"), None);
+        assert_eq!(parse_schedule("at 2027-01-15"), None);
+        assert_eq!(parse_schedule("at 2027-01T09:30"), None);
+        assert_eq!(parse_schedule("at not-a-date"), None);
+        assert_eq!(parse_schedule("at 2027-01-15T09"), None);
+        assert_eq!(parse_schedule("at 2027-01-15T09:30:00:00"), None);
+        assert_eq!(parse_schedule("at 2027-1-15-09T09:30"), None);
+        assert_eq!(parse_schedule("at "), None);
+    }
+
+    #[test]
+    fn at_schedule_fires_exactly_once() {
+        let ts = 2_000_000_000_i64;
+        let s = Schedule::At(ts);
+
+        // Future ts, never fired: not due.
+        assert!(!schedule_is_due(s, ts - 1, None));
+        // At/after ts, never fired: due.
+        assert!(schedule_is_due(s, ts, None));
+        assert!(schedule_is_due(s, ts + 10_000, None));
+        // A never-fired one-shot whose ts is already in the PAST IS due — a
+        // missed reminder (app was closed) still runs once on next launch.
+        assert!(schedule_is_due(s, ts + 86_400 * 30, None));
+        // Once fired at/after ts: never due again (exactly-once).
+        assert!(!schedule_is_due(s, ts + 1, Some(ts)));
+        assert!(!schedule_is_due(s, ts + 99_999, Some(ts)));
+        assert!(!schedule_is_due(s, ts + 99_999, Some(ts + 5)));
+        // `At` ignores the offset arg (ts is already real UTC).
+        assert!(schedule_is_due_at_offset(s, ts, None, 3600));
+        assert!(!schedule_is_due_at_offset(s, ts - 1, None, -3600));
     }
 
     /* ─────────────────────────────────────────────────────────────────────

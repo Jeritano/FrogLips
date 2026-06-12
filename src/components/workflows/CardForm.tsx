@@ -135,9 +135,22 @@ const ALL_TOOLS = [
 
 /**
  * Schedule grammar the Rust scheduler accepts: `every <n>m` / `every <n>h`
- * (interval) or `daily HH:MM` (clock time). Blank = manual run only.
+ * (interval), `daily HH:MM` (clock time), or `at YYYY-MM-DDTHH:MM` (a one-shot
+ * at a specific local wall-clock time). Blank = manual run only. The friendly
+ * picker below emits these strings; the raw escape hatch lets power users type
+ * them directly.
  */
-const HINT = "Use 'every 30m', 'every 2h', or 'daily 09:00'.";
+const HINT =
+  "Use 'every 30m', 'every 2h', 'daily 09:00', or 'at 2026-06-12T09:00'.";
+
+/**
+ * Soft warning shown — but NOT a save block — when an `at` datetime is in the
+ * past. A past one-shot simply fires once on the next scheduler tick, which is
+ * acceptable (the user may be backfilling a run); we surface it so a typo'd
+ * year isn't silently swallowed.
+ */
+const PAST_AT_WARNING =
+  "That date/time is in the past — the card will fire once on the next run.";
 
 /**
  * Look up a model's backend by id. Used by the Model dropdown when the card's
@@ -176,7 +189,132 @@ function scheduleError(value: string): string | null {
     const mm = Number(daily[2]);
     return hh < 24 && mm < 60 ? null : HINT;
   }
+  // One-shot `at <iso-local>` — `at YYYY-MM-DDTHH:MM` with an optional
+  // `:SS`. Matches what an HTML datetime-local input emits (the seconds
+  // suffix appears when the input has `step` < 60). Validate the field
+  // ranges here so a value pasted into the raw escape hatch can't smuggle
+  // a `13`-month date past the form into the scheduler. A PAST datetime is
+  // intentionally NOT an error (see `schedulePastWarning`) — it fires once.
+  const at = matchAtSchedule(v);
+  if (at) {
+    const { month, day, hour, minute, second } = at;
+    const inRange =
+      month >= 1 &&
+      month <= 12 &&
+      day >= 1 &&
+      day <= 31 &&
+      hour < 24 &&
+      minute < 60 &&
+      second < 60;
+    return inRange ? null : HINT;
+  }
   return HINT;
+}
+
+/**
+ * Parse an `at YYYY-MM-DDTHH:MM(:SS)?` schedule into its numeric fields, or
+ * `null` if the string isn't an `at` schedule at all. Shared by the validator
+ * and the picker's round-trip parse so the two never drift. Case-insensitive
+ * on the `at ` prefix to mirror the Rust parser's `to_lowercase()`.
+ */
+function matchAtSchedule(value: string): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  /** The raw `YYYY-MM-DDTHH:MM(:SS)?` body (original case), for the input. */
+  iso: string;
+} | null {
+  const m = value
+    .trim()
+    .match(/^at[ \t]+(\d{4})-(\d{2})-(\d{2})t(\d{2}):(\d{2})(?::(\d{2}))?$/i);
+  if (!m) return null;
+  return {
+    year: Number(m[1]),
+    month: Number(m[2]),
+    day: Number(m[3]),
+    hour: Number(m[4]),
+    minute: Number(m[5]),
+    second: m[6] ? Number(m[6]) : 0,
+    // Preserve the original (uppercase `T`) body so the datetime-local input
+    // gets a value it accepts verbatim.
+    iso: value.trim().slice(value.trim().indexOf(" ") + 1),
+  };
+}
+
+/**
+ * Soft (non-blocking) warning for a well-formed but PAST `at` datetime. Returns
+ * null for every other schedule kind and for future/now datetimes. Compared in
+ * local time because the picker collects local wall-clock and the scheduler
+ * interprets `at` as a local time.
+ */
+function schedulePastWarning(value: string): string | null {
+  const at = matchAtSchedule(value);
+  if (!at) return null;
+  // Construct a LOCAL Date from the parsed parts (month is 0-based in JS).
+  const dt = new Date(
+    at.year,
+    at.month - 1,
+    at.day,
+    at.hour,
+    at.minute,
+    at.second,
+  );
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt.getTime() < Date.now() ? PAST_AT_WARNING : null;
+}
+
+/** The mode the friendly schedule picker is in. `raw` is the escape hatch. */
+type ScheduleMode = "manual" | "every" | "daily" | "at" | "raw";
+
+/**
+ * Decode a stored schedule string into the picker's `(mode, parts)` so opening
+ * the form lands on the right control with the existing values pre-filled. An
+ * unrecognized-but-nonblank string (e.g. a legacy format, or one a power user
+ * typed) drops to the `raw` escape hatch so it round-trips untouched instead of
+ * being silently rewritten.
+ */
+function decodeSchedule(schedule: string | null): {
+  mode: ScheduleMode;
+  everyN: string;
+  everyUnit: "m" | "h";
+  dailyTime: string;
+  atLocal: string;
+} {
+  const fallback = {
+    mode: "manual" as ScheduleMode,
+    everyN: "30",
+    everyUnit: "m" as "m" | "h",
+    dailyTime: "09:00",
+    atLocal: "",
+  };
+  if (!schedule || schedule.trim() === "") return fallback;
+  const v = schedule.trim();
+  const every = v.toLowerCase().match(/^every[ \t]+(\d+)[ \t]*([mh])$/);
+  if (every) {
+    return {
+      ...fallback,
+      mode: "every",
+      everyN: every[1],
+      everyUnit: every[2] as "m" | "h",
+    };
+  }
+  const daily = v.toLowerCase().match(/^daily[ \t]+(\d{1,2}):(\d{2})$/);
+  if (daily) {
+    const hh = daily[1].padStart(2, "0");
+    return { ...fallback, mode: "daily", dailyTime: `${hh}:${daily[2]}` };
+  }
+  const at = matchAtSchedule(v);
+  if (at) {
+    // datetime-local wants `YYYY-MM-DDTHH:MM` (no seconds) for its value; drop
+    // any `:SS` so the input shows the value rather than rendering blank.
+    const noSecs = at.iso.replace(/(T\d{2}:\d{2}):\d{2}$/i, "$1");
+    return { ...fallback, mode: "at", atLocal: noSecs };
+  }
+  // Nonblank but unrecognized → keep it in the raw box untouched.
+  return { ...fallback, mode: "raw" };
 }
 
 /**
@@ -259,6 +397,11 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   }, []);
 
   const schedErr = scheduleError(draft.schedule ?? "");
+  // Soft, non-blocking notice for a past one-shot `at` datetime — surfaced as a
+  // hint, not the `wf-field-error` (which gates Save). A past one-shot just
+  // fires once on the next scheduler tick.
+  const schedWarn =
+    schedErr == null ? schedulePastWarning(draft.schedule ?? "") : null;
 
   function set<K extends keyof WorkflowCard>(key: K, value: WorkflowCard[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -364,6 +507,13 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
             </button>
           </div>
           <div className="wf-form-body">
+            {draft.needsReview === true && (
+              <ReviewBanner
+                tools={draft.tools}
+                nodeType={draft.nodeType}
+                onArm={() => set("needsReview", false)}
+              />
+            )}
             <label className="wf-field">
               <span>Agent name</span>
               <div className="wf-name-row">
@@ -578,20 +728,12 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
                 })}
               </div>
             </div>
-            <label className="wf-field">
-              <span>Schedule (blank = manual)</span>
-              <input
-                value={draft.schedule ?? ""}
-                onChange={(e) => set("schedule", e.target.value || null)}
-                placeholder="every 30m  ·  daily 09:00"
-                aria-invalid={schedErr != null}
-              />
-              {schedErr && (
-                <p className="wf-field-error" role="alert">
-                  {schedErr}
-                </p>
-              )}
-            </label>
+            <SchedulePicker
+              schedule={draft.schedule ?? null}
+              error={schedErr}
+              warning={schedWarn}
+              onChange={(s) => set("schedule", s)}
+            />
             <label className="wf-field wf-field-check">
               <input
                 type="checkbox"
@@ -927,6 +1069,250 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── Schedule picker ──────────────────────────────────────────────────────
+ * A friendly mode selector that emits the same schedule grammar the Rust
+ * scheduler parses, with a raw escape hatch for power users. On open it
+ * decodes the stored string back into the matching mode (see
+ * `decodeSchedule`) so editing round-trips; the `mode` is local UI state
+ * while the canonical value lives on the card's `schedule` field.
+ *
+ * Each mode owns its own controlled sub-fields. Switching mode immediately
+ * re-emits a schedule string for the new mode (so the parent + validator
+ * stay in sync) EXCEPT for "manual" (emits null) and "raw" (leaves the
+ * stored value untouched so the user can hand-edit it).
+ */
+function SchedulePicker({
+  schedule,
+  error,
+  warning,
+  onChange,
+}: {
+  schedule: string | null;
+  error: string | null;
+  warning: string | null;
+  onChange: (schedule: string | null) => void;
+}) {
+  // Decode ONCE per opened card (keyed on the card's value at mount). The
+  // decoded parts seed the sub-field state; thereafter the sub-fields are the
+  // source of truth and `schedule` follows them. Re-decoding on every keystroke
+  // would fight the user (e.g. typing "9:5" in the time box mid-edit).
+  const [parts, setParts] = useState(() => decodeSchedule(schedule));
+  // `lastEmitted` holds the exact string WE last pushed up via `emit`. The
+  // re-seed effect uses it to distinguish "the parent echoed our own edit
+  // back" (skip — the sub-fields already match) from "the schedule changed
+  // externally" (re-decode — a fresh card, or a programmatic reset). Without
+  // this guard the echo of our own `emit` re-decodes mid-edit and, for
+  // values that don't survive a round-trip verbatim (e.g. a cleared count
+  // emitting `every 0m`), snaps the field out from under the user.
+  const lastEmitted = useRef<string | null>(schedule);
+  useEffect(() => {
+    if (schedule !== lastEmitted.current) {
+      lastEmitted.current = schedule;
+      setParts(decodeSchedule(schedule));
+    }
+  }, [schedule]);
+
+  const update = (
+    next: Partial<ReturnType<typeof decodeSchedule>>,
+  ): ReturnType<typeof decodeSchedule> => {
+    const merged = { ...parts, ...next };
+    setParts(merged);
+    return merged;
+  };
+
+  // Build the schedule string for the active mode from `p`, then push it up.
+  // Record what we emit so the re-seed effect can ignore the echo.
+  const emit = (p: ReturnType<typeof decodeSchedule>) => {
+    const push = (s: string | null) => {
+      lastEmitted.current = s;
+      onChange(s);
+    };
+    switch (p.mode) {
+      case "manual":
+        push(null);
+        break;
+      case "every":
+        push(`every ${p.everyN || "0"}${p.everyUnit}`);
+        break;
+      case "daily":
+        push(`daily ${p.dailyTime || "00:00"}`);
+        break;
+      case "at":
+        push(p.atLocal ? `at ${p.atLocal}` : null);
+        break;
+      case "raw":
+        // Raw mode keeps the stored value; nothing to recompute here.
+        break;
+    }
+  };
+
+  const onMode = (mode: ScheduleMode) => {
+    const merged = update({ mode });
+    if (mode === "raw") return; // leave the stored value for hand-editing
+    emit(merged);
+  };
+
+  return (
+    <div className="wf-field">
+      <span>Schedule (blank = manual)</span>
+      <div
+        className="wf-sched-modes"
+        role="radiogroup"
+        aria-label="Schedule mode"
+      >
+        {(
+          [
+            ["manual", "Manual"],
+            ["every", "Every"],
+            ["daily", "Daily"],
+            ["at", "On a date"],
+            ["raw", "Advanced"],
+          ] as Array<[ScheduleMode, string]>
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={parts.mode === value}
+            className={`wf-sched-mode${parts.mode === value ? " selected" : ""}`}
+            onClick={() => onMode(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {parts.mode === "every" && (
+        <div className="wf-sched-row">
+          <input
+            type="number"
+            min={1}
+            step={1}
+            aria-label="Interval count"
+            value={parts.everyN}
+            onChange={(e) => emit(update({ everyN: e.target.value }))}
+          />
+          <select
+            aria-label="Interval unit"
+            value={parts.everyUnit}
+            onChange={(e) =>
+              emit(update({ everyUnit: e.target.value as "m" | "h" }))
+            }
+          >
+            <option value="m">minutes</option>
+            <option value="h">hours</option>
+          </select>
+        </div>
+      )}
+
+      {parts.mode === "daily" && (
+        <div className="wf-sched-row">
+          <input
+            type="time"
+            aria-label="Daily time"
+            value={parts.dailyTime}
+            onChange={(e) => emit(update({ dailyTime: e.target.value }))}
+          />
+        </div>
+      )}
+
+      {parts.mode === "at" && (
+        <div className="wf-sched-row">
+          <input
+            type="datetime-local"
+            aria-label="Run-at date and time"
+            value={parts.atLocal}
+            onChange={(e) => emit(update({ atLocal: e.target.value }))}
+          />
+        </div>
+      )}
+
+      {parts.mode === "raw" && (
+        <input
+          aria-label="Raw schedule"
+          value={schedule ?? ""}
+          onChange={(e) => {
+            // Record the edit as ours so the re-seed effect doesn't yank the
+            // user out of raw mode the instant they type a recognized form
+            // (e.g. "every 30m"). The mode only changes on an explicit mode
+            // button click; raw stays raw while hand-editing.
+            const next = e.target.value || null;
+            lastEmitted.current = next;
+            onChange(next);
+          }}
+          placeholder="every 30m  ·  daily 09:00  ·  at 2026-06-12T09:00"
+          aria-invalid={error != null}
+        />
+      )}
+
+      {error && (
+        <p className="wf-field-error" role="alert">
+          {error}
+        </p>
+      )}
+      {!error && warning && (
+        <p className="wf-field-hint wf-sched-warn">{warning}</p>
+      )}
+      <small className="wf-field-hint">{HINT}</small>
+    </div>
+  );
+}
+
+/* ── needsReview "Arm" banner ─────────────────────────────────────────────
+ * A prominent warning shown ONLY while `draft.needsReview === true` — i.e. a
+ * card the chat model authored with elevated capabilities. It lists the tools
+ * the card was granted (and its nodeType when non-agent) so the human can see
+ * what they're approving, and an "Arm this card" button that flips
+ * `needsReview` to false. The runner + scheduler REFUSE to run the card until
+ * this clears; saving alone never clears it (only the explicit button does),
+ * so the gate can't be bypassed by hitting Save.
+ */
+function ReviewBanner({
+  tools,
+  nodeType,
+  onArm,
+}: {
+  tools: string[];
+  nodeType?: WorkflowNodeType;
+  onArm: () => void;
+}) {
+  const nonAgent = nodeType && nodeType !== "agent" ? nodeType : null;
+  const nodeLabel = nonAgent
+    ? (WORKFLOW_NODE_TYPES.find((nt) => nt.value === nonAgent)?.label ??
+      nonAgent)
+    : null;
+  return (
+    <div className="wf-review-banner" role="alert">
+      <p className="wf-review-banner-title">
+        ⚠ This card was authored by the assistant with elevated tools and needs
+        review.
+      </p>
+      {nodeLabel && (
+        <p className="wf-review-banner-line">
+          Node type: <strong>{nodeLabel}</strong>
+        </p>
+      )}
+      <p className="wf-review-banner-line">
+        Tools granted:
+        {tools.length === 0 ? (
+          <span className="wf-review-banner-none"> role default (none)</span>
+        ) : (
+          <span className="wf-review-banner-tools">
+            {tools.map((t) => (
+              <code key={t} className="wf-review-banner-tool">
+                {t}
+              </code>
+            ))}
+          </span>
+        )}
+      </p>
+      <button type="button" className="wf-btn wf-review-arm" onClick={onArm}>
+        Arm this card
+      </button>
     </div>
   );
 }

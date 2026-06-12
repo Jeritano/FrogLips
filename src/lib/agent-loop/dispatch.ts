@@ -2,7 +2,12 @@ import { api } from "../tauri-api";
 import { logDiag } from "../diagnostics";
 import type { AuditApproval, AuditOutcome, ToolCall } from "../../types";
 import { serializeWorkflowGraph } from "../../types";
-import { assertFlowSafe, buildLinearFlow } from "../workflow/create-flow";
+import {
+  assertFlowSafe,
+  assertFlowSafeAdvanced,
+  buildAdvancedFlow,
+  buildLinearFlow,
+} from "../workflow/create-flow";
 import type { Risk } from "./types";
 import { dispatchMcpTool, isMcpToolName } from "./mcp-tools";
 import { looksLikeSecret, recall, saveMemory } from "../memory-client";
@@ -1433,11 +1438,20 @@ export async function executeTool(
     }
     /* ── Workflow scratchpad + cross-run artifacts (Phase 1.1 + 1.2) ── */
     case "create_flow": {
-      // Build a validated, inert linear Flow from the model's {name, steps}.
-      // The builder hardcodes every security field (unattended:false, curated
-      // read-only tools, no schedule/orchestrator); the model controls only
-      // titles/roles/instructions. create_flow SAVES — it never runs the Flow.
-      const build = buildLinearFlow(args.name, args.steps);
+      // Build a validated, inert Flow from the model's {name, steps}. Either way
+      // the builder hardcodes every security field (unattended:false, no
+      // schedule) from a fresh literal — the model controls only titles/roles/
+      // instructions (+ nodeType/verifyCmd/tools in advanced). create_flow
+      // SAVES — it never runs the Flow.
+      //
+      // mode='advanced' lets the model author powerful cards (non-agent
+      // nodeTypes, verifyCmd, wider tools) but EVERY elevated card lands
+      // needsReview:true; the runner + scheduler refuse it until the user arms
+      // it in the editor. Safe mode keeps the read-only/non-network gate.
+      const advanced = args.mode === "advanced";
+      const build = advanced
+        ? buildAdvancedFlow(args.name, args.steps)
+        : buildLinearFlow(args.name, args.steps);
       if (!build.ok) {
         return JSON.stringify({
           ok: false,
@@ -1445,7 +1459,12 @@ export async function executeTool(
           message: build.message,
         });
       }
-      const violation = assertFlowSafe(build.graph);
+      // Independent defense-in-depth re-check, mode-matched: safe mode requires
+      // plain read-only agents; advanced mode allows elevated cards ONLY when
+      // they carry the needsReview gate.
+      const violation = advanced
+        ? assertFlowSafeAdvanced(build.graph)
+        : assertFlowSafe(build.graph);
       if (violation) {
         return JSON.stringify({
           ok: false,
@@ -1467,7 +1486,10 @@ export async function executeTool(
         flow_id,
         name: build.name,
         steps: build.graph.cards.length,
-        note: "Saved to the Flows view (not run). Open Flows to review, edit, and run it.",
+        needs_review: advanced,
+        note: advanced
+          ? "Saved to the Flows view DISABLED. Each elevated card is flagged for review — open Flows and Arm each card before it can run."
+          : "Saved to the Flows view (not run). Open Flows to review, edit, and run it.",
       });
     }
     case "workflow_set": {

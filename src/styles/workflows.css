@@ -311,6 +311,19 @@
   padding: 2px 6px;
   border-radius: var(--radius-xs);
 }
+/* Unreviewed-card chip — an assistant-authored card with elevated tools that
+   hasn't been armed yet. Painted in the warn palette so it reads as "attention
+   needed, not yet an error" and stands apart from the run-state badges. */
+.wf-node-review {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  white-space: nowrap;
+}
 /* Orchestration node-type badge (MoA / Critic / Cascade / …). Tinted distinct
    from the neutral preset chip so an orchestrator card reads at a glance. */
 .wf-node-nodetype {
@@ -743,6 +756,121 @@
 .wf-field-check span {
   font-size: var(--fs-sm);
   color: var(--text);
+}
+
+/* ── Schedule picker ──
+   A small segmented mode selector (Manual / Every / Daily / On a date /
+   Advanced) over the per-mode sub-field row. The mode buttons mirror the
+   tool-item button discipline (no native radios) so selection state can't be
+   hidden by OS theming. */
+.wf-sched-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+.wf-sched-mode {
+  padding: var(--space-1) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-family: inherit;
+  cursor: pointer;
+}
+.wf-sched-mode:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.wf-sched-mode.selected {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+.wf-sched-mode:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Per-mode sub-fields. The count/unit pair (Every) and the lone time/date
+   inputs sit in a left-aligned row that doesn't stretch full-width. */
+.wf-sched-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+.wf-sched-row input[type="number"] {
+  width: 80px;
+}
+.wf-sched-row select {
+  width: auto;
+}
+.wf-sched-row input[type="time"],
+.wf-sched-row input[type="datetime-local"] {
+  width: auto;
+}
+/* Soft (non-blocking) past-date notice — warn palette, not the danger-toned
+   field error, so it reads as advisory rather than a save block. */
+.wf-sched-warn {
+  color: var(--warn-fg);
+}
+
+/* ── needsReview Arm banner ──
+   Prominent top-of-form warning for an assistant-authored card with elevated
+   tools. Warn palette + a danger-toned arm button so the action reads as a
+   deliberate trust escalation. Stays until the explicit Arm click. */
+.wf-review-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-sm);
+}
+.wf-review-banner-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--warn-fg);
+  line-height: 1.4;
+}
+.wf-review-banner-line {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  line-height: 1.5;
+}
+.wf-review-banner-none {
+  color: var(--text-2);
+}
+.wf-review-banner-tools {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-left: var(--space-1);
+}
+.wf-review-banner-tool {
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  color: var(--warn-fg);
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  border: 1px solid var(--warn-border);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+}
+/* The Arm button uses the danger button skin (defined above) for emphasis;
+   this rule just nudges it to sit at the start, not stretch full width. */
+.wf-review-arm {
+  align-self: flex-start;
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-fg);
+  font-weight: 600;
+}
+.wf-review-arm:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -206,6 +206,10 @@ export function WorkflowCanvas({
           state: cardStates[c.id] ?? "idle",
           midChain: hasUpstream.has(c.id),
           color: c.color ?? null,
+          // Surface the unreviewed-card gate as a chip on the node (see
+          // AgentCardNode). Refresh of this field is covered by the
+          // `placedCards` dependency below.
+          needsReview: c.needsReview === true,
           onConfigure: (rect: DOMRect) => onConfigure(c.id, rect),
           onRun: () => onRunCard(c.id),
           onDelete: () => onDeleteCard(c.id),
