@@ -4,6 +4,35 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-06-12
+
+### Fixed — Flows
+- **Built-in templates now actually run.** Every gallery template (Feature
+  Crew, Bug Hunter, the five security workflows) shipped with its action
+  cards in attended mode, so the runner silently denied every shell/edit/
+  commit/API call — the flows looked like they ran but did nothing. The
+  vetted action cards are now armed; authorization gates and read-only cards
+  stay denied, and irreversible tools (delete/kill) remain hard-denied.
+- **Critic verify command is safe by default** — auto-detects npm/cargo and
+  no-ops cleanly when neither is present, instead of failing every iteration
+  on a missing `npm test` and burning the whole retry budget.
+- **Self-consistency votes actually vote** — samples now vary across members
+  (so they can disagree), the vote compares the structured verdict line, and
+  free-text cards use synthesis honestly instead of paying for a vote that
+  never matched.
+- A thrown run (e.g. an unreviewed advanced flow hitting its arm gate) no
+  longer leaves a card stuck on "running" with an orphaned timer.
+
+### Performance — Flows
+- **Cascade escalation refines instead of restarting** — the strong model
+  now receives the base draft + the critique, rather than re-solving from
+  scratch (the call you escalate specifically to avoid paying twice).
+- The Flows page no longer re-renders wholesale on every streamed token;
+  CardForm and the canvas stop rebuilding heavy structures each keystroke.
+- Critic skips the verify run on its final, discarded iteration.
+- The scheduler stops re-parsing every workflow graph and pruning its
+  bookkeeping table on every 30-second tick.
+
 ## [0.13.0] — 2026-06-12
 
 ### Flows — the agent workforce

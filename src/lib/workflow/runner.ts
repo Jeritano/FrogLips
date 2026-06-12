@@ -166,6 +166,16 @@ export interface RunWorkflowOptions {
    * is still the correct value for "not associated with a run").
    */
   workflowRunId?: number | null;
+  /**
+   * Pre-resolved linear order for `graph`. The scheduler glue
+   * (`handleWorkflowTrigger`) already calls `resolveLinearOrder` to run its
+   * own needsReview pre-gate; passing the result here lets the runner skip a
+   * redundant second resolve of the SAME graph per scheduled trigger (perf).
+   * When omitted, the runner resolves the order itself. The caller MUST pass
+   * the order for THIS exact graph — a mismatched order would run the wrong
+   * cards; the runner trusts it without re-validating.
+   */
+  precomputedOrder?: WorkflowCard[];
 }
 
 /**
@@ -414,7 +424,10 @@ export async function runWorkflow(
   hooks: WorkflowHooks,
   opts: RunWorkflowOptions,
 ): Promise<WorkflowRunResult> {
-  const order = resolveLinearOrder(graph);
+  // Reuse a caller-supplied order when present (the scheduler already resolved
+  // it for its needsReview pre-gate); otherwise resolve it here. Same graph
+  // either way — see RunWorkflowOptions.precomputedOrder.
+  const order = opts.precomputedOrder ?? resolveLinearOrder(graph);
   const signal = opts.signal ?? new AbortController().signal;
 
   // Phase 1.1: initialize the workflow scratchpad for this run. Any
@@ -492,19 +505,27 @@ export async function runWorkflow(
     // the run still rolls up as `ok`.
     let haltInfo: WorkflowRunResult["halted"] = null;
 
-    for (const card of cards) {
+    for (let ci = 0; ci < cards.length; ci++) {
+      const card = cards[ci];
       if (failed || haltInfo != null || signal.aborted) {
-        const result: CardResult = {
-          cardId: card.id,
-          name: card.name,
-          status: "skipped",
-          output: "",
-        };
-        results.push(result);
-        safeHook("onCardDone(skipped)", () =>
-          hooks.onCardDone?.(card.id, result),
-        );
-        continue;
+        // The chain has stopped (failure / halt / abort). EVERY card from here
+        // to the end is skipped, so drain them in one tail loop instead of
+        // re-checking the three flags + paying a per-card hook each iteration.
+        // The skipped signal lives in the recorded `CardResult` (asserted by
+        // tests + persisted in the run record); the per-card onCardDone hook
+        // only reset an ALREADY-idle card (a skipped card never started, so it
+        // never left idle) — a redundant setCardStates reconcile that adds
+        // nothing. Recording the result is kept; the no-op hook is dropped.
+        for (let k = ci; k < cards.length; k++) {
+          const skipped = cards[k];
+          results.push({
+            cardId: skipped.id,
+            name: skipped.name,
+            status: "skipped",
+            output: "",
+          });
+        }
+        break;
       }
 
       safeHook("onCardStart", () => hooks.onCardStart?.(card.id));

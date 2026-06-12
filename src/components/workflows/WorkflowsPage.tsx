@@ -6,7 +6,10 @@ import { Puzzle, X } from "lucide-react";
 import { api } from "../../lib/tauri-api";
 import { validateGraph, parseWorkflowTrigger } from "../../lib/workflow";
 import type { RunWorkflowOptions } from "../../lib/workflow";
-import { useWorkflowRun } from "../../lib/workflow/run-context";
+import {
+  useWorkflowRunControl,
+  useWorkflowRunCards,
+} from "../../lib/workflow/run-context";
 import { logDiag } from "../../lib/diagnostics";
 import { announce } from "../../lib/announce";
 import { useTauriEvent } from "../../hooks/useTauriEvent";
@@ -70,11 +73,16 @@ export function WorkflowsPage({ status }: Props) {
   const [importErr, setImportErr] = useState<string | null>(null);
   // 2026-05-26 Option-A lift: workflow run state now lives in the
   // App-level WorkflowRunProvider so a navigate-away no longer aborts
-  // the run. `cardStates`, `outputs`, and `running` are derived here
-  // from the provider's `cardStates` snapshot (see below). The
-  // provider also owns the AbortController + synchronous running-id
-  // ref so the entry-point gating semantics are preserved.
-  const run = useWorkflowRun();
+  // the run. The provider also owns the AbortController + synchronous
+  // running-id ref so the entry-point gating semantics are preserved.
+  //
+  // Perf (adversarial review HIGH, 2026-06-12): the page shell subscribes
+  // ONLY to the STABLE control surface (running id, summary, start/stop) so
+  // a streamed token no longer repaints this ~1000-line component. The HOT
+  // per-card snapshot — the only thing that changes per token — is isolated
+  // in `<RunSurface>` below, which subscribes to the card context and is the
+  // sole subtree that re-renders during streaming.
+  const run = useWorkflowRunControl();
   const [err, setErr] = useState<string | null>(null);
   // Approval policy: per-card `unattended` checkbox is the SOLE approval
   // surface. Cards with the box checked auto-approve every tool call.
@@ -96,25 +104,10 @@ export function WorkflowsPage({ status }: Props) {
     }
   }, [run.lastSummary]);
 
-  // Provider's per-card snapshot → legacy local-state shape that the
-  // rest of this file (RunPanel, AgentCardNode badges, etc.) consumes.
-  // Derived (not duplicated) so an in-flight run's tokens paint in the
-  // canvas the instant the user returns to the Workflows view.
-  const cardStates: Record<string, CardRunState> = useMemo(() => {
-    const out: Record<string, CardRunState> = {};
-    for (const [id, snap] of Object.entries(run.cardStates)) {
-      out[id] = snap.state;
-    }
-    return out;
-  }, [run.cardStates]);
-  const outputs: Record<string, { output: string; error?: string }> =
-    useMemo(() => {
-      const out: Record<string, { output: string; error?: string }> = {};
-      for (const [id, snap] of Object.entries(run.cardStates)) {
-        out[id] = { output: snap.output, error: snap.error };
-      }
-      return out;
-    }, [run.cardStates]);
+  // Per-card snapshots (`run.cardStates`) are deliberately NOT read here —
+  // they update on every streamed token. The `<RunSurface>` child owns that
+  // hot subscription so the page shell stays put during a run. `running`
+  // comes from the stable control surface (flips once per run boundary).
   const running = run.runningWorkflowId !== null;
   // Pre-formatted "About You" block, shared by every card's agent run so
   // workflow agents know who the user is. Refreshed on mount.
@@ -195,10 +188,24 @@ export function WorkflowsPage({ status }: Props) {
   }, []);
 
   // Non-throwing graph validation drives both the inline warning and the
-  // run-button gate.
+  // run-button gate. Only the *topology* (which cards exist + how they're
+  // wired) affects the result, so key the memo on a cheap connectivity
+  // signature rather than the `cards`/`edges` identities. A pure position
+  // drag bumps `cards` identity every frame but leaves the signature
+  // unchanged, so the full topo resolve no longer re-runs on every drag
+  // tick (or any unrelated re-render). `.order` — the only field that holds
+  // live card objects — is never read here; the page consumes `.ok`/`.error`.
+  const graphSignature = useMemo(
+    () =>
+      cards.map((c) => c.id).join(",") +
+      "|" +
+      edges.map((e) => `${e.from}>${e.to}`).join(","),
+    [cards, edges],
+  );
   const validation = useMemo(
     () => validateGraph({ cards, edges }),
-    [cards, edges],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on the topology signature, not the cards/edges identities, so a position-only drag doesn't re-resolve the chain. The signature changes iff connectivity changes, which is the only thing validateGraph depends on.
+    [graphSignature],
   );
   // Suppress the validation banner while the user is still building: a lone
   // card or several not-yet-connected cards is a normal mid-build state, not
@@ -473,21 +480,31 @@ export function WorkflowsPage({ status }: Props) {
 
   // Clicking the deck's top card: open the centered form on a fresh draft.
   // `position` is a viewport-aware flow-coordinate supplied by the canvas, so
-  // saving lands the node where the user can currently see it.
-  function createFromDeck(origin: DOMRect, position: { x: number; y: number }) {
-    setFormCard(freshCard(position.x, position.y));
-    setFormIsNew(true);
-    setFormOrigin(rectOrigin(origin));
-  }
+  // saving lands the node where the user can currently see it. Stable identity
+  // (useCallback) so the canvas's `nodes` memo isn't rebuilt every streaming
+  // flush just because this handler closure changed.
+  const createFromDeck = useCallback(
+    (origin: DOMRect, position: { x: number; y: number }) => {
+      setFormCard(freshCard(position.x, position.y));
+      setFormIsNew(true);
+      setFormOrigin(rectOrigin(origin));
+    },
+    [],
+  );
 
-  // Clicking a placed node: open the centered form to edit it.
-  function editCard(id: string, origin: DOMRect) {
-    const card = cards.find((c) => c.id === id);
-    if (!card) return;
-    setFormCard(card);
-    setFormIsNew(false);
-    setFormOrigin(rectOrigin(origin));
-  }
+  // Clicking a placed node: open the centered form to edit it. Keyed on
+  // `cards` only — that's stable across a run's per-token streaming, so the
+  // canvas node memo holds and only the live status surface repaints.
+  const editCard = useCallback(
+    (id: string, origin: DOMRect) => {
+      const card = cards.find((c) => c.id === id);
+      if (!card) return;
+      setFormCard(card);
+      setFormIsNew(false);
+      setFormOrigin(rectOrigin(origin));
+    },
+    [cards],
+  );
 
   function closeForm() {
     setFormCard(null);
@@ -624,25 +641,84 @@ export function WorkflowsPage({ status }: Props) {
     }
   }
 
-  function runSingleCard(id: string) {
-    setErr(null);
-    const card = cards.find((c) => c.id === id);
-    if (!card || !selected) return;
-    const opts = baseRunOpts([card]);
-    if (!opts) return;
-    const accepted = run.start({
-      workflowId: selected.id,
-      graph: { cards: [card], edges: [] },
-      opts,
-      preflight: async (signal) => {
-        if (signal.aborted) return;
-        await ensureCardModelLoaded(card);
-      },
-    });
-    if (!accepted) {
-      setErr("A run is already in progress.");
-    }
-  }
+  // Stable identity so the canvas's per-node `onRun` wiring (and thus its
+  // `nodes` memo) doesn't churn on every streamed token. Depends on
+  // `run.start` — which is memoized in the provider — rather than the whole
+  // `run` aggregate (that object is rebuilt per token by `useWorkflowRun`).
+  const runSingleCard = useCallback(
+    (id: string) => {
+      setErr(null);
+      const card = cards.find((c) => c.id === id);
+      if (!card || !selected) return;
+      const opts = baseRunOpts([card]);
+      if (!opts) return;
+      const accepted = run.start({
+        workflowId: selected.id,
+        graph: { cards: [card], edges: [] },
+        opts,
+        preflight: async (signal) => {
+          if (signal.aborted) return;
+          await ensureCardModelLoaded(card);
+        },
+      });
+      if (!accepted) {
+        setErr("A run is already in progress.");
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `ensureCardModelLoaded` is recreated each render but only reads `status`, which already drives `baseRunOpts`; capturing it via that dep keeps the model gate fresh without re-creating this callback per token.
+    [cards, selected, baseRunOpts, run.start],
+  );
+
+  // Re-run the whole graph but resume from a specific card (review UX #6):
+  // the runner already honors `startCardId` — used by the scheduled-trigger
+  // path — so a failed/partial run can be retried from the card that broke
+  // without re-doing the upstream work. The full graph is passed so the
+  // runner can resolve the start card's position and run it + everything
+  // downstream. Stable identity so `<RunSurface>` doesn't re-render per token.
+  const runFromCard = useCallback(
+    (id: string) => {
+      setErr(null);
+      if (!selected || !validation.ok) {
+        setErr("Fix the chain warning before running.");
+        return;
+      }
+      const startIdx = cards.findIndex((c) => c.id === id);
+      if (startIdx < 0) return;
+      const opts = baseRunOpts(cards.slice(startIdx));
+      if (!opts) return;
+      const accepted = run.start({
+        workflowId: selected.id,
+        graph: { cards, edges },
+        opts: { ...opts, startCardId: id },
+        preflight: async (signal) => {
+          const loaded = new Set<string>();
+          for (const c of cards.slice(startIdx)) {
+            if (signal.aborted) break;
+            if (c.model && loaded.has(c.model)) continue;
+            await ensureCardModelLoaded(c);
+            if (c.model) loaded.add(c.model);
+          }
+        },
+      });
+      if (!accepted) {
+        setErr("A run is already in progress.");
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see runSingleCard: ensureCardModelLoaded reads `status`, which already drives `baseRunOpts`.
+    [cards, edges, selected, validation, baseRunOpts, run.start],
+  );
+
+  // Imperative focus hook the canvas registers into (review UX #5): clicking a
+  // failed card in the status panel scrolls + frames its node on the canvas.
+  // A ref (not state) so the canvas registering its focuser never re-renders
+  // the page, and so the page can call it without a render cycle in between.
+  const focusNodeRef = useRef<((id: string) => void) | null>(null);
+  const registerFocusNode = useCallback((fn: ((id: string) => void) | null) => {
+    focusNodeRef.current = fn;
+  }, []);
+  const focusNode = useCallback((id: string) => {
+    focusNodeRef.current?.(id);
+  }, []);
 
   function stopRun() {
     run.stop();
@@ -712,24 +788,14 @@ export function WorkflowsPage({ status }: Props) {
     ),
   );
 
-  const runInfo = useMemo<CardRunInfo[]>(
-    () =>
-      cards
-        .filter((c) => c.placed !== false)
-        .map((c) => ({
-          id: c.id,
-          name: c.name,
-          state: cardStates[c.id] ?? "idle",
-          output: outputs[c.id]?.output ?? "",
-          error: outputs[c.id]?.error,
-        })),
-    [cards, cardStates, outputs],
-  );
-
-  const runningCardId = useMemo(
-    () =>
-      cards.find((c) => (cardStates[c.id] ?? "idle") === "running")?.id ?? null,
-    [cards, cardStates],
+  // `runInfo` / `runningCardId` used to live here, but they read the hot
+  // per-card snapshot and so forced a full-page re-render per token. They now
+  // live inside `<RunSurface>` (the isolated hot subtree). The number of
+  // placed cards — all the page shell needs for the Run-button gate — is a
+  // pure function of `cards`, independent of run state.
+  const placedCardCount = useMemo(
+    () => cards.filter((c) => c.placed !== false).length,
+    [cards],
   );
 
   // The portal slot inside App.tsx's <header> where this page renders its
@@ -899,7 +965,7 @@ export function WorkflowsPage({ status }: Props) {
     );
   }
 
-  const canRun = runInfo.length > 0 && validation.ok;
+  const canRun = placedCardCount > 0 && validation.ok;
   const editorHeader = (
     <>
       <button
@@ -993,21 +1059,19 @@ export function WorkflowsPage({ status }: Props) {
         </div>
       )}
       <div className="wf-editor-body">
-        <ReactFlowProvider>
-          <WorkflowCanvas
-            cards={cards}
-            edges={edges}
-            cardStates={cardStates}
-            onCardsChange={setCards}
-            onEdgesChange={setEdges}
-            onConfigure={editCard}
-            onRunCard={runSingleCard}
-            onDeleteCard={deleteCard}
-            onCreateFromDeck={createFromDeck}
-            runningCardId={runningCardId}
-          />
-        </ReactFlowProvider>
-        <RunPanel cards={runInfo} />
+        <RunSurface
+          cards={cards}
+          edges={edges}
+          onCardsChange={setCards}
+          onEdgesChange={setEdges}
+          onConfigure={editCard}
+          onRunCard={runSingleCard}
+          onDeleteCard={deleteCard}
+          onCreateFromDeck={createFromDeck}
+          onFocusNode={focusNode}
+          onRerunFromCard={runFromCard}
+          onRegisterFocus={registerFocusNode}
+        />
       </div>
       {formCard && (
         <CardForm
@@ -1025,5 +1089,106 @@ export function WorkflowsPage({ status }: Props) {
         onClose={() => setSkillsOpen(false)}
       />
     </div>
+  );
+}
+
+interface RunSurfaceProps {
+  cards: WorkflowCard[];
+  edges: WorkflowEdge[];
+  onCardsChange: (cards: WorkflowCard[]) => void;
+  onEdgesChange: (edges: WorkflowEdge[]) => void;
+  onConfigure: (id: string, origin: DOMRect) => void;
+  onRunCard: (id: string) => void;
+  onDeleteCard: (id: string) => void;
+  onCreateFromDeck: (
+    origin: DOMRect,
+    position: { x: number; y: number },
+  ) => void;
+  /** Scroll + frame a node on the canvas (clicked from a failed status row). */
+  onFocusNode: (id: string) => void;
+  /** Re-run the graph resuming from a card (the "re-run from here" action). */
+  onRerunFromCard: (id: string) => void;
+  /** Lets the canvas hand its imperative node-focuser up to the page. */
+  onRegisterFocus: (fn: ((id: string) => void) | null) => void;
+}
+
+/**
+ * The HOT subtree (adversarial review HIGH, 2026-06-12). This is the ONLY
+ * part of the Workflows editor that subscribes to the per-card run snapshot,
+ * so a streamed token re-renders just the canvas badges + status panel — not
+ * the ~1000-line page shell. Everything it needs from the page (cards, edges,
+ * stable handlers) arrives as props with stable identities; the only changing
+ * input is `run.cardStates`, owned here.
+ */
+function RunSurface({
+  cards,
+  edges,
+  onCardsChange,
+  onEdgesChange,
+  onConfigure,
+  onRunCard,
+  onDeleteCard,
+  onCreateFromDeck,
+  onFocusNode,
+  onRerunFromCard,
+  onRegisterFocus,
+}: RunSurfaceProps) {
+  const { cardStates: snapshot } = useWorkflowRunCards();
+
+  // Provider's per-card snapshot → the legacy `state` map the canvas badges
+  // and run panel consume. Derived (not duplicated) so an in-flight run paints
+  // the instant the user returns to the Workflows view.
+  const cardStates: Record<string, CardRunState> = useMemo(() => {
+    const out: Record<string, CardRunState> = {};
+    for (const [id, snap] of Object.entries(snapshot)) {
+      out[id] = snap.state;
+    }
+    return out;
+  }, [snapshot]);
+
+  const runInfo = useMemo<CardRunInfo[]>(
+    () =>
+      cards
+        .filter((c) => c.placed !== false)
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          state: cardStates[c.id] ?? "idle",
+          output: snapshot[c.id]?.output ?? "",
+          error: snapshot[c.id]?.error,
+        })),
+    [cards, cardStates, snapshot],
+  );
+
+  const runningCardId = useMemo(
+    () =>
+      cards.find((c) => (cardStates[c.id] ?? "idle") === "running")?.id ?? null,
+    [cards, cardStates],
+  );
+
+  return (
+    <>
+      <ReactFlowProvider>
+        <WorkflowCanvas
+          cards={cards}
+          edges={edges}
+          cardStates={cardStates}
+          onCardsChange={onCardsChange}
+          onEdgesChange={onEdgesChange}
+          onConfigure={onConfigure}
+          onRunCard={onRunCard}
+          onDeleteCard={onDeleteCard}
+          onCreateFromDeck={onCreateFromDeck}
+          runningCardId={runningCardId}
+          onRegisterFocus={onRegisterFocus}
+        />
+      </ReactFlowProvider>
+      <RunPanel
+        cards={runInfo}
+        runningCardId={runningCardId}
+        onFocusNode={onFocusNode}
+        onRerunFromCard={onRerunFromCard}
+      />
+    </>
   );
 }

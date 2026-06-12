@@ -189,153 +189,38 @@ function clamp(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) : s;
 }
 
-/**
- * Validate + build a linear Flow graph from the model's high-level input.
- * Fail-closed: returns `{ok:false, kind, message}` rather than throwing.
- */
-export function buildLinearFlow(
-  rawName: unknown,
-  rawSteps: unknown,
-): BuildResult {
-  if (typeof rawName !== "string" || !rawName.trim()) {
-    return {
-      ok: false,
-      kind: "bad_args",
-      message: "name must be a non-empty string.",
-    };
-  }
-  if (!Array.isArray(rawSteps) || rawSteps.length === 0) {
-    return {
-      ok: false,
-      kind: "bad_args",
-      message: "steps must be a non-empty array.",
-    };
-  }
-  if (rawSteps.length > MAX_FLOW_STEPS) {
-    return {
-      ok: false,
-      kind: "too_many_steps",
-      message: `At most ${MAX_FLOW_STEPS} steps (got ${rawSteps.length}).`,
-    };
-  }
-
-  const cards: WorkflowCard[] = [];
-  const edges: WorkflowEdge[] = [];
-
-  for (let i = 0; i < rawSteps.length; i++) {
-    const step = rawSteps[i] as Partial<FlowStepInput> | null;
-    if (!step || typeof step !== "object") {
-      return {
-        ok: false,
-        kind: "bad_args",
-        message: `step ${i} is not an object.`,
-      };
-    }
-    const role = typeof step.role === "string" ? step.role : "";
-    // Role must be in the closed allowlist (a fixed set of built-in preset ids).
-    // The preset only affects the system prompt — the card's explicit curated
-    // `tools[]` below override the preset's allowlist regardless — so this is the
-    // sole role gate.
-    if (!ALLOWED_FLOW_ROLES.has(role)) {
-      return {
-        ok: false,
-        kind: "unknown_role",
-        message: `step ${i}: role "${role}" not allowed. Use one of: ${[...ALLOWED_FLOW_ROLES].join(", ")}.`,
-      };
-    }
-    const instructions =
-      typeof step.instructions === "string" ? step.instructions.trim() : "";
-    if (!instructions) {
-      return {
-        ok: false,
-        kind: "bad_args",
-        message: `step ${i}: instructions must be non-empty.`,
-      };
-    }
-    const title =
-      typeof step.title === "string" && step.title.trim()
-        ? clamp(step.title.trim(), MAX_STEP_TITLE)
-        : `Step ${i + 1}`;
-
-    // FRESH literal — the model's `step` object is NEVER spread, so it can't
-    // inject unattended/schedule/nodeType/model/etc.
-    const id = `card-${crypto.randomUUID()}`;
-    cards.push({
-      id,
-      name: title,
-      preset: role,
-      prompt: clamp(instructions, MAX_INSTRUCTIONS),
-      systemPrompt: null,
-      tools: [...CURATED_TOOLS_FOR_ROLE[role]],
-      schedule: null,
-      backend: null,
-      model: null,
-      unattended: false,
-      placed: true,
-      nodeType: "agent",
-      nodeConfig: null,
-      x: 80,
-      y: 80 + i * 160,
-    });
-    if (i > 0) edges.push({ from: cards[i - 1].id, to: id });
-  }
-
-  return {
-    ok: true,
-    name: clamp(rawName.trim(), MAX_FLOW_NAME),
-    graph: { cards, edges },
-  };
+/** The per-step fields shared by both modes after the common gates pass:
+ *  a validated role, the trimmed/clamped title, the trimmed instructions,
+ *  the raw step (for the advanced builder's extra fields), and the index. */
+interface ValidatedStep {
+  role: string;
+  title: string;
+  instructions: string;
+  step: Partial<AdvancedStepInput>;
+  index: number;
 }
 
 /**
- * Build a minimal valid `nodeConfig` for an advanced node type. Only the fields
- * the handler actually needs are populated; everything else is left to the
- * runtime default (and re-clamped by `normalizeNodeConfig` on every load). The
- * agent node type carries no config (returns null).
+ * Shared scaffolding for both Flow builders. Runs the IDENTICAL envelope
+ * validation (name, steps array, step count) and per-step gates (object shape,
+ * role-allowlist membership, non-empty instructions, title clamp) for safe AND
+ * advanced mode, then hands each validated step to `buildCard` — the only
+ * per-mode part — to mint the fresh-literal card. The mode-specific card
+ * builder is where every security invariant is stamped (unattended:false /
+ * schedule:null and, for advanced, needsReview:true + the tool intersection);
+ * this helper never spreads the model's step object into a card.
  *
- * `verifyCmd` is only meaningful for critic/cascade (the loop runs it before
- * each critique pass); it's ignored for moa/consistency/agent.
- */
-function buildAdvancedNodeConfig(
-  nodeType: WorkflowNodeType,
-  verifyCmd: string | null,
-): WorkflowNodeConfig | null {
-  switch (nodeType) {
-    case "moa":
-    case "consistency":
-      return { members: 3 };
-    case "critic":
-      return {
-        maxIters: 3,
-        passThreshold: 75,
-        ...(verifyCmd ? { verifyCmd } : {}),
-      };
-    case "cascade":
-      return {
-        passThreshold: 75,
-        escalateModel: null,
-        escalateBackend: null,
-        ...(verifyCmd ? { verifyCmd } : {}),
-      };
-    default:
-      // "agent" — a plain pass, no orchestration config.
-      return null;
-  }
-}
-
-/**
- * ADVANCED build: like `buildLinearFlow` but lets the model request a non-agent
- * nodeType, a verifyCmd, and a wider (intersected) tools[] per step. EVERY card
- * is constructed from a FRESH literal with the gate hardcoded —
- * needsReview:true, unattended:false, schedule:null — so the model can never
- * arm a card or wire in auto-run. The dispatcher saves the result DISABLED; the
- * user arms each elevated card in the editor before it can run.
+ * `allowedRoles` is the mode's closed role set; `buildCard` returns the minted
+ * card OR a `{ok:false}` BuildResult (used by advanced to reject a bad
+ * nodeType). Edge chaining + the final name clamp are common.
  *
  * Fail-closed: returns `{ok:false, kind, message}` rather than throwing.
  */
-export function buildAdvancedFlow(
+function buildFlow(
   rawName: unknown,
   rawSteps: unknown,
+  allowedRoles: Set<string>,
+  buildCard: (v: ValidatedStep) => WorkflowCard | BuildResult,
 ): BuildResult {
   if (typeof rawName !== "string" || !rawName.trim()) {
     return {
@@ -372,14 +257,15 @@ export function buildAdvancedFlow(
       };
     }
     const role = typeof step.role === "string" ? step.role : "";
-    // Advanced expands the role set to also allow researcher/general — the
-    // preset only seeds the system prompt; the explicit curated/intersected
-    // `tools[]` below still fully control what the card may call.
-    if (!ADVANCED_FLOW_ROLES.has(role)) {
+    // Role must be in the mode's closed allowlist (a fixed set of built-in
+    // preset ids). The preset only affects the system prompt — the card's
+    // explicit curated/intersected `tools[]` below override the preset's
+    // allowlist regardless — so this is the sole role gate.
+    if (!allowedRoles.has(role)) {
       return {
         ok: false,
         kind: "unknown_role",
-        message: `step ${i}: role "${role}" not allowed. Use one of: ${[...ADVANCED_FLOW_ROLES].join(", ")}.`,
+        message: `step ${i}: role "${role}" not allowed. Use one of: ${[...allowedRoles].join(", ")}.`,
       };
     }
     const instructions =
@@ -396,78 +282,13 @@ export function buildAdvancedFlow(
         ? clamp(step.title.trim(), MAX_STEP_TITLE)
         : `Step ${i + 1}`;
 
-    // nodeType: validate against the advanced-allowed set; reject anything else
-    // (incl. router/blackboard/budget) rather than silently downgrading, so the
-    // model gets a clear error instead of a surprising plain-agent card.
-    const nodeType: WorkflowNodeType =
-      step.nodeType == null ? "agent" : (step.nodeType as WorkflowNodeType);
-    if (!ADVANCED_NODE_TYPES.has(nodeType)) {
-      return {
-        ok: false,
-        kind: "bad_node_type",
-        message: `step ${i}: nodeType "${String(step.nodeType)}" not allowed in advanced mode. Use one of: ${[...ADVANCED_NODE_TYPES].join(", ")}.`,
-      };
-    }
-
-    // verifyCmd: clamp + only meaningful for critic/cascade (a shell command
-    // run before each critique pass). For other node types it's dropped.
-    const verifyCmd =
-      typeof step.verifyCmd === "string" && step.verifyCmd.trim()
-        ? clamp(step.verifyCmd.trim(), MAX_VERIFY_CMD)
-        : null;
-
-    // tools: an explicit list INTERSECTED with the advanced allowlist. Anything
-    // outside (incl. every forbidden tool) is silently dropped. When the model
-    // gives no tools, fall back to the role's curated safe set (or read-only
-    // local for the expanded researcher/general roles, which have no curated
-    // entry) so the card still has a sane non-empty allowlist.
-    const requested = Array.isArray(step.tools)
-      ? step.tools.filter((t): t is string => typeof t === "string")
-      : [];
-    let tools: string[];
-    if (requested.length > 0) {
-      // Intersect (preserve request order, dedupe, drop forbidden + non-allowed).
-      const seen = new Set<string>();
-      tools = [];
-      for (const t of requested) {
-        if (seen.has(t)) continue;
-        if (ADVANCED_FORBIDDEN_TOOLS.has(t)) continue;
-        if (!ADVANCED_ALLOWED_TOOLS.has(t)) continue;
-        seen.add(t);
-        tools.push(t);
-      }
-    } else {
-      tools = [...(CURATED_TOOLS_FOR_ROLE[role] ?? READ_ONLY_LOCAL)];
-    }
-    // An intersection that wiped every tool would leave an empty allowlist,
-    // which the runner reads as "inherit the preset" — the exact fallback the
-    // safe builder guards against. Pin a read-only floor instead.
-    if (tools.length === 0) tools = [...READ_ONLY_LOCAL];
-
-    // FRESH literal — the model's `step` object is NEVER spread. needsReview/
-    // unattended/schedule are builder-controlled and the model can't reach them.
-    const id = `card-${crypto.randomUUID()}`;
-    cards.push({
-      id,
-      name: title,
-      preset: role,
-      prompt: clamp(instructions, MAX_INSTRUCTIONS),
-      systemPrompt: null,
-      tools,
-      schedule: null,
-      backend: null,
-      model: null,
-      unattended: false,
-      // The gate: every advanced card is saved DISABLED. Only the editor's
-      // "Arm" action clears this; the model can never set it false.
-      needsReview: true,
-      placed: true,
-      nodeType,
-      nodeConfig: buildAdvancedNodeConfig(nodeType, verifyCmd),
-      x: 80,
-      y: 80 + i * 160,
-    });
-    if (i > 0) edges.push({ from: cards[i - 1].id, to: id });
+    // Mint the card from a FRESH literal (buildCard never spreads `step`). A
+    // builder may instead return a {ok:false} result to reject the step (e.g.
+    // advanced's bad-nodeType gate) — propagate it unchanged.
+    const built = buildCard({ role, title, instructions, step, index: i });
+    if ("ok" in built) return built;
+    cards.push(built);
+    if (i > 0) edges.push({ from: cards[i - 1].id, to: built.id });
   }
 
   return {
@@ -478,6 +299,203 @@ export function buildAdvancedFlow(
 }
 
 /**
+ * Validate + build a linear Flow graph from the model's high-level input.
+ * Fail-closed: returns `{ok:false, kind, message}` rather than throwing.
+ */
+export function buildLinearFlow(
+  rawName: unknown,
+  rawSteps: unknown,
+): BuildResult {
+  return buildFlow(
+    rawName,
+    rawSteps,
+    ALLOWED_FLOW_ROLES,
+    ({ role, title, instructions, index }) => {
+      // FRESH literal — the model's `step` object is NEVER spread, so it can't
+      // inject unattended/schedule/nodeType/model/etc. Curated egress-free
+      // tools per role; plain agent; no orchestration config.
+      return {
+        id: `card-${crypto.randomUUID()}`,
+        name: title,
+        preset: role,
+        prompt: clamp(instructions, MAX_INSTRUCTIONS),
+        systemPrompt: null,
+        tools: [...CURATED_TOOLS_FOR_ROLE[role]],
+        schedule: null,
+        backend: null,
+        model: null,
+        unattended: false,
+        placed: true,
+        nodeType: "agent",
+        nodeConfig: null,
+        x: 80,
+        y: 80 + index * 160,
+      };
+    },
+  );
+}
+
+/**
+ * Build a minimal valid `nodeConfig` for an advanced node type. Only the fields
+ * the handler actually needs are populated; everything else is left to the
+ * runtime default (and re-clamped by `normalizeNodeConfig` on every load). The
+ * agent node type carries no config (returns null).
+ *
+ * `verifyCmd` is only meaningful for critic/cascade (the loop runs it before
+ * each critique pass); it's ignored for moa/consistency/agent.
+ */
+function buildAdvancedNodeConfig(
+  nodeType: WorkflowNodeType,
+  verifyCmd: string | null,
+): WorkflowNodeConfig | null {
+  switch (nodeType) {
+    case "moa":
+      // MoA: 3 proposers → one synthesis pass. Matches runMoa's runtime
+      // `members ?? 3` default — stamp it explicitly so the built value
+      // tracks the handler's intent rather than relying on the fallback.
+      return { members: 3 };
+    case "consistency":
+      // Self-consistency: 5 samples → vote/merge. Matches runConsistency's
+      // runtime `members ?? 5` default. The prior shared `members:3` literal
+      // silently under-sampled an advanced-built consistency node vs. what
+      // the same node type does when its config is left unset.
+      return { members: 5 };
+    case "critic":
+      return {
+        maxIters: 3,
+        passThreshold: 75,
+        ...(verifyCmd ? { verifyCmd } : {}),
+      };
+    case "cascade":
+      return {
+        passThreshold: 75,
+        escalateModel: null,
+        escalateBackend: null,
+        ...(verifyCmd ? { verifyCmd } : {}),
+      };
+    default:
+      // "agent" — a plain pass, no orchestration config.
+      return null;
+  }
+}
+
+/**
+ * ADVANCED build: like `buildLinearFlow` but lets the model request a non-agent
+ * nodeType, a verifyCmd, and a wider (intersected) tools[] per step. EVERY card
+ * is constructed from a FRESH literal with the gate hardcoded —
+ * needsReview:true, unattended:false, schedule:null — so the model can never
+ * arm a card or wire in auto-run. The dispatcher saves the result DISABLED; the
+ * user arms each elevated card in the editor before it can run.
+ *
+ * Fail-closed: returns `{ok:false, kind, message}` rather than throwing.
+ */
+export function buildAdvancedFlow(
+  rawName: unknown,
+  rawSteps: unknown,
+): BuildResult {
+  // Same envelope + role/instructions/title gates as the safe builder (via
+  // buildFlow), but with the EXPANDED advanced role set and a per-step builder
+  // that mints the elevated card. Advanced cards may carry a non-agent
+  // nodeType, a verifyCmd, and a wider (intersected) tools[] — every elevated
+  // capability is gated behind the builder-hardcoded needsReview:true.
+  return buildFlow(
+    rawName,
+    rawSteps,
+    ADVANCED_FLOW_ROLES,
+    ({ role, title, instructions, step, index }) => {
+      // nodeType: validate against the advanced-allowed set; reject anything
+      // else (incl. router/blackboard/budget) rather than silently downgrading,
+      // so the model gets a clear error instead of a surprising plain-agent
+      // card. Returning a {ok:false} result propagates out of buildFlow.
+      const nodeType: WorkflowNodeType =
+        step.nodeType == null ? "agent" : (step.nodeType as WorkflowNodeType);
+      if (!ADVANCED_NODE_TYPES.has(nodeType)) {
+        return {
+          ok: false,
+          kind: "bad_node_type",
+          message: `step ${index}: nodeType "${String(step.nodeType)}" not allowed in advanced mode. Use one of: ${[...ADVANCED_NODE_TYPES].join(", ")}.`,
+        };
+      }
+
+      // verifyCmd: clamp + only meaningful for critic/cascade (a shell command
+      // run before each critique pass). For other node types it's dropped.
+      const verifyCmd =
+        typeof step.verifyCmd === "string" && step.verifyCmd.trim()
+          ? clamp(step.verifyCmd.trim(), MAX_VERIFY_CMD)
+          : null;
+
+      // tools: an explicit list INTERSECTED with the advanced allowlist.
+      // Anything outside (incl. every forbidden tool) is silently dropped. When
+      // the model gives no tools, fall back to the role's curated safe set (or
+      // read-only local for the expanded researcher/general roles, which have
+      // no curated entry) so the card still has a sane non-empty allowlist.
+      const requested = Array.isArray(step.tools)
+        ? step.tools.filter((t): t is string => typeof t === "string")
+        : [];
+      let tools: string[];
+      if (requested.length > 0) {
+        // Intersect (preserve request order, dedupe, drop forbidden + non-allowed).
+        const seen = new Set<string>();
+        tools = [];
+        for (const t of requested) {
+          if (seen.has(t)) continue;
+          if (ADVANCED_FORBIDDEN_TOOLS.has(t)) continue;
+          if (!ADVANCED_ALLOWED_TOOLS.has(t)) continue;
+          seen.add(t);
+          tools.push(t);
+        }
+      } else {
+        tools = [...(CURATED_TOOLS_FOR_ROLE[role] ?? READ_ONLY_LOCAL)];
+      }
+      // An intersection that wiped every tool would leave an empty allowlist,
+      // which the runner reads as "inherit the preset" — the exact fallback the
+      // safe builder guards against. Pin a read-only floor instead.
+      if (tools.length === 0) tools = [...READ_ONLY_LOCAL];
+
+      // FRESH literal — the model's `step` object is NEVER spread. needsReview/
+      // unattended/schedule are builder-controlled and the model can't reach them.
+      return {
+        id: `card-${crypto.randomUUID()}`,
+        name: title,
+        preset: role,
+        prompt: clamp(instructions, MAX_INSTRUCTIONS),
+        systemPrompt: null,
+        tools,
+        schedule: null,
+        backend: null,
+        model: null,
+        unattended: false,
+        // The gate: every advanced card is saved DISABLED. Only the editor's
+        // "Arm" action clears this; the model can never set it false.
+        needsReview: true,
+        placed: true,
+        nodeType,
+        nodeConfig: buildAdvancedNodeConfig(nodeType, verifyCmd),
+        x: 80,
+        y: 80 + index * 160,
+      };
+    },
+  );
+}
+
+/**
+ * Per-card invariants that BOTH the safe and advanced gates enforce
+ * identically: no card may be unattended, scheduled, or carry an
+ * empty/missing tool allowlist (an empty allowlist is read by the runner as
+ * "inherit the preset" — the silent broadening both builders guard against).
+ * Returns a violation message or null. The mode-specific checks
+ * (curated-only vs advanced-allowlist+forbidden+needsReview) stay in each
+ * caller — this shares only the truly-common gates so neither is weakened.
+ */
+function assertCardCommonSafe(c: WorkflowCard): string | null {
+  if (c.unattended === true) return `card "${c.name}" is unattended`;
+  if (c.schedule != null) return `card "${c.name}" has a schedule`;
+  if (!Array.isArray(c.tools) || c.tools.length === 0)
+    return `card "${c.name}" has no tools`;
+  return null;
+}
+
+/**
  * Defense-in-depth assertion run by the dispatcher on the built graph BEFORE
  * saving. Re-checks every security invariant independently of the builder, so a
  * future builder regression can't silently ship a dangerous Flow.
@@ -485,13 +503,13 @@ export function buildAdvancedFlow(
  */
 export function assertFlowSafe(graph: WorkflowGraph): string | null {
   for (const c of graph.cards) {
-    if (c.unattended === true) return `card "${c.name}" is unattended`;
-    if (c.schedule != null) return `card "${c.name}" has a schedule`;
+    // Shared gates: unattended / scheduled / empty-tools.
+    const common = assertCardCommonSafe(c);
+    if (common) return common;
+    // Safe-only gates: plain agent, no nodeConfig, curated tools only.
     if (c.nodeType && c.nodeType !== "agent")
       return `card "${c.name}" is not a plain agent`;
     if (c.nodeConfig != null) return `card "${c.name}" carries nodeConfig`;
-    if (!Array.isArray(c.tools) || c.tools.length === 0)
-      return `card "${c.name}" has no curated tools`;
     for (const t of c.tools) {
       if (!ALL_CURATED_TOOLS.has(t))
         return `card "${c.name}" carries non-curated tool "${t}"`;
@@ -516,10 +534,11 @@ export function assertFlowSafe(graph: WorkflowGraph): string | null {
  */
 export function assertFlowSafeAdvanced(graph: WorkflowGraph): string | null {
   for (const c of graph.cards) {
-    if (c.unattended === true) return `card "${c.name}" is unattended`;
-    if (c.schedule != null) return `card "${c.name}" has a schedule`;
-    if (!Array.isArray(c.tools) || c.tools.length === 0)
-      return `card "${c.name}" has no tools`;
+    // Shared gates: unattended / scheduled / empty-tools.
+    const common = assertCardCommonSafe(c);
+    if (common) return common;
+    // Advanced-only gates: every tool within the advanced allowlist and none
+    // forbidden; every elevated card flagged needsReview.
     for (const t of c.tools) {
       if (ADVANCED_FORBIDDEN_TOOLS.has(t))
         return `card "${c.name}" carries forbidden tool "${t}"`;

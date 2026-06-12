@@ -76,12 +76,27 @@ const CODE_TOOLS = [
  * fully local/private. Swap the escalation tag in the card editor if you
  * prefer a different hosted model (any `*:cloud` tag works).
  *
- * verifyCmd ships as `npm test` — a placeholder; edit it per project in the
- * card editor (the prompts remind the model + user of this too).
+ * verifyCmd ships as a safe auto-detecting one-liner (SAFE_VERIFY_CMD) that
+ * runs npm/cargo test when present and no-ops cleanly otherwise — a missing
+ * runner must not fail every critic iteration. Edit it per project in the card
+ * editor (the prompts remind the model + user of this too).
  */
 
 /** Cheap hosted escalation tier (Ollama Cloud, flat-rate). NOT a frontier API. */
 const CLOUD_ESCALATION_MODEL = "glm-4.6:cloud";
+
+/**
+ * Safe-by-default verify command for the critic loops. Auto-detects the
+ * project's test runner and — crucially — no-ops cleanly (exit 0) when none is
+ * found, so a non-Node/non-Rust project does NOT fail every iteration and burn
+ * the whole maxIters budget on a missing `npm`. The user still edits this to
+ * their real test command (the card prompts say so); this just makes the
+ * shipped default harmless instead of a guaranteed red. A genuine test failure
+ * in a detected runner still surfaces — only a MISSING runner is the no-op.
+ */
+const SAFE_VERIFY_CMD =
+  "[ -f package.json ] && npm test || { [ -f Cargo.toml ] && cargo test; } || " +
+  'echo "no test runner detected — edit this card’s verify command to your project’s real test command"';
 
 const PAD_TOOLS = ["workflow_set", "workflow_get", "workflow_keys"];
 /** Read-only repo navigation shared by the dev-workforce cards. */
@@ -313,18 +328,26 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           name: "Implementer",
           preset: "coder",
           prompt:
-            "You are the Implementer. Execute workflow_get('plan') exactly, step by step, in plan order — read every file before editing it and prefer edit_file/multi_edit over rewrites. After each plan step, run the test command from workflow_get('test_cmd') via run_shell; never advance past a failing step. Implement only what the plan and spec require — no opportunistic refactors and no new dependencies without a stated reason. A verification critic re-runs this card's verify command (default 'npm test' — edit the card to match this project) after every iteration and scores your work against the plan. When all steps are green, call workflow_set('impl_status', 'green') and finish with a one-paragraph change summary, not a transcript.",
+            "You are the Implementer. Execute workflow_get('plan') exactly, step by step, in plan order — read every file before editing it and prefer edit_file/multi_edit over rewrites. After each plan step, run the test command from workflow_get('test_cmd') via run_shell; never advance past a failing step. Implement only what the plan and spec require — no opportunistic refactors and no new dependencies without a stated reason. A verification critic re-runs this card's verify command (which auto-detects npm/cargo by default and no-ops if neither is present — edit the card to your project's real test command) after every iteration and scores your work against the plan. When all steps are green, call workflow_set('impl_status', 'green') and finish with a one-paragraph change summary, not a transcript.",
           tools: [
             ...REPO_READ_TOOLS,
             ...REPO_EDIT_TOOLS,
             "format_code",
             ...PAD_TOOLS,
           ],
+          // Vetted gallery template: the user explicitly installs + runs this
+          // Flow, and an action card whose whole job is mutating/exec/network
+          // (here edit_file/multi_edit/write_file/run_shell) is dead weight
+          // unless its tools auto-approve — a non-unattended card hits the
+          // runner's deny-all gate and does nothing. unattended:true opts these
+          // in; truly irreversible tools (delete_path/kill_process/agent_undo)
+          // stay hard-denied by the runner even when unattended, so this is safe.
+          unattended: true,
           nodeType: "critic",
           nodeConfig: {
             maxIters: 4,
             passThreshold: 90,
-            verifyCmd: "npm test",
+            verifyCmd: SAFE_VERIFY_CMD,
             criticSystemPrompt:
               "You are an exacting software verification critic. You did not write this code and owe it no loyalty: judge only what the diff and the verification output prove, never the implementer's narrative.",
             criticPrompt:
@@ -362,6 +385,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
             "workflow_get",
             "workflow_keys",
           ],
+          unattended: true,
           nodeConfig: { maxMs: 1_200_000 },
         }),
       ],
@@ -393,6 +417,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
             "git_log",
             ...PAD_TOOLS,
           ],
+          unattended: true,
           nodeConfig: {
             maxMs: 900_000,
             // Gate: no repro, no hunt — a clean halt beats a guessed fix.
@@ -419,19 +444,27 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
             "workflow_keys",
           ],
           nodeType: "consistency",
-          nodeConfig: { members: 3, voteMode: "vote", maxMs: 900_000 },
+          // voteMode "vote" (not "synth"): each analyst ends with the structured
+          // `FAULT: <file>:<line> — …` line, which the consistency node's
+          // voteKey/structuredKey extracts and tallies — so genuine agreement on
+          // a location wins cheaply, no extra synthesis LLM call. (Free-text-only
+          // consistency cards would instead use "synth"; this one is structured.)
+          // maxMs matches the sibling 3-member consistency card (vuln-hunter vh4):
+          // same nodeType + member count → same ceiling.
+          nodeConfig: { members: 3, voteMode: "vote", maxMs: 1_200_000 },
         }),
         card("bh3", 640, {
           name: "Fixer",
           preset: "coder",
           prompt:
-            "You are the Fixer. Take the voted FAULT location from the handoff and workflow_get('repro_output'); read the faulty code and its callers via find_references before changing anything. Fix the ROOT CAUSE with the smallest correct change — do not paper over the symptom in the repro path, and do not refactor surrounding code while you are here. After every edit, run workflow_get('repro_cmd') (it must now pass) and then workflow_get('test_cmd') (nothing may regress); a cross-checking critic also re-runs this card's verify command (default 'npm test' — edit the card to match this project) and scores your fix. Keep the repro test in place as a permanent regression test. Finish with workflow_set('fix_summary', '<root cause, files changed, repro + suite status>').",
+            "You are the Fixer. Take the voted FAULT location from the handoff and workflow_get('repro_output'); read the faulty code and its callers via find_references before changing anything. Fix the ROOT CAUSE with the smallest correct change — do not paper over the symptom in the repro path, and do not refactor surrounding code while you are here. After every edit, run workflow_get('repro_cmd') (it must now pass) and then workflow_get('test_cmd') (nothing may regress); a cross-checking critic also re-runs this card's verify command (which auto-detects npm/cargo by default and no-ops if neither is present — edit the card to your project's real test command) and scores your fix. Keep the repro test in place as a permanent regression test. Finish with workflow_set('fix_summary', '<root cause, files changed, repro + suite status>').",
           tools: [...REPO_READ_TOOLS, ...REPO_EDIT_TOOLS, ...PAD_TOOLS],
+          unattended: true,
           nodeType: "critic",
           nodeConfig: {
             maxIters: 5,
             passThreshold: 95,
-            verifyCmd: "npm test",
+            verifyCmd: SAFE_VERIFY_CMD,
             criticSystemPrompt:
               "You are a skeptical debugging critic, deliberately judging from outside the fixer's perspective. Judge only the diff and the verification output; a fix that silences the repro without explaining the root cause scores low.",
             criticPrompt:
@@ -454,6 +487,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
             "workflow_get",
             "workflow_keys",
           ],
+          unattended: true,
           nodeConfig: { maxMs: 900_000 },
         }),
       ],
@@ -525,6 +559,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Security Report Writer. Read workflow_get('confirmed_findings') and write SECURITY_AUDIT.md: an executive summary (counts by severity), then one section per confirmed finding with — title + CWE, severity (Critical/High/Medium/Low with a one-line CVSS-style rationale), the file:line and the proven source→sink path, concrete impact, and a specific remediation (the exact code change or control to add). Order by severity, then by exploitability. Add a short 'Refuted / out of scope' appendix from workflow_get('refuted') so the reader trusts the signal. End with a one-line confirmation in chat, not the file body.",
           tools: ["read_file", "write_file", "workflow_get", "workflow_keys"],
+          unattended: true,
           nodeConfig: { maxMs: 600_000 },
         }),
       ],
@@ -565,6 +600,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Vuln Hunter, working only within workflow_get('scope') and prioritizing workflow_get('surface'). Hunt exploitable defects with concrete, reachable source→sink paths — not theoretical smells. A scanner critic re-runs this card's verify command (semgrep by default — edit to match the project) after each pass and scores you against what's actually provable. For each candidate call workflow_set so downstream cards see it: workflow_set('vulns', ['<id | class+CWE | file:line | the tainted path | preconditions to trigger>']). Stay defensive: you are finding bugs to fix them, never weaponizing — no live exploitation against anything outside the local code.",
           tools: SEC_SHELL_TOOLS,
+          unattended: true,
           nodeType: "critic",
           nodeConfig: {
             maxIters: 4,
@@ -585,6 +621,10 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
             "You are a reproducibility analyst; sibling analysts judge the same candidates independently and your verdicts are voted, so end in the exact agreed format. For the candidates in workflow_get('vulns'), determine which ones genuinely trigger: trace the path once more, check guards and preconditions, and decide reproducible vs not. Your final line must be exactly: VERDICT: <id> | reproducible=<yes|no> | <one-sentence justification with file:line>. Commit to one verdict per candidate — no hedging.",
           tools: SEC_NAV_TOOLS,
           nodeType: "consistency",
+          // voteMode "vote": each analyst ends with the structured
+          // `VERDICT: <id> | reproducible=<yes|no> | …` line; voteKey/structuredKey
+          // tallies on that tag value, so reproducibility agreement is decided by
+          // a real vote rather than a fall-through synthesis pass.
           nodeConfig: { members: 3, voteMode: "vote", maxMs: 1_200_000 },
         }),
         card("vh5", 1280, {
@@ -593,6 +633,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Defensive Writeup author. For each vulnerability the vote marked reproducible, write — in workflow_set('report', '<markdown>') and a VULN_REPORT.md file — the proof-of-severity exploit PATH (the precise sequence that reaches the sink, as evidence for prioritization, NOT a weaponized payload against a live third party), the CWE/severity, and the concrete fix (exact code change + the control that prevents the class). The single hardest inter-procedural case may exceed the local model; this card escalates such reasoning to a flat-rate hosted tier. Stay strictly defensive: the deliverable is a fix and a justification, never a working attack tool.",
           tools: [...SEC_NAV_TOOLS, "write_file"],
+          unattended: true,
           nodeType: "cascade",
           nodeConfig: {
             passThreshold: 80,
@@ -622,6 +663,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Supply-Chain Scan Runner. Detect the project's ecosystem and run whichever auditors are installed, capturing JSON where possible: `npm audit --json` (Node), `cargo audit --json` (Rust), `osv-scanner --format json -r .` (cross-ecosystem), and for leaked secrets `trufflehog filesystem . --only-verified --json` or `gitleaks detect --report-format json` if present. For each tool that isn't installed, note it and continue — never fail the card on a missing scanner. Persist the raw findings: workflow_set('cve_findings', '<dependency advisories: package, version, advisory id, severity>') and workflow_set('secret_findings', '<verified secrets: file:line, type — REDACT the secret value itself>'). Do not edit anything.",
           tools: SEC_SHELL_TOOLS,
+          unattended: true,
           nodeConfig: { maxMs: 1_200_000 },
         }),
         card("scs2", 320, {
@@ -638,6 +680,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Remediation Planner. From workflow_get('triaged'), write DEPENDENCY_REMEDIATION.md: a prioritized action list where each item is — the package/secret, the risk and whether it's reachable, and the EXACT fix (safe version to bump to and whether it's a breaking major, the patch, or for secrets: rotate + purge-from-history steps). Group as: Fix now (reachable + high severity, or verified live secret), Schedule (unreachable-but-known / low severity), and Monitor (unknown/transitive). Add the precise commands (e.g. `npm install pkg@x.y.z`) where they're safe. End with one confirmation line in chat.",
           tools: ["read_file", "write_file", "workflow_get", "workflow_keys"],
+          unattended: true,
           nodeConfig: { maxMs: 600_000 },
         }),
       ],
@@ -670,6 +713,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Breach Sweep analyst. For each address in workflow_get('emails'), query Have I Been Pwned via call_api using a registered API named 'HIBP' (register it in Settings → APIs with your hibp-api-key as the auth header 'hibp-api-key' and a template of just '{key}'; the key stays in the Keychain and is injected server-side — you never see it). Call the breach account and paste account endpoints (path like '/api/v3/breachedaccount/<email>?truncateResponse=false' and '/api/v3/pasteaccount/<email>'). Respect rate limits — space requests. If the 'HIBP' API isn't registered, say so clearly and write workflow_set('breaches', 'HIBP not configured — register it in Settings → APIs to enable breach lookups') instead of guessing. Otherwise call workflow_set('breaches', '<per email: breach names, dates, the data classes exposed (passwords? tokens?)>'). Report only — never attempt any login anywhere.",
           tools: EXPOSURE_TOOLS,
+          unattended: true,
           nodeConfig: { maxMs: 1_200_000 },
         }),
         card("exp3", 640, {
@@ -678,6 +722,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Pwned-Passwords checker, and you protect the user's secrets while checking them. ONLY if the user explicitly provides a password to test (ask first; never read one from a file or env): compute its SHA-1, then send ONLY the first 5 hex chars of the hash to the Pwned Passwords range API via run_shell (`curl -s https://api.pwnedpasswords.com/range/<first5>`) — this is k-anonymity, the full hash and the password NEVER leave the machine. Match the returned suffixes locally to get the breach count. Report how many times each tested password has appeared in breaches (0 = not seen). Call workflow_set('password_exposure', '<per password label: seen N times — rotate if N>0>'). Never log, store, or transmit the password or its full hash.",
           tools: ["run_shell", "ask_user", ...PAD_TOOLS],
+          unattended: true,
           nodeConfig: { maxMs: 900_000 },
         }),
         card("exp4", 960, {
@@ -686,6 +731,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Email-Spoofability auditor. For each domain in workflow_get('domains'), resolve its email-authentication posture via run_shell + dig: SPF (`dig +short TXT <domain>` → the v=spf1 record), DMARC (`dig +short TXT _dmarc.<domain>` → policy p=none|quarantine|reject), and note whether DKIM selectors are discoverable. Flag weaknesses: missing SPF, SPF with +all/no -all, missing DMARC, or DMARC p=none (monitors but doesn't block spoofing). Call workflow_set('email_auth', '<per domain: SPF/DKIM/DMARC status + each gap that lets someone spoof mail as this domain>'). Read-only DNS lookups against the user's own domains.",
           tools: ["run_shell", ...PAD_TOOLS],
+          unattended: true,
           nodeConfig: { maxMs: 600_000 },
         }),
         card("exp5", 1280, {
@@ -694,6 +740,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Exposure Report writer. Consolidate workflow_get('breaches'), workflow_get('password_exposure'), and workflow_get('email_auth') into EXPOSURE_REPORT.md — a prioritized, plain-language action plan for the user: which exact credentials to ROTATE NOW (any breach exposing passwords/tokens, or any password seen in Pwned Passwords), where to ENABLE 2FA (accounts tied to breached emails), and which DMARC/SPF records to harden (with the exact record to publish, e.g. a DMARC p=reject). Lead with the highest-risk items. Be calm and concrete — this is a defensive checklist, not an alarm. End with one confirmation line in chat.",
           tools: ["read_file", "write_file", "workflow_get", "workflow_keys"],
+          unattended: true,
           nodeConfig: { maxMs: 600_000 },
         }),
       ],
@@ -747,6 +794,7 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
           prompt:
             "You are the Mitigation Mapper. For each threat in workflow_get('ranked_threats'), specify the concrete defense mapped to the real code: the control to add or strengthen (input validation, authz check, output encoding, rate limit, audit log, crypto fix), WHERE it goes (file:line or module), and the residual risk after. Write THREAT_MODEL.md: the system overview, the ranked threats with their attack trees, and the mitigation plan as an actionable checklist ordered by risk. Distinguish 'must fix' from 'defense in depth'. End with one confirmation line in chat, not the document body.",
           tools: [...SEC_NAV_TOOLS, "write_file"],
+          unattended: true,
           nodeConfig: { maxMs: 1_200_000 },
         }),
       ],

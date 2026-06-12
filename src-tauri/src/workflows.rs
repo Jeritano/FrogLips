@@ -143,38 +143,52 @@ pub fn load_card_last_fired() -> Result<std::collections::HashMap<String, i64>> 
     Ok(rows)
 }
 
-/// Persist a single card's last-fired unix time (upsert). `workflow_id` is
-/// stored in a dedicated integer column so `delete_workflow` can delete by
-/// equality — see `ensure_card_fired_workflow_id_column` for the rationale.
-pub fn persist_card_last_fired(card_key: &str, workflow_id: i64, ts: i64) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
-        "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(card_key) DO UPDATE SET
-            workflow_id = excluded.workflow_id,
-            last_fired = excluded.last_fired",
-        params![card_key, workflow_id, ts],
-    )?;
+/// Persist a batch of `(card_key, workflow_id, last_fired)` upserts in ONE
+/// IMMEDIATE transaction. A scheduler tick can seed/fire many cards; doing a
+/// separate connection-checkout + upsert per card on the hot path multiplied
+/// pool pressure and fsyncs. Batching collapses a tick's writes into a single
+/// transaction. `Immediate` matches `record_run`/`delete_workflow` so the write
+/// can't fail on lock-promotion under the concurrent perf-ledger writer.
+///
+/// `workflow_id` is stored in a dedicated integer column so `delete_workflow`
+/// can delete by equality — see `ensure_card_fired_workflow_id_column`.
+pub fn persist_card_last_fired_batch(rows: &[(String, i64, i64)]) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut conn = get_db()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(card_key) DO UPDATE SET
+                workflow_id = excluded.workflow_id,
+                last_fired = excluded.last_fired",
+        )?;
+        for (card_key, workflow_id, ts) in rows {
+            stmt.execute(params![card_key, workflow_id, ts])?;
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 
-/// Persist a card's fire time and, on failure, emit a diagnostics warning
-/// instead of silently dropping the error. A swallowed persist (e.g. pool
-/// exhaustion) leaves the fire recorded only in memory: the card won't
-/// re-fire this process, but after a restart the disk lacks the record and a
-/// `daily HH:MM` card can multi-fire within the same day. We can't guarantee
-/// the write succeeds, but we make its failure visible. `phase` is "seed" or
-/// "fire" for the log.
-fn warn_if_persist_failed(card_key: &str, workflow_id: i64, ts: i64, phase: &str) {
-    if let Err(e) = persist_card_last_fired(card_key, workflow_id, ts) {
+/// Persist a tick's batched card fire/seed times and, on failure, emit a
+/// diagnostics warning instead of silently dropping the error. A swallowed
+/// persist (e.g. pool exhaustion) leaves the fires recorded only in memory: the
+/// cards won't re-fire this process, but after a restart the disk lacks the
+/// record and a `daily HH:MM` card can multi-fire within the same day. We can't
+/// guarantee the write succeeds, but we make its failure visible. The batch
+/// mixes "seed" and "fire" rows, so the log reports the count rather than a
+/// single phase.
+fn warn_if_persist_batch_failed(rows: &[(String, i64, i64)]) {
+    if let Err(e) = persist_card_last_fired_batch(rows) {
         crate::diagnostics::warn_with(
             "workflow",
-            "failed to persist scheduler card fire time — may re-fire after restart",
+            "failed to persist scheduler card fire times — may re-fire after restart",
             serde_json::json!({
-                "card_key": card_key,
-                "workflow_id": workflow_id,
-                "phase": phase,
+                "rows": rows.len(),
                 "error": e.to_string(),
             }),
         );
@@ -394,6 +408,49 @@ pub fn list_workflows() -> Result<Vec<Workflow>> {
             Err(e) => crate::diagnostics::warn_with(
                 "workflows",
                 "skipping unreadable workflow row",
+                serde_json::json!({ "error": e.to_string() }),
+            ),
+        }
+    }
+    Ok(out)
+}
+
+/// A scheduler-only view of a workflow: its id, its `updated_at` (the cache
+/// invalidation key), and the raw `graph_json`. Deliberately narrower than the
+/// full [`Workflow`] — the scheduler does not need `name`/`created_at`, so the
+/// hot 30s scan query does not select them.
+pub(crate) struct WorkflowScheduleRow {
+    pub id: i64,
+    pub updated_at: i64,
+    pub graph_json: String,
+}
+
+/// List the lightweight schedule rows for every workflow. Selects only the
+/// columns the scheduler needs (id, updated_at, graph_json) so the hot scan
+/// query does not drag `name`/`created_at` along. Mirrors `list_workflows`'
+/// per-row resilience: one unreadable row is skipped + logged, never blanks the
+/// whole scan.
+pub(crate) fn list_workflow_schedule_rows() -> Result<Vec<WorkflowScheduleRow>> {
+    let conn = get_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, updated_at, graph_json
+         FROM workflows ORDER BY updated_at DESC",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next()? {
+        let parsed = (|| -> rusqlite::Result<WorkflowScheduleRow> {
+            Ok(WorkflowScheduleRow {
+                id: r.get(0)?,
+                updated_at: r.get(1)?,
+                graph_json: r.get(2)?,
+            })
+        })();
+        match parsed {
+            Ok(row) => out.push(row),
+            Err(e) => crate::diagnostics::warn_with(
+                "workflows",
+                "skipping unreadable workflow schedule row",
                 serde_json::json!({ "error": e.to_string() }),
             ),
         }
@@ -779,19 +836,82 @@ pub const TRIGGER_EVENT: &str = "workflow-trigger";
 /// How often the scheduler scans all workflows for due cards.
 const SCAN_INTERVAL_SECS: u64 = 30;
 
-/// One scheduler scan: load every workflow, parse each card's `schedule`, and
-/// for each card that is due emit `workflow-trigger`. `last_fired` tracks the
-/// last unix time a card fired (keyed by `"<workflow_id>:<card_id>"`) so an
+/// Prune the persisted `workflow_card_fired` table at most once every this many
+/// scans when nothing changed. In steady state (no fires, no edited/deleted
+/// workflows) the prune is a pure no-op read of the whole table, so running it
+/// on every 30s tick is wasted disk work. We still prune immediately whenever a
+/// card fires or the set of live cards shrinks (see `scheduler_scan`), so a
+/// deleted workflow's rows never linger long; this cap only governs the idle
+/// case. 20 ticks ≈ every 10 minutes.
+const IDLE_PRUNE_EVERY_N_SCANS: u64 = 20;
+
+/// A workflow's extracted schedule, cached so the hot scan does not re-parse the
+/// `graph_json` blob on every 30s tick. `updated_at` is the invalidation key:
+/// any `save_workflow` bumps it (see `save_workflow`), so a stale cache entry is
+/// detected and re-parsed, guaranteeing a freshly-edited schedule takes effect
+/// on the very next scan.
+struct CachedSchedules {
+    updated_at: i64,
+    /// `(card_id, parsed schedule)` for every card whose `schedule` parsed.
+    cards: Vec<(String, Schedule)>,
+}
+
+/// Cache of parsed schedules keyed by `workflow_id`. Entries are invalidated by
+/// `updated_at` mismatch and dropped when their workflow disappears, so the map
+/// stays bounded across a long app session.
+type ScheduleCache = std::collections::HashMap<i64, CachedSchedules>;
+
+/// Parse a workflow's `graph_json` into the `(card_id, Schedule)` pairs the
+/// scheduler cares about. Cards without a recognised `schedule` are dropped.
+/// Returns an empty vec if the blob does not parse or lacks a `cards` array —
+/// the caller treats that as "no schedulable cards" (and caches the empty result
+/// so the unparseable blob is not re-parsed every tick).
+fn extract_schedules(graph_json: &str) -> Vec<(String, Schedule)> {
+    let graph: serde_json::Value = match serde_json::from_str(graph_json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let cards = match graph.get("cards").and_then(|c| c.as_array()) {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for card in cards {
+        let card_id = match card.get("id").and_then(|v| v.as_str()) {
+            Some(id) => id,
+            None => continue,
+        };
+        let sched = match card.get("schedule").and_then(|v| v.as_str()) {
+            Some(s) => match parse_schedule(s) {
+                Some(parsed) => parsed,
+                None => continue,
+            },
+            None => continue,
+        };
+        out.push((card_id.to_string(), sched));
+    }
+    out
+}
+
+/// One scheduler scan: load every workflow's lightweight schedule row, resolve
+/// its parsed schedules (from `cache`, re-parsing only rows whose `updated_at`
+/// changed), and for each due card emit `workflow-trigger`. `last_fired` tracks
+/// the last unix time a card fired (keyed by `"<workflow_id>:<card_id>"`) so an
 /// interval card fires once per window, not every scan. Newly-seen interval
 /// cards are seeded with `now` so their first fire lands a full window later.
+///
+/// `scans_since_prune` is incremented and reset here to throttle the idle
+/// disk-prune (see `IDLE_PRUNE_EVERY_N_SCANS`).
 fn scheduler_scan(
     app: &tauri::AppHandle,
     last_fired: &mut std::collections::HashMap<String, i64>,
+    cache: &mut ScheduleCache,
+    scans_since_prune: &mut u64,
     now: i64,
 ) {
     use tauri::Emitter;
 
-    let workflows = match list_workflows() {
+    let rows = match list_workflow_schedule_rows() {
         Ok(w) => w,
         Err(e) => {
             crate::diagnostics::warn_with(
@@ -804,32 +924,40 @@ fn scheduler_scan(
     };
 
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut live_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
     // Resolve the machine's local UTC offset once for this scan so `daily
     // HH:MM` cards fire at the user's local wall-clock time, not UTC.
     let tz_offset = local_utc_offset_secs(now);
+    // Batch this tick's seed + fire upserts into one transaction (see
+    // `persist_card_last_fired_batch`) instead of an upsert per card.
+    let mut pending_persist: Vec<(String, i64, i64)> = Vec::new();
 
-    for wf in &workflows {
-        let graph: serde_json::Value = match serde_json::from_str(&wf.graph_json) {
-            Ok(v) => v,
-            Err(_) => continue,
+    for row in &rows {
+        live_ids.insert(row.id);
+        // Re-parse only when the row changed: a cache hit on a matching
+        // `updated_at` reuses the previously parsed schedules; any edit bumps
+        // `updated_at` (in `save_workflow`) and forces a re-parse, so a newly
+        // edited schedule takes effect on the next scan without re-parsing every
+        // unchanged blob every tick.
+        let entry = match cache.get(&row.id) {
+            Some(c) if c.updated_at == row.updated_at => c,
+            _ => {
+                let cards = extract_schedules(&row.graph_json);
+                cache.insert(
+                    row.id,
+                    CachedSchedules {
+                        updated_at: row.updated_at,
+                        cards,
+                    },
+                );
+                // `insert` returned the old value; re-borrow the fresh entry.
+                cache.get(&row.id).expect("just inserted")
+            }
         };
-        let cards = match graph.get("cards").and_then(|c| c.as_array()) {
-            Some(c) => c,
-            None => continue,
-        };
-        for card in cards {
-            let card_id = match card.get("id").and_then(|v| v.as_str()) {
-                Some(id) => id,
-                None => continue,
-            };
-            let sched = match card.get("schedule").and_then(|v| v.as_str()) {
-                Some(s) => match parse_schedule(s) {
-                    Some(parsed) => parsed,
-                    None => continue,
-                },
-                None => continue,
-            };
-            let key = format!("{}:{}", wf.id, card_id);
+
+        for (card_id, sched) in &entry.cards {
+            let sched = *sched;
+            let key = format!("{}:{}", row.id, card_id);
             seen.insert(key.clone());
 
             // Seed a never-seen interval card so its first fire lands one full
@@ -840,32 +968,58 @@ fn scheduler_scan(
             // satisfy `last_fired >= ts` and NEVER fire. Do not broaden this.
             if matches!(sched, Schedule::Every(_)) && !last_fired.contains_key(&key) {
                 last_fired.insert(key.clone(), now);
-                warn_if_persist_failed(&key, wf.id, now, "seed");
+                pending_persist.push((key, row.id, now));
                 continue;
             }
 
             if schedule_is_due_at_offset(sched, now, last_fired.get(&key).copied(), tz_offset) {
                 last_fired.insert(key.clone(), now);
-                // Persist the fire time so a `daily HH:MM` card cannot
-                // multi-fire across app restarts within the same day. The
-                // in-memory insert above prevents re-fire within THIS process;
-                // the persist guards the restart window. If it fails we keep
-                // the in-memory mark (no 30s re-fire spam) but log loudly so
-                // the residual restart-re-fire risk is diagnosable rather than
-                // silent.
-                warn_if_persist_failed(&key, wf.id, now, "fire");
+                // Queue the fire time so a `daily HH:MM` card cannot multi-fire
+                // across app restarts within the same day. The in-memory insert
+                // above prevents re-fire within THIS process; the persist (run
+                // once at end of tick) guards the restart window. If it fails we
+                // keep the in-memory mark (no 30s re-fire spam) but log loudly
+                // so the residual restart-re-fire risk is diagnosable.
+                pending_persist.push((key, row.id, now));
+                // RACE (LOW): `row` is a snapshot from the start of this scan; a
+                // concurrent `delete_workflow` could remove the workflow between
+                // the snapshot and this emit. That is benign — `app.emit`
+                // serializes a JSON payload and never panics on a stale id, and
+                // the frontend `workflow-trigger` handler already no-ops when
+                // the workflow is missing or its graph fails to parse. We
+                // deliberately do NOT re-query existence here: a re-check would
+                // add a DB round-trip on the hot path to close a window that the
+                // frontend already tolerates.
                 let _ = app.emit(
                     TRIGGER_EVENT,
-                    serde_json::json!({ "workflow_id": wf.id, "card_id": card_id }),
+                    serde_json::json!({ "workflow_id": row.id, "card_id": card_id }),
                 );
             }
         }
     }
 
-    // Drop tracking for cards that no longer exist so the map can't grow
-    // unbounded as workflows are edited/deleted over a long app session.
+    // Drop cache entries for workflows that no longer exist so the cache can't
+    // grow unbounded across a long app session.
+    cache.retain(|id, _| live_ids.contains(id));
+
+    // Drop in-memory tracking for cards that no longer exist so the map can't
+    // grow unbounded as workflows are edited/deleted over a long session.
+    let before = last_fired.len();
     last_fired.retain(|k, _| seen.contains(k));
-    let _ = prune_card_last_fired(&seen);
+    let cards_disappeared = last_fired.len() != before;
+
+    // One batched write for the whole tick's seeds + fires.
+    warn_if_persist_batch_failed(&pending_persist);
+
+    // Prune the persisted table only when something actually changed (a card
+    // fired/was seeded, or the live-card set shrank) or periodically when idle.
+    // In steady state this avoids a full-table scan + delete loop every 30s.
+    *scans_since_prune += 1;
+    let changed = !pending_persist.is_empty() || cards_disappeared;
+    if changed || *scans_since_prune >= IDLE_PRUNE_EVERY_N_SCANS {
+        let _ = prune_card_last_fired(&seen);
+        *scans_since_prune = 0;
+    }
 }
 
 /// Start the app-lifetime workflow scheduler. Spawns a tokio task that scans
@@ -881,6 +1035,14 @@ pub fn start_scheduler(app: tauri::AppHandle, shutdown: std::sync::Arc<tokio::sy
         // last-fired state across app restarts.
         let mut last_fired: std::collections::HashMap<String, i64> =
             load_card_last_fired().unwrap_or_default();
+        // Parsed-schedule cache (keyed by workflow id, invalidated by
+        // `updated_at`) so the hot scan does not re-JSON-parse every graph blob
+        // each tick. Lives across the loop's lifetime; bounded by pruning gone
+        // workflows each scan.
+        let mut cache: ScheduleCache = ScheduleCache::new();
+        // Ticks since the persisted fired-table was last pruned, to throttle the
+        // idle prune (see `IDLE_PRUNE_EVERY_N_SCANS`).
+        let mut scans_since_prune: u64 = 0;
         loop {
             // Sticky shutdown-flag check, in addition to `.notified()`.
             // `notify_waiters()` only wakes parked waiters; if the exit
@@ -899,7 +1061,13 @@ pub fn start_scheduler(app: tauri::AppHandle, shutdown: std::sync::Arc<tokio::sy
             if crate::is_shutting_down() {
                 break;
             }
-            scheduler_scan(&app, &mut last_fired, now_unix());
+            scheduler_scan(
+                &app,
+                &mut last_fired,
+                &mut cache,
+                &mut scans_since_prune,
+                now_unix(),
+            );
         }
     });
 }
@@ -1154,7 +1322,7 @@ mod tests {
     #[test]
     fn card_last_fired_table_persists_and_prunes() {
         let conn = fresh_db();
-        // Upsert mirrors persist_card_last_fired (the public fn uses the pool).
+        // Upsert mirrors persist_card_last_fired_batch (the public fn uses the pool).
         let upsert = |k: &str, wid: i64, ts: i64| {
             conn.execute(
                 "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
@@ -1919,5 +2087,208 @@ mod tests {
         }
         // Saturation check: very large interval must not panic.
         assert!(parse_schedule("every 99999999h").is_some());
+    }
+
+    #[test]
+    fn extract_schedules_drops_unparseable_and_unscheduled_cards() {
+        // Two scheduled cards, one with a null schedule, one with a junk
+        // schedule, one missing an id — only the two valid ones survive.
+        let graph = r#"{
+            "cards": [
+                {"id":"a","schedule":"every 5m"},
+                {"id":"b","schedule":"daily 09:30"},
+                {"id":"c","schedule":null},
+                {"id":"d","schedule":"banana"},
+                {"schedule":"every 5m"}
+            ],
+            "edges": []
+        }"#;
+        let got = extract_schedules(graph);
+        assert_eq!(
+            got,
+            vec![
+                ("a".to_string(), Schedule::Every(300)),
+                ("b".to_string(), Schedule::Daily(9 * 60 + 30)),
+            ]
+        );
+        // Unparseable / shapeless blobs yield no schedules, never panic.
+        assert!(extract_schedules("{not json").is_empty());
+        assert!(extract_schedules(r#"{"edges":[]}"#).is_empty());
+    }
+
+    /// The cache re-parses a workflow ONLY when its `updated_at` changes. This
+    /// drives the same get-or-parse decision `scheduler_scan` uses, asserting
+    /// (1) an unchanged `updated_at` reuses the cached parse and (2) a bumped
+    /// `updated_at` forces a re-parse so an edited schedule takes effect.
+    #[test]
+    fn schedule_cache_reparses_only_on_updated_at_change() {
+        // Mirror the scan's cache lookup exactly. `parses` counts how often the
+        // expensive `extract_schedules` path runs. We can't observe the calls
+        // inside `scheduler_scan` directly (it needs an AppHandle), so reproduce
+        // the cache-keying logic via a free fn that borrows the counter.
+        fn resolve(
+            cache: &mut ScheduleCache,
+            parses: &mut u32,
+            id: i64,
+            updated_at: i64,
+            graph_json: &str,
+        ) -> Vec<(String, Schedule)> {
+            match cache.get(&id) {
+                Some(c) if c.updated_at == updated_at => c.cards.clone(),
+                _ => {
+                    *parses += 1;
+                    let cards = extract_schedules(graph_json);
+                    cache.insert(
+                        id,
+                        CachedSchedules {
+                            updated_at,
+                            cards: cards.clone(),
+                        },
+                    );
+                    cards
+                }
+            }
+        }
+
+        let mut cache: ScheduleCache = ScheduleCache::new();
+        let mut parses = 0u32;
+        let v1 = r#"{"cards":[{"id":"a","schedule":"every 5m"}],"edges":[]}"#;
+        let v2 = r#"{"cards":[{"id":"a","schedule":"every 10m"}],"edges":[]}"#;
+
+        // First sight → parse.
+        let r = resolve(&mut cache, &mut parses, 1, 100, v1);
+        assert_eq!(r, vec![("a".to_string(), Schedule::Every(300))]);
+        assert_eq!(parses, 1);
+
+        // Same updated_at, even with a different blob, must NOT re-parse: the
+        // cache trusts updated_at as the invalidation key (save_workflow always
+        // bumps it on any graph change).
+        let r = resolve(&mut cache, &mut parses, 1, 100, v2);
+        assert_eq!(r, vec![("a".to_string(), Schedule::Every(300))]);
+        assert_eq!(
+            parses, 1,
+            "unchanged updated_at must reuse the cached parse"
+        );
+
+        // Bumped updated_at → re-parse, new schedule takes effect.
+        let r = resolve(&mut cache, &mut parses, 1, 200, v2);
+        assert_eq!(r, vec![("a".to_string(), Schedule::Every(600))]);
+        assert_eq!(parses, 2, "bumped updated_at must force a re-parse");
+    }
+
+    #[test]
+    fn schedule_cache_drops_entries_for_gone_workflows() {
+        // Mirror the scan's end-of-tick retain: a cache entry whose workflow is
+        // no longer in the live set is dropped so the cache stays bounded.
+        let mut cache: ScheduleCache = ScheduleCache::new();
+        cache.insert(
+            1,
+            CachedSchedules {
+                updated_at: 1,
+                cards: vec![],
+            },
+        );
+        cache.insert(
+            2,
+            CachedSchedules {
+                updated_at: 1,
+                cards: vec![],
+            },
+        );
+        let live: std::collections::HashSet<i64> = [2].into_iter().collect();
+        cache.retain(|id, _| live.contains(id));
+        assert!(!cache.contains_key(&1), "gone workflow must be evicted");
+        assert!(cache.contains_key(&2), "live workflow must stay cached");
+    }
+
+    #[test]
+    fn persist_batch_upserts_all_rows_in_one_pass() {
+        // The batched persist must upsert every row (insert-or-overwrite),
+        // matching the per-card upsert it replaced. Drive the same SQL the batch
+        // helper runs against an in-memory connection (the public fn uses the
+        // pool); this keeps the round-trip pool-free while locking the upsert
+        // semantics: later rows for the same key overwrite earlier ones.
+        let conn = fresh_db();
+        let upsert_batch = |rows: &[(&str, i64, i64)]| {
+            let tx = conn.unchecked_transaction().unwrap();
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(card_key) DO UPDATE SET
+                            workflow_id = excluded.workflow_id,
+                            last_fired = excluded.last_fired",
+                    )
+                    .unwrap();
+                for (k, wid, ts) in rows {
+                    stmt.execute(params![k, wid, ts]).unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        };
+
+        // One tick: seed two, fire one.
+        upsert_batch(&[("1:a", 1, 100), ("1:b", 1, 100), ("2:a", 2, 100)]);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workflow_card_fired", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3);
+
+        // Next tick re-fires 1:a at a later ts; the upsert overwrites in place.
+        upsert_batch(&[("1:a", 1, 160)]);
+        let (n, ts): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), (SELECT last_fired FROM workflow_card_fired WHERE card_key='1:a')
+                 FROM workflow_card_fired",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(n, 3, "re-fire must not add a row");
+        assert_eq!(ts, 160, "re-fire must overwrite last_fired");
+    }
+
+    /// The idle-prune throttle: prune runs when something changed OR every Nth
+    /// scan, but not on an idle tick in between. Drives the same gate logic as
+    /// `scheduler_scan` to lock the steady-state behavior (no per-tick prune).
+    #[test]
+    fn idle_prune_gate_skips_unchanged_ticks() {
+        // Free fn mirroring the gate in `scheduler_scan`: returns whether this
+        // tick pruned and advances the counter in place.
+        fn tick(scans_since_prune: &mut u64, changed: bool) -> bool {
+            *scans_since_prune += 1;
+            if changed || *scans_since_prune >= IDLE_PRUNE_EVERY_N_SCANS {
+                *scans_since_prune = 0;
+                true
+            } else {
+                false
+            }
+        }
+
+        let mut scans = 0u64;
+        let mut prunes = 0u32;
+
+        // A changed tick prunes and resets the counter.
+        if tick(&mut scans, true) {
+            prunes += 1;
+        }
+        assert_eq!(prunes, 1);
+        assert_eq!(scans, 0);
+
+        // Idle ticks below the cap do NOT prune.
+        for _ in 0..(IDLE_PRUNE_EVERY_N_SCANS - 1) {
+            if tick(&mut scans, false) {
+                prunes += 1;
+            }
+        }
+        assert_eq!(prunes, 1, "idle ticks below cap must not prune");
+
+        // The Nth idle tick crosses the cap and prunes once.
+        if tick(&mut scans, false) {
+            prunes += 1;
+        }
+        assert_eq!(prunes, 2, "Nth idle tick must prune");
+        assert_eq!(scans, 0);
     }
 }

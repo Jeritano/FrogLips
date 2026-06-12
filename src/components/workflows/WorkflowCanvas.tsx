@@ -44,6 +44,13 @@ interface Props {
     position: { x: number; y: number },
   ) => void;
   runningCardId: string | null;
+  /**
+   * Hand the page an imperative "frame this node" function so a failed-card
+   * click in the status panel can scroll + zoom the canvas to that node. The
+   * page stores it in a ref and calls it on demand; passing `null` on unmount
+   * lets the page drop the stale reference.
+   */
+  onRegisterFocus?: (fn: ((id: string) => void) | null) => void;
 }
 
 const nodeTypes: NodeTypes = { agentCard: AgentCardNode };
@@ -110,9 +117,26 @@ export function WorkflowCanvas({
   onDeleteCard,
   onCreateFromDeck,
   runningCardId,
+  onRegisterFocus,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
+
+  // Register an imperative node-focuser (review UX #5). `fitView` with an
+  // explicit node id frames + zooms that single node; the same animated
+  // padding as the new-card safety-net keeps the motion consistent. Cleared
+  // on unmount so the page never calls into a torn-down ReactFlow instance.
+  useEffect(() => {
+    onRegisterFocus?.((id: string) => {
+      void fitView({
+        nodes: [{ id }],
+        padding: 0.4,
+        duration: 300,
+        maxZoom: 1.5,
+      });
+    });
+    return () => onRegisterFocus?.(null);
+  }, [onRegisterFocus, fitView]);
 
   // Card width is ~420px; half that recenters the dropped node under the
   // visible-area center rather than placing its top-left corner there.

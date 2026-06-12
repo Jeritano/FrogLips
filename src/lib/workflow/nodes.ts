@@ -98,6 +98,21 @@ function parseRouteIndex(text: string, n: number): number {
   return Math.min(i, n - 1); // clamp an out-of-range high index to the last route
 }
 
+/** Deterministic temperature spread for self-consistency members. Without it
+ *  all N samples share one temperature → near-identical drafts and the vote has
+ *  nothing to disagree on. Derive the value from the member INDEX (not
+ *  Math.random — forbidden here) so the spread stays reproducible/testable:
+ *  member 0 → SAMPLE_TEMP_MIN, last member → SAMPLE_TEMP_MAX, linear between.
+ *  A single member collapses to the midpoint. */
+const SAMPLE_TEMP_MIN = 0.5;
+const SAMPLE_TEMP_MAX = 0.9;
+function sampleTemperature(i: number, n: number): number {
+  if (n <= 1) return (SAMPLE_TEMP_MIN + SAMPLE_TEMP_MAX) / 2;
+  const t =
+    SAMPLE_TEMP_MIN + (SAMPLE_TEMP_MAX - SAMPLE_TEMP_MIN) * (i / (n - 1));
+  return Math.round(t * 100) / 100; // tidy 2-decimal value
+}
+
 /** Normalize a free-text answer for vote comparison (whitespace/case/terminal punctuation). */
 function normalizeAnswer(s: string): string {
   return s
@@ -107,15 +122,37 @@ function normalizeAnswer(s: string): string {
     .replace(/[.!?]+$/, "");
 }
 
+/** A structured final-verdict line like `FAULT: race condition` or
+ *  `VERDICT: GUILTY` — an uppercase tag, a colon, then a value. When samples
+ *  carry one, voting on the TAG VALUE (not the whole prose) finds agreement that
+ *  exact-string equality of free text almost never would. Scans bottom-up so the
+ *  card's terminal verdict wins over any earlier mention. */
+function structuredKey(s: string): string | null {
+  const lines = s.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i].match(/^\s*([A-Z][A-Z_]+)\s*:\s*(.+\S)\s*$/);
+    if (m) return `${m[1].toUpperCase()}:${normalizeAnswer(m[2])}`;
+  }
+  return null;
+}
+
+/** Comparison key for the vote: prefer a structured final line (FAULT:/VERDICT:
+ *  etc.), else the whole answer normalized. Cheap — no LLM call. */
+function voteKey(s: string): string {
+  return structuredKey(s) ?? normalizeAnswer(s);
+}
+
 /** Plurality vote over samples: returns the modal answer verbatim when at
- *  least two samples agree, else null (→ caller falls back to synthesis). */
+ *  least two samples agree, else null (→ caller falls back to synthesis).
+ *  Agreement is keyed on {@link voteKey} so a shared structured verdict counts
+ *  as a match even when the surrounding prose differs. */
 function majorityVote(
   samples: string[],
 ): { answer: string; agree: number } | null {
   const counts = new Map<string, { count: number; rep: string }>();
   for (const s of samples) {
     if (!s || s.startsWith("[sample ")) continue; // skip failed proposers
-    const key = normalizeAnswer(s);
+    const key = voteKey(s);
     if (!key) continue;
     const e = counts.get(key);
     if (e) e.count++;
@@ -137,6 +174,8 @@ interface SubOpts {
   toolAllowlist?: string[];
   /** Cap generated tokens for this sub-run (budget node). */
   maxTokens?: number | null;
+  /** Override sampling temperature for this sub-run (self-consistency varies it per member). */
+  temperature?: number;
   /** Stream this sub-run's deltas to the card UI. Off for hidden sub-runs (proposers/critics). */
   stream?: boolean;
   /** Override the abort signal (budget node uses a child controller). */
@@ -154,9 +193,24 @@ async function runSub(ctx: NodeRunContext, o: SubOpts): Promise<string> {
           { conversation_id: 0, role: "user", content: o.userContent },
         ]
       : ctx.base.messages;
-  const params =
+  // A sub-run's own token cap never escapes a budget ceiling the wrapper placed
+  // on base.params.max_tokens — keep the tighter of the two so the ceiling
+  // reaches even sub-runs that override the cap (fix: overriding sub-runs used
+  // to ignore the budget).
+  const subMaxTokens =
     o.maxTokens != null
-      ? { ...(ctx.base.params ?? {}), max_tokens: o.maxTokens }
+      ? Math.min(
+          o.maxTokens,
+          ctx.base.params?.max_tokens ?? Number.POSITIVE_INFINITY,
+        )
+      : null;
+  const params =
+    subMaxTokens != null || o.temperature != null
+      ? {
+          ...(ctx.base.params ?? {}),
+          ...(subMaxTokens != null ? { max_tokens: subMaxTokens } : {}),
+          ...(o.temperature != null ? { temperature: o.temperature } : {}),
+        }
       : ctx.base.params;
   const opts: AgentRunOptions = {
     ...ctx.base,
@@ -185,6 +239,7 @@ async function runMoa(ctx: NodeRunContext): Promise<string> {
   const cfg = ctx.card.nodeConfig ?? {};
   const n = cfg.members ?? 3;
   const task = taskText(ctx.base);
+  if (ctx.signal.aborted) return "";
   ctx.emit(`Mixture-of-Agents — ${n} proposers running in parallel…\n`);
   const proposals = await Promise.all(
     Array.from({ length: n }, (_, i) =>
@@ -214,12 +269,17 @@ async function runConsistency(ctx: NodeRunContext): Promise<string> {
   const n = cfg.members ?? 5;
   const mode = cfg.voteMode ?? "synth";
   const task = taskText(ctx.base);
+  if (ctx.signal.aborted) return "";
   ctx.emit(`Self-consistency — ${n} samples…\n`);
+  // Vary the sampling temperature per member (index-derived, deterministic) so
+  // the N samples are genuinely independent draws — otherwise they collapse to
+  // near-identical text and the consistency vote has nothing to weigh.
   const samples = await Promise.all(
     Array.from({ length: n }, (_, i) =>
-      runSub(ctx, { stream: false }).catch(
-        (e) => `[sample ${i + 1} failed: ${errMsg(e)}]`,
-      ),
+      runSub(ctx, {
+        stream: false,
+        temperature: sampleTemperature(i, n),
+      }).catch((e) => `[sample ${i + 1} failed: ${errMsg(e)}]`),
     ),
   );
   if (ctx.signal.aborted) return samples.find(Boolean) ?? "";
@@ -339,11 +399,16 @@ async function runCritic(ctx: NodeRunContext): Promise<string> {
   let draft = await runSub(ctx, { stream: true });
   for (let i = 0; i < maxIters; i++) {
     if (ctx.signal.aborted) break;
+    const isLastIter = i === maxIters - 1;
     // Re-run the verify command every iteration — the generator pass may have
     // mutated files via tools, so each critique scores the CURRENT state.
-    const verify = cfg.verifyCmd
-      ? await runVerifyCmd(ctx, cfg.verifyCmd)
-      : null;
+    // EXCEPT the terminal iteration: the loop exits straight after scoring it,
+    // so a verify (a real build/test run) on the last pass only feeds a score
+    // that's immediately discarded. Skip it — the draft is already final.
+    const verify =
+      cfg.verifyCmd && !isLastIter
+        ? await runVerifyCmd(ctx, cfg.verifyCmd)
+        : null;
     if (ctx.signal.aborted) break;
     const criticInstr =
       (cfg.criticPrompt ??
@@ -364,7 +429,7 @@ async function runCritic(ctx: NodeRunContext): Promise<string> {
       `\nCritic iteration ${i + 1}: score ${score ?? "?"} / ${threshold} pass mark\n`,
     );
     if (score != null && score >= threshold) break;
-    if (i === maxIters - 1) break; // out of iterations — keep the best draft
+    if (isLastIter) break; // out of iterations — keep the best draft
     ctx.emit(`Revising…\n`);
     draft = await runSub(ctx, {
       userContent: `Revise your answer to fix the critique below. Output ONLY the improved answer.\n\n## Task\n${task}\n\n## Previous answer\n${draft}\n\n## Critique\n${critique}`,
@@ -395,7 +460,11 @@ async function runCascade(ctx: NodeRunContext): Promise<string> {
   ctx.emit(`\nBase score ${score ?? "?"} / ${threshold} escalation mark\n`);
   if (score != null && score >= threshold) return baseAns;
   ctx.emit(`Escalating to ${cfg.escalateModel}…\n`);
+  // Refine, don't restart: hand the stronger model the base draft + why it fell
+  // short (the critique) so it builds on the cheap pass instead of re-solving
+  // from scratch. Mirrors the critic loop's revise prompt.
   return runSub(ctx, {
+    userContent: `A cheaper model produced the draft below; a critic judged it insufficient. Produce a better, correct, and complete answer — fix the problems the critique raises rather than starting over. Output ONLY the improved answer.\n\n## Task\n${task}\n\n## Previous draft\n${baseAns}\n\n## Critique\n${critique}`,
     model: cfg.escalateModel,
     backend: coerceBackend(cfg.escalateBackend),
     stream: true,
@@ -459,8 +528,32 @@ async function runBlackboard(ctx: NodeRunContext): Promise<string> {
   });
 }
 
-/** Budget: run the base agent under a token and/or wall-clock ceiling. */
-async function runBudget(ctx: NodeRunContext): Promise<string> {
+/** What a budget body sees: the child abort signal it must thread into its
+ *  sub-runs, and a buffering `emit` whose accumulation becomes the best-effort
+ *  partial if the time ceiling fires. */
+interface BudgetInner {
+  signal: AbortSignal;
+  emit: (text: string) => void;
+}
+
+/**
+ * Shared budget-ceiling machinery for {@link runBudget} and the universal
+ * {@link runUnderBudget} wrapper — one implementation so the two can't drift.
+ * Arms ONE child abort controller (forwarded from the parent signal) and, when
+ * `maxMs` is set, ONE wall-clock timer that aborts it. Runs `body`, then applies
+ * the uniform `onExceed` policy:
+ *   - "best": on a time-ceiling hit return the body's own result, else the text
+ *     buffered through `inner.emit`, else a placeholder.
+ *   - "stop": throw.
+ * A genuine user Stop (parent `ctx.signal` aborted) propagates and is NEVER
+ * treated as a budget hit. A between-iteration abort can make a sub-run RETURN
+ * (its partial, or "") rather than throw, so the time-budget branch runs in both
+ * the success and catch paths.
+ */
+async function withBudgetCeiling(
+  ctx: NodeRunContext,
+  body: (inner: BudgetInner) => Promise<string>,
+): Promise<string> {
   const cfg = ctx.card.nodeConfig ?? {};
   const onExceed = cfg.onExceed ?? "best";
   const child = new AbortController();
@@ -475,40 +568,25 @@ async function runBudget(ctx: NodeRunContext): Promise<string> {
     }, cfg.maxMs);
   }
   let buf = "";
-  const limits = [
-    cfg.maxMs != null ? `≤${Math.round(cfg.maxMs / 1000)}s` : null,
-    cfg.maxTokens != null ? `≤${cfg.maxTokens} tok` : null,
-  ].filter(Boolean);
-  ctx.emit(`Budget run${limits.length ? ` (${limits.join(", ")})` : ""}…\n`);
+  const emit = (t: string) => {
+    buf += t;
+    ctx.emit(t);
+  };
+  const bestEffort = (out?: string): string => {
+    ctx.emit(`\nTime budget hit — returning best effort.\n`);
+    return out || buf || "[budget exceeded before any output]";
+  };
   try {
-    const out = await runSub(ctx, {
-      stream: true,
-      maxTokens: cfg.maxTokens ?? undefined,
-      signal: child.signal,
-      onDelta: (t) => {
-        buf += t;
-        ctx.emit(t);
-      },
-    });
-    // A between-iteration abort makes runAgentLoop RETURN null (→ "") rather
-    // than throw, so the time-budget branch must be handled here, not only in
-    // catch. (A genuine user Stop also aborts child via onParentAbort, but
-    // then ctx.signal.aborted is true → don't treat it as a budget hit.)
+    const out = await body({ signal: child.signal, emit });
     if (timedOut && !ctx.signal.aborted) {
-      if (onExceed === "best") {
-        ctx.emit(`\nTime budget hit — returning best effort.\n`);
-        return buf || "[budget exceeded before any output]";
-      }
+      if (onExceed === "best") return bestEffort(out);
       throw new Error("Budget time ceiling exceeded.");
     }
     return out;
   } catch (e) {
     if (ctx.signal.aborted) throw e; // genuine user Stop — propagate
     if (timedOut) {
-      if (onExceed === "best") {
-        ctx.emit(`\nTime budget hit — returning best effort.\n`);
-        return buf || "[budget exceeded before any output]";
-      }
+      if (onExceed === "best") return bestEffort();
       throw new Error("Budget time ceiling exceeded.");
     }
     throw e;
@@ -516,6 +594,32 @@ async function runBudget(ctx: NodeRunContext): Promise<string> {
     if (timer) clearTimeout(timer);
     ctx.signal.removeEventListener("abort", onParentAbort);
   }
+}
+
+/** Render the active limits for a budget status line. */
+function budgetLimits(cfg: NonNullable<WorkflowCard["nodeConfig"]>): string[] {
+  return [
+    cfg.maxMs != null ? `≤${Math.round(cfg.maxMs / 1000)}s` : null,
+    cfg.maxTokens != null ? `≤${cfg.maxTokens} tok` : null,
+  ].filter((s): s is string => s != null);
+}
+
+/** Budget node: run a single base-agent pass under a token and/or wall-clock
+ *  ceiling. Shares all ceiling machinery with the universal wrapper via
+ *  {@link withBudgetCeiling} — the only node-specific part is the body (one
+ *  streamed `runSub` capped at `maxTokens`). */
+async function runBudget(ctx: NodeRunContext): Promise<string> {
+  const cfg = ctx.card.nodeConfig ?? {};
+  const limits = budgetLimits(cfg);
+  ctx.emit(`Budget run${limits.length ? ` (${limits.join(", ")})` : ""}…\n`);
+  return withBudgetCeiling(ctx, ({ signal, emit }) =>
+    runSub(ctx, {
+      stream: true,
+      maxTokens: cfg.maxTokens ?? undefined,
+      signal,
+      onDelta: emit,
+    }),
+  );
 }
 
 /** Inner dispatch — the per-type handler switch, without budget wrapping. */
@@ -559,18 +663,8 @@ async function runUnderBudget(
   inner: (c: NodeRunContext) => Promise<string>,
 ): Promise<string> {
   const cfg = ctx.card.nodeConfig ?? {};
-  const onExceed = cfg.onExceed ?? "best";
-  const child = new AbortController();
-  const onParentAbort = () => child.abort();
-  ctx.signal.addEventListener("abort", onParentAbort, { once: true });
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let timedOut = false;
-  if (cfg.maxMs != null) {
-    timer = setTimeout(() => {
-      timedOut = true;
-      child.abort();
-    }, cfg.maxMs);
-  }
+  const limits = budgetLimits(cfg);
+  ctx.emit(`Budget ceiling (${limits.join(", ")})…\n`);
   const base: AgentRunOptions =
     cfg.maxTokens != null
       ? {
@@ -585,57 +679,22 @@ async function runUnderBudget(
           },
         }
       : ctx.base;
-  let buf = "";
-  const innerCtx: NodeRunContext = {
-    ...ctx,
-    base: { ...base, signal: child.signal },
-    signal: child.signal,
-    emit: (t) => {
-      buf += t;
-      ctx.emit(t);
-    },
-  };
-  const limits = [
-    cfg.maxMs != null ? `≤${Math.round(cfg.maxMs / 1000)}s` : null,
-    cfg.maxTokens != null ? `≤${cfg.maxTokens} tok` : null,
-  ].filter(Boolean);
-  ctx.emit(`Budget ceiling (${limits.join(", ")})…\n`);
-  try {
-    const out = await inner(innerCtx);
-    // Same between-iteration-abort caveat as runBudget: an abort can make the
-    // handler RETURN (its partial, or "") rather than throw, so the budget
-    // branch must run here too. A genuine user Stop aborts child via
-    // onParentAbort → ctx.signal.aborted is true → not a budget hit.
-    if (timedOut && !ctx.signal.aborted) {
-      if (onExceed === "best") {
-        ctx.emit(`\nTime budget hit — returning best effort.\n`);
-        return out || buf || "[budget exceeded before any output]";
-      }
-      throw new Error("Budget time ceiling exceeded.");
-    }
-    return out;
-  } catch (e) {
-    if (ctx.signal.aborted) throw e; // genuine user Stop — propagate
-    if (timedOut) {
-      if (onExceed === "best") {
-        ctx.emit(`\nTime budget hit — returning best effort.\n`);
-        return buf || "[budget exceeded before any output]";
-      }
-      throw new Error("Budget time ceiling exceeded.");
-    }
-    throw e;
-  } finally {
-    if (timer) clearTimeout(timer);
-    ctx.signal.removeEventListener("abort", onParentAbort);
-  }
+  return withBudgetCeiling(ctx, ({ signal, emit }) =>
+    inner({
+      ...ctx,
+      base: { ...base, signal },
+      signal,
+      emit,
+    }),
+  );
 }
 
 /** Dispatch a card to its orchestration handler under the universal budget.
  *  Called for every orchestrator card AND for plain "agent" cards that carry
  *  budget ceilings ({@link hasCardBudget}); the `"agent"` default branch is a
- *  single streamed pass. The dedicated `budget` node keeps its own ceiling
- *  implementation (same config fields) — skip the wrapper there so the timer
- *  isn't armed twice. */
+ *  single streamed pass. The dedicated `budget` node already arms the ceiling
+ *  itself (it shares {@link withBudgetCeiling} with the wrapper) — skip the
+ *  wrapper there so the controller/timer isn't armed twice. */
 export function runWorkflowNode(ctx: NodeRunContext): Promise<string> {
   if (ctx.card.nodeType !== "budget" && hasCardBudget(ctx.card)) {
     return runUnderBudget(ctx, dispatchNode);

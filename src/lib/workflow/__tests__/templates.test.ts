@@ -133,3 +133,64 @@ describe("dev-workforce templates", () => {
     }
   });
 });
+
+/* ── Gate-works invariant (the deny-all gate must never neuter a template) ────
+ * The workflow runner denies every DANGEROUS_TOOLS call on a card that has NOT
+ * opted into `unattended` (runner.ts: denyAll). So a card that needs a
+ * mutating/exec/network tool to do its job is dead weight unless it sets
+ * unattended:true — and conversely a read-only / ask_user-gate card must NOT be
+ * unattended (no auto-approve surface it doesn't need). These are vetted gallery
+ * templates the user installs + runs, so the action cards opt in; irreversible
+ * tools (delete_path/kill_process/agent_undo) stay hard-denied by the runner
+ * even when unattended, so the opt-in is safe. This test enforces the exact
+ * biconditional across EVERY shipped template. */
+describe("gate-works invariant: unattended ⇔ has an action tool", () => {
+  // The mutating/exec/network tools the runner's deny-all gate blocks on a
+  // non-unattended card (all are members of DANGEROUS_TOOLS). A card carrying
+  // any of these can only act if it opts into unattended.
+  const ACTION_TOOLS = new Set([
+    "run_shell",
+    "edit_file",
+    "multi_edit",
+    "write_file",
+    "git_commit",
+    "http_request",
+    "call_api",
+  ]);
+  const hasActionTool = (tools: string[] | undefined) =>
+    (tools ?? []).some((t) => ACTION_TOOLS.has(t));
+
+  it("every card with a mutating/exec/network tool is unattended", () => {
+    for (const t of FLOW_TEMPLATES) {
+      for (const c of t.graph.cards) {
+        if (hasActionTool(c.tools)) {
+          expect(
+            c.unattended,
+            `${t.id}/${c.id} carries an action tool but is not unattended — the runner deny-all gate would make it do nothing`,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("no read-only / ask_user card is unattended", () => {
+    for (const t of FLOW_TEMPLATES) {
+      for (const c of t.graph.cards) {
+        if (!hasActionTool(c.tools)) {
+          expect(
+            c.unattended ?? false,
+            `${t.id}/${c.id} has no action tool yet is unattended — it has no auto-approve surface it needs`,
+          ).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("the gallery actually exercises both sides of the gate", () => {
+    // Guard against the invariant passing vacuously: there must be at least one
+    // action card AND one read-only card in the shipped set.
+    const cards = FLOW_TEMPLATES.flatMap((t) => t.graph.cards);
+    expect(cards.some((c) => hasActionTool(c.tools))).toBe(true);
+    expect(cards.some((c) => !hasActionTool(c.tools))).toBe(true);
+  });
+});

@@ -144,6 +144,20 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
       abortRef.current = ac;
       announce("Workflow run started");
 
+      // Hoisted above the try so the finally can always clear a pending
+      // coalesce flush — even when runWorkflow THROWS before onWorkflowDone
+      // fires (e.g. the needsReview gate rejects before any card runs). A
+      // leaked setTimeout would otherwise hold a stale flush + the deltaBuf
+      // alive past the failed run. The flush callback assigned inside the try
+      // resets this to null on its own.
+      let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
+      const clearCoalesce = () => {
+        if (coalesceTimer != null) {
+          clearTimeout(coalesceTimer);
+          coalesceTimer = null;
+        }
+      };
+
       void (async () => {
         try {
           if (preflight) await preflight(ac.signal);
@@ -160,7 +174,6 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
           // Display tail kept per card in the run panel (full output is
           // unaffected — it flows to downstream cards and the run record).
           const OUTPUT_TAIL_MAX = 32_768;
-          let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
           const flushDeltas = () => {
             coalesceTimer = null;
             if (deltaBuf.size === 0) return;
@@ -212,10 +225,7 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
               // a terminal state. Synchronous (clears the coalesce
               // timer) so the next React reconcile sees the complete
               // string, not a half-flushed buffer.
-              if (coalesceTimer != null) {
-                clearTimeout(coalesceTimer);
-                coalesceTimer = null;
-              }
+              clearCoalesce();
               flushDeltas();
               if (result.status === "ok") updateCard(id, { state: "done" });
               else if (result.status === "skipped")
@@ -278,6 +288,24 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
             message: "runWorkflow threw outside hook path",
             detail: e,
           });
+          // A thrown run never fires onWorkflowDone, so any card already
+          // flipped to "running" would otherwise be stranded mid-run in the
+          // panel. Reset every non-terminal card to "failed" so the error is
+          // visible instead of a zombie spinner. Cards that already reached a
+          // terminal state (done/failed/idle) are left as-is.
+          setCardStates((s) => {
+            let mutated = false;
+            const next: Record<string, CardRunSnapshot> = {};
+            for (const [id, snap] of Object.entries(s)) {
+              if (snap.state === "running") {
+                next[id] = { ...snap, state: "failed" };
+                mutated = true;
+              } else {
+                next[id] = snap;
+              }
+            }
+            return mutated ? next : s;
+          });
           setLastSummary({
             workflowId,
             status: "failed",
@@ -287,6 +315,12 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
           runningIdRef.current = null;
           abortRef.current = null;
           setRunningWorkflowId(null);
+        } finally {
+          // Always release a pending coalesce flush — on the success path the
+          // onCardDone handler already cleared it, but a throw before/without
+          // that handler (e.g. the needsReview gate, or a preflight reject)
+          // would otherwise leak the timer + retain the delta buffer.
+          clearCoalesce();
         }
       })();
 

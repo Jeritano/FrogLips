@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import type {
   ModelEntry,
@@ -326,7 +326,10 @@ function decodeSchedule(schedule: string | null): {
 export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
-  const presets = loadAllPresets();
+  // `loadAllPresets()` reads localStorage + JSON.parses + validates the custom
+  // preset blob — pure I/O that doesn't change while the form is open. Compute
+  // it once on mount instead of on every keystroke-driven re-render.
+  const presets = useMemo(() => loadAllPresets(), []);
   const [draft, setDraft] = useState<WorkflowCard>(card);
   // `entered` flips on after first paint so the CSS transition runs from the
   // origin transform to the resting (centered) state.
@@ -403,9 +406,15 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
   const schedWarn =
     schedErr == null ? schedulePastWarning(draft.schedule ?? "") : null;
 
-  function set<K extends keyof WorkflowCard>(key: K, value: WorkflowCard[K]) {
-    setDraft((d) => ({ ...d, [key]: value }));
-  }
+  // `set` is stable (uses the functional setState form) so the children that
+  // receive a `set`-derived callback below can be memoized without a new
+  // closure on every render.
+  const set = useCallback(
+    <K extends keyof WorkflowCard>(key: K, value: WorkflowCard[K]) => {
+      setDraft((d) => ({ ...d, [key]: value }));
+    },
+    [],
+  );
 
   // Merge one key into the (possibly null) nodeConfig. The Advanced section
   // below writes through here so values set in the per-node-type
@@ -414,14 +423,24 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
     setDraft((d) => ({ ...d, nodeConfig: { ...(d.nodeConfig ?? {}), ...p } }));
   }
 
-  function toggleTool(tool: string) {
+  const toggleTool = useCallback((tool: string) => {
     setDraft((d) => ({
       ...d,
       tools: d.tools.includes(tool)
         ? d.tools.filter((t) => t !== tool)
         : [...d.tools, tool],
     }));
-  }
+  }, []);
+
+  // Stable per-field setters for the memoized sub-sections. The tool grid and
+  // schedule picker are the heaviest children; giving them constant callback
+  // identities lets their `memo` wrappers skip re-render on unrelated keystrokes
+  // (typing in another field no longer repaints either block).
+  const setTools = useCallback((next: string[]) => set("tools", next), [set]);
+  const setSchedule = useCallback(
+    (s: string | null) => set("schedule", s),
+    [set],
+  );
 
   // Animate the card out, then run the callback once the transition ends.
   // `mode` "fly" returns it to the origin rect; "fade" dissolves it in place.
@@ -732,7 +751,7 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
               schedule={draft.schedule ?? null}
               error={schedErr}
               warning={schedWarn}
-              onChange={(s) => set("schedule", s)}
+              onChange={setSchedule}
             />
             <label className="wf-field wf-field-check">
               <input
@@ -1049,7 +1068,7 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
             </details>
             <ToolPicker
               selected={draft.tools}
-              onChange={(next) => set("tools", next)}
+              onChange={setTools}
               onToggleOne={toggleTool}
             />
           </div>
@@ -1085,7 +1104,7 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
  * stay in sync) EXCEPT for "manual" (emits null) and "raw" (leaves the
  * stored value untouched so the user can hand-edit it).
  */
-function SchedulePicker({
+const SchedulePicker = memo(function SchedulePicker({
   schedule,
   error,
   warning,
@@ -1260,7 +1279,7 @@ function SchedulePicker({
       <small className="wf-field-hint">{HINT}</small>
     </div>
   );
-}
+});
 
 /* ── needsReview "Arm" banner ─────────────────────────────────────────────
  * A prominent warning shown ONLY while `draft.needsReview === true` — i.e. a
@@ -1779,7 +1798,7 @@ function RouteEditor({
  * so a contributor adding a new tool without categorizing it produces a
  * visible signal instead of silent omission.
  */
-function ToolPicker({
+const ToolPicker = memo(function ToolPicker({
   selected,
   onChange,
   onToggleOne,
@@ -1902,4 +1921,4 @@ function ToolPicker({
       </p>
     </div>
   );
-}
+});

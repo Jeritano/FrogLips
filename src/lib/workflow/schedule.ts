@@ -94,5 +94,9 @@ export async function handleWorkflowTrigger(
     ...runOpts,
     workflowId: workflow.id,
     startCardId: trigger.card_id,
+    // Hand the runner the order we just resolved for the needsReview pre-gate
+    // so it doesn't re-resolve the same graph (perf). The runner re-applies
+    // the startCardId slice itself — we pass the FULL order, not `reachable`.
+    precomputedOrder: order,
   });
 }

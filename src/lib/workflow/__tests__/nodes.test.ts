@@ -198,6 +198,90 @@ describe("Self-consistency node", () => {
     expect(out).toBe("SYNTH");
     expect(calls).toHaveLength(4); // 3 samples + 1 synth
   });
+
+  it("varies the sampling temperature across the N samples so they're independent", async () => {
+    responder = (o) => (lastUser(o).includes("## Samples") ? "MERGED" : "s");
+    await runWorkflowNode(
+      ctx({
+        nodeType: "consistency",
+        nodeConfig: { members: 4, voteMode: "synth" },
+      }),
+    );
+    // The synth pass is the last call; the first N are the samples.
+    const sampleTemps = calls.slice(0, 4).map((c) => c.params?.temperature);
+    // All defined, spread across a sensible 0.5..0.9 range, and strictly
+    // increasing per member index (deterministic, not random).
+    for (const t of sampleTemps) {
+      expect(typeof t).toBe("number");
+      expect(t!).toBeGreaterThanOrEqual(0.5);
+      expect(t!).toBeLessThanOrEqual(0.9);
+    }
+    expect(new Set(sampleTemps).size).toBe(4); // genuinely distinct draws
+    expect(sampleTemps[0]).toBe(0.5); // first member → range floor
+    expect(sampleTemps[3]).toBe(0.9); // last member → range ceiling
+    for (let i = 1; i < sampleTemps.length; i++)
+      expect(sampleTemps[i]!).toBeGreaterThan(sampleTemps[i - 1]!);
+  });
+
+  it("derives the sample temperatures deterministically (same across runs)", async () => {
+    responder = (o) => (lastUser(o).includes("## Samples") ? "M" : "s");
+    const run = async () => {
+      calls.length = 0;
+      await runWorkflowNode(
+        ctx({
+          nodeType: "consistency",
+          nodeConfig: { members: 5, voteMode: "synth" },
+        }),
+      );
+      return calls.slice(0, 5).map((c) => c.params?.temperature);
+    };
+    expect(await run()).toEqual(await run());
+  });
+
+  it("vote mode finds a majority on a shared structured verdict line despite differing prose", async () => {
+    // Samples agree on the FAULT: verdict but wrap it in different reasoning —
+    // exact-string equality would miss the majority; the structured-key compare
+    // catches it and returns the modal answer WITHOUT an aggregator call.
+    const samples = [
+      "Looking at the trace, the lock is dropped early.\nFAULT: race condition",
+      "After review I believe two threads collide here.\nFAULT: Race Condition.",
+      "It's clearly a memory leak in the allocator.\nFAULT: memory leak",
+    ];
+    let i = 0;
+    responder = (o) => {
+      if (lastUser(o).includes("## Samples")) return "SYNTH";
+      return samples[i++];
+    };
+    const out = await runWorkflowNode(
+      ctx({
+        nodeType: "consistency",
+        nodeConfig: { members: 3, voteMode: "vote" },
+      }),
+    );
+    expect(out).toBe(samples[0].trim()); // 2/3 share FAULT: race condition
+    expect(calls).toHaveLength(3); // 3 samples, NO aggregator
+  });
+
+  it("vote mode falls through to synth when structured verdicts all differ", async () => {
+    const samples = [
+      "reasoning a\nVERDICT: APPROVE",
+      "reasoning b\nVERDICT: REJECT",
+      "reasoning c\nVERDICT: ESCALATE",
+    ];
+    let i = 0;
+    responder = (o) => {
+      if (lastUser(o).includes("## Samples")) return "SYNTH";
+      return samples[i++];
+    };
+    const out = await runWorkflowNode(
+      ctx({
+        nodeType: "consistency",
+        nodeConfig: { members: 3, voteMode: "vote" },
+      }),
+    );
+    expect(out).toBe("SYNTH");
+    expect(calls).toHaveLength(4); // 3 samples + 1 synth
+  });
 });
 
 describe("Critic node", () => {
@@ -320,6 +404,43 @@ describe("Critic node — execution-grounded verification (verifyCmd)", () => {
     await runWorkflowNode(ctx({ nodeType: "critic", nodeConfig: {} }));
     expect(shellCalls).toHaveLength(0);
   });
+
+  it("skips the verify run on the terminal iteration (its score is discarded)", async () => {
+    // maxIters:1 → the sole iteration IS the terminal one; the loop exits right
+    // after scoring it, so paying for a build/test run there is pure waste.
+    responder = (o) =>
+      lastUser(o).includes("Candidate answer") ? "SCORE: 10 weak" : "draft1";
+    await runWorkflowNode(
+      ctx({
+        nodeType: "critic",
+        nodeConfig: { verifyCmd: "npm test", maxIters: 1 },
+      }),
+    );
+    expect(shellCalls).toHaveLength(0); // terminal iteration → no verify
+  });
+
+  it("runs verify on non-terminal iterations but not the final one", async () => {
+    // maxIters:2, both critiques score low → the loop reaches its terminal
+    // iteration. Verify should fire on iteration 0 only, not the discarded last.
+    let critiques = 0;
+    responder = (o) => {
+      const u = lastUser(o);
+      if (u.includes("Candidate answer")) {
+        critiques += 1;
+        return "SCORE: 10 still weak"; // never passes → exhausts iterations
+      }
+      if (u.includes("Revise your answer")) return "draft2";
+      return "draft1";
+    };
+    await runWorkflowNode(
+      ctx({
+        nodeType: "critic",
+        nodeConfig: { verifyCmd: "npm test", maxIters: 2 },
+      }),
+    );
+    expect(critiques).toBe(2); // both iterations critiqued
+    expect(shellCalls).toHaveLength(1); // verify only on the non-terminal pass
+  });
 });
 
 describe("Critic node — criticSystemPrompt", () => {
@@ -431,6 +552,30 @@ describe("Cascade node", () => {
     expect(out).toBe("baseans");
     expect(calls.some((c) => c.model === "big")).toBe(false);
   });
+
+  it("refines on escalation — hands the strong model the base draft + critique, not a fresh restart", async () => {
+    responder = (o) => {
+      if (o.model === "big") return "BIG";
+      if (lastUser(o).includes("## Answer")) return "SCORE: 20 missing X";
+      return "baseans";
+    };
+    await runWorkflowNode(
+      ctx({
+        nodeType: "cascade",
+        nodeConfig: { passThreshold: 70, escalateModel: "big" },
+      }),
+    );
+    const esc = calls.find((c) => c.model === "big")!;
+    const u = lastUser(esc);
+    // The escalation prompt carries the prior draft + the critique reason so the
+    // strong model refines rather than re-solving from scratch.
+    expect(u).toContain("## Previous draft");
+    expect(u).toContain("baseans");
+    expect(u).toContain("## Critique");
+    expect(u).toContain("SCORE: 20 missing X");
+    expect(u).toContain("## Task");
+    expect(u).toContain("TASK");
+  });
 });
 
 describe("Router node", () => {
@@ -463,6 +608,18 @@ describe("Budget node", () => {
     );
     expect(out).toBe("capped");
     expect(calls[0].params?.max_tokens).toBe(100);
+  });
+
+  it("never lets a sub-run cap exceed a tighter inherited ceiling", async () => {
+    // Base params already cap at 50; the node asks for 100 — the smaller wins so
+    // the budget ceiling reaches even a sub-run that overrides max_tokens.
+    const base = baseOpts();
+    base.params = { temperature: null, top_p: null, max_tokens: 50 };
+    responder = () => "capped";
+    await runWorkflowNode(
+      ctx({ nodeType: "budget", nodeConfig: { maxTokens: 100 } }, base),
+    );
+    expect(calls[0].params?.max_tokens).toBe(50);
   });
 });
 

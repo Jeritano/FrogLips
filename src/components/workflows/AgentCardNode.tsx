@@ -51,6 +51,14 @@ function AgentCardNodeImpl({ data }: NodeProps) {
     if (ref.current) d.onConfigure(ref.current.getBoundingClientRect());
   }
 
+  // Resolve the node-type descriptor once — the label chip below reads both
+  // its `label` and `blurb`, so a single lookup avoids a double `.find` over
+  // WORKFLOW_NODE_TYPES on every node render.
+  const nodeTypeMeta =
+    d.nodeType && d.nodeType !== "agent"
+      ? WORKFLOW_NODE_TYPES.find((nt) => nt.value === d.nodeType)
+      : null;
+
   // Accent color drives a CSS custom property the stylesheet uses for the
   // left border + name tint. `data-themed` lets the CSS scope the accent
   // rules so a null color falls back to the neutral default chrome.
@@ -92,15 +100,9 @@ function AgentCardNodeImpl({ data }: NodeProps) {
               ⚠ Needs review
             </span>
           )}
-          {d.nodeType && d.nodeType !== "agent" && (
-            <span
-              className="wf-node-nodetype"
-              title={
-                WORKFLOW_NODE_TYPES.find((nt) => nt.value === d.nodeType)?.blurb
-              }
-            >
-              {WORKFLOW_NODE_TYPES.find((nt) => nt.value === d.nodeType)
-                ?.label ?? d.nodeType}
+          {nodeTypeMeta != null && (
+            <span className="wf-node-nodetype" title={nodeTypeMeta.blurb}>
+              {nodeTypeMeta.label ?? d.nodeType}
             </span>
           )}
           {d.schedule && (

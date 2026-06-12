@@ -101,14 +101,16 @@ export function clearAll(): boolean {
 }
 
 /** Bytes a single key:value pair contributes to the JSON object form,
- *  including the leading comma when not the first key. Stringify of the
- *  KEY and VALUE only — no whole-pad rescan. (Audit M10.) */
-function pairBytes(key: string, value: ScratchValue, isFirst: boolean): number {
+ *  including the leading comma when not the first key. Takes the value's
+ *  ALREADY-stringified JSON so a caller that holds it (setEntry) doesn't
+ *  re-stringify the same value twice. Stringify of the KEY only here — no
+ *  whole-pad rescan. (Audit M10; single-stringify follow-up 2026-06.) */
+function pairBytes(key: string, valueJson: string, isFirst: boolean): number {
   // `"key":<value>` plus the comma separator if not first.
   return (
     JSON.stringify(key).length +
     1 + // ':'
-    JSON.stringify(value).length +
+    valueJson.length +
     (isFirst ? 0 : 1) // ','
   );
 }
@@ -139,10 +141,15 @@ export function setEntry(
   }
   // Cheap structural validation — reject Date / RegExp / Symbol / function
   // by round-tripping through JSON. Any value that survives this is a
-  // safe ScratchValue.
+  // safe ScratchValue. Stringify ONCE here and reuse the JSON string for the
+  // byte-accounting below (pairBytes takes the pre-stringified form) — the
+  // prior impl re-stringified `normalized` (and the old value) a second/third
+  // time per write.
+  let normalizedJson: string;
   let normalized: ScratchValue;
   try {
-    normalized = JSON.parse(JSON.stringify(value));
+    normalizedJson = JSON.stringify(value);
+    normalized = JSON.parse(normalizedJson);
   } catch {
     return {
       ok: false,
@@ -180,12 +187,12 @@ export function setEntry(
   // overwrite — over many overwrites of a single accumulator key that drift
   // defeats the SCRATCHPAD_MAX_BYTES cap. (audit re-review 2026-06)
   const oldContribution = replacingExisting
-    ? pairBytes(key, active.data[key], keysBefore === 1)
+    ? pairBytes(key, JSON.stringify(active.data[key]), keysBefore === 1)
     : 0;
   // The new pair is "not first" if there are already other keys present
   // (i.e. keys_before > 1 when replacing, or keys_before > 0 when adding).
   const otherKeyCount = replacingExisting ? keysBefore - 1 : keysBefore;
-  const newContribution = pairBytes(key, normalized, otherKeyCount === 0);
+  const newContribution = pairBytes(key, normalizedJson, otherKeyCount === 0);
   const nextBytes = active.bytesUsed - oldContribution + newContribution;
   if (nextBytes > SCRATCHPAD_MAX_BYTES) {
     return {
