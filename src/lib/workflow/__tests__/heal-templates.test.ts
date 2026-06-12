@@ -75,18 +75,44 @@ describe("healStaleTemplateClones", () => {
     expect(fc3.nodeConfig?.verifyCmd).not.toBe("npm test");
   });
 
-  it("leaves a user-customized clone untouched (one prompt edited)", () => {
-    const customized = staleClone(2, "My Feature Crew", "feature-crew");
-    // The user edited one card's prompt → no longer an unmodified clone.
-    customized.graph.cards[0].prompt += "\n\nExtra house rule from the user.";
-    const snapshot = JSON.stringify(customized);
+  it("heals despite an edited prompt — prompts no longer block the match", () => {
+    // An OLD clone necessarily has older prompt wording than the current
+    // template (which gains path-discipline blocks etc). The match keys on the
+    // card-id SET, not prompt equality, so such a clone still heals.
+    const stale = staleClone(2, "Feature Crew", "feature-crew");
+    stale.graph.cards.find((c) => c.id === "fc3")!.prompt +=
+      "\n\n(older wording — predates the current template)";
+
+    const [res] = healStaleTemplateClones([stale]);
+    expect(res.changed).toBe(true);
+    const fc3 = res.workflow.graph.cards.find((c) => c.id === "fc3")!;
+    expect(fc3.unattended).toBe(true); // re-armed
+    expect(fc3.nodeConfig?.verifyCmd).not.toBe("npm test"); // verify swapped
+    expect(fc3.prompt).toContain("older wording"); // prompt preserved
+  });
+
+  it("does NOT re-arm a card whose tools the user changed", () => {
+    const customized = staleClone(7, "Feature Crew", "feature-crew");
+    const fc3 = customized.graph.cards.find((c) => c.id === "fc3")!;
+    // User deliberately narrowed the Implementer's tools → a customization we
+    // must respect; its arm state stays as the user left it (disarmed).
+    fc3.tools = ["read_file", "write_file"];
 
     const [res] = healStaleTemplateClones([customized]);
-    expect(res.changed).toBe(false);
-    // Returned byte-for-byte unchanged — including the still-stale config we
-    // must not silently rewrite under a deliberate edit.
-    expect(JSON.stringify(res.workflow)).toBe(snapshot);
-    expect(res.workflow.graph.cards[1].unattended).toBe(false);
+    const healedFc3 = res.workflow.graph.cards.find((c) => c.id === "fc3")!;
+    expect(healedFc3.unattended).toBe(false); // tools differ → not re-armed
+    expect(healedFc3.tools).toEqual(["read_file", "write_file"]); // tools kept
+  });
+
+  it("does NOT overwrite a user's custom verify command", () => {
+    const customized = staleClone(8, "Feature Crew", "feature-crew");
+    const fc3 = customized.graph.cards.find((c) => c.id === "fc3")!;
+    fc3.nodeConfig = { ...fc3.nodeConfig, verifyCmd: "pytest -q" };
+
+    const [res] = healStaleTemplateClones([customized]);
+    const healedFc3 = res.workflow.graph.cards.find((c) => c.id === "fc3")!;
+    // Only the exact stale "npm test" literal is swapped — a real command stays.
+    expect(healedFc3.nodeConfig?.verifyCmd).toBe("pytest -q");
   });
 
   it("does not touch a workflow that matches no template", () => {

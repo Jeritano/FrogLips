@@ -4,6 +4,17 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.3] — 2026-06-12
+
+### Fixed
+- **Stale-clone healing now matches by structure, not prompt text.** v0.13.2's
+  heal keyed on identical prompts, so improving a template's wording (the
+  path-discipline blocks) made every existing clone stop matching and never
+  heal. It now identifies a template clone by its card-id set and conservatively
+  fixes only the two things a stale clone has wrong — re-arming an action card
+  whose tools are unchanged, and swapping the exact `npm test` verify literal —
+  leaving customized tools and custom verify commands alone.
+
 ## [0.13.2] — 2026-06-12
 
 ### Flows — fixes from a real end-to-end build test

@@ -57,74 +57,79 @@ const NORMALIZED_TEMPLATE_CARDS: WorkflowCard[][] = FLOW_TEMPLATES.map(
     }).graph.cards,
 );
 
-/**
- * True when `saved` is an UNMODIFIED clone of `template`: the exact same set of
- * card ids and, for every card, an identical prompt. Edge topology and card
- * count fall out of the id-set check (a clone shares both), and prompts are the
- * field a user is most likely to edit — diverge on any prompt and we treat the
- * whole workflow as customized. We deliberately do NOT compare the execution
- * fields here (unattended/nodeConfig/tools): those are exactly what a stale
- * clone has WRONG, so requiring them to match would make every stale clone fail
- * to match its own template and never get healed.
- */
-function isUnmodifiedClone(saved: Workflow, tplCards: WorkflowCard[]): boolean {
-  const savedCards = saved.graph.cards;
-  if (savedCards.length !== tplCards.length) return false;
-
-  const tplById = new Map(tplCards.map((c) => [c.id, c]));
-  // Same id SET (sizes already equal, so a one-to-one cover proves equality).
-  for (const sc of savedCards) {
-    const tc = tplById.get(sc.id);
-    if (!tc) return false;
-    if (sc.prompt !== tc.prompt) return false;
-  }
-  return true;
+/** Order-insensitive equality of two tool allowlists. */
+function toolsEqual(a: string[] | undefined, b: string[] | undefined): boolean {
+  const sa = [...(a ?? [])].sort();
+  const sb = [...(b ?? [])].sort();
+  return sa.length === sb.length && sa.every((t, i) => t === sb[i]);
 }
 
 /**
- * Re-sync a single saved card's execution config from its template card.
- * Returns the (possibly new) card and whether anything actually changed. The
- * change check is on the JSON of the synced fields so a re-heal of an
- * already-healed card reports no change (idempotency).
+ * True when `saved` is a clone of `template`: same card count AND same set of
+ * card ids. We match on the id SET — NOT on prompt equality — deliberately.
+ *
+ * The first cut keyed on identical prompts, which was self-defeating: the
+ * moment a template's prompt wording is improved (e.g. the v0.13.2 path-
+ * discipline block added to the Implementer), every previously-saved clone
+ * stops matching its own template and never heals — exactly the OLD clones
+ * that most need it. The card-id set is the stable identity of a template
+ * (`fc1..fc5`, `bh1..bh4`); a user keeps those ids across edits. Customization
+ * is instead detected per-FIELD inside `syncCard`, which only heals the two
+ * things a stale clone has provably wrong and never overwrites a deliberate
+ * edit.
+ */
+function isTemplateClone(saved: Workflow, tplCards: WorkflowCard[]): boolean {
+  const savedCards = saved.graph.cards;
+  if (savedCards.length !== tplCards.length) return false;
+  const tplIds = new Set(tplCards.map((c) => c.id));
+  // Sizes equal + every saved id present in the template ⇒ identical id sets.
+  return savedCards.every((sc) => tplIds.has(sc.id));
+}
+
+/**
+ * Heal ONLY the two fields a stale pre-v0.13.1 clone has provably wrong, and
+ * only when doing so can't clobber a deliberate user edit:
+ *
+ *   1. `unattended` — re-arm an action card that the current template ships
+ *      armed, BUT only if the saved card's tool allowlist is UNCHANGED from
+ *      the template. If the user altered the tools, they customized the card —
+ *      leave its arm state alone.
+ *   2. `verifyCmd` — swap the exact known-stale literal `"npm test"` for the
+ *      template's safe auto-detecting command. A user's own custom verify
+ *      command (anything other than that literal) is never touched.
+ *
+ * Everything else — prompt, name, preset, tools, position, schedule, model,
+ * the rest of nodeConfig — stays exactly as saved.
  */
 function syncCard(
   saved: WorkflowCard,
   tpl: WorkflowCard,
 ): { card: WorkflowCard; changed: boolean } {
-  // Normalize for comparison: the template's `card()` factory always sets
-  // `unattended` (default false) and `tools` ([]), but `nodeConfig` is only
-  // present when the template states one. Treat absent as the canonical empty.
-  const tplUnattended = tpl.unattended === true;
-  const tplTools = tpl.tools ?? [];
-  const tplNodeConfig = tpl.nodeConfig ?? null;
+  let next = saved;
+  let changed = false;
 
-  const before = JSON.stringify({
-    unattended: saved.unattended === true,
-    tools: saved.tools ?? [],
-    nodeConfig: saved.nodeConfig ?? null,
-  });
-  const after = JSON.stringify({
-    unattended: tplUnattended,
-    tools: tplTools,
-    nodeConfig: tplNodeConfig,
-  });
-  if (before === after) return { card: saved, changed: false };
+  // 1. Re-arm an unmodified-tools action card the template ships armed.
+  if (
+    tpl.unattended === true &&
+    saved.unattended !== true &&
+    toolsEqual(saved.tools, tpl.tools)
+  ) {
+    next = { ...next, unattended: true };
+    changed = true;
+  }
 
-  // Copy the template's execution fields onto a clone of the saved card;
-  // everything else (name/preset/prompt/position/schedule/model/backend/…)
-  // stays as the user saved it. Deep-copy the template's tools + nodeConfig so
-  // the healed workflow can never alias the shared template object.
-  const card: WorkflowCard = {
-    ...saved,
-    unattended: tplUnattended,
-    tools: [...tplTools],
-    nodeConfig: tplNodeConfig
-      ? (JSON.parse(
-          JSON.stringify(tplNodeConfig),
-        ) as WorkflowCard["nodeConfig"])
-      : null,
-  };
-  return { card, changed: true };
+  // 2. Replace the known-stale verify literal with the template's safe one.
+  const savedVerify = saved.nodeConfig?.verifyCmd;
+  const tplVerify = tpl.nodeConfig?.verifyCmd;
+  if (savedVerify === "npm test" && tplVerify && tplVerify !== "npm test") {
+    next = {
+      ...next,
+      nodeConfig: { ...next.nodeConfig, verifyCmd: tplVerify },
+    };
+    changed = true;
+  }
+
+  return { card: next, changed };
 }
 
 /**
@@ -139,7 +144,7 @@ export function healStaleTemplateClones(
 ): HealResult[] {
   return savedWorkflows.map((wf) => {
     const tplCards = NORMALIZED_TEMPLATE_CARDS.find((cards) =>
-      isUnmodifiedClone(wf, cards),
+      isTemplateClone(wf, cards),
     );
     if (!tplCards) return { workflow: wf, changed: false };
 
