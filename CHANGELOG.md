@@ -4,6 +4,68 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-06-12
+
+### Flows — the agent workforce
+- **Build a Flow from chat.** Describe a workflow in agent mode and the
+  assistant constructs it via `create_flow`. A new **advanced mode** lets it
+  author powerful Flows — critic loops with a real verify command, cascade
+  escalation, mixture-of-agents — with web/edit/shell tools. Any card the
+  assistant grants elevated tools lands flagged **Needs review**: the runner
+  *and* the scheduler refuse to run it until you open it and **Arm** it. The
+  assistant can never auto-run, schedule, or self-approve a Flow.
+- **Scheduled Flows with a date & time.** Pick when a Flow runs — a one-shot
+  calendar date+time, `daily HH:MM`, or `every Nm/Nh` — from a proper picker.
+  A one-shot missed while the app was closed runs once on next launch.
+- **Flows Wave 1 primitives.** Critic nodes can run a real shell *verify
+  command* and score against its exit code (execution-grounded review); the
+  verifier judges from its own stance; budget ceilings apply to every node
+  type; a `Halt when` gate stops a flow on a blocking verdict.
+- **Dev-workforce templates** in the gallery: **Feature Crew** (spec →
+  architect → implement → review → ship) and **Bug Hunter** (reproduce →
+  vote-localize → fix → independent verify). Local models do the work; only
+  the hardest reasoning escalates to a flat-rate hosted tier.
+- **Five defensive security templates** (category *Security*): Security
+  Auditor, Vuln Bug Hunter, Supply-Chain Sentinel, Exposure Monitor (breach
+  self-check — your HIBP key stays in the Keychain), and Threat Model Crew.
+  Every template touching a live target or personal data opens with an
+  authorization gate.
+
+### Agent
+- **Real API access.** The Coder preset gained web/HTTP tools, and a new
+  **saved-API registry** (Settings → APIs) lets the agent call any registered
+  API *by name* — your key is stored in the macOS Keychain and injected
+  server-side, so the model never sees the secret. A capability assertion in
+  the system prompt stops small models from falsely claiming they "can't
+  access the web/APIs."
+- **Run visibility.** The agent status pill now shows the current tool, the
+  iteration count, a live elapsed clock, and a per-tool call-count tooltip.
+
+### Chat & onboarding
+- **Self-healing send** — the composer is never disabled; your first message
+  starts the selected model automatically, and switching models hot-swaps in
+  place. No more "pick a model and press Start" ceremony.
+- **Code blocks** get a language label + copy button; **LaTeX** math renders.
+- **Onboarding** no longer ends in a hallucinated first reply on a fresh Mac;
+  the starter-model catalog is sized to your machine's RAM; an empty install
+  leads with "Download a starter model."
+- **Voice dictation** now works (native on-device speech recognition), and the
+  microphone permission prompt actually appears.
+
+### Security & correctness
+- `call_api` hardened: the injected key is pinned to the registered host
+  across redirects, model headers are deny-filtered, and the key is redacted
+  from responses.
+- All multi-statement writes use `IMMEDIATE` transactions (fixes a rare
+  reply-loss under concurrent writes).
+- Atomic installs (stage + rename) and a retrying Gatekeeper gate.
+- Toolchain pinned (Rust 1.96, Node 22 in CI) and a CI gate that fails on
+  undeclared CSS tokens.
+
+### Design
+- CSS token-system integrity pass (fixes borderless panels and light-mode
+  regressions); consistent code-block and feedback styling.
+
 ## [0.12.0] — 2026-06-09
 
 ### Distribution
