@@ -486,6 +486,12 @@ pub struct ReadResult {
     pub total_bytes: u64,
     pub truncated: bool,
     pub binary: bool,
+    /// Byte offset to pass as `offset` on the NEXT read to continue from where
+    /// this one stopped. `Some(end)` only when the read was truncated mid-file
+    /// (more bytes remain); `None` when the whole file was returned. Lets the
+    /// agent paginate without re-deriving the cursor itself (opt #4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<u64>,
 }
 
 /// Threshold beyond which we treat a file as binary purely on size, without
@@ -541,6 +547,7 @@ pub async fn read_file(
             total_bytes: total_meta,
             truncated: true,
             binary: true,
+            next_offset: None,
         });
     }
     let bytes = tokio::fs::read(&resolved)
@@ -554,6 +561,7 @@ pub async fn read_file(
             total_bytes: total,
             truncated: true,
             binary: true,
+            next_offset: None,
         });
     }
     let start = offset.unwrap_or(0).min(total);
@@ -581,7 +589,88 @@ pub async fn read_file(
         total_bytes: total,
         truncated,
         binary: false,
+        // Cursor for the next page: byte `end` (where this slice stopped) when
+        // there is more file past it; otherwise the read is complete.
+        next_offset: if truncated { Some(end) } else { None },
     })
+}
+
+/* ── Read multiple files ─────────────────────────────────────────────────── */
+
+/// Maximum number of files a single `read_files` call may pull in. Bounds the
+/// worst-case bytes a single read can inject into the agent's context window
+/// (MAX_READ_FILES × MAX_READ_BYTES).
+pub(super) const MAX_READ_FILES: usize = 32;
+
+/// One file's slot in a `read_files` response. On success it carries the same
+/// fields as a single `read_file` result; on failure `ok:false` plus an
+/// `error` message. Per-file errors are non-fatal — a missing or binary file
+/// is reported in its slot and the rest of the batch still returns.
+#[derive(Serialize)]
+pub struct MultiReadEntry {
+    pub path: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_read: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Read up to `MAX_READ_FILES` files in one call. Each file goes through the
+/// SAME confined path as `read_file` (read-gate validation, binary detection,
+/// per-call byte cap, prompt-injection fencing). Read-only: no approval, no
+/// undo snapshot. Lets an agent pull several files in one turn instead of one
+/// per turn (exp #2 — mirrors `write_files`).
+pub async fn read_files(paths: Vec<String>) -> Result<serde_json::Value, String> {
+    if paths.is_empty() {
+        return Err(err_string(ToolError::invalid(
+            "read_files requires at least one path",
+        )));
+    }
+    if paths.len() > MAX_READ_FILES {
+        return Err(err_string(ToolError::invalid(format!(
+            "read_files accepts at most {MAX_READ_FILES} paths per call (got {})",
+            paths.len()
+        ))));
+    }
+    let mut entries: Vec<MultiReadEntry> = Vec::with_capacity(paths.len());
+    for path in paths {
+        match read_file(path.clone(), None, None).await {
+            Ok(r) => entries.push(MultiReadEntry {
+                path,
+                ok: true,
+                content: Some(r.content),
+                bytes_read: Some(r.bytes_read),
+                total_bytes: Some(r.total_bytes),
+                truncated: Some(r.truncated),
+                binary: Some(r.binary),
+                next_offset: r.next_offset,
+                error: None,
+            }),
+            Err(e) => entries.push(MultiReadEntry {
+                path,
+                ok: false,
+                content: None,
+                bytes_read: None,
+                total_bytes: None,
+                truncated: None,
+                binary: None,
+                next_offset: None,
+                error: Some(e),
+            }),
+        }
+    }
+    Ok(serde_json::json!({ "files": entries }))
 }
 
 /* ── List dir ────────────────────────────────────────────────────────────── */
@@ -904,7 +993,19 @@ pub struct SearchHit {
     pub path: String,
     pub line: u32,
     pub text: String,
+    /// Up to `context` lines immediately BEFORE the match (oldest→newest), when
+    /// the caller passed `context > 0`. Empty (and omitted) otherwise. Lets the
+    /// agent see surrounding code without a follow-up `read_file` (exp #4).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub before: Vec<String>,
+    /// Up to `context` lines immediately AFTER the match.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<String>,
 }
+
+/// Hard ceiling on `context` lines per hit — bounds how much surrounding text
+/// one search can pull into context even with many hits.
+const MAX_SEARCH_CONTEXT: u32 = 5;
 
 #[derive(Serialize)]
 pub struct SearchResult {
@@ -959,6 +1060,7 @@ fn walk_search(
     root: &Path,
     matcher: &Matcher,
     glob: &str,
+    context: u32,
     files_scanned: &mut u32,
     hits: &mut Vec<SearchHit>,
 ) -> bool /* truncated_scan */ {
@@ -1009,25 +1111,42 @@ fn walk_search(
             let Ok(text) = std::str::from_utf8(&bytes) else {
                 continue;
             };
-            for (i, line) in text.lines().enumerate() {
-                if matcher.matches(line) {
-                    let mut trimmed = line.to_string();
-                    if trimmed.len() > MAX_GREP_LINE_BYTES {
-                        // Clamp to a char boundary — raw `String::truncate` at a
-                        // fixed byte index PANICS mid-codepoint (a multibyte char
-                        // straddling byte 1024 is common in minified JS / unicode
-                        // comments), which would crash the agent_search_files
-                        // task. MED (2026-05-30).
-                        trimmed.truncate(super::shell::safe_truncate_idx(
-                            &trimmed,
-                            MAX_GREP_LINE_BYTES,
-                        ));
-                        trimmed.push('…');
-                    }
+            // Clamp a line to a char boundary — raw `String::truncate` at a
+            // fixed byte index PANICS mid-codepoint (a multibyte char straddling
+            // byte 1024 is common in minified JS / unicode comments), which
+            // would crash the agent_search_files task. MED (2026-05-30). Applied
+            // to match AND context lines alike.
+            let clamp_line = |line: &str| -> String {
+                let mut s = line.to_string();
+                if s.len() > MAX_GREP_LINE_BYTES {
+                    s.truncate(super::shell::safe_truncate_idx(&s, MAX_GREP_LINE_BYTES));
+                    s.push('…');
+                }
+                s
+            };
+            // Collect lines once so we can index neighbors for `context`. Only
+            // materialized when context is requested or for the match itself —
+            // the collect is cheap relative to the read+utf8 above (file < 2 MiB).
+            let lines: Vec<&str> = text.lines().collect();
+            for i in 0..lines.len() {
+                if matcher.matches(lines[i]) {
+                    let (before, after) = if context > 0 {
+                        let ctx = context as usize;
+                        let lo = i.saturating_sub(ctx);
+                        let hi = (i + 1 + ctx).min(lines.len());
+                        (
+                            lines[lo..i].iter().map(|l| clamp_line(l)).collect(),
+                            lines[i + 1..hi].iter().map(|l| clamp_line(l)).collect(),
+                        )
+                    } else {
+                        (Vec::new(), Vec::new())
+                    };
                     hits.push(SearchHit {
                         path: p.to_string_lossy().into_owned(),
                         line: (i + 1) as u32,
-                        text: trimmed,
+                        text: clamp_line(lines[i]),
+                        before,
+                        after,
                     });
                     if hits.len() >= MAX_SEARCH_HITS {
                         return false;
@@ -1044,6 +1163,7 @@ pub async fn search_files(
     pattern: String,
     glob: Option<String>,
     regex_mode: Option<bool>,
+    context: Option<u32>,
 ) -> Result<SearchResult, String> {
     if pattern.is_empty() {
         return Err(err_string(ToolError::invalid("pattern must not be empty")));
@@ -1053,6 +1173,8 @@ pub async fn search_files(
     }
     let resolved = validate_for_read(&path).map_err(err_string)?;
     let glob = glob.unwrap_or_else(|| "*".into());
+    // Clamp surrounding-context request to a sane ceiling.
+    let context = context.unwrap_or(0).min(MAX_SEARCH_CONTEXT);
     let matcher = if regex_mode.unwrap_or(false) {
         match regex::Regex::new(&pattern) {
             Ok(re) => Matcher::Regex(re),
@@ -1067,8 +1189,14 @@ pub async fn search_files(
     let result = tokio::task::spawn_blocking(move || {
         let mut hits: Vec<SearchHit> = Vec::new();
         let mut files_scanned: u32 = 0;
-        let truncated_scan =
-            walk_search(&resolved2, &matcher, &glob2, &mut files_scanned, &mut hits);
+        let truncated_scan = walk_search(
+            &resolved2,
+            &matcher,
+            &glob2,
+            context,
+            &mut files_scanned,
+            &mut hits,
+        );
         let truncated_hits = hits.len() >= MAX_SEARCH_HITS;
         SearchResult {
             hits,
@@ -1089,6 +1217,11 @@ pub async fn search_files(
     for hit in &mut wrapped.hits {
         let (w, _n) = crate::agent::injection_scan::scan_and_wrap(&hit.text);
         hit.text = w;
+        // Context lines are equally attacker-controllable — fence them too.
+        for l in hit.before.iter_mut().chain(hit.after.iter_mut()) {
+            let (w, _n) = crate::agent::injection_scan::scan_and_wrap(l);
+            *l = w;
+        }
     }
     Ok(wrapped)
 }
@@ -1186,11 +1319,393 @@ pub async fn multi_edit(path: String, edits: Vec<EditOp>) -> Result<MultiEditRes
     })
 }
 
+/* ── Apply patch (multi-file unified diff) ───────────────────────────────── */
+//
+// A focused, EXACT-MATCH unified-diff applier (exp #3). One call can edit
+// several files atomically: every file's hunks are validated and the new
+// content computed in a dry pass FIRST, and only if all files apply cleanly
+// are any writes performed. There is no fuzz — context + removed lines must
+// match the on-disk file exactly (the agent just generated/read these files,
+// so exactness is the right contract: a silent fuzzy apply is how patches
+// corrupt code). A mismatch fails the whole call with the offending path.
+
+#[derive(Serialize)]
+pub struct ApplyPatchFileResult {
+    pub path: String,
+    pub created: bool,
+    pub hunks_applied: u32,
+    pub new_size: u64,
+}
+
+enum HunkLine {
+    Context(String),
+    Add(String),
+    Del(String),
+}
+
+struct Hunk {
+    old_start: usize,
+    lines: Vec<HunkLine>,
+}
+
+struct FilePatch {
+    #[allow(dead_code)]
+    old_path: String,
+    new_path: String,
+    hunks: Vec<Hunk>,
+}
+
+/// Strip a git `a/` or `b/` prefix and any trailing tab-separated timestamp
+/// from a `---`/`+++` header path. `/dev/null` is returned verbatim (sentinel
+/// for create/delete).
+fn parse_diff_path(rest: &str) -> String {
+    let p = rest.split('\t').next().unwrap_or(rest).trim();
+    if p == "/dev/null" {
+        return p.to_string();
+    }
+    p.strip_prefix("a/")
+        .or_else(|| p.strip_prefix("b/"))
+        .unwrap_or(p)
+        .to_string()
+}
+
+/// Parse the old-file start line from a `@@ -a,b +c,d @@` header (the `a`).
+fn parse_hunk_old_start(line: &str) -> Result<usize, String> {
+    let minus = line
+        .find('-')
+        .ok_or_else(|| format!("malformed hunk header: {line}"))?;
+    let after = &line[minus + 1..];
+    let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    num.parse::<usize>()
+        .map_err(|_| format!("malformed hunk header: {line}"))
+}
+
+fn parse_unified_diff(diff: &str) -> Result<Vec<FilePatch>, String> {
+    let mut files: Vec<FilePatch> = Vec::new();
+    let mut cur: Option<FilePatch> = None;
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            if let Some(f) = cur.take() {
+                files.push(f);
+            }
+            cur = Some(FilePatch {
+                old_path: String::new(),
+                new_path: String::new(),
+                hunks: Vec::new(),
+            });
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("--- ") {
+            let path = parse_diff_path(rest);
+            match cur.as_mut() {
+                // Fill the slot opened by a preceding `diff --git`.
+                Some(f) if f.old_path.is_empty() && f.hunks.is_empty() => f.old_path = path,
+                // Otherwise this `---` opens a fresh file section (plain `diff -u`).
+                _ => {
+                    if let Some(f) = cur.take() {
+                        files.push(f);
+                    }
+                    cur = Some(FilePatch {
+                        old_path: path,
+                        new_path: String::new(),
+                        hunks: Vec::new(),
+                    });
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            if let Some(f) = cur.as_mut() {
+                f.new_path = parse_diff_path(rest);
+            }
+            continue;
+        }
+        if line.starts_with("@@") {
+            let old_start = parse_hunk_old_start(line)?;
+            let f = cur
+                .as_mut()
+                .ok_or_else(|| "hunk @@ appears before any file header".to_string())?;
+            f.hunks.push(Hunk {
+                old_start,
+                lines: Vec::new(),
+            });
+            continue;
+        }
+        // Hunk body line — only meaningful once a hunk is open.
+        if let Some(h) = cur.as_mut().and_then(|f| f.hunks.last_mut()) {
+            if let Some(rest) = line.strip_prefix('+') {
+                h.lines.push(HunkLine::Add(rest.to_string()));
+            } else if let Some(rest) = line.strip_prefix('-') {
+                h.lines.push(HunkLine::Del(rest.to_string()));
+            } else if let Some(rest) = line.strip_prefix(' ') {
+                h.lines.push(HunkLine::Context(rest.to_string()));
+            } else if line.starts_with('\\') {
+                // "\ No newline at end of file" — eof-newline is handled by the
+                // line model; ignore the marker.
+            } else if line.is_empty() {
+                // A bare empty line in the body is an empty context line.
+                h.lines.push(HunkLine::Context(String::new()));
+            }
+            // Anything else (git "index"/"old mode"/"rename" noise that landed
+            // after the first @@) is ignored.
+        }
+    }
+    if let Some(f) = cur.take() {
+        files.push(f);
+    }
+    Ok(files)
+}
+
+/// Split file text into logical lines for diff matching. `"a\nb\n"` →
+/// `["a","b",""]` so a re-join with `\n` is byte-exact (the trailing element
+/// carries the final-newline property).
+fn split_lines(s: &str) -> Vec<String> {
+    s.split('\n').map(|l| l.to_string()).collect()
+}
+
+/// Find where `needle` (the hunk's context+removed lines, in order) matches in
+/// `orig` at or after `from`, preferring the diff's hinted `expected` position.
+fn locate_hunk(orig: &[String], from: usize, expected: usize, needle: &[String]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(expected.clamp(from, orig.len()));
+    }
+    if needle.len() > orig.len() {
+        return None;
+    }
+    let last = orig.len() - needle.len();
+    let matches_at = |pos: usize| (0..needle.len()).all(|k| orig[pos + k] == needle[k]);
+    let exp = expected.max(from);
+    if exp <= last && matches_at(exp) {
+        return Some(exp);
+    }
+    (from..=last).find(|&pos| matches_at(pos))
+}
+
+/// Apply one file's hunks to `orig` lines, returning the new lines. Exact match
+/// only — any context/removed line that doesn't match the file fails the apply.
+fn apply_file_hunks(orig: &[String], hunks: &[Hunk]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut idx = 0usize;
+    for (hi, h) in hunks.iter().enumerate() {
+        let needle: Vec<String> = h
+            .lines
+            .iter()
+            .filter_map(|l| match l {
+                HunkLine::Context(s) | HunkLine::Del(s) => Some(s.clone()),
+                HunkLine::Add(_) => None,
+            })
+            .collect();
+        let expected = h.old_start.saturating_sub(1);
+        let pos = locate_hunk(orig, idx, expected, &needle).ok_or_else(|| {
+            format!(
+                "hunk #{} does not match the file (context/removed lines not found)",
+                hi + 1
+            )
+        })?;
+        out.extend_from_slice(&orig[idx..pos]);
+        let mut o = pos;
+        for hl in &h.lines {
+            match hl {
+                HunkLine::Context(s) => {
+                    if orig.get(o) != Some(s) {
+                        return Err(format!("hunk #{} context drift at line {}", hi + 1, o + 1));
+                    }
+                    out.push(s.clone());
+                    o += 1;
+                }
+                HunkLine::Del(s) => {
+                    if orig.get(o) != Some(s) {
+                        return Err(format!("hunk #{} removed-line drift at line {}", hi + 1, o + 1));
+                    }
+                    o += 1;
+                }
+                HunkLine::Add(s) => out.push(s.clone()),
+            }
+        }
+        idx = o;
+    }
+    out.extend_from_slice(&orig[idx..]);
+    Ok(out)
+}
+
+/// Resolve a diff-relative path to an absolute string the write/read gates can
+/// confine. Relative paths anchor to the workspace root (or home fallback).
+fn resolve_patch_path(raw: &str) -> String {
+    if raw.starts_with('/') || raw.starts_with('~') {
+        return raw.to_string();
+    }
+    match workspace_root_clone().or_else(default_workspace_root) {
+        Some(root) => root.join(raw).to_string_lossy().into_owned(),
+        None => raw.to_string(),
+    }
+}
+
+/// Maximum unified-diff payload accepted by a single `apply_patch` call.
+const MAX_PATCH_BYTES: usize = 2 * 1024 * 1024;
+
+/// Apply a (possibly multi-file) unified diff atomically. New files are created
+/// (`--- /dev/null`); deletions are refused (`delete_path` is the gated path
+/// for removal). All-or-nothing: a mismatch on any file writes nothing.
+pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
+    if diff.len() > MAX_PATCH_BYTES {
+        return Err(err_string(ToolError::TooLarge {
+            message: format!("patch exceeds {MAX_PATCH_BYTES} bytes"),
+        }));
+    }
+    let patches = parse_unified_diff(&diff)?;
+    if patches.is_empty() {
+        return Err(err_string(ToolError::invalid(
+            "no file sections found in patch (expected ---/+++/@@ unified diff)",
+        )));
+    }
+    if patches.len() > MAX_WRITE_FILES {
+        return Err(err_string(ToolError::invalid(format!(
+            "apply_patch accepts at most {MAX_WRITE_FILES} files per call (got {})",
+            patches.len()
+        ))));
+    }
+
+    // ── Dry pass: validate every file + compute new content. No writes yet. ──
+    struct Planned {
+        raw_path: String,
+        resolved: String,
+        content: String,
+        created: bool,
+        hunks: u32,
+    }
+    let mut planned: Vec<Planned> = Vec::with_capacity(patches.len());
+    for fp in &patches {
+        if fp.new_path == "/dev/null" {
+            return Err(err_string(ToolError::invalid(
+                "apply_patch does not delete files; use delete_path for removal",
+            )));
+        }
+        if fp.new_path.is_empty() {
+            return Err(err_string(ToolError::invalid(
+                "patch file section missing a +++ target path",
+            )));
+        }
+        let created = fp.old_path == "/dev/null";
+        let resolved = resolve_patch_path(&fp.new_path);
+        // Read current content through the read gate (skip for new files).
+        let orig_text = if created {
+            String::new()
+        } else {
+            let read_path = validate_for_read(&resolved).map_err(err_string)?;
+            let bytes = tokio::fs::read(&read_path)
+                .await
+                .map_err(|e| format!("{}: {}", fp.new_path, err_string(classify_io(&e))))?;
+            if bytes.len() > MAX_WRITE_BYTES {
+                return Err(err_string(ToolError::TooLarge {
+                    message: format!("{} exceeds {MAX_WRITE_BYTES} bytes", fp.new_path),
+                }));
+            }
+            String::from_utf8(bytes).map_err(|_| {
+                err_string(ToolError::invalid(format!(
+                    "{} is not valid UTF-8 — cannot patch",
+                    fp.new_path
+                )))
+            })?
+        };
+        let orig_lines = split_lines(&orig_text);
+        let new_lines = apply_file_hunks(&orig_lines, &fp.hunks)
+            .map_err(|e| format!("{}: {e}", fp.new_path))?;
+        let new_content = new_lines.join("\n");
+        if new_content.len() > MAX_WRITE_BYTES {
+            return Err(err_string(ToolError::TooLarge {
+                message: format!("{} would exceed {MAX_WRITE_BYTES} bytes", fp.new_path),
+            }));
+        }
+        planned.push(Planned {
+            raw_path: fp.new_path.clone(),
+            resolved,
+            content: new_content,
+            created,
+            hunks: fp.hunks.len() as u32,
+        });
+    }
+
+    // ── Commit pass: every file validated; write through the confined path
+    // (workspace confinement + per-file undo snapshot). ───────────────────────
+    let mut results: Vec<ApplyPatchFileResult> = Vec::with_capacity(planned.len());
+    for p in planned {
+        let new_size = p.content.len() as u64;
+        write_one_confined(&p.resolved, p.content, "apply_patch")
+            .await
+            .map_err(|e| format!("apply_patch failed at {}: {e}", p.raw_path))?;
+        results.push(ApplyPatchFileResult {
+            path: p.raw_path,
+            created: p.created,
+            hunks_applied: p.hunks,
+            new_size,
+        });
+    }
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "files_changed": results.len(),
+        "files": results,
+    }))
+}
+
 /* ── Tests ───────────────────────────────────────────────────────────────── */
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_patch_modifies_middle_line() {
+        let orig = "alpha\nbravo\ncharlie\n";
+        let patches = parse_unified_diff(
+            "--- a/x.txt\n+++ b/x.txt\n@@ -1,3 +1,3 @@\n alpha\n-bravo\n+BRAVO\n charlie\n",
+        )
+        .unwrap();
+        assert_eq!(patches.len(), 1);
+        let lines = apply_file_hunks(&split_lines(orig), &patches[0].hunks).unwrap();
+        assert_eq!(lines.join("\n"), "alpha\nBRAVO\ncharlie\n");
+    }
+
+    #[test]
+    fn apply_patch_appends_line_preserving_trailing_newline() {
+        let orig = "a\nb\n";
+        let patches =
+            parse_unified_diff("--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n a\n b\n+c\n").unwrap();
+        let lines = apply_file_hunks(&split_lines(orig), &patches[0].hunks).unwrap();
+        assert_eq!(lines.join("\n"), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn apply_patch_creates_new_file_from_dev_null() {
+        let patches = parse_unified_diff(
+            "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
+        )
+        .unwrap();
+        assert_eq!(patches[0].old_path, "/dev/null");
+        let lines = apply_file_hunks(&split_lines(""), &patches[0].hunks).unwrap();
+        assert_eq!(lines.join("\n"), "hello\nworld\n");
+    }
+
+    #[test]
+    fn apply_patch_rejects_context_mismatch() {
+        let orig = "alpha\nbravo\n";
+        let patches = parse_unified_diff(
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n WRONG\n-bravo\n+BRAVO\n",
+        )
+        .unwrap();
+        assert!(apply_file_hunks(&split_lines(orig), &patches[0].hunks).is_err());
+    }
+
+    #[test]
+    fn apply_patch_parses_multiple_files() {
+        let patches = parse_unified_diff(
+            "diff --git a/one.txt b/one.txt\n--- a/one.txt\n+++ b/one.txt\n@@ -1 +1 @@\n-a\n+A\ndiff --git a/two.txt b/two.txt\n--- a/two.txt\n+++ b/two.txt\n@@ -1 +1 @@\n-b\n+B\n",
+        )
+        .unwrap();
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0].new_path, "one.txt");
+        assert_eq!(patches[1].new_path, "two.txt");
+    }
 
     #[test]
     fn read_gate_blocks_credential_dirs_and_secret_store() {

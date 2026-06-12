@@ -134,6 +134,13 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
             "paths",
             p.path.as_deref().unwrap_or(""),
         )]))),
+        // apply_patch binds to the EXACT unified-diff text the user confirmed,
+        // carried in the `text` payload field. A swapped patch (even one
+        // touching the same files) recomputes a different hash and is rejected.
+        "agent_apply_patch" => Some(sha256_hex(&kv(&[(
+            "patch",
+            p.text.as_deref().unwrap_or(""),
+        )]))),
         // Two-path family: move + copy.
         "agent_move_path" | "agent_copy_path" => Some(sha256_hex(&kv(&[
             ("from", p.from.as_deref().unwrap_or("")),
@@ -459,14 +466,40 @@ pub async fn agent_file_exists(path: String) -> Result<agent::ExistsResult, Stri
     agent::file_exists(path).await
 }
 
+/// Read-only multi-file read (exp #2). No approval — same gate as
+/// `agent_read_file`, applied per file.
+#[tauri::command]
+pub async fn agent_read_files(paths: Vec<String>) -> Result<serde_json::Value, String> {
+    agent::read_files(paths).await
+}
+
 #[tauri::command]
 pub async fn agent_search_files(
     path: String,
     pattern: String,
     glob: Option<String>,
     regex: Option<bool>,
+    context: Option<u32>,
 ) -> Result<agent::SearchResult, String> {
-    agent::search_files(path, pattern, glob, regex).await
+    agent::search_files(path, pattern, glob, regex, context).await
+}
+
+/// Apply a multi-file unified diff atomically (exp #3). Bound to the exact
+/// patch text the user confirmed so a swapped diff can't ride the same token.
+#[tauri::command]
+pub async fn agent_apply_patch(
+    patch: String,
+    approval: String,
+) -> Result<serde_json::Value, String> {
+    verify_bound(
+        "agent_apply_patch",
+        &approval,
+        ApprovalPayload {
+            text: Some(patch.clone()),
+            ..Default::default()
+        },
+    )?;
+    agent::apply_patch(patch).await
 }
 
 #[tauri::command]

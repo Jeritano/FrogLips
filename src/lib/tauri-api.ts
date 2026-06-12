@@ -82,6 +82,8 @@ import type {
   Message,
   MessageSearchHit,
   MultiEditResult,
+  ApplyPatchResult,
+  MultiReadResult,
   PdfResult,
   PolicyDecision,
   ProjectPolicy,
@@ -470,17 +472,30 @@ export const api = {
     }),
   agentFileExists: (path: string) =>
     invoke<ExistsResult>("agent_file_exists", { path }),
+  // Read-only multi-read — no approval (same gate as agentReadFile, per file).
+  agentReadFiles: (paths: string[]) =>
+    invoke<MultiReadResult>("agent_read_files", { paths }),
   agentSearchFiles: (
     path: string,
     pattern: string,
     glob?: string,
     regex?: boolean,
+    context?: number,
   ) =>
     invoke<SearchResult>("agent_search_files", {
       path,
       pattern,
       glob: glob ?? null,
       regex: regex ?? null,
+      context: context ?? null,
+    }),
+  // Multi-file unified-diff apply. The approval token is bound to the exact
+  // patch text (the same string the Rust `agent_apply_patch` binding hashes,
+  // carried as the `text` payload field) so a swapped diff can't reuse it.
+  agentApplyPatch: async (patch: string) =>
+    invoke<ApplyPatchResult>("agent_apply_patch", {
+      patch,
+      approval: await mintApproval("agent_apply_patch", { text: patch }),
     }),
   agentMultiEdit: async (path: string, edits: EditOp[]) =>
     invoke<MultiEditResult>("agent_multi_edit", {

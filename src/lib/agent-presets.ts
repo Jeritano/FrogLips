@@ -24,13 +24,16 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
       "Code reading, search, editing + shell + full git. Prefers edit_file / multi_edit over write_file.",
     allowedTools: [
       "read_file",
+      "read_files",
       "list_dir",
       "search_files",
       "file_exists",
       "edit_file",
       "multi_edit",
+      "apply_patch",
       "write_file",
       "write_files",
+      "update_plan",
       "run_shell",
       "git_status",
       "git_diff",
@@ -48,11 +51,13 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
     ],
     systemPromptOverride:
       "You are a coding agent on the user's local machine. " +
-      "When asked to fix bugs, implement features, or modify code: search the codebase, read relevant files, then prefer edit_file over write_file. " +
+      "For any multi-step job, call update_plan once up front with your milestones, then flip each step's status as you go — don't re-narrate the whole plan in prose. " +
+      "When asked to fix bugs, implement features, or modify code: search the codebase, read relevant files (use read_files to pull several at once, and search_files context=N to see lines around a match), then prefer edit_file over write_file. " +
       "Always read existing code before editing. Use run_shell for builds/tests/linting. " +
       "After changes, run the project's test or typecheck command if discoverable. " +
       "Don't add comments unless they explain a non-obvious WHY. Don't over-engineer. " +
       "Create files with write_file (one file) or write_files (several at once). " +
+      "For a coordinated change spanning several files (e.g. a rename + its call sites), apply_patch lands one atomic unified diff in a single approval. " +
       "NEVER write files through the shell — no cat/heredocs, echo>, tee, or generated scripts; " +
       "that hits length limits, escapes the workspace, and costs an approval per file. " +
       "Prefer edit_file/multi_edit for changes to existing files.",

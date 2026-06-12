@@ -23,6 +23,10 @@ export const DANGEROUS_TOOLS = new Set([
   "task_create",
   "write_file",
   "write_files",
+  // apply_patch writes (creates/edits) one or more files from a unified diff —
+  // same filesystem-mutation surface as write_files, so it prompts + carries a
+  // patch-bound approval token.
+  "apply_patch",
   "edit_file",
   "multi_edit",
   "git_commit",
@@ -1021,7 +1025,22 @@ export async function executeTool(
         String(args.pattern ?? ""),
         args.glob ? String(args.glob) : undefined,
         typeof args.regex === "boolean" ? args.regex : undefined,
+        typeof args.context === "number" ? args.context : undefined,
       );
+      return JSON.stringify(r);
+    }
+    case "read_files": {
+      const paths = Array.isArray(args.paths)
+        ? (args.paths as unknown[]).map((p) => String(p)).filter((p) => p)
+        : [];
+      if (paths.length === 0) {
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message: "read_files requires a non-empty paths array of strings.",
+        });
+      }
+      const r = await api.agentReadFiles(paths);
       return JSON.stringify(r);
     }
     case "multi_edit": {
@@ -1391,6 +1410,18 @@ export async function executeTool(
       await api.agentWriteFiles(files);
       return JSON.stringify({ ok: true, paths: files.map((f) => f.path) });
     }
+    case "apply_patch": {
+      const patch = String(args.patch ?? "");
+      if (!patch.trim()) {
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message: "apply_patch requires a non-empty unified-diff `patch` string.",
+        });
+      }
+      const r = await api.agentApplyPatch(patch);
+      return JSON.stringify(r);
+    }
     case "edit_file": {
       const r = await api.agentEditFile(
         String(args.path ?? ""),
@@ -1399,6 +1430,37 @@ export async function executeTool(
         typeof args.replace_all === "boolean" ? args.replace_all : undefined,
       );
       return JSON.stringify(r);
+    }
+    case "update_plan": {
+      // Pure book-keeping tool (exp #1): the model maintains a compact,
+      // pinned checklist instead of re-narrating its whole plan every turn.
+      // No side effects — normalize + echo so the result the model sees (and
+      // the chat UI renders) is the canonical plan. Stateless by design: the
+      // plan lives in the tool-result message, not in runner state.
+      const VALID = new Set(["pending", "in_progress", "done"]);
+      const rawSteps = Array.isArray(args.plan) ? args.plan : [];
+      const plan = rawSteps
+        .map((s) => {
+          if (!s || typeof s !== "object" || Array.isArray(s)) return null;
+          const rec = s as Record<string, unknown>;
+          const step = String(rec.step ?? "").trim();
+          if (!step) return null;
+          const status = VALID.has(String(rec.status))
+            ? String(rec.status)
+            : "pending";
+          return { step, status };
+        })
+        .filter((s): s is { step: string; status: string } => s !== null)
+        .slice(0, 30);
+      if (plan.length === 0) {
+        return JSON.stringify({
+          ok: false,
+          kind: "bad_args",
+          message:
+            "update_plan requires a non-empty `plan` array of {step, status}.",
+        });
+      }
+      return JSON.stringify({ ok: true, plan });
     }
     case "watch_path": {
       const r = await api.agentWatchPath(
@@ -2055,15 +2117,13 @@ export async function executeTool(
 //      non-read-only tool may have changed filesystem / process / network
 //      state in ways the cached read would miss.
 //
-//   2. **Future parallel execution (NOT wired yet).** When an assistant turn
-//      issues multiple tool calls AND every one of them is in this set,
-//      the runner COULD fire them with `Promise.all` instead of serial
-//      `await`. Mixed batches must stay sequential (write ordering
-//      matters; approvals are per-call). The runner is still strictly
-//      serial today (runner.ts main tool-call loop) — flagged here so a
-//      future contributor adding the optimization knows which set to
-//      gate on. (Audit L-A4: comment was previously written as if the
-//      optimization existed; corrected to mark it as aspirational.)
+//   2. **Parallel execution (wired — opt #1, 2026-06-12).** When an assistant
+//      turn issues multiple tool calls AND every one is in this set (minus
+//      `load_claude_skill`, which mutates the run's allowlist), the runner
+//      prefetches them concurrently with a bounded pool and the serial loop
+//      consumes the prefetched results in order — preserving result ordering,
+//      caching, stall + audit book-keeping. Mixed batches and cloud routes
+//      stay strictly sequential. See `runner.ts` (PARALLEL_READ_CAP).
 //
 // Anything mutating, anything network-side-effectful, anything that depends
 // on real-time state (clipboard, screenshots), or anything that requires
@@ -2071,6 +2131,9 @@ export async function executeTool(
 // just mean missing an optimization; false positives are correctness bugs.
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "read_file",
+  // read_files is a batched read — same no-side-effect nature as read_file, so
+  // it caches + parallelizes the same way.
+  "read_files",
   "list_dir",
   "file_exists",
   "search_files",

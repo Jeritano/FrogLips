@@ -6,7 +6,7 @@ export const TOOLS = [
     function: {
       name: "read_file",
       description:
-        "Read text contents of a file. Default reads up to 65536 bytes — DO NOT pass a small limit (anything under 8192 is auto-raised). Only paginate with offset when total_bytes exceeds 65536. Returns content, bytes_read, total_bytes, truncated.",
+        "Read text contents of a file. Default reads up to 65536 bytes — DO NOT pass a small limit (anything under 8192 is auto-raised). Only paginate when total_bytes exceeds 65536: pass the returned `next_offset` as the next call's `offset`. To read SEVERAL files at once, prefer read_files (one call). Returns content, bytes_read, total_bytes, truncated, next_offset.",
       parameters: {
         type: "object",
         properties: {
@@ -26,6 +26,25 @@ export const TOOLS = [
           },
         },
         required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_files",
+      description:
+        "Read MULTIPLE files in ONE call (read-only, no approval). Strongly preferred over many read_file calls when you need to inspect several files — saves turns. Returns {files: [{path, ok, content, total_bytes, truncated, next_offset} | {path, ok:false, error}]}. Max 32 files; each file capped at 65536 bytes (paginate large ones individually with read_file).",
+      parameters: {
+        type: "object",
+        properties: {
+          paths: {
+            type: "array",
+            items: { type: "string" },
+            description: "Absolute or ~/relative file paths (max 32).",
+          },
+        },
+        required: ["paths"],
       },
     },
   },
@@ -52,7 +71,7 @@ export const TOOLS = [
     function: {
       name: "search_files",
       description:
-        "Search for text across files under a directory (line-grep, recursive). Set regex=true for regex pattern matching. Skips .git/node_modules/target/etc.",
+        "Search for text across files under a directory (line-grep, recursive). Set regex=true for regex pattern matching. Pass context=N (1-5) to get N surrounding lines per hit (before/after) — avoids a follow-up read_file just to see around a match. Skips .git/node_modules/target/etc.",
       parameters: {
         type: "object",
         properties: {
@@ -66,6 +85,11 @@ export const TOOLS = [
           regex: {
             type: "boolean",
             description: "Treat pattern as a regex (Rust regex syntax).",
+          },
+          context: {
+            type: "number",
+            description:
+              "Lines of surrounding context per hit (0-5, default 0). Each hit gains `before` and `after` arrays.",
           },
         },
         required: ["path", "pattern"],
@@ -302,6 +326,53 @@ export const TOOLS = [
           },
         },
         required: ["files"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_patch",
+      description:
+        "Apply a unified diff across ONE OR MORE files in a single approval — the best tool for a coordinated change (e.g. a rename touching several call sites). Atomic: if any hunk fails to match, NOTHING is written. Use standard unified-diff format with `--- a/path`, `+++ b/path`, `@@` hunks; create a new file with `--- /dev/null`. Context + removed lines must match the file EXACTLY (no fuzz). Does not delete files (use delete_path). Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          patch: {
+            type: "string",
+            description:
+              "The full unified diff. May contain multiple file sections.",
+          },
+        },
+        required: ["patch"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_plan",
+      description:
+        "Maintain a short, pinned task checklist for a multi-step job. Call it once early with your plan, then again to flip a step's status as you progress — instead of re-typing the whole plan in prose each turn. Keeps you on track and saves tokens. Statuses: pending | in_progress | done. Keep it to the few real milestones (max 30 steps), not every tool call.",
+      parameters: {
+        type: "object",
+        properties: {
+          plan: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                step: { type: "string", description: "Short step description." },
+                status: {
+                  type: "string",
+                  enum: ["pending", "in_progress", "done"],
+                },
+              },
+              required: ["step", "status"],
+            },
+          },
+        },
+        required: ["plan"],
       },
     },
   },

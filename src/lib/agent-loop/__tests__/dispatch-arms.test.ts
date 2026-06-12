@@ -25,8 +25,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../tauri-api", () => ({
   api: {
     agentReadFile: vi.fn(async (path: string) => ({ path, bytes: "hi" })),
+    agentReadFiles: vi.fn(async (paths: string[]) => ({
+      files: paths.map((p) => ({ path: p, ok: true })),
+    })),
     agentListDir: vi.fn(async (path: string) => ({ path, entries: [] })),
     agentSearchFiles: vi.fn(async () => ({ matches: [] })),
+    agentApplyPatch: vi.fn(async () => ({ ok: true, files_changed: 1 })),
     agentGitStatus: vi.fn(async () => ({ branch: "main", dirty: false })),
     agentWebFetch: vi.fn(async (url: string) => ({ url, body: "" })),
     agentScreenshot: vi.fn(async () => ({ path: "/tmp/x.png" })),
@@ -167,7 +171,68 @@ describe("executeTool: arm routing (sample one per category)", () => {
       "TODO",
       undefined,
       true,
+      undefined,
     );
+  });
+
+  it("'search_files' forwards the context arg", async () => {
+    await executeTool("search_files", {
+      path: "/x",
+      pattern: "TODO",
+      context: 3,
+    });
+    expect(api.agentSearchFiles).toHaveBeenCalledWith(
+      "/x",
+      "TODO",
+      undefined,
+      undefined,
+      3,
+    );
+  });
+
+  it("'read_files' routes to api.agentReadFiles with a string[] of paths", async () => {
+    await executeTool("read_files", { paths: ["/a", "/b", ""] });
+    // Empty entries are dropped before the IPC.
+    expect(api.agentReadFiles).toHaveBeenCalledWith(["/a", "/b"]);
+  });
+
+  it("'read_files' rejects an empty paths array without an IPC", async () => {
+    vi.clearAllMocks();
+    const out = await executeTool("read_files", { paths: [] });
+    expect(api.agentReadFiles).not.toHaveBeenCalled();
+    expect(JSON.parse(out).ok).toBe(false);
+  });
+
+  it("'apply_patch' routes to api.agentApplyPatch", async () => {
+    await executeTool("apply_patch", { patch: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n" });
+    expect(api.agentApplyPatch).toHaveBeenCalledWith(
+      "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+    );
+  });
+
+  it("'apply_patch' rejects an empty patch without an IPC", async () => {
+    vi.clearAllMocks();
+    const out = await executeTool("apply_patch", { patch: "   " });
+    expect(api.agentApplyPatch).not.toHaveBeenCalled();
+    expect(JSON.parse(out).ok).toBe(false);
+  });
+
+  it("'update_plan' normalizes + echoes the plan with no IPC", async () => {
+    const out = await executeTool("update_plan", {
+      plan: [
+        { step: "scaffold", status: "done" },
+        { step: "wire", status: "in_progress" },
+        { step: "  ", status: "pending" }, // blank step dropped
+        { step: "ship", status: "bogus" }, // bad status → pending
+      ],
+    });
+    const parsed = JSON.parse(out);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.plan).toEqual([
+      { step: "scaffold", status: "done" },
+      { step: "wire", status: "in_progress" },
+      { step: "ship", status: "pending" },
+    ]);
   });
 
   it("'git_status' routes to api.agentGitStatus", async () => {

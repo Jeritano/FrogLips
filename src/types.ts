@@ -205,6 +205,39 @@ export interface ReadResult {
   total_bytes: number;
   truncated: boolean;
   binary: boolean;
+  /** Byte offset to pass as `offset` on the next read to continue a truncated
+   * read; omitted when the whole file was returned. */
+  next_offset?: number;
+}
+
+/** One file's slot in a `read_files` (multi-read) response. */
+export interface MultiReadEntry {
+  path: string;
+  ok: boolean;
+  content?: string;
+  bytes_read?: number;
+  total_bytes?: number;
+  truncated?: boolean;
+  binary?: boolean;
+  next_offset?: number;
+  error?: string;
+}
+
+export interface MultiReadResult {
+  files: MultiReadEntry[];
+}
+
+export interface ApplyPatchFileResult {
+  path: string;
+  created: boolean;
+  hunks_applied: number;
+  new_size: number;
+}
+
+export interface ApplyPatchResult {
+  ok: boolean;
+  files_changed: number;
+  files: ApplyPatchFileResult[];
 }
 
 export interface EditOp {
@@ -462,6 +495,10 @@ export interface SearchHit {
   path: string;
   line: number;
   text: string;
+  /** Up to `context` lines before the match (present only when context > 0). */
+  before?: string[];
+  /** Up to `context` lines after the match. */
+  after?: string[];
 }
 
 export interface SearchResult {

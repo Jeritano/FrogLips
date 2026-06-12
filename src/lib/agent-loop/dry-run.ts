@@ -20,6 +20,7 @@ export const DRY_RUN_TOOLS = new Set([
   "write_file",
   "edit_file",
   "multi_edit",
+  "apply_patch",
   "run_shell",
   "applescript_run",
   "browser_navigate",
@@ -43,9 +44,13 @@ export const DRY_RUN_TOOLS = new Set([
  */
 export const DRY_RUN_READ_ONLY = new Set([
   "read_file",
+  "read_files",
   "list_dir",
   "search_files",
   "file_exists",
+  // update_plan only normalizes + echoes a checklist — no side effects, safe
+  // to actually run under dry-run.
+  "update_plan",
   "hash_file",
   "diff_files",
   "git_status",
@@ -241,6 +246,26 @@ export async function dryRunExecute(
         would_fill: {
           selector: String(args.selector ?? ""),
           value: String(args.value ?? ""),
+        },
+      });
+    }
+    case "apply_patch": {
+      const patch = String(args.patch ?? "");
+      // Light parse of the +++ headers to list the files the patch would touch
+      // (strip git a//b/ prefixes; skip /dev/null). The real apply is suppressed.
+      const files: string[] = [];
+      for (const line of patch.split("\n")) {
+        if (line.startsWith("+++ ")) {
+          const p = line.slice(4).split("\t")[0].trim();
+          if (p && p !== "/dev/null") files.push(p.replace(/^[ab]\//, ""));
+        }
+      }
+      return JSON.stringify({
+        ok: true,
+        dry_run: true,
+        would_apply_patch: {
+          files,
+          diff: truncForDryRun(patch, 4096),
         },
       });
     }

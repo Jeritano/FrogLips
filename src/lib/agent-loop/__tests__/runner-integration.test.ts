@@ -21,9 +21,9 @@ const { auditMock, metricsMock, listDirMock } = vi.hoisted(() => ({
   metricsMock: vi.fn<(entry: Record<string, unknown>) => Promise<void>>(
     async () => undefined,
   ),
-  listDirMock: vi.fn(async () => ({
+  listDirMock: vi.fn(async (_path: string) => ({
     entries: ["a.txt", "b.txt"],
-    truncated: false,
+    truncated: false as boolean,
   })),
 }));
 
@@ -52,6 +52,24 @@ function ollamaToolCall(id: string, name: string, args: object) {
       tool_calls: [
         { id, type: "function", function: { name, arguments: args } },
       ],
+    },
+    prompt_eval_count: 7,
+    eval_count: 3,
+  };
+}
+
+/** One Ollama /api/chat response carrying SEVERAL tool calls in one turn. */
+function ollamaMultiToolCall(
+  calls: Array<{ id: string; name: string; args: object }>,
+) {
+  return {
+    message: {
+      content: "",
+      tool_calls: calls.map((c) => ({
+        id: c.id,
+        type: "function",
+        function: { name: c.name, arguments: c.args },
+      })),
     },
     prompt_eval_count: 7,
     eval_count: 3,
@@ -246,5 +264,84 @@ describe("runAgentLoop integration", () => {
     expect(metrics.last?.iterations).toBe(8);
     // Session metrics still recorded exactly once on the cap exit.
     expect(metricsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("executes a multi read-only turn in parallel, preserving result order (opt #1)", async () => {
+    // Turn 1 issues THREE read-only list_dir calls at once. The runner's
+    // prefetch fires them concurrently; the serial loop then lands their
+    // results in tool-call order. Make the mock resolve out of order (the
+    // first call resolves LAST) so a serial implementation would still pass
+    // but the ordering assertion specifically guards the concurrent path.
+    const order: string[] = [];
+    listDirMock.mockImplementation(async (path: string) => {
+      order.push(`start:${path}`);
+      // First-issued path resolves on a later microtask tick than the others.
+      const delay = path.endsWith("a") ? 3 : 1;
+      await new Promise((r) => setTimeout(r, delay));
+      order.push(`done:${path}`);
+      return { entries: [`${path}-entry`], truncated: false };
+    });
+
+    const fetchMock = scriptedFetch([
+      ollamaMultiToolCall([
+        { id: "p-1", name: "list_dir", args: { path: "/dir/a" } },
+        { id: "p-2", name: "list_dir", args: { path: "/dir/b" } },
+        { id: "p-3", name: "list_dir", args: { path: "/dir/c" } },
+      ]),
+      ollamaFinal("listed all three"),
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const collected: Message[][] = [];
+    const metrics = { last: null as AgentMetrics | null };
+    const result = await runAgentLoop(baseOpts(collected, metrics));
+
+    expect(result).toBe("listed all three");
+    expect(listDirMock).toHaveBeenCalledTimes(3);
+
+    // Concurrency proof: all three started before the first one finished.
+    const firstDoneIdx = order.indexOf("done:/dir/a");
+    const startsBeforeFirstDone = order
+      .slice(0, firstDoneIdx)
+      .filter((e) => e.startsWith("start:")).length;
+    expect(startsBeforeFirstDone).toBe(3);
+
+    // Ordering proof: the three tool results appear in tool-call order.
+    const last = collected[collected.length - 1] ?? [];
+    const toolResults = last.filter((m) => m.role === "tool");
+    expect(toolResults.map((m) => m.tool_call_id)).toEqual([
+      "p-1",
+      "p-2",
+      "p-3",
+    ]);
+    expect(toolResults[0].content).toContain("/dir/a-entry");
+    expect(toolResults[2].content).toContain("/dir/c-entry");
+  });
+
+  it("flags an A/B/A oscillation as a duplicate via the widened dedupe window (opt #2)", async () => {
+    // Old one-turn-back dedupe never caught A,B,A. The 3-turn history does:
+    // turn 3's list_dir(/x) matches turn 1's, so it is rejected as a dup
+    // instead of executing a third time.
+    const fetchMock = scriptedFetch([
+      ollamaToolCall("a-1", "list_dir", { path: "/x" }), // turn 1: A
+      ollamaToolCall("b-1", "list_dir", { path: "/y" }), // turn 2: B
+      ollamaToolCall("a-2", "list_dir", { path: "/x" }), // turn 3: A again
+      ollamaFinal("done oscillating"),
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const collected: Message[][] = [];
+    const metrics = { last: null as AgentMetrics | null };
+    const result = await runAgentLoop(baseOpts(collected, metrics));
+
+    expect(result).toBe("done oscillating");
+    // list_dir(/x) executed only ONCE (turn 1); turn 3's repeat was rejected,
+    // plus list_dir(/y) once → two real dispatches total.
+    expect(listDirMock).toHaveBeenCalledTimes(2);
+
+    const last = collected[collected.length - 1] ?? [];
+    const dup = last.find((m) => m.role === "tool" && m.tool_call_id === "a-2");
+    expect(dup).toBeDefined();
+    expect(JSON.parse(dup!.content).kind).toBe("duplicate_call");
   });
 });

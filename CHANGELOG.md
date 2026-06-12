@@ -4,6 +4,43 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.7] — 2026-06-12
+
+### Agent tools — new capabilities
+- **`read_files`** — read several files in one call instead of one per turn
+  (read-only, no approval). Mirrors the existing `write_files`.
+- **`apply_patch`** — land a coordinated change across one or more files as a
+  single unified diff, in one approval. Atomic: if any hunk fails to match the
+  file exactly, nothing is written (no fuzzy/partial application). Creates new
+  files via `--- /dev/null`; refuses deletions (that stays with `delete_path`).
+  The approval token is bound to the exact patch text.
+- **`search_files` context lines** — pass `context: N` (1–5) to get the lines
+  around each match (`before`/`after`), instead of a follow-up `read_file`.
+- **`update_plan`** — keep a short pinned checklist for a multi-step job and
+  flip step statuses as you go, instead of re-narrating the whole plan each
+  turn. Saves tokens and keeps weaker local models on track. Visible in the
+  Tool History panel.
+- **`read_file` pagination** now returns `next_offset` — the cursor to pass as
+  the next `offset` — so the model paginates large files without doing the math.
+
+### Agent loop — optimization
+- **Read-only tool calls in a turn now run in parallel.** When a turn issues
+  several independent reads (e.g. read three files, grep two trees), their
+  backend IPC overlaps via a bounded pool instead of awaiting one at a time —
+  result ordering, the per-run read cache, the stall guard, and audit rows are
+  all preserved. Writes, approvals, and cloud routes stay strictly serial.
+- **Loop-thrash guards widened.** The duplicate-call guard now compares against
+  the last few turns (not just the immediately-prior one), so an A/B/A/B
+  oscillation is caught instead of running to the turn limit. The same-target
+  stall guard now also covers a repeated identical `search_files`, not only
+  chunked `read_file`s.
+
+### Fixed
+- **Release build was silently broken by a dependency-resolution drift.**
+  `embedder.rs` needs `reqwest`'s `blocking` feature, which had been satisfied
+  transitively; a `cargo update` (from the earlier toolchain refresh) dropped
+  it, breaking a clean test/release compile. Now declared explicitly.
+
 ## [0.13.6] — 2026-06-12
 
 ### Performance — Chat

@@ -142,7 +142,8 @@ Rules:
    • GitHub: \`https://api.github.com/...\`.
    • HackerNews: \`https://hacker-news.firebaseio.com/v0/...\`.
    • Most large sites publish an \`/api/...\` or \`/.well-known/...\` JSON endpoint — try it before scraping.
-   If web_fetch returns a body dominated by nav links, script tags, or \`<div id="__next">\` boilerplate, the page is JS-rendered: switch to a JSON source, hit a different domain, or use \`web_search\` snippets for the actual data.` +
+   If web_fetch returns a body dominated by nav links, script tags, or \`<div id="__next">\` boilerplate, the page is JS-rendered: switch to a JSON source, hit a different domain, or use \`web_search\` snippets for the actual data.
+9. Work in batches, not one item per turn: read several files with \`read_files\` (not many \`read_file\` calls), get surrounding lines with \`search_files\` \`context\`, and land a coordinated multi-file change as one \`apply_patch\` unified diff. For any multi-step task, track milestones with \`update_plan\` and update statuses as you go instead of restating the plan each turn.` +
     weakBlock
   );
 }

@@ -372,6 +372,9 @@ const APPROVE_ALL_WRITE_FS = new Set([
   // write_files is a multi-file write — same nature as write_file, so the
   // "auto-approve file writes this run" blanket covers it too (2026-06-12).
   "write_files",
+  // apply_patch creates/edits files from a unified diff — same filesystem-write
+  // nature, so the same blanket covers it (2026-06-12).
+  "apply_patch",
   "edit_file",
   "multi_edit",
   "make_dir",
@@ -402,6 +405,13 @@ const DENY_MESSAGE_BY_REASON: Record<string, string> = {
 // Stall detection: if agent reads the same path > this many times in
 // monotonically-advancing tiny chunks, abort the loop with an explanatory msg.
 const STALL_SAME_PATH_LIMIT = 6;
+// How many prior turns the dedupe guard compares against. >1 so an A/B/A/B
+// oscillation (which a one-turn-back check never catches) trips the guard.
+const DEDUPE_HISTORY = 3;
+// Max read-only tool calls executed concurrently in one turn's prefetch
+// (opt #1). Bounded so a turn that issues many reads doesn't slam the IPC
+// bridge / disk with unlimited parallelism.
+const PARALLEL_READ_CAP = 6;
 // Consecutive-error budget: after this many tool results in a row come back
 // `ok:false` (even with differing args — the dedupe window only catches
 // IDENTICAL calls), inject a stop-and-report hint so a permission wall or
@@ -410,6 +420,28 @@ const MAX_CONSECUTIVE_TOOL_ERRORS = 5;
 
 function makeTmpKey() {
   return `tmp:${crypto.randomUUID()}`;
+}
+
+/**
+ * Run `tasks` with at most `limit` in flight, resolving once all complete.
+ * Each task owns its own result/error handling (the prefetch tasks store into a
+ * map and never throw), so this only needs to bound concurrency, not collect
+ * return values. Used by the read-only prefetch (opt #1).
+ */
+async function runWithConcurrency(
+  tasks: Array<() => Promise<void>>,
+  limit: number,
+): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const idx = next++;
+      if (idx >= tasks.length) return;
+      await tasks[idx]();
+    }
+  };
+  const n = Math.min(Math.max(1, limit), tasks.length);
+  await Promise.all(Array.from({ length: n }, () => worker()));
 }
 
 /* ── Main loop ── */
@@ -519,45 +551,65 @@ function sigMultiset(sigs: string[]): Map<string, number> {
   return m;
 }
 
-/**
- * True when THIS turn's tool calls are an exact multiset match against the
- * IMMEDIATELY-PRIOR turn's tool calls. Previously this was an
- * order-insensitive subset check over the whole dedupe window, which would
- * fire on perfectly normal interleavings (e.g. read_file(A) on turn N,
- * read_file(B) on turn N+1, read_file(A) on turn N+2 — last turn flagged as a
- * dup even though A had legitimate intervening progress). Comparing per-turn
- * multisets restricts the rejection to "the model just made the same set of
- * calls again, in any order, with the same arity".
- */
-function isDuplicateTurn(
-  currentSigs: string[],
-  prevSigs: string[] | null,
-): boolean {
-  if (!prevSigs || prevSigs.length === 0) return false;
-  if (currentSigs.length !== prevSigs.length) return false;
-  const cur = sigMultiset(currentSigs);
-  const prev = sigMultiset(prevSigs);
-  if (cur.size !== prev.size) return false;
-  for (const [k, v] of cur) {
-    if (prev.get(k) !== v) return false;
+/** True when two turns' tool-call signatures are an exact multiset match. */
+function sameTurnMultiset(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const am = sigMultiset(a);
+  const bm = sigMultiset(b);
+  if (am.size !== bm.size) return false;
+  for (const [k, v] of am) {
+    if (bm.get(k) !== v) return false;
   }
   return true;
 }
 
 /**
- * Stall predicate for `read_file`: bumps the per-path read counter and
- * reports whether the agent has exceeded the chunk-thrashing limit.
+ * True when THIS turn's tool calls exactly match (as an order-insensitive
+ * multiset) ANY of the last few turns' calls. Comparing against a short
+ * history — not just the immediately-prior turn — catches A/B/A/B thrash where
+ * the model oscillates between two identical turns and never converges (the
+ * one-turn-back check let that run to the iteration cap). The window is kept
+ * small (DEDUPE_HISTORY) so legitimate re-reads with real intervening progress
+ * (read A, read B, read A again) still slip through.
  */
-function isReadFileStalling(
+function isDuplicateTurn(
+  currentSigs: string[],
+  prevSigsHistory: string[][],
+): boolean {
+  if (currentSigs.length === 0) return false;
+  return prevSigsHistory.some((prev) => sameTurnMultiset(currentSigs, prev));
+}
+
+/**
+ * Stall predicate for repeated same-target read-only calls. Bumps a per-key
+ * counter and reports whether the agent has exceeded the chunk/repeat limit.
+ * Covers `read_file` (keyed by path — catches chunk-thrashing a single file)
+ * and `search_files` (keyed by path+pattern — catches re-running the identical
+ * grep across turns when the dedupe window has rolled past it). Other tools are
+ * never flagged.
+ */
+function isToolStalling(
   fnName: string,
   args: Record<string, unknown>,
   readCounts: Map<string, number>,
-): { stalling: boolean; path: string; count: number } {
-  if (fnName !== "read_file") return { stalling: false, path: "", count: 0 };
-  const path = String(args.path ?? "");
-  const count = (readCounts.get(path) ?? 0) + 1;
-  readCounts.set(path, count);
-  return { stalling: count > STALL_SAME_PATH_LIMIT, path, count };
+): { stalling: boolean; key: string; count: number; tool: string } {
+  let key: string | null = null;
+  if (fnName === "read_file") {
+    key = `read_file:${String(args.path ?? "")}`;
+  } else if (fnName === "search_files") {
+    key = `search_files:${String(args.path ?? "")}${String(args.pattern ?? "")}`;
+  }
+  if (key === null) {
+    return { stalling: false, key: "", count: 0, tool: fnName };
+  }
+  const count = (readCounts.get(key) ?? 0) + 1;
+  readCounts.set(key, count);
+  return {
+    stalling: count > STALL_SAME_PATH_LIMIT,
+    key: fnName === "read_file" ? String(args.path ?? "") : String(args.pattern ?? ""),
+    count,
+    tool: fnName,
+  };
 }
 
 /**
@@ -750,11 +802,16 @@ export async function runAgentLoop(
     if (!ok) slot.errors += 1;
     metrics.toolStats[name] = slot;
   };
-  // Signatures of the immediately-prior turn's tool calls. Per-turn multiset
-  // comparison (see `isDuplicateTurn`) restricts dedupe to "the model just
-  // repeated last turn", which is the case worth aborting on — a
-  // window-wide subset check produced false positives.
-  let prevTurnSigs: string[] | null = null;
+  // Ring buffer of the last DEDUPE_HISTORY turns' tool-call signatures. Per-turn
+  // multiset comparison (see `isDuplicateTurn`) flags "the model repeated a
+  // recent turn's exact set of calls" — including an A/B/A/B oscillation, which
+  // a one-turn-back check missed. Kept short so legitimate re-reads with real
+  // intervening progress are not false-positived.
+  const prevTurnSigsHistory: string[][] = [];
+  const pushTurnSigs = (sigs: string[]): void => {
+    prevTurnSigsHistory.push(sigs);
+    if (prevTurnSigsHistory.length > DEDUPE_HISTORY) prevTurnSigsHistory.shift();
+  };
   // Per-path read counter — guards against agents chunking the same file
   // into dozens of tiny reads and blowing the iteration budget.
   const readCounts = new Map<string, number>();
@@ -1024,7 +1081,7 @@ export async function runAgentLoop(
       // protocol) or the backend will reject the next request — so push one
       // duplicate_call response per call, not just the first.
       const sigs = toolCalls.map(toolCallSig);
-      if (isDuplicateTurn(sigs, prevTurnSigs)) {
+      if (isDuplicateTurn(sigs, prevTurnSigsHistory)) {
         msgs.push({
           _tmpKey: makeTmpKey(),
           conversation_id: opts.conversationId,
@@ -1053,12 +1110,12 @@ export async function runAgentLoop(
             opts.workflowRunId ?? null,
           );
         }
-        // Update prev-turn sigs even on a dup so two-back→one-back→now also fires.
-        prevTurnSigs = sigs;
+        // Record the dup turn too so an oscillation keeps matching history.
+        pushTurnSigs(sigs);
         continue;
       }
-      // Snapshot this turn's tool-call signatures for next iteration's compare.
-      prevTurnSigs = sigs;
+      // Snapshot this turn's tool-call signatures for next iterations' compare.
+      pushTurnSigs(sigs);
 
       // Assistant turn with tool calls
       const asstMsg: Message = {
@@ -1071,6 +1128,70 @@ export async function runAgentLoop(
       msgs.push(asstMsg);
       onUpdate([...msgs]);
       onStatusChange("tool");
+
+      // Parallel read-only prefetch (opt #1): when EVERY call this turn is a
+      // cacheable read-only tool (and we are not on a cloud route, which has
+      // already been truncated to a single call above), fire their backend IPC
+      // concurrently with a bounded pool. The serial loop below consumes these
+      // prefetched results IN ORDER, so result ordering, the read-only cache,
+      // stall counters, audit rows and abort handling all stay identical to the
+      // serial path — only the awaited IPC overlaps. `load_claude_skill` is
+      // excluded because it narrows the run's allowlist as a side effect and
+      // must run through the serial post-processing.
+      const isCloudRoute =
+        typeof opts.model === "string" && opts.model.endsWith(":cloud");
+      const canParallelize =
+        !isCloudRoute &&
+        toolCalls.length > 1 &&
+        toolCalls.every((tc) => {
+          const fn = tc.function?.name ?? "";
+          return (
+            isReadOnlyTool(fn) &&
+            fn !== "load_claude_skill" &&
+            (!allowlistSet || allowlistSet.has(fn))
+          );
+        });
+      const prefetched = new Map<
+        ToolCall,
+        { result: string; threw: boolean; durationMs: number }
+      >();
+      if (canParallelize) {
+        const tasks = toolCalls.map((tc) => async () => {
+          if (signal.aborted) return;
+          const fnName = tc.function?.name ?? "";
+          const parsed = parseArgs(tc.function?.arguments);
+          if (!parsed.ok) return; // serial loop emits bad_arguments
+          const args = parsed.args;
+          const ckey = cacheKey(fnName, args);
+          if (readOnlyCache.has(ckey)) return; // serial loop serves from cache
+          const started = performance.now();
+          try {
+            const result = await abortableToolResult(
+              executeTool(fnName, args, {
+                dryRun,
+                shellTrackKey: signal,
+                signal,
+                conversationId: opts.conversationId,
+                workspaceRoot,
+                workflowRunId: opts.workflowRunId ?? null,
+              }),
+              signal,
+            );
+            prefetched.set(tc, {
+              result,
+              threw: false,
+              durationMs: performance.now() - started,
+            });
+          } catch (e) {
+            prefetched.set(tc, {
+              result: formatToolError(e),
+              threw: true,
+              durationMs: performance.now() - started,
+            });
+          }
+        });
+        await runWithConcurrency(tasks, PARALLEL_READ_CAP);
+      }
 
       for (const tc of toolCalls) {
         if (signal.aborted) return null;
@@ -1123,17 +1244,18 @@ export async function runAgentLoop(
         const servedFromCache =
           isReadOnlyTool(fnName) && readOnlyCache.has(cacheKey(fnName, args));
         if (!servedFromCache) {
-          const stall = isReadFileStalling(fnName, args, readCounts);
+          const stall = isToolStalling(fnName, args, readCounts);
           if (stall.stalling) {
+            const stallMsg =
+              stall.tool === "read_file"
+                ? `read_file has been called ${stall.count} times for '${stall.key}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`
+                : `search_files has been run ${stall.count} times for the same pattern ('${stall.key}'). You already have these results — stop repeating the search and act on what you found, or answer the user now.`;
             pushToolResult(
               msgs,
               opts.conversationId,
               onUpdate,
               tc,
-              rejectionBody(
-                "stall_guard",
-                `read_file has been called ${stall.count} times for '${stall.path}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`,
-              ),
+              rejectionBody("stall_guard", stallMsg),
               {
                 approval: "auto",
                 outcome: "stall_guard",
@@ -1300,6 +1422,9 @@ export async function runAgentLoop(
         const toolStart = performance.now();
         let result: string;
         let toolErrorKind: string | null = null;
+        // Set when this call's backend IPC ran in the parallel prefetch above —
+        // its measured duration replaces the (near-zero) serial-await timing.
+        let prefetchDurationMs: number | null = null;
         try {
           if (fnName === "spawn_subagent") {
             const mode = typeof args.mode === "string" ? args.mode : "sync";
@@ -1338,6 +1463,24 @@ export async function runAgentLoop(
             const ckey = isCacheable ? cacheKey(fnName, args) : null;
             if (ckey != null && readOnlyCache.has(ckey)) {
               result = readOnlyCache.get(ckey)!;
+            } else if (prefetched.has(tc)) {
+              // Consume the result the parallel prefetch already produced for
+              // this call. Cache it exactly as the serial path would (skip
+              // error bodies so a transient failure isn't memoized).
+              const pf = prefetched.get(tc)!;
+              result = pf.result;
+              if (pf.threw) toolErrorKind = "tool_error";
+              prefetchDurationMs = pf.durationMs;
+              if (ckey != null && !pf.threw) {
+                let cacheable = true;
+                try {
+                  const r = JSON.parse(result) as { ok?: boolean } | null;
+                  if (r && r.ok === false) cacheable = false;
+                } catch {
+                  /* non-JSON read result — cache it */
+                }
+                if (cacheable) cacheStore(ckey, result);
+              }
             } else {
               // `shellTrackKey: signal` keys this loop's active-shell entry
               // by its AbortSignal. Sibling loops (parent + subagent) get
@@ -1419,7 +1562,7 @@ export async function runAgentLoop(
           result = formatToolError(e);
           toolErrorKind = "tool_error";
         }
-        const durationMs = performance.now() - toolStart;
+        const durationMs = prefetchDurationMs ?? performance.now() - toolStart;
         // C1: if Stop fired during the tool, `abortableToolResult` returned the
         // aborted sentinel. Pair it and END the loop rather than feeding it back
         // to the model for another turn. Pairing a result before returning keeps

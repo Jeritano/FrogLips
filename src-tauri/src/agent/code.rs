@@ -35,7 +35,7 @@ pub async fn find_definition(symbol: String, path: Option<String>) -> Result<Sea
         r"(\bfn\s+{s}\b|\bdef\s+{s}\b|\bfunction\s+{s}\b|\bclass\s+{s}\b|\bstruct\s+{s}\b|\benum\s+{s}\b|\btrait\s+{s}\b|\binterface\s+{s}\b|\btype\s+{s}\b|\bconst\s+{s}\b|\blet\s+{s}\b|\bvar\s+{s}\b|\bpub\s+(struct|enum|fn|trait|type|const|static)\s+{s}\b)",
         s = regex::escape(&symbol),
     );
-    search_files(root, pat, None, Some(true)).await
+    search_files(root, pat, None, Some(true), None).await
 }
 
 pub async fn find_references(symbol: String, path: Option<String>) -> Result<SearchResult, String> {
@@ -58,7 +58,7 @@ pub async fn find_references(symbol: String, path: Option<String>) -> Result<Sea
             .into_owned(),
     };
     let pat = format!(r"\b{}\b", regex::escape(&symbol));
-    search_files(root, pat, None, Some(true)).await
+    search_files(root, pat, None, Some(true), None).await
 }
 
 /* ── format_code ─────────────────────────────────────────────────────────── */
