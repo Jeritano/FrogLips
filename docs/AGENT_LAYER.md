@@ -326,7 +326,7 @@ The agent loop forwards this verbatim to the model. The system prompt instructs 
 
 ## Sandbox
 
-Two complementary layers:
+Three complementary layers:
 
 ### Protected paths (always blocked)
 
@@ -339,6 +339,12 @@ Write-blocked: all of the above plus `/System`, `/private/etc`, `/etc`, `/privat
 `agent_set_workspace(path)` canonicalizes the path and stores it in a `RwLock`. Persisted to settings.json. When set, every path passed to a tool must start with the canonical workspace root (after the path itself is canonicalized — symlink escape closed).
 
 When unset, the agent has full filesystem access (still subject to protected list and OS perms).
+
+### OS sandbox on shell/code (Seatbelt, default-on)
+
+The protected-path list above is enforced by the *filesystem tools* — it does nothing for a `run_shell`/`run_code` command that `cat`s a credential file directly. So those two tools additionally run their child under a macOS Seatbelt profile via `/usr/bin/sandbox-exec` (`agent/shell.rs` `base_command`). The profile is `(allow default)` with a `(deny file-read* file-write* …)` over the credential set no build legitimately reads: `~/.ssh`, `~/.gnupg`, `~/Library/Keychains`, `~/Library/Cookies`, `~/Library/Mail`, `~/Library/Messages`, `~/.local-llm-app`, and `~/Library/Application Support/Froglips`. Network and ordinary build inputs (`~/.gitconfig`, `~/.npmrc`, `~/.aws`, project files) are deliberately **left allowed** so git/npm/aws builds don't break.
+
+A one-time probe (`sandbox-exec -p <profile> /usr/bin/true`, cached in a `OnceLock`) gates the wrapper: if `sandbox-exec` is missing or the profile fails to load, the child runs unsandboxed rather than failing — a bad profile can never brick the shell tool. Set `FROGLIPS_NO_SHELL_SANDBOX=1` to disable. This composes with the other shell hardening in `capped_output(…, harden=true)`: a secret/loader-key env scrub, `setsid` + process-group kill on timeout/cancel, and `RLIMIT_FSIZE`/no-core. The per-call approval prompt is still the primary boundary; the sandbox is defense-in-depth for an approved-but-malicious command.
 
 ## Authorization model
 

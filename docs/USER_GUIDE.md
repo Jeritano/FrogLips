@@ -1,18 +1,20 @@
 # Froglips — User Guide
 
-Version 0.11.1 · macOS (Apple Silicon)
+Version 0.13.13 · macOS (Apple Silicon)
 
 ## 1. Install
 
+### From Homebrew
+
+```bash
+brew install --cask Jeritano/tap/froglips
+```
+
 ### From a release
 
-1. Download `Froglips_0.11.1_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
+1. Download the latest `Froglips_*_aarch64.dmg` from the [Releases page](https://github.com/Jeritano/FrogLips/releases/latest).
 2. Open the DMG and drag `Froglips.app` to `/Applications`.
-3. First launch: macOS may show "unidentified developer". Right-click the app → Open. Confirm.
-4. Optional one-line fix to strip Gatekeeper quarantine entirely:
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/Froglips.app
-   ```
+3. Double-click to launch. The app is signed with a Developer ID, notarized, and stapled, so it opens without any Gatekeeper right-click or quarantine workaround.
 
 ### From source
 
@@ -23,7 +25,7 @@ npm install
 npm run release
 ```
 
-This kills any running Froglips, builds, ad-hoc signs, and installs to `/Applications`.
+This kills any running Froglips, builds, signs, and installs to `/Applications` — notarized when Developer ID + notary credentials are configured, ad-hoc-signed otherwise.
 
 ## 2. Prerequisites
 
@@ -325,8 +327,8 @@ On **Installed**, click **+ Add manually** and choose a type:
   optional **env JSON** field. Local servers run with your full user
   privileges — only add commands you trust.
 - **Remote (URL)** — a **name** and a streamable-HTTP endpoint URL
-  (`https://…/mcp`). An optional **bearer token** is stored in a local
-  `0600` **secret store** (`secrets.json`), never in plaintext settings.
+  (`https://…/mcp`). An optional **bearer token** is stored in the **macOS
+  Keychain** (with a `0600`-file fallback), never in plaintext settings.
 
 ### Managing installed servers
 

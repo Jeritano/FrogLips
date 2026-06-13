@@ -217,52 +217,34 @@ new key, plus a security notice in the release notes directing users to
 download from GitHub manually. Auto-update cannot bridge a hostile-key
 gap.
 
-## Notarization roadmap
+## Notarization (current)
 
-The app currently ships **unsigned + unnotarized** by Apple. Gatekeeper
-warns on first launch; the README instructs users to right-click → Open.
-This trains real users to bypass Gatekeeper, which is a malware
-distribution vector other apps will exploit.
+Releases ship **Developer ID-signed, notarized, and stapled** — Gatekeeper
+trusts the binary, so there is no first-launch right-click or quarantine
+workaround. `scripts/release.sh` does this automatically when the signing
+credentials are present.
 
-Plan to address (sequence matters):
+Credentials live out-of-tree in `~/.tauri/froglips-notary.env` (mode `0600`,
+**never committed**), sourced by `release.sh`:
 
-1. **Enroll** in the Apple Developer Program ($99/yr). Required for a
-   Developer ID Application certificate, which is what notarization
-   binds against. Personal vs Organization enrollment is a tax/identity
-   question, not a technical one.
-2. **Generate** a Developer ID Application cert in Xcode → Settings →
-   Accounts → Manage Certificates. Export the `.p12` and password into
-   the release-build machine's keychain (and the password-manager backup
-   the same way the minisign key is stored — see Key custody above).
-3. **Update `scripts/release.sh`** to codesign with the real identity
-   instead of the ad-hoc `-`:
-   ```bash
-   codesign --force --options runtime --timestamp \
-            --sign "Developer ID Application: <your-name> (<team-id>)" \
-            Froglips.app
-   ```
-4. **Add notarize step** after `tauri build`:
-   ```bash
-   xcrun notarytool submit Froglips_0.11.x_aarch64.dmg \
-         --apple-id "$APPLE_ID" \
-         --password "$APP_SPECIFIC_PASSWORD" \
-         --team-id "$TEAM_ID" \
-         --wait
-   xcrun stapler staple Froglips_0.11.x_aarch64.dmg
-   xcrun stapler staple Froglips.app  # for the updater tarball
-   ```
-5. **Mirror in `release.yml`** — the CI runner needs the cert + an
-   app-specific password in GitHub Secrets:
-   - `APPLE_DEVELOPER_ID_CERT_P12` (base64-encoded)
-   - `APPLE_DEVELOPER_ID_CERT_PASSWORD`
-   - `APPLE_ID`, `APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
-6. **Update SECURITY.md** to remove the "intentionally not notarized"
-   line and bump to "first-launch shows nothing — Gatekeeper trusts the
-   binary".
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: <name> (<team-id>)"
+export APPLE_ID="<apple-id-email>"
+export APPLE_PASSWORD="<app-specific-password>"   # appleid.apple.com → App-Specific Passwords
+export APPLE_TEAM_ID="<team-id>"
+```
 
-This is gated on the $99/yr enrollment decision. Track as a single
-out-of-scope ticket; no code change in the meantime — the minisign
-updater signature continues to carry integrity for installed users.
+When `APPLE_SIGNING_IDENTITY` is set, `tauri build` codesigns with that
+identity and notarizes via `notarytool`; `release.sh` then staples both the
+`.app` (for the updater tarball) and the `.dmg`, repairs the signature if the
+DMG bundler clobbered it, smoke-tests the built app, and verifies the installed
+copy reports a Notarized Developer ID before swapping it into `/Applications`.
+With no signing identity present the build falls back to an ad-hoc signature for
+local-only use (Gatekeeper will warn — fine for a dev machine, not for release).
+
+CI does **not** notarize (no secrets on the runner); notarization happens on the
+maintainer's machine during `npm run release`. The minisign updater signature
+independently carries integrity for in-place updates.
 
 ## Troubleshooting builds
 
@@ -278,7 +260,8 @@ Then retry. The `.app` and updater `.tar.gz` are generated *after* DMG, so a DMG
 
 ### Codesign warns "replacing existing signature"
 
-That's fine — ad-hoc signing is idempotent. Each build re-signs.
+That's fine — signing is idempotent; each build re-signs (Developer ID for a
+release build, ad-hoc when no signing identity is configured).
 
 ### Updater says "no update available" when there clearly is
 

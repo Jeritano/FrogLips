@@ -126,7 +126,7 @@ Owns the spawned model-server child (formerly `mlx_server.rs`; renamed because i
 
 ### `settings.rs`
 
-JSON file at `~/Library/Application Support/Froglips/settings.json`. Stores `workspace_root` and other persisted prefs. Custom-backend (and MCP remote) API keys are **not** kept in this file — they live in a sibling `0600` `secrets.json` (account → key), redacted from the settings blob returned to the webview. Load on startup, save on change. (Keys formerly used the macOS login Keychain; dropped because ad-hoc re-signed builds reset the Keychain ACL and re-prompted on every access — the local owner-only file avoids that.)
+JSON file at `~/Library/Application Support/Froglips/settings.json`. Stores `workspace_root` and other persisted prefs. Custom-backend (and MCP remote) API keys are **not** kept in this file — by default they live in the **macOS login Keychain** (in-process Security.framework, account → key; ACL binds to the stable notarized signature), redacted from the settings blob returned to the webview. A sibling `0600` `secrets.json` is the fallback: older file-stored keys auto-migrate into the Keychain on first read, a Keychain failure falls back to the file so a key is never lost, and `FROGLIPS_SECRETS_FILE=1` forces the file. Load on startup, save on change. (Keys briefly used the file because *ad-hoc* re-signed builds reset the Keychain ACL and re-prompted; a stable notarized Developer ID signature removes that, so the Keychain is the default again.)
 
 ### `mcp/mod.rs` (native remote transport)
 
@@ -298,8 +298,9 @@ ModelBrowser.pull()
 | External URL opening (`open_external`) | Any `http(s)` URL with a valid host (the old host allowlist was removed so registry/model links resolve); non-http schemes rejected |
 | MCP remote SSRF / DNS-rebinding | `validate_remote_url` + `resolve_pinned_addrs`: resolve host, reject blocked IPs (link-local incl. `169.254.169.254`, unspecified, multicast, Alibaba `100.100.100.200`), pin the client to the validated addresses |
 | MCP remote response flooding | Chunk-bounded body read against `MAX_RESULT_BYTES`; 256-tool-per-server cap; tool name/description/schema sanitized for prompt injection |
-| Cloud API keys (custom backends, MCP remotes) | `0600` `secrets.json` (account → key, e.g. `mcp:<name>`); read server-side per request, redacted from settings + logs |
-| Subprocess leaks | All children use `kill_on_drop(true)` + timeouts |
+| Cloud API keys (custom backends, MCP remotes) | macOS Keychain by default (account → key, e.g. `mcp:<name>`; ACL bound to the notarized signature), `0600` `secrets.json` fallback w/ auto-migration; read server-side per request, redacted from settings + logs |
+| Approved-but-malicious `run_shell`/`run_code` | Default-on Seatbelt (`sandbox-exec`) profile denying `~/.ssh`/`~/.gnupg`/Keychains/cookies/Mail/Messages/app-stores; env-scrub; process-group kill on timeout/cancel; `RLIMIT_FSIZE`/no-core (`FROGLIPS_NO_SHELL_SANDBOX=1` opts out) |
+| Subprocess leaks | All children use `kill_on_drop(true)` + timeouts + a killed process group |
 
 ## Configuration
 
