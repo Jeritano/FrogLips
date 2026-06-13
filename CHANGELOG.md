@@ -4,6 +4,25 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.8] — 2026-06-12
+
+### Fixed
+- **Cloud models failed to install with "pull model manifest: file does not
+  exist."** The Model Library built the pull tag as a bare `<name>:cloud`, but
+  Ollama's size-tagged cloud models use `<name>:<size>-cloud`
+  (`gpt-oss:120b-cloud`, `qwen3-coder:480b-cloud`, `deepseek-v3.1:671b-cloud`).
+  The bare tag 404'd the manifest, and because a 404 doesn't look like a
+  sign-in error, the auto-`ollama signin` retry never kicked in. Cloud pull tags
+  now resolve via a verified map → largest-size heuristic → bare `:cloud`
+  (`lib/cloud-tags.ts`), so "Get cloud" uses the real tag and the existing
+  sign-in flow handles auth.
+- **Release script could delete a freshly-notarized install.** `release.sh`
+  ran `rm -rf /Applications/Froglips.app` whenever the post-install `spctl`
+  check didn't confirm within 10s — but `spctl`'s online assessment flakes for
+  seconds right after notarization, so a transient miss wiped a good install
+  (the recurring "installs then vanishes" report). It now widens the window,
+  treats only an explicit reject as fatal, and never deletes.
+
 ## [0.13.7] — 2026-06-12
 
 ### Agent tools — new capabilities

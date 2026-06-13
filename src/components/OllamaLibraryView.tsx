@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, Tag, Clock, Cloud, Trash2, Check } from "lucide-react";
 import { api } from "../lib/tauri-api";
+import { resolveCloudPullId } from "../lib/cloud-tags";
 import type {
   ModelEntry,
   OllamaLibraryEntry,
@@ -327,14 +328,16 @@ export function OllamaLibraryView({
       {!loading &&
         filteredSorted.map((entry) => {
           // Cloud-capability models aren't a local download — Ollama serves
-          // them under the `:cloud` tag (and they require `ollama signin`).
-          // Pull/track the suffixed id so a bare `ollama pull <name>` doesn't
-          // 404 on a missing local manifest ("file does not exist").
+          // them under a model-SPECIFIC cloud tag (and they require
+          // `ollama signin`). It is NOT uniformly `<name>:cloud`: the big
+          // size-tagged ones are `<name>:<size>-cloud` (gpt-oss:120b-cloud,
+          // qwen3-coder:480b-cloud). A bare `<name>:cloud` 404s the manifest
+          // ("file does not exist"), so resolve the real tag (known map →
+          // largest-size heuristic → bare `:cloud`). See lib/cloud-tags.ts.
           const isCloud = entry.capabilities.includes("cloud");
-          const pullId =
-            isCloud && !entry.name.includes(":")
-              ? `${entry.name}:cloud`
-              : entry.name;
+          const pullId = isCloud
+            ? resolveCloudPullId(entry.name, entry.sizes)
+            : entry.name;
           // Installed-match: a catalog row names a model FAMILY ("gemma4"), but
           // a local install carries a tag ("gemma4:latest"). Match the exact
           // pull id, the bare name, OR any installed variant whose base name
