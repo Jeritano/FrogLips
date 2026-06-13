@@ -16,12 +16,22 @@ All notable changes to Froglips are documented in this file. Format loosely foll
   now resolve via a verified map → largest-size heuristic → bare `:cloud`
   (`lib/cloud-tags.ts`), so "Get cloud" uses the real tag and the existing
   sign-in flow handles auth.
-- **Release script could delete a freshly-notarized install.** `release.sh`
-  ran `rm -rf /Applications/Froglips.app` whenever the post-install `spctl`
-  check didn't confirm within 10s — but `spctl`'s online assessment flakes for
-  seconds right after notarization, so a transient miss wiped a good install
-  (the recurring "installs then vanishes" report). It now widens the window,
-  treats only an explicit reject as fatal, and never deletes.
+- **The "vanishing Froglips.app" bug — root cause found and fixed.** The
+  Desktop-alias step ran `ln -sf /Applications/Froglips.app ~/Desktop/Froglips`.
+  Once `~/Desktop/Froglips` already existed as a symlink to the bundle (true
+  after the first release), `ln -sf` *dereferenced* it and created the new link
+  **inside** the bundle: `/Applications/Froglips.app/Froglips.app ->
+  /Applications/Froglips.app`. That stray self-link in the bundle root broke the
+  code-signature seal ("unsealed contents present in the bundle root"), so
+  Gatekeeper rejected the app and macOS removed it on launch. `release.sh` now
+  removes any existing alias before linking, so it can never write into the
+  installed bundle.
+- **Release script could also delete a freshly-notarized install.** The
+  post-install check ran `rm -rf /Applications/Froglips.app` whenever `spctl`
+  didn't confirm within 10s — but `spctl`'s online assessment flakes for seconds
+  right after notarization. It now widens the window, treats only an explicit
+  reject as fatal, and never deletes (so a broken install can be inspected
+  instead of vanishing).
 
 ## [0.13.7] — 2026-06-12
 

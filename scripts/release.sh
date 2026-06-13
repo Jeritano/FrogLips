@@ -329,7 +329,18 @@ fi
 
 echo "✓ Installed v${VERSION} at /Applications/Froglips.app"
 
-# Refresh Desktop alias
-ln -sf /Applications/Froglips.app "$HOME/Desktop/Froglips"
+# Refresh Desktop alias.
+# CRITICAL (2026-06-12): this WAS `ln -sf /Applications/Froglips.app
+# "$HOME/Desktop/Froglips"`. When ~/Desktop/Froglips already existed as a
+# SYMLINK to the bundle (which it does after the first release), `ln -sf`
+# DEREFERENCES it and creates the new link INSIDE the target dir — i.e.
+# /Applications/Froglips.app/Froglips.app -> /Applications/Froglips.app. That
+# self-link in the bundle ROOT broke the code-signature seal ("unsealed
+# contents present in the bundle root"), so Gatekeeper rejected the app and
+# macOS removed it on launch. THIS was the recurring "vanishing Froglips" bug.
+# Fix: remove any existing alias first, then create a fresh symlink — never let
+# `ln` follow a stale symlink into the installed bundle.
+rm -f "$HOME/Desktop/Froglips"
+ln -s /Applications/Froglips.app "$HOME/Desktop/Froglips"
 
 echo "✓ Desktop alias refreshed"
