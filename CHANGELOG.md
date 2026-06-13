@@ -4,6 +4,21 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.10] — 2026-06-12
+
+### Fixed
+- **Agent "says it's working but does nothing" on cloud models (multi-tool turns
+  silently lost).** Ollama Cloud streams each tool call on its own line with the
+  slot index nested under `function.index` and complete object arguments. The
+  parser read only the top-level `tc.index` (absent on this shape) and fell back
+  to the array position — always 0, since each line holds one call — so a turn
+  with several tool calls **collapsed into slot 0, each call clobbering the
+  previous**. A coding agent issuing multiple edits per turn lost all but the
+  last (or corrupted to zero → "0 tools"), then narrated ("let me continue…")
+  because its edits never landed. Tool-call slot indices are now resolved from
+  either shape (`tc.index` or `tc.function.index`). Verified directly against
+  `qwen3-coder:480b-cloud` (it tool-calls correctly; the app was dropping them).
+
 ## [0.13.9] — 2026-06-12
 
 ### Fixed

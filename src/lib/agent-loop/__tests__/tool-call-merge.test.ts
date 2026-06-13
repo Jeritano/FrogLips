@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { finalizeToolCalls, mergeToolCallChunk } from "../tool-call-merge";
+import {
+  finalizeToolCalls,
+  mergeToolCallChunk,
+  toolCallIndex,
+} from "../tool-call-merge";
 import type { PartialToolCall } from "../stream-types";
 
 /** Build a tool_call chunk; `function` always carries both fields the
@@ -58,6 +62,53 @@ describe("mergeToolCallChunk", () => {
     expect(finalizeToolCalls(acc)[0].function.arguments).toEqual({
       fresh: true,
     });
+  });
+});
+
+describe("toolCallIndex", () => {
+  it("reads a top-level index (OpenAI/MLX delta shape)", () => {
+    expect(toolCallIndex({ index: 2 }, 0)).toBe(2);
+  });
+
+  it("reads a function-nested index (Ollama Cloud shape)", () => {
+    expect(toolCallIndex({ function: { index: 1 } }, 0)).toBe(1);
+  });
+
+  it("falls back to the array position when neither index is present", () => {
+    expect(toolCallIndex({ function: {} }, 3)).toBe(3);
+    expect(toolCallIndex({}, 5)).toBe(5);
+  });
+
+  it("REGRESSION: Ollama Cloud multi-tool turn keeps distinct calls (not collapsed into slot 0)", () => {
+    // Each cloud tool call arrives on its OWN NDJSON line as a 1-element array,
+    // with the slot index nested under `function.index` and complete object
+    // arguments. The old `tc.index ?? i` resolution made both resolve to 0 →
+    // the 2nd clobbered the 1st → the agent lost a tool call ("0 tools").
+    const acc: PartialToolCall[] = [];
+    const line1 = [
+      {
+        id: "call_a",
+        function: { index: 0, name: "read_file", arguments: { path: "/a" } },
+      },
+    ];
+    const line2 = [
+      {
+        id: "call_b",
+        function: {
+          index: 1,
+          name: "write_file",
+          arguments: { path: "/b", content: "hi" },
+        },
+      },
+    ];
+    for (const tcs of [line1, line2]) {
+      tcs.forEach((tc, i) => mergeToolCallChunk(acc, toolCallIndex(tc, i), tc));
+    }
+    const out = finalizeToolCalls(acc);
+    expect(out.map((t) => t.function.name)).toEqual(["read_file", "write_file"]);
+    expect(out.map((t) => t.id)).toEqual(["call_a", "call_b"]);
+    expect(out[0].function.arguments).toEqual({ path: "/a" });
+    expect(out[1].function.arguments).toEqual({ path: "/b", content: "hi" });
   });
 });
 

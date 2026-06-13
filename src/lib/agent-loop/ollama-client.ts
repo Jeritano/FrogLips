@@ -2,7 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Message, ToolCall } from "../../types";
 import { withInactivityTimeout } from "../signal-utils";
 import { readLines } from "../stream-lines";
-import { finalizeToolCalls, mergeToolCallChunk } from "./tool-call-merge";
+import {
+  finalizeToolCalls,
+  mergeToolCallChunk,
+  toolCallIndex,
+} from "./tool-call-merge";
 import type { PartialToolCall, StreamChatResult } from "./stream-types";
 
 export const OLLAMA_BASE = "http://127.0.0.1:11434";
@@ -231,8 +235,10 @@ export async function streamOllamaChat(
         | undefined;
       if (Array.isArray(tcs)) {
         tcs.forEach((tc, i) => {
-          const idx = typeof tc.index === "number" ? tc.index : i;
-          mergeToolCallChunk(toolAcc, idx, tc);
+          // Cloud nests the slot index under `function.index`; local/MLX use the
+          // top-level `index`. toolCallIndex handles both so multi-tool turns
+          // don't collapse into slot 0.
+          mergeToolCallChunk(toolAcc, toolCallIndex(tc, i), tc);
         });
       }
     }

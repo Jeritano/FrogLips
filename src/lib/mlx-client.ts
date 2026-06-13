@@ -2,6 +2,7 @@ import type { Message, ServerStatus, ToolCall } from "../types";
 import {
   finalizeToolCalls,
   mergeToolCallChunk,
+  toolCallIndex,
 } from "./agent-loop/tool-call-merge";
 import type {
   PartialToolCall,
@@ -289,7 +290,7 @@ export async function streamMlxAgentChat(
           | undefined;
         if (Array.isArray(tcs)) {
           tcs.forEach((tc, i) => {
-            const idx = typeof tc.index === "number" ? tc.index : i;
+            const idx = toolCallIndex(tc, i);
             mergeToolCallChunk(toolAcc, idx, tc);
           });
         }

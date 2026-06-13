@@ -10,6 +10,40 @@ import type { ToolCall } from "../../types";
 import type { PartialToolCall } from "./stream-types";
 
 /**
+ * Resolve which accumulator slot a streaming tool_call chunk belongs to.
+ *
+ * Servers disagree on where the slot index lives:
+ *   - OpenAI-style deltas (MLX /v1/chat/completions) put it TOP-LEVEL: `tc.index`.
+ *   - Ollama Cloud nests it under the function: `tc.function.index`, and sends
+ *     each complete tool call on its own NDJSON line (a 1-element array each).
+ *
+ * Reading only `tc.index` made every cloud tool call resolve to the array-
+ * position fallback (always 0, since each line holds one call) — so a turn with
+ * N tool calls collapsed into slot 0, the 2nd clobbering the 1st. A multi-tool
+ * agent turn then lost all but the last call (or corrupted to zero), which
+ * surfaced as "0 tools" and the model narrating instead of acting. Prefer the
+ * explicit index from EITHER shape; fall back to array position only when
+ * neither is present.
+ */
+export function toolCallIndex(
+  tc: {
+    index?: number;
+    // `name`/`arguments` are listed so a wire `ToolCall["function"]` (which
+    // carries them) structurally satisfies this param — TS's weak-type check
+    // rejects an `{ index?: number }`-only shape against an object that has no
+    // `index`. We only read `index`.
+    function?: { index?: number; name?: string; arguments?: unknown } | null;
+  },
+  fallback: number,
+): number {
+  if (typeof tc.index === "number") return tc.index;
+  if (tc.function && typeof tc.function.index === "number") {
+    return tc.function.index;
+  }
+  return fallback;
+}
+
+/**
  * Merge an incoming tool_call chunk into the accumulator slot at `index`.
  * Some servers emit `arguments` as a string fragment (concat), others as a
  * full object (replace). Both forms are handled.
