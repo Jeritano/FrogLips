@@ -528,6 +528,13 @@ interface PushToolResultOpts {
   args?: Record<string, unknown>;
   /** Tool wall-clock duration in ms (default 0 for short-circuited calls). */
   durationMs?: number;
+  /**
+   * Perf: when true, skip the per-call `onUpdate([...msgs])` fan-out. Used by
+   * tight loops that push many results in one pass (duplicate-turn, abort-pair)
+   * so they can coalesce into a SINGLE `onUpdate` after the loop instead of one
+   * O(n) array clone per call. The audit row and `msgs` push still happen.
+   */
+  skipUpdate?: boolean;
 }
 
 /**
@@ -565,7 +572,7 @@ function pushToolResult(
     conversationId,
     workflowRunId,
   });
-  onUpdate([...msgs]);
+  if (!o.skipUpdate) onUpdate([...msgs]);
 }
 
 /** Multiset (sig → count) for a single turn. */
@@ -1030,10 +1037,17 @@ export async function runAgentLoop(
       // is actually sent. `applyContextBudget` collapses old turns and can drop a
       // `role:"tool"` result while keeping its assistant `tool_calls` turn (or
       // vice versa); an unpaired tool_call id 400s the next request
-      // ("tool_call_id not found"). The runner sanitizes its input (line 606) and
-      // every appended message, but the post-budget array is the one on the wire,
-      // so it gets the same guard here.
-      const sentMessages = stripUnpairedToolCalls(budgeted.messages);
+      // ("tool_call_id not found"). The runner sanitizes its input and every
+      // appended message, but the post-budget array is the one on the wire, so it
+      // gets the same guard here.
+      //
+      // Perf: orphans can only be introduced by the budgeter's Pass-2 turn
+      // collapse, which runs ONLY when it actually trimmed. When `trimmed` is
+      // false, `budgeted.messages` is an unmutated shallow copy of the already-
+      // sanitized `msgs`, so it is provably paired — skip the O(n) re-scan.
+      const sentMessages = budgeted.trimmed
+        ? stripUnpairedToolCalls(budgeted.messages)
+        : budgeted.messages;
 
       let result: {
         content: string;
@@ -1166,6 +1180,9 @@ export async function runAgentLoop(
           "duplicate_call",
           "You just called this exact tool with these exact arguments. Try a different approach or report what you've learned to the user.",
         );
+        // Perf: suppress the per-call onUpdate; coalesce into ONE fan-out after
+        // the loop (and the optional dropped-call reminder) so a multi-call
+        // duplicate turn doesn't clone the whole msgs array once per call.
         for (const tc of toolCalls) {
           const dupParsed = parseArgs(tc.function?.arguments);
           pushToolResult(
@@ -1179,6 +1196,7 @@ export async function runAgentLoop(
               outcome: "duplicate",
               errorKind: "duplicate_call",
               args: dupParsed.ok ? dupParsed.args : {},
+              skipUpdate: true,
             },
             opts.workflowRunId ?? null,
           );
@@ -1197,8 +1215,9 @@ export async function runAgentLoop(
               `${droppedParallelCount} additional tool call(s) you issued were dropped — ` +
               `reissue any that still matter on your next turn.`,
           });
-          onUpdate([...msgs]);
         }
+        // Single coalesced fan-out for the whole dedupe branch.
+        onUpdate([...msgs]);
         // Record the dup turn too so an oscillation keeps matching history.
         pushTurnSigs(sigs);
         continue;
@@ -1295,6 +1314,9 @@ export async function runAgentLoop(
         DENY_MESSAGE_BY_REASON.aborted ?? DENY_MESSAGE_BY_REASON.user_deny,
       );
       const pairAbortedFrom = (start: number) => {
+        // Perf: suppress the per-call onUpdate and fire a single coalesced one
+        // after the loop, so pairing many remaining calls on abort doesn't clone
+        // the whole msgs array once per call. Only fan out if anything was paired.
         for (let j = start; j < toolCalls.length; j++) {
           const t = toolCalls[j];
           const ap = parseArgs(t.function?.arguments);
@@ -1309,10 +1331,12 @@ export async function runAgentLoop(
               outcome: "denied",
               errorKind: "aborted",
               args: ap.ok ? ap.args : {},
+              skipUpdate: true,
             },
             opts.workflowRunId ?? null,
           );
         }
+        if (start < toolCalls.length) onUpdate([...msgs]);
       };
       for (let ti = 0; ti < toolCalls.length; ti++) {
         const tc = toolCalls[ti];
@@ -1322,6 +1346,11 @@ export async function runAgentLoop(
         }
 
         const fnName = tc.function?.name ?? "";
+        // Compute the MCP-name test once per call and reuse it in the
+        // dangerous-tool gate below (opt: it was re-evaluated in the `||` guard
+        // there). `classifyToolRisk` still calls isMcpToolName internally — that
+        // redundancy lives in dispatch.ts and is left untouched here.
+        const isMcp = isMcpToolName(fnName);
 
         // Allowlist gate — uses the precomputed Set (P0 #5).
         if (allowlistSet && !allowlistSet.has(fnName)) {
@@ -1361,13 +1390,27 @@ export async function runAgentLoop(
         }
         const args = parsed.args;
 
+        // Read-only cache key, computed ONCE per call and reused by the stall
+        // check, the serial cache probe, and cacheStore (perf: cacheKey does a
+        // sort+JSON.stringify and was previously recomputed 2-3× for the same
+        // call within a turn). Null for non-cacheable tools so the cache paths
+        // are skipped entirely.
+        //
+        // `load_claude_skill` is deliberately EXCLUDED even though it is in
+        // READ_ONLY_TOOLS: loading a skill narrows the run's allowlist as a side
+        // effect (see the executeTool branch below), so serving it from cache
+        // would skip that re-narrowing. This mirrors its exclusion from the
+        // parallel prefetch above (bug: cached-serve dropped the side effect).
+        const isCacheable =
+          isReadOnlyTool(fnName) && fnName !== "load_claude_skill";
+        const ckey = isCacheable ? cacheKey(fnName, args) : null;
+
         // Stall guard: if the agent keeps re-reading the same file in chunks,
         // bail out with a hint instead of letting it eat the iteration budget.
         // Skip a re-read the read-only cache will serve instantly (no IPC) — only
         // genuine backend reads should count toward the stall limit, otherwise a
         // legitimately-cached re-read is penalized as if it were chunk-thrashing.
-        const servedFromCache =
-          isReadOnlyTool(fnName) && readOnlyCache.has(cacheKey(fnName, args));
+        const servedFromCache = ckey != null && readOnlyCache.has(ckey);
         if (!servedFromCache) {
           const stall = isToolStalling(fnName, args, readCounts);
           if (stall.stalling) {
@@ -1401,7 +1444,7 @@ export async function runAgentLoop(
         // out-of-process and not in the built-in DANGEROUS_TOOLS list, so they
         // are gated explicitly here — classifyToolRisk returns a non-normal
         // risk for them, and a careless/malicious MCP tool must never auto-run.
-        if (DANGEROUS_TOOLS.has(fnName) || isMcpToolName(fnName)) {
+        if (DANGEROUS_TOOLS.has(fnName) || isMcp) {
           const risk = await classifyToolRisk(fnName, args);
 
           // Policy wins over session approval state. A loaded policy can
@@ -1584,9 +1627,9 @@ export async function runAgentLoop(
             // read-only tool with the same args (e.g. read_file the same path
             // twice across two iterations), return the cached payload instead
             // of round-tripping IPC. The cache is invalidated below whenever a
-            // non-read-only tool succeeds.
-            const isCacheable = isReadOnlyTool(fnName);
-            const ckey = isCacheable ? cacheKey(fnName, args) : null;
+            // non-read-only tool succeeds. `ckey`/`isCacheable` were computed
+            // once at the top of the call (load_claude_skill is excluded so its
+            // allowlist-narrowing side effect always re-runs).
             if (ckey != null && readOnlyCache.has(ckey)) {
               result = readOnlyCache.get(ckey)!;
             } else if (prefetched.has(tc)) {

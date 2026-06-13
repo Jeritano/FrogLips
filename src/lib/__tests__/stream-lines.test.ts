@@ -71,6 +71,17 @@ describe("readLines", () => {
     expect(lines).not.toContain(huge);
   });
 
+  it("keeps complete lines coalesced into the same read as an over-cap tail", async () => {
+    // A single read carrying two complete lines followed by an oversized
+    // unterminated tail (e.g. a multi-MB tool_call blob). The complete lines
+    // must be drained before the overflow guard truncates the tail — they
+    // must not be collateral damage of the cap. (bug regression)
+    const huge = "z".repeat((1 << 20) + 100);
+    const lines = await collect([`first\nsecond\n${huge}`]);
+    expect(lines).toEqual(["first", "second"]);
+    expect(lines).not.toContain(huge);
+  });
+
   it("discards an oversized buffer with no newline boundary", async () => {
     // No newline anywhere in an over-cap buffer — buffer is cleared entirely,
     // then a final clean line still parses.

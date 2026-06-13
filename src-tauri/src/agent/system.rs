@@ -41,9 +41,16 @@ pub async fn applescript_run(script: String) -> Result<ShellResult, String> {
                 })
             }
         };
+    // Review 2026-06 (medium/security): osascript output is at least as
+    // untrusted as run_shell/clipboard output — AppleScript can read Mail,
+    // Messages, Safari page contents, the clipboard, etc. Fence both channels
+    // through the injection scanner before they re-enter the agent loop, exactly
+    // as run_shell (shell.rs `fence_output`) and clipboard_get do.
+    let stdout = super::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&out)).0;
+    let stderr = super::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&err)).0;
     Ok(ShellResult {
-        stdout: String::from_utf8_lossy(&out).into_owned(),
-        stderr: String::from_utf8_lossy(&err).into_owned(),
+        stdout,
+        stderr,
         exit_code,
         duration_ms: started.elapsed().as_millis() as u64,
         timed_out: false,

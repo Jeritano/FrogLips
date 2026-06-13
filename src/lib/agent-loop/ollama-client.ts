@@ -154,8 +154,9 @@ export async function streamOllamaChat(
   signal: AbortSignal,
   onContentChunk: (delta: string) => void,
 ): Promise<StreamChatResult> {
-  // Inactivity watchdog: arm with the generous first-byte window, then drop to
-  // the per-token idle cadence once headers arrive and re-arm on every line.
+  // Inactivity watchdog: arm with the generous first-byte / cold-start window
+  // and HOLD it until the first real token arrives, then drop to the per-token
+  // idle cadence and re-arm on every line.
   const to = withInactivityTimeout(
     signal,
     OLLAMA_IDLE_TIMEOUT_MS,
@@ -170,8 +171,12 @@ export async function streamOllamaChat(
     body: JSON.stringify({ ...(body as object), stream: true }),
     signal: to.signal,
   });
-  // Headers arrived — switch from the cold-start window to the idle cadence.
-  to.kick();
+  // Bug fix (low/bug): headers can flush on request-accept while a queued cloud
+  // MoE is still spinning up the first token. Re-kicking to the 120s idle cap
+  // here would abort that legitimate cold-start. Keep the generous window armed
+  // until the first content/tool line; the switch to idle cadence happens in
+  // processLine once the stream is actually producing tokens.
+  to.kick(OLLAMA_CONNECT_TIMEOUT_MS);
   if (!res.ok) {
     to.clear();
     const errText = await res.text().catch(() => "");
@@ -210,11 +215,16 @@ export async function streamOllamaChat(
   const toolAcc: PartialToolCall[] = [];
   let promptTok: number | undefined;
   let evalTok: number | undefined;
+  // Stays armed at the generous cold-start window until the first real
+  // content/tool delta lands; flips to the 120s idle cadence thereafter.
+  let sawFirstToken = false;
 
   const processLine = (line: string) => {
     // Any line — including an empty keep-alive — proves the stream is alive, so
-    // re-arm the idle watchdog before doing anything else.
-    to.kick();
+    // re-arm the watchdog before doing anything else. Before the first token we
+    // re-arm at the generous cold-start window (a queued cloud MoE may emit
+    // keep-alives while still spinning up); once tokens flow we use idle cadence.
+    to.kick(sawFirstToken ? undefined : OLLAMA_CONNECT_TIMEOUT_MS);
     const trimmed = line.trim();
     if (!trimmed) return;
     let obj: Record<string, unknown>;
@@ -240,6 +250,16 @@ export async function streamOllamaChat(
           // don't collapse into slot 0.
           mergeToolCallChunk(toolAcc, toolCallIndex(tc, i), tc);
         });
+      }
+      // First real content/tool delta observed — from here a >120s silence is a
+      // genuine stall, so drop to the idle cadence (re-armed on every line).
+      if (!sawFirstToken) {
+        const hasContent = typeof c === "string" && c.length > 0;
+        const hasTools = Array.isArray(tcs) && tcs.length > 0;
+        if (hasContent || hasTools) {
+          sawFirstToken = true;
+          to.kick();
+        }
       }
     }
     if (typeof obj.prompt_eval_count === "number")

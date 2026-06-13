@@ -11,13 +11,27 @@ try {
   /* localStorage unavailable — keep the dark default */
 }
 
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
-import { QuickPrompt } from "./components/QuickPrompt";
-import { DetachedChatView } from "./components/DetachedChatView";
 import { parseDetachedParams } from "./lib/detached-params";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+
+// Perf review (2026-06-13, medium): lazy-load the three window roots so each
+// auxiliary webview boots from its own chunk instead of the full chat bundle.
+// Static imports forced a single shared entry chunk (~878 KB incl.
+// ChatWindow/markdown/katex) onto the lightweight QuickPrompt window. With
+// React.lazy + Suspense the bundler can split App/DetachedChatView (which need
+// ChatWindow) away from QuickPrompt, which imports none of that tree.
+// QuickPrompt/DetachedChatView are named exports, so map them to `default`.
+const App = lazy(() => import("./App"));
+const QuickPrompt = lazy(() =>
+  import("./components/QuickPrompt").then((m) => ({ default: m.QuickPrompt })),
+);
+const DetachedChatView = lazy(() =>
+  import("./components/DetachedChatView").then((m) => ({
+    default: m.DetachedChatView,
+  })),
+);
 
 // Single bundle, three entrypoints. The Rust side opens auxiliary webviews
 // with query-string flags; we branch here so each window only loads the
@@ -35,13 +49,15 @@ const detached = parseDetachedParams(window.location.search);
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary label="App">
-      {isQuick ? (
-        <QuickPrompt />
-      ) : detached ? (
-        <DetachedChatView conversationId={detached.conversationId} />
-      ) : (
-        <App />
-      )}
+      <Suspense fallback={null}>
+        {isQuick ? (
+          <QuickPrompt />
+        ) : detached ? (
+          <DetachedChatView conversationId={detached.conversationId} />
+        ) : (
+          <App />
+        )}
+      </Suspense>
     </ErrorBoundary>
   </React.StrictMode>,
 );

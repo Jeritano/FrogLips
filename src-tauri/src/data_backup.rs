@@ -165,11 +165,15 @@ pub fn collect_export(conn: &Connection) -> Result<ExportDoc> {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
+        // Prepare the per-conversation messages query once and reuse it across
+        // every conversation — only the bound `c.id` changes. Hoisted out of
+        // the loop to avoid re-parsing/re-planning the identical SQL N times
+        // (perf), matching how conv_stmt/mem_stmt are each prepared once.
+        let mut msg_stmt = conn.prepare(
+            "SELECT role, content, created_at, model, images
+             FROM messages WHERE conversation_id = ?1 ORDER BY id",
+        )?;
         for c in convs {
-            let mut msg_stmt = conn.prepare(
-                "SELECT role, content, created_at, model, images
-                 FROM messages WHERE conversation_id = ?1 ORDER BY id",
-            )?;
             let messages: Vec<ExportMessage> = msg_stmt
                 .query_map(params![c.id], |r| {
                     Ok(ExportMessage {

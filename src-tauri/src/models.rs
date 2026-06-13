@@ -54,16 +54,22 @@ pub fn list_ollama_models() -> Result<Vec<ModelEntry>> {
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
 
-    let child = Arc::new(PLMutex::new(
-        std::process::Command::new("ollama")
-            .arg("list")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("ollama not found on PATH")?,
-    ));
+    let mut spawned = std::process::Command::new("ollama")
+        .arg("list")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("ollama not found on PATH")?;
 
-    let stdout = child.lock().stdout.take();
+    // Capture the pid up front so the timeout path can SIGKILL the child WITHOUT
+    // taking the same lock the reader thread holds for the entire duration of
+    // wait(). Locking it here would deadlock: the reader is parked inside
+    // wait() holding the mutex until the daemon exits, so the timeout's kill()
+    // would block on child.lock() and never fire against a genuinely hung
+    // process — defeating the kill-on-timeout design. (low-severity bug fix)
+    let pid = spawned.id();
+    let stdout = spawned.stdout.take();
+    let child = Arc::new(PLMutex::new(spawned));
     let (tx, rx) = mpsc::channel::<Result<(std::process::ExitStatus, String)>>();
     let child_for_reader = child.clone();
     std::thread::spawn(move || {
@@ -79,10 +85,14 @@ pub fn list_ollama_models() -> Result<Vec<ModelEntry>> {
     let (exit_status, stdout_buf) = match rx.recv_timeout(Duration::from_secs(5)) {
         Ok(r) => r?,
         Err(_) => {
-            // Kill the hung child so the reader thread can drain and exit
-            let mut c = child.lock();
-            let _ = c.kill();
-            let _ = c.wait();
+            // Kill the hung child by pid so the reader thread can drain and
+            // exit. We deliberately do NOT take child.lock() here — the reader
+            // may be holding it inside wait() (see comment above). SIGKILL by
+            // pid is safe because the pid is still live (the reader hasn't
+            // reaped it yet); the reader's own wait() then reaps the zombie.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
             return Err(anyhow::anyhow!("ollama list timed out after 5s"));
         }
     };
@@ -192,7 +202,14 @@ fn hf_hub_dir() -> PathBuf {
 }
 
 fn cached_dir_size(path: &Path) -> Result<u64> {
-    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    // Bug (low): a model dir's top-level mtime only moves when its direct
+    // entries (blobs/ snapshots/ refs/) are added/removed — NOT when HF writes
+    // new/larger blobs *inside* those existing subdirs on a re-pull, a new
+    // revision, or a partial download completing. Keying solely on the top-dir
+    // mtime returns the stale first-seen size forever. Fold in the `blobs/`
+    // mtime (where weights actually land) so the cache key advances when the
+    // on-disk size really changes.
+    let mtime = dir_size_cache_key(path);
     if let Some(mt) = mtime {
         let mut cache = DIR_SIZE_CACHE.lock();
         if let Some((cached_mt, size)) = cache.get(path) {
@@ -208,6 +225,21 @@ fn cached_dir_size(path: &Path) -> Result<u64> {
     }
 }
 
+/// Cache-invalidation key for a `models--*` dir: the max of the top-level dir
+/// mtime and the `blobs/` subdir mtime. New blobs land in `blobs/`, bumping its
+/// mtime even when the parent's direct entries are unchanged, so this advances
+/// whenever the model's real size grows.
+fn dir_size_cache_key(path: &Path) -> Option<SystemTime> {
+    let top = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    let blobs = std::fs::metadata(path.join("blobs"))
+        .and_then(|m| m.modified())
+        .ok();
+    Some(match blobs {
+        Some(b) if b > top => b,
+        _ => top,
+    })
+}
+
 fn dir_size(path: &Path) -> Result<u64> {
     // Resolve the root once so symlinks pointing outside the model directory
     // are not followed. HF snapshots contain symlinks into the blob store
@@ -215,8 +247,15 @@ fn dir_size(path: &Path) -> Result<u64> {
     let root = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut total = 0u64;
     let mut stack = vec![path.to_path_buf()];
+    // Best-effort walk (low-severity bug fix): a single unreadable entry
+    // (permission error, a file/dir removed mid-walk by a concurrent HF
+    // pull/GC, a broken mount) must NOT abort the whole walk via `?` and
+    // collapse the model's size to 0. Skip the offending entry and keep
+    // accumulating so we report a slightly-low total instead of zero.
     while let Some(p) = stack.pop() {
-        let md = std::fs::symlink_metadata(&p)?;
+        let Ok(md) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
         if md.file_type().is_symlink() {
             // Resolve the symlink; only follow if it stays inside the model root
             // and points to a regular file. Skip directories to avoid loops.
@@ -232,8 +271,10 @@ fn dir_size(path: &Path) -> Result<u64> {
             continue;
         }
         if md.is_dir() {
-            for entry in std::fs::read_dir(&p)? {
-                stack.push(entry?.path());
+            if let Ok(rd) = std::fs::read_dir(&p) {
+                for entry in rd.flatten() {
+                    stack.push(entry.path());
+                }
             }
         } else {
             total += md.len();

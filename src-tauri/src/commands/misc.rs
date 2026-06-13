@@ -133,6 +133,16 @@ pub async fn append_diag_log(line: String) -> Result<(), String> {
     crate::commands::blocking(move || -> anyhow::Result<()> {
         use std::fs::OpenOptions;
         use std::io::Write;
+        // bug (low): the rotate+append below is a non-atomic read-modify-write.
+        // Because this command runs its whole body on the blocking pool, two
+        // concurrent IPC calls both observing the file over MAX_FILE_BYTES would
+        // both truncate-write — the second clobbering the first's truncation and
+        // any O_APPEND line that landed between, losing diag lines. Serialize the
+        // entire critical section under a process-global lock so rotation and
+        // append for diag.log are mutually exclusive. (crash_log avoids this only
+        // by being driven from a single panic hook, so there's no lock to mirror.)
+        static DIAG_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = DIAG_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Some(home) = dirs::home_dir() else {
             anyhow::bail!("no home dir");
         };

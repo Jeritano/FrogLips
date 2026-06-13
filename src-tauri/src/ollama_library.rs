@@ -68,6 +68,24 @@ type CacheCell = Option<(Instant, Vec<OllamaLibraryEntry>)>;
 
 static CACHE: Lazy<Mutex<CacheCell>> = Lazy::new(|| Mutex::new(None));
 
+/// Card-field selectors, compiled once per process (perf: low). These are
+/// static and identical across every card, so recompiling them per call to
+/// `parse_card` was wasted parser work — ~7 compiles for each of the 30-100
+/// cards on each of the two pages, per fetch. `expect` is safe: these are
+/// hard-coded literals that always compile.
+static NAME_SEL: Lazy<Selector> = Lazy::new(|| Selector::parse("h2").expect("h2 selector"));
+static DESC_SEL: Lazy<Selector> = Lazy::new(|| Selector::parse("p").expect("p selector"));
+static CAP_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("span[x-test-capability]").expect("capability selector"));
+static SIZE_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("span[x-test-size]").expect("size selector"));
+static PULL_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("span[x-test-pull-count]").expect("pull-count selector"));
+static TAGC_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("span[x-test-tag-count]").expect("tag-count selector"));
+static UPD_SEL: Lazy<Selector> =
+    Lazy::new(|| Selector::parse("span[x-test-updated]").expect("updated selector"));
+
 /// Fetch + parse the public library and cloud catalogues. Cached for 10 min
 /// per-process.
 ///
@@ -210,7 +228,7 @@ pub fn parse_library(html: &str) -> Vec<OllamaLibraryEntry> {
                 v
             } else if let Some(fb) = fallback {
                 doc.select(&fb)
-                    .filter(|el| el.select(&h2_sel()).next().is_some())
+                    .filter(|el| el.select(&NAME_SEL).next().is_some())
                     .collect()
             } else {
                 Vec::new()
@@ -228,23 +246,11 @@ pub fn parse_library(html: &str) -> Vec<OllamaLibraryEntry> {
     out
 }
 
-fn h2_sel() -> Selector {
-    Selector::parse("h2").expect("h2 selector compiles")
-}
-
 fn parse_card(card: ElementRef<'_>) -> Option<OllamaLibraryEntry> {
-    // Compile selectors lazily per card — these are cheap (microseconds)
-    // and avoids threading a struct of selectors through every helper.
-    let name_sel = Selector::parse("h2").ok()?;
-    let desc_sel = Selector::parse("p").ok()?;
-    let cap_sel = Selector::parse("span[x-test-capability]").ok()?;
-    let size_sel = Selector::parse("span[x-test-size]").ok()?;
-    let pull_sel = Selector::parse("span[x-test-pull-count]").ok()?;
-    let tagc_sel = Selector::parse("span[x-test-tag-count]").ok()?;
-    let upd_sel = Selector::parse("span[x-test-updated]").ok()?;
-
+    // Selectors are compiled once at module scope (see *_SEL statics) rather
+    // than per card — they're static and identical for every card.
     let name = card
-        .select(&name_sel)
+        .select(&NAME_SEL)
         .next()
         .map(|el| collect_text(el))
         .map(|s| s.trim().to_string())
@@ -254,42 +260,42 @@ fn parse_card(card: ElementRef<'_>) -> Option<OllamaLibraryEntry> {
     // secondary <p> (e.g. release-note callouts on featured models) gets
     // ignored.
     let description = card
-        .select(&desc_sel)
+        .select(&DESC_SEL)
         .next()
         .map(|el| collect_text(el))
         .map(|s| trim_to(&s, DESC_CAP))
         .unwrap_or_default();
 
     let capabilities: Vec<String> = card
-        .select(&cap_sel)
+        .select(&CAP_SEL)
         .map(|el| collect_text(el).to_ascii_lowercase())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
 
     let sizes: Vec<String> = card
-        .select(&size_sel)
+        .select(&SIZE_SEL)
         .map(|el| collect_text(el).to_ascii_lowercase())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
 
     let pulls = card
-        .select(&pull_sel)
+        .select(&PULL_SEL)
         .next()
         .map(|el| collect_text(el))
         .map(|s| parse_pulls(&s))
         .unwrap_or(0);
 
     let tag_count = card
-        .select(&tagc_sel)
+        .select(&TAGC_SEL)
         .next()
         .map(|el| collect_text(el))
         .map(|s| parse_first_u32(&s))
         .unwrap_or(0);
 
     let updated_relative = card
-        .select(&upd_sel)
+        .select(&UPD_SEL)
         .next()
         .map(|el| collect_text(el))
         .map(|s| s.trim().to_string())

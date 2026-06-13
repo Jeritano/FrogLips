@@ -817,6 +817,17 @@ const OLLAMA: CatalogEntry[] = [
   },
 ];
 
+/* Stable fallback array for OllamaLibraryView. OLLAMA is a module constant
+ * whose projected shape never changes, so we compute this once instead of
+ * re-mapping ~100 objects on every ModelBrowser render (perf: low). */
+const OLLAMA_FALLBACK = OLLAMA.map((c) => ({
+  id: c.id,
+  label: c.label,
+  desc: c.desc,
+  tags: c.tags,
+  size: c.size,
+}));
+
 interface Props {
   onClose: () => void;
   onPulled: () => void;
@@ -1218,13 +1229,7 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
               done={done}
               errors={errors}
               confirmDelete={confirmDelete}
-              fallback={OLLAMA.map((c) => ({
-                id: c.id,
-                label: c.label,
-                desc: c.desc,
-                tags: c.tags,
-                size: c.size,
-              }))}
+              fallback={OLLAMA_FALLBACK}
               query={query}
             />
           )}

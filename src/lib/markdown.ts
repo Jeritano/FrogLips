@@ -330,8 +330,12 @@ export function chipifyCitations(root: HTMLElement | DocumentFragment): void {
       continue;
     }
     // Reset stickiness for each fresh string (CITATION_RE is /g).
-    CITATION_RE.lastIndex = 0;
-    if (!CITATION_RE.test(text)) continue;
+    // Perf (low/optimization): we do NOT pre-`.test()` here. The expensive
+    // lookbehind+path-alternation regex was previously walked twice per node
+    // (a standalone test() then the exec loop). The single exec loop below
+    // already short-circuits on no match; we track `produced` so a no-match
+    // node skips the DOM rebuild (the tail still appends the full text, so a
+    // non-empty `frag` alone can't tell us whether a chip was emitted).
     CITATION_RE.lastIndex = 0;
 
     // Audit L-F6 (2026-05-28): hoist `code.ownerDocument` once per loop
@@ -345,6 +349,7 @@ export function chipifyCitations(root: HTMLElement | DocumentFragment): void {
     // then replace the inline <code>'s contents wholesale.
     const frag = doc.createDocumentFragment();
     let lastIndex = 0;
+    let produced = false;
     let m: RegExpExecArray | null;
     while ((m = CITATION_RE.exec(text)) !== null) {
       if (m.index > lastIndex) {
@@ -370,18 +375,21 @@ export function chipifyCitations(root: HTMLElement | DocumentFragment): void {
       a.setAttribute("href", "#");
       a.textContent = basenameWithLine(matchStr);
       frag.appendChild(a);
+      produced = true;
       lastIndex = m.index + matchStr.length;
     }
+    // No chip emitted → leave the <code> untouched (avoids needless DOM
+    // rebuild for nodes that passed the cheap pre-filter but matched no
+    // path-shaped citation).
+    if (!produced) continue;
     if (lastIndex < text.length) {
       frag.appendChild(doc.createTextNode(text.slice(lastIndex)));
     }
-    // Only commit if we actually produced at least one chip.
-    if (frag.childNodes.length > 0) {
-      // Replace the <code>'s children with the new fragment. The <code>
-      // wrapper itself stays — the chip just lives inside it.
-      while (code.firstChild) code.removeChild(code.firstChild);
-      code.appendChild(frag);
-    }
+    // We produced at least one chip — commit the rebuilt contents.
+    // Replace the <code>'s children with the new fragment. The <code>
+    // wrapper itself stays — the chip just lives inside it.
+    while (code.firstChild) code.removeChild(code.firstChild);
+    code.appendChild(frag);
   }
 }
 

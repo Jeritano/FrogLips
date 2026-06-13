@@ -174,11 +174,14 @@ pub fn run() {
                 .map(|cfg| {
                     let limiter = Arc::clone(&limiter);
                     tokio::spawn(async move {
-                        // permit released on drop at end of task
-                        let _permit = limiter
-                            .acquire_owned()
-                            .await
-                            .expect("mcp autostart semaphore closed");
+                        // permit released on drop at end of task.
+                        // acquire_owned only errors if the semaphore is closed;
+                        // bail quietly rather than panicking in this detached
+                        // task (the work is best-effort and already logs/skips
+                        // failures below).
+                        let Ok(_permit) = limiter.acquire_owned().await else {
+                            return;
+                        };
                         let name = cfg.name.clone();
                         // Remote (streamable-HTTP) server: token comes from the
                         // Keychain (account mcp:<name>), never settings.json.

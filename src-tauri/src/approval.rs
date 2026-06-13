@@ -44,21 +44,17 @@ static RECENT_MINTS: Lazy<Mutex<Vec<Instant>>> = Lazy::new(|| Mutex::new(Vec::ne
 
 /// Generate a 128-bit cryptographically-random opaque token, hex-encoded.
 ///
-/// Reads from the OS CSPRNG via `/dev/urandom` (macOS/Linux). Hex-encodes
-/// 16 raw bytes → 32 chars. Returns `Err` on read failure rather than
-/// falling back to a predictable mix — review M3 (2026-05-24) flagged the
-/// old time+counter fallback as bruteforceable inside the 60 s TTL window
-/// if `/dev/urandom` were ever unreadable. Hard-fail keeps the security
-/// posture monotonic: if we can't generate true entropy we don't mint a
-/// token at all.
+/// Fills 16 bytes from the OS CSPRNG via the `getrandom` crate (same entropy
+/// source as `/dev/urandom`, no per-call file open, and portable — matches the
+/// pattern already used in `mcp/oauth.rs`). Hex-encodes 16 raw bytes → 32
+/// chars. Returns `Err` on failure rather than falling back to a predictable
+/// mix — review M3 (2026-05-24) flagged the old time+counter fallback as
+/// bruteforceable inside the 60 s TTL window if the CSPRNG were ever
+/// unreadable. Hard-fail keeps the security posture monotonic: if we can't
+/// generate true entropy we don't mint a token at all.
 fn random_token() -> Result<String, String> {
-    use std::io::Read;
-
     let mut buf = [0u8; 16];
-    let mut f = std::fs::File::open("/dev/urandom")
-        .map_err(|e| format!("approval: cannot open /dev/urandom: {e}"))?;
-    f.read_exact(&mut buf)
-        .map_err(|e| format!("approval: read /dev/urandom failed: {e}"))?;
+    getrandom::getrandom(&mut buf).map_err(|e| format!("approval: getrandom failed: {e}"))?;
 
     let mut out = String::with_capacity(32);
     for b in buf {

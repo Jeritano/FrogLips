@@ -197,23 +197,29 @@ fn warn_if_persist_batch_failed(rows: &[(String, i64, i64)]) {
 
 /// Drop persisted last-fired rows whose card_key is not in `keep` — keeps the
 /// table from growing as workflows/cards are edited or deleted.
+///
+/// Perf (review 2026-06-13): instead of reading the whole table into a Vec and
+/// issuing one auto-committed DELETE per stale key (a full-table SELECT + N
+/// implicit transactions/fsyncs, with zero rows actually deleted in the common
+/// steady state), let SQLite do the filtering with a single set-based DELETE.
+/// rusqlite is built with only `["bundled","backup"]` here — no `array`/carray
+/// feature — so the keep set is bound via a dynamic `IN (?, ?, …)` placeholder
+/// list rather than `rarray(?1)`. One statement, one implicit transaction, no
+/// SELECT and no per-key Vec allocation.
 pub fn prune_card_last_fired(keep: &std::collections::HashSet<String>) -> Result<()> {
     let conn = get_db()?;
-    let existing: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT card_key FROM workflow_card_fired")?;
-        let rows = stmt
-            .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    for k in existing {
-        if !keep.contains(&k) {
-            conn.execute(
-                "DELETE FROM workflow_card_fired WHERE card_key = ?1",
-                params![k],
-            )?;
-        }
+    if keep.is_empty() {
+        // `NOT IN ()` is not valid SQL — an empty keep set means "drop all".
+        conn.execute("DELETE FROM workflow_card_fired", [])?;
+        return Ok(());
     }
+    // Build `?,?,…` once, then bind each kept key positionally.
+    let placeholders = std::iter::repeat_n("?", keep.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("DELETE FROM workflow_card_fired WHERE card_key NOT IN ({placeholders})");
+    let params: Vec<&dyn rusqlite::ToSql> = keep.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
+    conn.execute(&sql, params.as_slice())?;
     Ok(())
 }
 
@@ -941,7 +947,25 @@ fn scheduler_scan(
     // `persist_card_last_fired_batch`) instead of an upsert per card.
     let mut pending_persist: Vec<(String, i64, i64)> = Vec::new();
 
+    // Set false if we break out of the scan early on a shutdown request: the
+    // `seen`/`live_ids` sets are then incomplete, so the post-loop bookkeeping
+    // (cache/last_fired retention and especially the disk prune keyed off
+    // `seen`) must be skipped — pruning against a partial `seen` would delete
+    // valid persisted fire records for not-yet-scanned live cards.
+    let mut scan_complete = true;
+
     for row in &rows {
+        // Bug (review 2026-06-13, low): bail out of a long scan promptly if a
+        // shutdown was requested mid-flight. `start_scheduler` only checks the
+        // flag at the loop top and after the `select!`, so without this an
+        // in-progress scan over a large workflow set would keep emitting
+        // triggers during teardown. We break (not return) so the cards already
+        // marked fired this tick still get their batched persist below —
+        // otherwise they'd lack a disk record and could re-fire after restart.
+        if crate::is_shutting_down() {
+            scan_complete = false;
+            break;
+        }
         live_ids.insert(row.id);
         // Re-parse only when the row changed: a cache hit on a matching
         // `updated_at` reuses the previously parsed schedules; any edit bumps
@@ -1018,6 +1042,20 @@ fn scheduler_scan(
         }
     }
 
+    // Always flush this tick's seeds + fires, even on an early shutdown break:
+    // cards we already marked fired in-memory must get a disk record or they
+    // could re-fire after restart.
+    warn_if_persist_batch_failed(&pending_persist);
+
+    // The remaining bookkeeping keys off the fully-populated `seen`/`live_ids`
+    // sets. On an early shutdown break they're incomplete, so skip it: the cache
+    // and `last_fired` map are in-memory and discarded on exit anyway, and a
+    // disk prune keyed off a partial `seen` would delete valid fire records for
+    // not-yet-scanned live cards.
+    if !scan_complete {
+        return;
+    }
+
     // Drop cache entries for workflows that no longer exist so the cache can't
     // grow unbounded across a long app session.
     cache.retain(|id, _| live_ids.contains(id));
@@ -1027,9 +1065,6 @@ fn scheduler_scan(
     let before = last_fired.len();
     last_fired.retain(|k, _| seen.contains(k));
     let cards_disappeared = last_fired.len() != before;
-
-    // One batched write for the whole tick's seeds + fires.
-    warn_if_persist_batch_failed(&pending_persist);
 
     // Prune the persisted table only when something actually changed (a card
     // fired/was seeded, or the live-card set shrank) or periodically when idle.

@@ -204,24 +204,85 @@ fn is_owned_by_current_user(path: &Path) -> bool {
 /// Semantics:
 ///   - If `allowed_shell_prefixes` is `None`, return `NeedsConfirm`
 ///     (no policy opinion → keep existing behaviour).
-///   - If the command's first whitespace token matches any allowed prefix,
-///     return `Auto`.
+///   - The command is normalized before matching: leading `NAME=value`
+///     env-assignment tokens are skipped, the program token is unquoted,
+///     and only its basename is considered (so `/usr/bin/cargo build` and
+///     `"cargo" build` both normalize to `cargo`). The normalized program
+///     name is compared for exact equality against each allowed entry's own
+///     unquoted basename. On match, return `Auto`.
 ///   - Otherwise return `NeedsConfirm`. Policies never auto-deny shell
 ///     commands — destructive risk classification still applies upstream.
+///
+/// Review (low/bug): the field is named `allowed_shell_prefixes`, which led
+/// users to expect normalized-program matching; the prior exact-first-token
+/// check never auto-approved `CARGO_TERM_COLOR=1 cargo build`,
+/// `/usr/bin/cargo build`, or `"cargo" build`. This stays conservative — it
+/// only ever widens auto-approve for the same program, never auto-denies, so
+/// a miss still falls through to a confirmation prompt (fail-safe).
 pub fn evaluate_shell(cmd: &str, policy: &ProjectPolicy) -> ShellDecision {
     let prefixes = match &policy.allowed_shell_prefixes {
         Some(p) => p,
         None => return Decision::NeedsConfirm,
     };
-    let first = cmd.split_whitespace().next().unwrap_or("");
-    if first.is_empty() {
-        return Decision::NeedsConfirm;
-    }
-    if prefixes.iter().any(|p| p == first) {
+    let program = match normalized_program(cmd) {
+        Some(p) => p,
+        None => return Decision::NeedsConfirm,
+    };
+    if prefixes
+        .iter()
+        .any(|p| normalized_program(p) == Some(program))
+    {
         Decision::Auto
     } else {
         Decision::NeedsConfirm
     }
+}
+
+/// Extract the program name a shell command actually invokes, normalized for
+/// comparison: skip leading `NAME=value` env-assignment tokens, strip a
+/// surrounding pair of single/double quotes, and reduce a path-prefixed
+/// invocation (`/usr/bin/cargo`) to its basename. Returns `None` when no
+/// program token can be identified (empty / env-assignments only).
+fn normalized_program(cmd: &str) -> Option<&str> {
+    let token = cmd
+        .split_whitespace()
+        .find(|t| !is_env_assignment(t))?;
+    let token = unquote(token);
+    if token.is_empty() {
+        return None;
+    }
+    // Basename: a path-prefixed program (`/usr/bin/cargo`) matches the bare
+    // `cargo` entry. Backslashes aren't path separators on the unix shells we
+    // target, so only `/` is split on.
+    Some(token.rsplit('/').next().unwrap_or(token))
+}
+
+/// A leading `NAME=value` token (e.g. `CARGO_TERM_COLOR=always`) is an env
+/// assignment the shell applies before the program, not the program itself.
+/// Conservative: the name must be a non-empty run of identifier characters
+/// before the first `=`, so a path like `a=b/c` or a flag is never mistaken
+/// for an assignment.
+fn is_env_assignment(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c == '_' || c.is_ascii_alphanumeric())
+        }
+        None => false,
+    }
+}
+
+/// Strip a single matching pair of surrounding `'` or `"` quotes. Only the
+/// outer pair is removed; embedded quotes are left untouched.
+fn unquote(token: &str) -> &str {
+    for q in ['"', '\''] {
+        if token.len() >= 2 && token.starts_with(q) && token.ends_with(q) {
+            return &token[1..token.len() - 1];
+        }
+    }
+    token
 }
 
 /// Decide whether a write to `path` should auto-approve, prompt, or be
@@ -398,6 +459,34 @@ mod tests {
         assert_eq!(evaluate_shell("git status", &p), Decision::Auto);
         assert_eq!(evaluate_shell("rm -rf /", &p), Decision::NeedsConfirm);
         assert_eq!(evaluate_shell("", &p), Decision::NeedsConfirm);
+
+        // Review (low/bug): common invocation shapes now normalize to the
+        // program name before matching.
+        // Leading env-assignment token(s) are skipped.
+        assert_eq!(
+            evaluate_shell("CARGO_TERM_COLOR=always cargo build", &p),
+            Decision::Auto
+        );
+        assert_eq!(
+            evaluate_shell("FOO=1 BAR=2 git status", &p),
+            Decision::Auto
+        );
+        // Path-prefixed program matches the bare entry via basename.
+        assert_eq!(
+            evaluate_shell("/usr/bin/cargo build", &p),
+            Decision::Auto
+        );
+        // Surrounding quotes on the program token are stripped.
+        assert_eq!(evaluate_shell("\"cargo\" build", &p), Decision::Auto);
+        assert_eq!(evaluate_shell("'git' status", &p), Decision::Auto);
+        // Still conservative: a different program sharing a prefix is NOT
+        // auto-approved (no substring widening).
+        assert_eq!(
+            evaluate_shell("gitleaks detect", &p),
+            Decision::NeedsConfirm
+        );
+        // Env-assignments only (no program) → NeedsConfirm, not a panic.
+        assert_eq!(evaluate_shell("FOO=1", &p), Decision::NeedsConfirm);
 
         // No allow list → no opinion → NeedsConfirm.
         let empty = ProjectPolicy::default();

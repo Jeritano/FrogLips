@@ -84,20 +84,30 @@ pub fn validate_read_src(src: &str) -> Result<PathBuf, String> {
     {
         return Err("source path may not contain '..'".into());
     }
-    // Reject a symlink at the leaf BEFORE canonicalizing — canonicalize() would
-    // follow it into whatever the symlink points at, including denylisted dirs.
-    if let Ok(md) = std::fs::symlink_metadata(&raw) {
-        if md.file_type().is_symlink() {
-            return Err("refusing to read through a symlink".into());
-        }
-    }
-    // Now canonicalize the full path so we can check it against the denylist
-    // with symlinked PARENT dirs resolved (the leaf has already been verified
-    // not to be a symlink).
-    let resolved =
-        std::fs::canonicalize(&raw).map_err(|e| format!("source path not accessible: {e}"))?;
+    // Sec re-review (TOCTOU, low): canonicalize the PARENT and join the leaf —
+    // mirror validate_write_dest instead of symlink_metadata(&raw) THEN
+    // canonicalize(&raw). The old pattern did two independent resolutions of the
+    // same path: a swapped-in leaf symlink could be followed by the second
+    // canonicalize() after the first stat said it wasn't a symlink. Resolving
+    // the parent once and joining the verified-non-symlink basename removes that
+    // second lookup; is_denied/is_credential_basename below still run on the
+    // resolved target, so a symlink into a denylisted file is caught regardless.
+    let parent = raw
+        .parent()
+        .ok_or_else(|| "source path has no parent".to_string())?;
+    let canon_parent =
+        std::fs::canonicalize(parent).map_err(|e| format!("source path not accessible: {e}"))?;
+    let file_name = raw
+        .file_name()
+        .ok_or_else(|| "source path has no file name".to_string())?;
+    let resolved = canon_parent.join(file_name);
+    // Reject a symlink (or non-regular file) at the leaf. symlink_metadata does
+    // not follow the leaf, so this is the leaf's own type, not its target's.
     let md =
         std::fs::symlink_metadata(&resolved).map_err(|e| format!("source not accessible: {e}"))?;
+    if md.file_type().is_symlink() {
+        return Err("refusing to read through a symlink".into());
+    }
     if !md.file_type().is_file() {
         return Err("source must be a regular file".into());
     }

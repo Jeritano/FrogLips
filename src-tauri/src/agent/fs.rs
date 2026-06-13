@@ -77,6 +77,21 @@ pub(super) use crate::util::expand_home;
 /// symlinks). For not-yet-existing paths (write targets), canonicalizes the
 /// parent and joins the final component, then explicitly rejects `..` segments.
 pub(super) fn resolve_path(p: &str, must_exist: bool) -> Result<PathBuf> {
+    resolve_path_status(p, must_exist).map(|(path, _)| path)
+}
+
+/// Like [`resolve_path`] but also reports whether the returned path is FULLY
+/// canonical — i.e. `canonicalize(&raw)` succeeded so every component (including
+/// the leaf) followed symlinks to its real target. `false` means only the parent
+/// was canonicalized and the leaf was joined verbatim (the not-yet-existing
+/// write-target case).
+///
+/// `validate_for_write` uses this to skip a redundant second `canonicalize` on
+/// the common existing-file overwrite (opt): when the leaf is already canonical
+/// there is no symlink to follow and re-running realpath + the protection checks
+/// is pure overhead. The parent-join (new-file) branch still needs the
+/// symlink-leaf guard, so the flag scopes the skip precisely.
+fn resolve_path_status(p: &str, must_exist: bool) -> Result<(PathBuf, bool /* fully_canonical */)> {
     let raw = expand_home(p)?;
     // Reject explicit `..` traversal in the source string outright — prevents
     // write-side path tricks even if the parent canonicalizes elsewhere.
@@ -87,16 +102,18 @@ pub(super) fn resolve_path(p: &str, must_exist: bool) -> Result<PathBuf> {
         return Err(anyhow!("path may not contain '..'"));
     }
     if must_exist {
-        std::fs::canonicalize(&raw).map_err(|e| anyhow!("path not accessible: {e}"))
+        std::fs::canonicalize(&raw)
+            .map(|c| (c, true))
+            .map_err(|e| anyhow!("path not accessible: {e}"))
     } else if let Ok(c) = std::fs::canonicalize(&raw) {
-        Ok(c)
+        Ok((c, true))
     } else if let Some(parent) = raw.parent() {
         let cparent =
             std::fs::canonicalize(parent).map_err(|e| anyhow!("parent not accessible: {e}"))?;
         let name = raw
             .file_name()
             .ok_or_else(|| anyhow!("path has no file name"))?;
-        Ok(cparent.join(name))
+        Ok((cparent.join(name), false))
     } else {
         Err(anyhow!("path resolution failed"))
     }
@@ -417,7 +434,8 @@ pub(super) fn validate_for_read(p: &str) -> Result<PathBuf, ToolError> {
 }
 
 pub(super) fn validate_for_write(p: &str) -> Result<PathBuf, ToolError> {
-    let resolved = resolve_path(p, false).map_err(|e| ToolError::invalid(e.to_string()))?;
+    let (resolved, fully_canonical) =
+        resolve_path_status(p, false).map_err(|e| ToolError::invalid(e.to_string()))?;
     if is_protected_for_write(&resolved) {
         return Err(ToolError::Protected {
             message: "path is restricted for writes".into(),
@@ -428,25 +446,34 @@ pub(super) fn validate_for_write(p: &str) -> Result<PathBuf, ToolError> {
             message: "path is outside workspace root".into(),
         });
     }
-    // resolve_path canonicalizes only the parent for write targets, so an
-    // existing symlink leaf would let a write escape via the link target.
-    // Reject symlinked leaves and re-check the canonical target.
-    if let Ok(md) = std::fs::symlink_metadata(&resolved) {
-        if md.file_type().is_symlink() {
-            return Err(ToolError::Protected {
-                message: "refusing to write through a symlink".into(),
-            });
-        }
-        if let Ok(canon) = std::fs::canonicalize(&resolved) {
-            if is_protected_for_write(&canon) {
+    // Opt: when `resolve_path_status` fully canonicalized the path (the existing
+    // non-`..` target), the leaf already followed any symlink to its real target,
+    // so the symlink_metadata + second canonicalize below would just re-confirm
+    // checks we ran on the already-canonical `resolved`. Skip them — the actual
+    // write uses O_NOFOLLOW for the leaf-swap TOCTOU defense regardless. Only the
+    // parent-join (not-yet-existing) case has an un-canonicalized leaf, so it
+    // still runs the symlink-leaf guard.
+    if !fully_canonical {
+        // resolve_path canonicalizes only the parent for write targets, so an
+        // existing symlink leaf would let a write escape via the link target.
+        // Reject symlinked leaves and re-check the canonical target.
+        if let Ok(md) = std::fs::symlink_metadata(&resolved) {
+            if md.file_type().is_symlink() {
                 return Err(ToolError::Protected {
-                    message: "path is restricted for writes".into(),
+                    message: "refusing to write through a symlink".into(),
                 });
             }
-            if !within_workspace(&canon) {
-                return Err(ToolError::OutsideWorkspace {
-                    message: "path is outside workspace root".into(),
-                });
+            if let Ok(canon) = std::fs::canonicalize(&resolved) {
+                if is_protected_for_write(&canon) {
+                    return Err(ToolError::Protected {
+                        message: "path is restricted for writes".into(),
+                    });
+                }
+                if !within_workspace(&canon) {
+                    return Err(ToolError::OutsideWorkspace {
+                        message: "path is outside workspace root".into(),
+                    });
+                }
             }
         }
     }
@@ -550,11 +577,77 @@ pub async fn read_file(
             next_offset: None,
         });
     }
-    let bytes = tokio::fs::read(&resolved)
+    // Perf (medium): total comes from the stat above, not from re-slurping the
+    // whole file. Previously this did `tokio::fs::read(&resolved)` — slurping
+    // the ENTIRE file into a Vec on EVERY paginated call — then sliced out the
+    // requested window. An agent paginating a 64 KiB–512 KiB file with
+    // next_offset re-read the whole file (+ re-scanned + re-allocated) per page,
+    // i.e. O(file × pages). Now each page is O(page): read only the head for the
+    // binary check, then seek to `start` and read at most `cap` bytes.
+    let total = total_meta;
+    let start = offset.unwrap_or(0).min(total);
+    // Clamp tiny limits to MIN_READ_BYTES to prevent agents from blowing
+    // iteration budget on pathologically small chunked reads (e.g. limit=300).
+    const MIN_READ_BYTES: u64 = 8_192;
+    let requested = limit.unwrap_or(MAX_READ_BYTES as u64);
+    let cap = requested.max(MIN_READ_BYTES).min(MAX_READ_BYTES as u64);
+    // Window we need: [start, start+cap), clamped to EOF.
+    let want = (start + cap).min(total) - start;
+    // Read ONE extra "peek" byte past the window when it stops short of EOF, so
+    // the UTF-8 boundary back-off below can inspect the byte AT `end` (the first
+    // byte of the next page) exactly as the old full-slurp code did — without
+    // re-reading the whole file.
+    let read_len = if start + want < total { want + 1 } else { want };
+
+    // Binary detection. The head-scan only needs the first ~8 KiB; on the first
+    // page the window already covers it, so reuse the window bytes and avoid a
+    // second read. On a later page (start > 0) we read the head separately so a
+    // mid-file page of a binary file is still flagged.
+    let resolved2 = resolved.clone();
+    let (buf, head): (Vec<u8>, Option<Vec<u8>>) =
+        tokio::task::spawn_blocking(move || -> std::io::Result<(Vec<u8>, Option<Vec<u8>>)> {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut f = std::fs::File::open(&resolved2)?;
+            // Read the head only when the requested window does not already start
+            // at offset 0 (the window itself covers the head in that case). Fill
+            // up to 8 KiB (or EOF) so the binary scan sees the same head bytes the
+            // old full-slurp code did, even across short reads.
+            let head = if start > 0 {
+                let mut h = vec![0u8; 8192.min(total as usize)];
+                let mut got = 0usize;
+                while got < h.len() {
+                    let n = f.read(&mut h[got..])?;
+                    if n == 0 {
+                        break;
+                    }
+                    got += n;
+                }
+                h.truncate(got);
+                Some(h)
+            } else {
+                None
+            };
+            f.seek(SeekFrom::Start(start))?;
+            let mut buf = vec![0u8; read_len as usize];
+            let mut filled = 0usize;
+            while filled < buf.len() {
+                let n = f.read(&mut buf[filled..])?;
+                if n == 0 {
+                    break; // EOF (e.g. file shrank since stat) — return what we got
+                }
+                filled += n;
+            }
+            buf.truncate(filled);
+            Ok((buf, head))
+        })
         .await
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?
         .map_err(|e| err_string(classify_io(&e)))?;
-    let total = bytes.len() as u64;
-    if looks_binary_with_size(&bytes, total) {
+
+    // Binary check: size short-circuit first (BINARY_SIZE_THRESHOLD already
+    // ruled out >512 KiB above, but keep the head-scan), then scan head bytes.
+    let head_bytes = head.as_deref().unwrap_or(&buf);
+    if looks_binary_with_size(head_bytes, total) {
         return Ok(ReadResult {
             content: format!("[binary file, {total} bytes — use a different tool for binary data]"),
             bytes_read: 0,
@@ -564,29 +657,34 @@ pub async fn read_file(
             next_offset: None,
         });
     }
-    let start = offset.unwrap_or(0).min(total);
-    // Clamp tiny limits to MIN_READ_BYTES to prevent agents from blowing
-    // iteration budget on pathologically small chunked reads (e.g. limit=300).
-    const MIN_READ_BYTES: u64 = 8_192;
-    let requested = limit.unwrap_or(MAX_READ_BYTES as u64);
-    let cap = requested.max(MIN_READ_BYTES).min(MAX_READ_BYTES as u64);
-    let mut end = (start + cap).min(total);
+    // `end` is the absolute byte offset where the window content stops. `buf` may
+    // hold one extra peek byte past it (read_len = want + 1); the window itself
+    // is `buf[..window_len]`. Clamp to what we actually read in case the file
+    // shrank between stat and read.
+    let window_len = (buf.len() as u64).min(want);
+    let mut end = start + window_len;
     // Audit A31: back `end` off to a UTF-8 char boundary when truncating
     // mid-file, so a multibyte char straddling the page edge is NOT split into
     // U+FFFD on BOTH this page and the next. A continuation byte is 0b10xxxxxx;
     // walk back past any to land on a char start. (No-op at EOF, where end ==
     // total and there is no next page.) Keeps next_offset char-aligned too.
-    if end < total {
-        while end > start && (bytes[end as usize] & 0xC0) == 0x80 {
+    //
+    // The back-off needs the byte AT offset `end` (`buf[end - start]`, the first
+    // byte of the next page). It is present only when we read the peek byte past
+    // the window — i.e. there really is more file AND the buffer holds it. Guard
+    // on `(end - start) < buf.len()` so a short read from a shrink-race never
+    // indexes out of bounds.
+    if end < total && (end - start) < buf.len() as u64 {
+        while end > start && (buf[(end - start) as usize] & 0xC0) == 0x80 {
             end -= 1;
         }
         // Degenerate guard: if the whole page was one oversized char run, fall
         // back to the raw cap rather than returning an empty page.
         if end == start {
-            end = (start + cap).min(total);
+            end = start + window_len;
         }
     }
-    let slice = &bytes[start as usize..end as usize];
+    let slice = &buf[..(end - start) as usize];
     let truncated = end < total;
     let mut content = String::from_utf8_lossy(slice).into_owned();
     if truncated {
@@ -815,7 +913,8 @@ async fn write_one_confined(
     snapshot_label: &'static str,
 ) -> Result<(), String> {
     let resolved = validate_for_write(path).map_err(err_string)?;
-    write_one_validated(resolved, content, snapshot_label).await
+    // No prior bytes in hand — the snapshot reads the current file itself.
+    write_one_validated(resolved, content, None, snapshot_label).await
 }
 
 /// Write to a PathBuf that has ALREADY passed `validate_for_write`. Skips the
@@ -824,9 +923,18 @@ async fn write_one_confined(
 /// no read/write-gate divergence, no TOCTOU between validation and write
 /// (audit A35). Does the size cap → parent create → undo snapshot → no-follow
 /// write that `write_one_confined` does after its own validation.
+///
+/// `prior_bytes`: the file's CURRENT contents if the caller already has them in
+/// memory (e.g. `apply_patch`'s dry pass read each target to compute the patch).
+/// When `Some`, the undo snapshot is captured from those bytes via
+/// `capture_with_bytes` — avoiding a SECOND full read of the same file (perf,
+/// low) — mirroring what `edit_file`/`multi_edit` already do. `None` (created
+/// files, or callers without the bytes) falls back to `capture`, which reads the
+/// file itself.
 async fn write_one_validated(
     resolved: std::path::PathBuf,
     content: String,
+    prior_bytes: Option<Vec<u8>>,
     snapshot_label: &'static str,
 ) -> Result<(), String> {
     if content.len() > MAX_WRITE_BYTES {
@@ -840,9 +948,11 @@ async fn write_one_validated(
             .map_err(|e| err_string(classify_io(&e)))?;
     }
     let snap_path = resolved.clone();
-    let _ =
-        tokio::task::spawn_blocking(move || super::snapshot::capture(&snap_path, snapshot_label))
-            .await;
+    let _ = tokio::task::spawn_blocking(move || match prior_bytes {
+        Some(b) => super::snapshot::capture_with_bytes(&snap_path, b, snapshot_label),
+        None => super::snapshot::capture(&snap_path, snapshot_label),
+    })
+    .await;
     let bytes = content.into_bytes();
     let target = resolved.clone();
     tokio::task::spawn_blocking(move || write_nofollow_sync(&target, &bytes, false))
@@ -901,6 +1011,45 @@ pub async fn write_files(files: Vec<WriteFileSpec>) -> Result<serde_json::Value,
 
 /* ── Edit file (patch-style replace) ──────────────────────────────────────── */
 
+/// Result of locating `old` in a haystack in a single pass.
+enum FoundMatches {
+    /// No occurrence — caller emits the "not found" error.
+    None,
+    /// Exactly one occurrence at this byte range `[start, end)`.
+    One { start: usize, end: usize },
+    /// Two or more occurrences; `count` is the EXACT total (the caller uses it
+    /// verbatim in the ambiguity error message, so it must not be capped).
+    Many { count: usize },
+}
+
+/// Single-pass occurrence scan for `old` in `haystack` (perf, low).
+///
+/// `edit_file`/`multi_edit` previously called `haystack.matches(old).count()`
+/// to validate uniqueness and then `replace`/`replacen` to mutate — two full
+/// substring scans for one logical replacement (and `multi_edit` did it inside
+/// a loop of up to 100 edits over growing content). This walks `match_indices`
+/// ONCE: for the overwhelmingly common single-unique case it returns the lone
+/// match's byte range so the caller can splice by index (no re-scan); only the
+/// `replace_all` and ambiguous-error paths consume the full count. `old` is
+/// never empty (callers check).
+fn find_matches(haystack: &str, old: &str) -> FoundMatches {
+    let mut it = haystack.match_indices(old);
+    let Some((start, m)) = it.next() else {
+        return FoundMatches::None;
+    };
+    if it.next().is_none() {
+        // Unique — common path, no further scanning.
+        return FoundMatches::One {
+            start,
+            end: start + m.len(),
+        };
+    }
+    // 2+ matches (2 already consumed from the iterator). replace_all uses
+    // `str::replace`'s own pass + this count; the single path errors out and
+    // needs the EXACT count for its message, so don't cap it.
+    FoundMatches::Many { count: 2 + it.count() }
+}
+
 #[derive(Serialize)]
 pub struct EditResult {
     pub replacements: u32,
@@ -929,22 +1078,32 @@ pub async fn edit_file(
     }
     let original = String::from_utf8(bytes)
         .map_err(|_| err_string(ToolError::invalid("file is not valid UTF-8 — cannot edit")))?;
-    let count = original.matches(&old_string).count();
-    if count == 0 {
-        return Err(err_string(ToolError::NotFound {
-            message: "old_string not found in file".into(),
-        }));
-    }
     let replace_all = replace_all.unwrap_or(false);
-    if count > 1 && !replace_all {
-        return Err(err_string(ToolError::invalid(format!(
-            "old_string matches {count} times; pass replace_all=true or include more surrounding context to make it unique"
-        ))));
-    }
-    let updated = if replace_all {
-        original.replace(&old_string, &new_string)
-    } else {
-        original.replacen(&old_string, &new_string, 1)
+    // Single-pass locate (perf, low): avoids the prior `matches().count()` +
+    // `replace`/`replacen` double scan. See `find_matches`.
+    let (updated, replacements) = match find_matches(&original, &old_string) {
+        FoundMatches::None => {
+            return Err(err_string(ToolError::NotFound {
+                message: "old_string not found in file".into(),
+            }));
+        }
+        FoundMatches::Many { count } if !replace_all => {
+            return Err(err_string(ToolError::invalid(format!(
+                "old_string matches {count} times; pass replace_all=true or include more surrounding context to make it unique"
+            ))));
+        }
+        FoundMatches::Many { count } => {
+            // replace_all: `str::replace` is itself a single pass; count known.
+            (original.replace(&old_string, &new_string), count as u32)
+        }
+        FoundMatches::One { start, end } => {
+            // Exactly one occurrence — splice it by byte index, no re-scan.
+            let mut s = String::with_capacity(original.len() - (end - start) + new_string.len());
+            s.push_str(&original[..start]);
+            s.push_str(&new_string);
+            s.push_str(&original[end..]);
+            (s, 1)
+        }
     };
     let new_size = updated.len() as u64;
     if new_size as usize > MAX_WRITE_BYTES {
@@ -970,7 +1129,7 @@ pub async fn edit_file(
         .map_err(|e| err_string(ToolError::io(e.to_string())))?
         .map_err(|e| err_string(classify_io(&e)))?;
     Ok(EditResult {
-        replacements: if replace_all { count as u32 } else { 1 },
+        replacements,
         new_size,
     })
 }
@@ -1128,9 +1287,20 @@ fn walk_search(
             if *files_scanned as usize > MAX_SEARCH_FILES_SCANNED {
                 return true;
             }
+            // Perf (low): skip oversized files via a cheap stat BEFORE reading.
+            // Previously the >2 MiB guard ran only AFTER `std::fs::read` had
+            // already slurped the whole file into a Vec — so a stray multi-
+            // hundred-MB file whose name matched the glob (DB, video, core dump)
+            // was fully allocated into RAM just to be discarded. `entry` is the
+            // DirEntry we already hold, so its metadata is a cheap lstat.
+            if entry.metadata().is_ok_and(|md| md.len() > 2 * 1024 * 1024) {
+                continue; // skip files > 2 MiB without reading them
+            }
             let Ok(bytes) = std::fs::read(&p) else {
                 continue;
             };
+            // Defensive fallback: the file may have grown between the stat above
+            // and this read (or metadata() failed), so still cap on actual size.
             if bytes.len() > 2 * 1024 * 1024 {
                 continue; // skip files > 2 MiB
             }
@@ -1306,24 +1476,33 @@ pub async fn multi_edit(path: String, edits: Vec<EditOp>) -> Result<MultiEditRes
                 "edit #{i}: old_string must not be empty"
             ))));
         }
-        let count = content.matches(&e.old_string).count();
-        if count == 0 {
-            return Err(err_string(ToolError::NotFound {
-                message: format!("edit #{i}: old_string not found"),
-            }));
-        }
         let all = e.replace_all.unwrap_or(false);
-        if count > 1 && !all {
-            return Err(err_string(ToolError::invalid(format!(
-                "edit #{i}: matches {count} times; pass replace_all=true or include more context"
-            ))));
-        }
-        if all {
-            content = content.replace(&e.old_string, &e.new_string);
-            total_replacements += count as u32;
-        } else {
-            content = content.replacen(&e.old_string, &e.new_string, 1);
-            total_replacements += 1;
+        // Single-pass locate per edit (perf, low) — was `matches().count()` then
+        // `replace`/`replacen`, two scans of the (growing) content per iteration.
+        match find_matches(&content, &e.old_string) {
+            FoundMatches::None => {
+                return Err(err_string(ToolError::NotFound {
+                    message: format!("edit #{i}: old_string not found"),
+                }));
+            }
+            FoundMatches::Many { count } if !all => {
+                return Err(err_string(ToolError::invalid(format!(
+                    "edit #{i}: matches {count} times; pass replace_all=true or include more context"
+                ))));
+            }
+            FoundMatches::Many { count } => {
+                content = content.replace(&e.old_string, &e.new_string);
+                total_replacements += count as u32;
+            }
+            FoundMatches::One { start, end } => {
+                let mut s =
+                    String::with_capacity(content.len() - (end - start) + e.new_string.len());
+                s.push_str(&content[..start]);
+                s.push_str(&e.new_string);
+                s.push_str(&content[end..]);
+                content = s;
+                total_replacements += 1;
+            }
         }
     }
     if content.len() > MAX_WRITE_BYTES {
@@ -1618,6 +1797,12 @@ pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
         content: String,
         created: bool,
         hunks: u32,
+        // Perf (low): the original on-disk bytes the dry pass already read for
+        // non-created files. Threaded to the commit pass so the undo snapshot is
+        // taken from these instead of a SECOND full read of the same file
+        // (mirrors edit_file/multi_edit). `None` for created files (nothing to
+        // snapshot — capture() records them as Absent).
+        orig_bytes: Option<Vec<u8>>,
     }
     let mut planned: Vec<Planned> = Vec::with_capacity(patches.len());
     let mut seen: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
@@ -1645,8 +1830,11 @@ pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
             ))));
         }
         // Read current content from the SAME validated path (skip for new files).
-        let orig_text = if created {
-            String::new()
+        // Retain the raw bytes (`orig_bytes`) so the commit pass can snapshot from
+        // them rather than re-reading the file (perf, low). Validate UTF-8 once and
+        // split into lines from that borrow — no extra String allocation.
+        let (orig_lines, orig_bytes): (Vec<String>, Option<Vec<u8>>) = if created {
+            (split_lines(""), None)
         } else {
             let bytes = tokio::fs::read(&resolved)
                 .await
@@ -1656,14 +1844,19 @@ pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
                     message: format!("{} exceeds {MAX_WRITE_BYTES} bytes", fp.new_path),
                 }));
             }
-            String::from_utf8(bytes).map_err(|_| {
-                err_string(ToolError::invalid(format!(
-                    "{} is not valid UTF-8 — cannot patch",
-                    fp.new_path
-                )))
-            })?
+            let lines = {
+                let text = std::str::from_utf8(&bytes).map_err(|_| {
+                    err_string(ToolError::invalid(format!(
+                        "{} is not valid UTF-8 — cannot patch",
+                        fp.new_path
+                    )))
+                })?;
+                // split_lines returns owned Strings, so the borrow of `bytes`
+                // ends with this block and `bytes` can then be moved below.
+                split_lines(text)
+            };
+            (lines, Some(bytes))
         };
-        let orig_lines = split_lines(&orig_text);
         let new_lines = apply_file_hunks(&orig_lines, &fp.hunks)
             .map_err(|e| format!("{}: {e}", fp.new_path))?;
         let new_content = new_lines.join("\n");
@@ -1678,6 +1871,7 @@ pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
             content: new_content,
             created,
             hunks: fp.hunks.len() as u32,
+            orig_bytes,
         });
     }
 
@@ -1686,7 +1880,9 @@ pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
     let mut results: Vec<ApplyPatchFileResult> = Vec::with_capacity(planned.len());
     for p in planned {
         let new_size = p.content.len() as u64;
-        write_one_validated(p.resolved, p.content, "apply_patch")
+        // Snapshot from the bytes the dry pass already read (perf, low) — created
+        // files pass None so capture() records them as Absent for undo.
+        write_one_validated(p.resolved, p.content, p.orig_bytes, "apply_patch")
             .await
             .map_err(|e| format!("apply_patch failed at {}: {e}", p.raw_path))?;
         results.push(ApplyPatchFileResult {
@@ -1934,5 +2130,48 @@ mod tests {
     fn resolve_path_rejects_parent_dir() {
         let result = resolve_path("/tmp/../etc/passwd", true);
         assert!(result.is_err(), "should reject .. in path");
+    }
+
+    #[test]
+    fn find_matches_single_pass_semantics() {
+        // perf-fix regression: the single-pass locator must match the old
+        // count-then-replace behavior for all cases edit_file/multi_edit rely on.
+        assert!(matches!(find_matches("hello", "zzz"), FoundMatches::None));
+        // Unique → exact byte range, splice-able by index.
+        match find_matches("foo bar baz", "bar") {
+            FoundMatches::One { start, end } => {
+                assert_eq!((start, end), (4, 7));
+                assert_eq!(&"foo bar baz"[start..end], "bar");
+            }
+            _ => panic!("expected One"),
+        }
+        // Ambiguous → EXACT count (not capped) for the error message.
+        match find_matches("a a a a", "a") {
+            FoundMatches::Many { count } => assert_eq!(count, 4),
+            _ => panic!("expected Many"),
+        }
+        match find_matches("xx-xx", "xx") {
+            FoundMatches::Many { count } => assert_eq!(count, 2),
+            _ => panic!("expected Many"),
+        }
+    }
+
+    #[test]
+    fn find_matches_single_splice_matches_replacen() {
+        // The byte-index splice the One branch performs must equal `replacen`.
+        let original = "alpha bravo charlie";
+        let old = "bravo";
+        let new = "BRAVO";
+        let spliced = match find_matches(original, old) {
+            FoundMatches::One { start, end } => {
+                let mut s = String::new();
+                s.push_str(&original[..start]);
+                s.push_str(new);
+                s.push_str(&original[end..]);
+                s
+            }
+            _ => panic!("expected One"),
+        };
+        assert_eq!(spliced, original.replacen(old, new, 1));
     }
 }

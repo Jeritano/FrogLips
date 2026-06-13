@@ -995,20 +995,33 @@ async fn finish_start(handle: Arc<ServerHandle>, name: String) -> Result<Vec<Too
 /// server (`http://127.0.0.1:port/mcp`) works — same posture as the
 /// custom-backend SSRF guard.
 /// True if `ip` is in the SSRF-blocked address space: cloud-metadata,
-/// link-local, unspecified, or multicast. Loopback (`127.0.0.0/8`, `::1`) and
-/// RFC1918 LAN (`10/8`, `172.16/12`, `192.168/16`) are deliberately NOT blocked
-/// so a locally-hosted MCP server works — same posture as the custom-backend
-/// SSRF guard. `169.254.0.0/16` (link-local) already covers the AWS/GCP/Azure
-/// metadata IP `169.254.169.254`; Alibaba's `100.100.100.200` is added
-/// explicitly because it lives in the CGNAT range, not link-local.
+/// link-local, unspecified, multicast, limited-broadcast, or the
+/// reserved/future / benchmarking / protocol-assignment ranges. Loopback
+/// (`127.0.0.0/8`, `::1`) and RFC1918 LAN (`10/8`, `172.16/12`, `192.168/16`)
+/// are deliberately NOT blocked so a locally-hosted MCP server works — same
+/// posture as the custom-backend SSRF guard. `169.254.0.0/16` (link-local)
+/// already covers the AWS/GCP/Azure metadata IP `169.254.169.254`; Alibaba's
+/// `100.100.100.200` is added explicitly because it lives in the CGNAT range,
+/// not link-local. The broadcast / reserved-range additions keep this guard in
+/// lockstep with `agent::web::is_safe_v4` (audit A29) — these ranges are never a
+/// legitimate MCP endpoint, so blocking them costs nothing and closes the
+/// divergence a discovery URL could otherwise probe. LOW (security, 2026-06).
 fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
         IpAddr::V4(v4) => {
+            let oct = v4.octets();
             v4.is_link_local()
                 || v4.is_unspecified()
                 || v4.is_multicast()
-                || v4.octets() == [100, 100, 100, 200]
+                || v4.is_broadcast()
+                || oct == [100, 100, 100, 200]
+                // Reserved/non-global ranges std's predicates miss (A29):
+                // 240.0.0.0/4 (reserved/future), 198.18.0.0/15 (benchmarking,
+                // RFC2544), 192.0.0.0/24 (IETF protocol assignments).
+                || oct[0] >= 240
+                || (oct[0] == 198 && (oct[1] == 18 || oct[1] == 19))
+                || (oct[0] == 192 && oct[1] == 0 && oct[2] == 0)
         }
         IpAddr::V6(v6) => {
             // Canonicalize IPv4-in-IPv6 forms FIRST: `::ffff:a.b.c.d`
@@ -1087,6 +1100,35 @@ fn validate_remote_url(raw: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject a token-carrying remote MCP URL that would send the bearer in
+/// cleartext: `https` is always fine, plaintext `http` is permitted ONLY to a
+/// loopback host (local dev server). The bearer is attached on every request
+/// path with no per-request downgrade check, so this is the single gate that
+/// keeps the credential off the wire to a non-loopback host. Mirrors
+/// `oauth.rs::secure_endpoint`. Sec audit (2026-06).
+fn require_secure_for_token(raw: &str) -> Result<()> {
+    let url = reqwest::Url::parse(raw).map_err(|e| anyhow!("invalid url: {e}"))?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            let host = url.host_str().unwrap_or("");
+            let loopback = host == "localhost"
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false);
+            if loopback {
+                Ok(())
+            } else {
+                bail!("remote MCP URL with a token must use https (got plaintext http): {host}")
+            }
+        }
+        s => bail!("unsupported url scheme '{s}' (http/https only)"),
+    }
+}
+
 /// Resolve the URL's host and return `(host, addrs)` — the validated socket
 /// addresses the HTTP client must pin its DNS to. Rejects if ANY resolved
 /// address is in SSRF-blocked space. This is the DNS-rebinding defense the
@@ -1129,6 +1171,24 @@ fn resolve_pinned_addrs(raw: &str) -> Result<(String, Vec<std::net::SocketAddr>)
     Ok((host, addrs))
 }
 
+/// Return a display copy of `raw` with any embedded userinfo
+/// (`scheme://user:pass@host/…`) stripped, safe for diagnostics logging.
+/// Falls back to the original string if it doesn't parse as a URL (it always
+/// will here — the caller already ran it through `build_pinned_client`).
+fn redact_url_userinfo(raw: &str) -> String {
+    match reqwest::Url::parse(raw) {
+        Ok(mut url) if !url.username().is_empty() || url.password().is_some() => {
+            // set_username/set_password only fail for cannot-be-a-base URLs,
+            // which http/https never are; ignore the Result.
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.to_string()
+        }
+        Ok(_) => raw.to_string(),
+        Err(_) => raw.to_string(),
+    }
+}
+
 /// Connect to a remote (streamable-HTTP) MCP server. `token`, if present, is
 /// sent as a bearer credential on every request; it is read from the Keychain
 /// by the caller and never logged or persisted in plaintext here.
@@ -1139,6 +1199,17 @@ pub async fn start_remote_server(
 ) -> Result<Vec<ToolDescriptor>> {
     validate_name(&name)?;
 
+    // A bearer token must never travel in cleartext to a non-loopback host:
+    // the bearer is attached on EVERY request path (RPC, notify, teardown
+    // DELETE) with no per-request downgrade gate, so https is required here
+    // unless the host is loopback (a local dev server). Mirrors the
+    // `oauth.rs::secure_endpoint` posture. validate_remote_url itself permits
+    // plaintext http to public hosts (legitimate for token-less servers), so
+    // this gate is token-conditional. LOW (security, 2026-06).
+    if token.as_deref().is_some_and(|t| !t.is_empty()) {
+        require_secure_for_token(&url)?;
+    }
+
     // SSRF / DNS-rebinding-hardened client (validate + pin + no redirects).
     let client = build_pinned_client(&url).await?;
 
@@ -1147,10 +1218,17 @@ pub async fn start_remote_server(
         tokio::spawn(async move { h.shutdown().await });
     }
 
+    // Strip any embedded userinfo (https://user:secret@host/…) before logging:
+    // validate_remote_url permits credentials in the URL, and the diagnostics
+    // ring / on-disk app.log persist whatever we pass here. The rest of this
+    // module never logs secrets (stderr is length-only, tool params dropped),
+    // so a credential in the endpoint URL would be an inconsistent cleartext
+    // leak. LOW (security, 2026-06).
+    let log_url = redact_url_userinfo(&url);
     crate::diagnostics::warn_with(
         "mcp",
-        &format!("starting remote server '{name}': {url}"),
-        json!({ "server": name, "url": url, "transport": "remote", "auth": token.is_some() }),
+        &format!("starting remote server '{name}': {log_url}"),
+        json!({ "server": name, "url": log_url, "transport": "remote", "auth": token.is_some() }),
     );
 
     let handle = Arc::new(ServerHandle {
@@ -1447,6 +1525,10 @@ mod tests {
         assert!(blocked("169.254.0.1")); // link-local
         assert!(blocked("0.0.0.0")); // unspecified
         assert!(blocked("224.0.0.1")); // multicast
+        assert!(blocked("255.255.255.255")); // limited broadcast
+        assert!(blocked("240.0.0.1")); // 240.0.0.0/4 reserved/future
+        assert!(blocked("198.18.0.1")); // 198.18.0.0/15 benchmarking
+        assert!(blocked("192.0.0.1")); // 192.0.0.0/24 IETF protocol assignments
         assert!(blocked("fe80::1")); // v6 link-local
         assert!(blocked("::")); // v6 unspecified
                                 // Allowed by design: loopback + RFC1918 LAN + public.
@@ -1496,5 +1578,37 @@ mod tests {
     fn list_tools_unknown_errors() {
         let r = list_tools("does-not-exist-xyz");
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn redact_url_userinfo_strips_credentials() {
+        // Embedded user:pass is removed; host/path/query preserved.
+        assert_eq!(
+            redact_url_userinfo("https://user:secret@host.example/mcp?x=1"),
+            "https://host.example/mcp?x=1"
+        );
+        // Username-only is also stripped.
+        assert_eq!(
+            redact_url_userinfo("https://user@host.example/mcp"),
+            "https://host.example/mcp"
+        );
+        // No userinfo → unchanged.
+        assert_eq!(
+            redact_url_userinfo("https://host.example/mcp"),
+            "https://host.example/mcp"
+        );
+    }
+
+    #[test]
+    fn require_secure_for_token_rules() {
+        // https is always fine.
+        assert!(require_secure_for_token("https://host.example/mcp").is_ok());
+        // plaintext http only to loopback.
+        assert!(require_secure_for_token("http://127.0.0.1:9000/mcp").is_ok());
+        assert!(require_secure_for_token("http://localhost:9000/mcp").is_ok());
+        assert!(require_secure_for_token("http://[::1]:9000/mcp").is_ok());
+        // plaintext http to a non-loopback host with a token is rejected.
+        assert!(require_secure_for_token("http://host.example/mcp").is_err());
+        assert!(require_secure_for_token("http://8.8.8.8/mcp").is_err());
     }
 }

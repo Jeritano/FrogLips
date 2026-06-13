@@ -1101,7 +1101,11 @@ pub fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, Strin
     let _guard = crate::settings::lock_for_update();
     let mut s = crate::settings::load();
     s.workspace_root = result.clone();
-    let _ = crate::settings::save(&s);
+    // Code re-review (low/bug): propagate the save error like every other
+    // settings writer (settings_set / setup_complete_set). Discarding it left
+    // the live agent on the new root while disk still held the old one, so the
+    // user's workspace selection silently "forgot itself" on next launch.
+    crate::settings::save(&s).map_err(|e| e.to_string())?;
     drop(_guard);
     // Code re-review M-1: snapshot stack was documented as workspace-
     // scoped but `clear()` was never called from here. Switching projects

@@ -394,6 +394,16 @@ async function buildPrototypes(
   loadProtoDisk();
   const map = new Map<string, number[]>();
   let dirty = false;
+
+  // perf (low): collect every uncached (route, utterance) embed across ALL
+  // routes into one flat list and await a single Promise.all, instead of one
+  // serial embed-batch per route inside the loop. N cold routes used to incur N
+  // sequential RTT-bursts on the pre-first-token path; this collapses them into
+  // one parallel batch. The memory-client in-flight coalescer + LRU dedupe
+  // identical strings, so flattening is safe. Each entry per-utterance embed is
+  // wrapped so a single failed embed can't reject the whole batch.
+  type Pending = { route: ChatRoute; key: string; utterances: string[] };
+  const pending: Pending[] = [];
   for (const r of routes) {
     const utterances = (r.utterances ?? [])
       .map((u) => u.trim())
@@ -405,20 +415,35 @@ async function buildPrototypes(
       map.set(r.id, cached);
       continue;
     }
-    try {
-      const vecs = await Promise.all(utterances.map((u) => embedFn(u)));
-      const proto = meanVec(
-        vecs.filter((v): v is number[] => Array.isArray(v) && v.length > 0),
-      );
+    pending.push({ route: r, key, utterances });
+  }
+
+  if (pending.length > 0) {
+    // Flat list of all utterances, with the owning pending-route index so each
+    // route can reduce its own slice back out of the parallel result.
+    const flat: { pi: number; text: string }[] = [];
+    pending.forEach((p, pi) =>
+      p.utterances.forEach((text) => flat.push({ pi, text })),
+    );
+    // catch per-embed so one unavailable embed → null (not a batch rejection),
+    // matching the old per-route try/catch's "skip → classifier covers it".
+    const results = await Promise.all(
+      flat.map((f) => embedFn(f.text).catch(() => null)),
+    );
+    const byRoute: number[][][] = pending.map(() => []);
+    results.forEach((v, i) => {
+      if (Array.isArray(v) && v.length > 0) byRoute[flat[i].pi].push(v);
+    });
+    pending.forEach((p, pi) => {
+      const proto = meanVec(byRoute[pi]);
       if (proto) {
-        protoMem.set(key, proto);
-        map.set(r.id, proto);
+        protoMem.set(p.key, proto);
+        map.set(p.route.id, proto);
         dirty = true;
       }
-    } catch {
-      /* embedder unavailable for this route → skip (classifier covers it) */
-    }
+    });
   }
+
   if (dirty) saveProtoDisk();
   return map;
 }

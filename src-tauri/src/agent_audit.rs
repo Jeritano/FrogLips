@@ -207,18 +207,33 @@ pub fn record(entry: AuditEntry) -> Result<()> {
     )?;
     // Audit A07: self-bound on insert so the table can't grow without limit
     // (the only purge was a manual IPC nothing called). Best-effort, every 256th
-    // insert, keep the newest MAX_AUDIT_ROWS by rowid. Cheap + non-fatal.
+    // insert, keep the newest MAX_AUDIT_ROWS by id. Cheap + non-fatal.
+    //
+    // perf (low): the counter is seeded at 1 and we test `fetch_add(1)+1` so the
+    // first insert of the process is tick 1 (not 0) — a fresh `AtomicU64::new(0)`
+    // returns 0 on its first read, and `0.is_multiple_of(256)` would fire a
+    // needless cold-start trim. The trim itself is a contiguous primary-key
+    // range delete keyed off `id` (monotonic AUTOINCREMENT) rather than a
+    // `rowid NOT IN (… LIMIT 50000)` anti-join, so it uses the PK index instead
+    // of materializing + probing up to 50k rowids per row.
     const MAX_AUDIT_ROWS: i64 = 50_000;
     static INSERTS_SINCE_TRIM: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
-    if INSERTS_SINCE_TRIM
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    if (INSERTS_SINCE_TRIM.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
         .is_multiple_of(256)
     {
+        // Delete everything older than the MAX_AUDIT_ROWS-th newest id. The
+        // subquery returns NULL (no row) until the table exceeds the cap, in
+        // which case `id < NULL` matches nothing — so this is a no-op range
+        // delete on a small table and a single contiguous PK-index sweep once
+        // the cap is reached.
+        // OFFSET is the 0-indexed position of the MAX_AUDIT_ROWS-th newest id,
+        // i.e. MAX_AUDIT_ROWS - 1; deleting `id <` that keeps exactly the newest
+        // MAX_AUDIT_ROWS (OFFSET MAX_AUDIT_ROWS would keep one row too many).
         let _ = conn.execute(
-            "DELETE FROM agent_audit WHERE rowid NOT IN \
-             (SELECT rowid FROM agent_audit ORDER BY rowid DESC LIMIT ?1)",
-            params![MAX_AUDIT_ROWS],
+            "DELETE FROM agent_audit WHERE id < \
+             (SELECT id FROM agent_audit ORDER BY id DESC LIMIT 1 OFFSET ?1)",
+            params![MAX_AUDIT_ROWS - 1],
         );
     }
     Ok(())
@@ -527,46 +542,63 @@ pub fn dashboard_summary(filter: AuditFilter) -> Result<DashboardSummary> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
 
-    // Tool latency — pull every duration grouped by tool, compute percentiles in Rust.
+    // Tool latency. perf (low): count/avg/max are exact aggregates pushed into
+    // SQL (grouped on the ts index) so we never materialize them in Rust. Only
+    // the durations needed for percentiles are pulled, and that pull is capped
+    // to the most-recent LATENCY_SAMPLE_CAP rows per tool via a windowed
+    // ROW_NUMBER() — previously this pulled *every* duration in the window
+    // (up to the 50k table cap) into a per-tool Vec on every dashboard refresh.
+    // p50/p95 are therefore approximate over the most-recent N samples once a
+    // tool exceeds the cap (count/avg/max stay exact over the full window).
+    const LATENCY_SAMPLE_CAP: i64 = 5_000;
+
+    // Exact aggregates per tool.
     let mut stmt = conn.prepare(
-        "SELECT tool_name, duration_ms
+        "SELECT tool_name, COUNT(*) AS c, AVG(duration_ms) AS a, MAX(duration_ms) AS m
            FROM agent_audit
           WHERE ts >= ?1 AND ts <= ?2
-          ORDER BY tool_name",
+          GROUP BY tool_name",
     )?;
-    let mut grouped: HashMap<String, Vec<i64>> = HashMap::new();
-    let rows = stmt.query_map(params![since, until], |r| {
+    let mut tool_latency: Vec<ToolLatencyRow> = stmt
+        .query_map(params![since, until], |r| {
+            Ok(ToolLatencyRow {
+                tool_name: r.get(0)?,
+                count: r.get(1)?,
+                avg_ms: r.get::<_, f64>(2)?,
+                p50_ms: 0.0,
+                p95_ms: 0.0,
+                max_ms: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+
+    // Percentile samples: most-recent N durations per tool (capped). Computed
+    // in Rust because SQLite has no built-in percentile function.
+    let mut samples: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT tool_name, duration_ms FROM (
+             SELECT tool_name, duration_ms,
+                    ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY id DESC) AS rn
+               FROM agent_audit
+              WHERE ts >= ?1 AND ts <= ?2
+         ) WHERE rn <= ?3",
+    )?;
+    let rows = stmt.query_map(params![since, until, LATENCY_SAMPLE_CAP], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
     })?;
     for row in rows {
         let (name, dur) = row?;
-        grouped.entry(name).or_default().push(dur);
+        samples.entry(name).or_default().push(dur);
     }
     drop(stmt);
-    let mut tool_latency: Vec<ToolLatencyRow> = grouped
-        .into_iter()
-        .map(|(name, mut durs)| {
+    for row in &mut tool_latency {
+        if let Some(durs) = samples.get_mut(&row.tool_name) {
             durs.sort_unstable();
-            let count = durs.len() as i64;
-            let sum: i64 = durs.iter().sum();
-            let avg_ms = if count > 0 {
-                sum as f64 / count as f64
-            } else {
-                0.0
-            };
-            let p50 = percentile(&durs, 0.50);
-            let p95 = percentile(&durs, 0.95);
-            let max_ms = *durs.last().unwrap_or(&0);
-            ToolLatencyRow {
-                tool_name: name,
-                count,
-                avg_ms,
-                p50_ms: p50,
-                p95_ms: p95,
-                max_ms,
-            }
-        })
-        .collect();
+            row.p50_ms = percentile(durs, 0.50);
+            row.p95_ms = percentile(durs, 0.95);
+        }
+    }
     tool_latency.sort_by_key(|r| std::cmp::Reverse(r.count));
 
     // Approval counts.
@@ -831,6 +863,74 @@ mod tests {
         assert_eq!(percentile(&[], 0.5), 0.0);
         assert_eq!(percentile(&[42], 0.95), 42.0);
         assert_eq!(percentile(&[1, 2, 3, 4], 0.5), 2.5);
+    }
+
+    #[test]
+    fn trim_range_delete_keeps_newest_and_is_noop_below_cap() {
+        // Mirrors the production trim in record(): a contiguous primary-key
+        // range delete keeping the newest CAP rows by id. perf (low) — verifies
+        // the range delete is a no-op below the cap and keeps exactly the newest
+        // CAP rows once exceeded (same retention as the old NOT-IN anti-join).
+        let conn = fresh_db();
+        const CAP: i64 = 5;
+        let now = now_millis();
+        let trim = |conn: &Connection| {
+            conn.execute(
+                "DELETE FROM agent_audit WHERE id < \
+                 (SELECT id FROM agent_audit ORDER BY id DESC LIMIT 1 OFFSET ?1)",
+                params![CAP - 1],
+            )
+            .unwrap()
+        };
+
+        // Below the cap: subquery yields no row → `id < NULL` matches nothing.
+        for i in 0..CAP {
+            insert(
+                &conn,
+                AuditEntry {
+                    ts: now + i,
+                    conversation_id: None,
+                    tool_name: "t".into(),
+                    args_json: "{}".into(),
+                    result_body: "".into(),
+                    duration_ms: i,
+                    approval: "auto".into(),
+                    outcome: "ok".into(),
+                    error_kind: None,
+                    workflow_run_id: None,
+                },
+            );
+        }
+        assert_eq!(trim(&conn), 0, "trim must be a no-op at or below the cap");
+
+        // Push past the cap; trim must drop the oldest, leaving the newest CAP.
+        for i in CAP..(CAP + 3) {
+            insert(
+                &conn,
+                AuditEntry {
+                    ts: now + i,
+                    conversation_id: None,
+                    tool_name: "t".into(),
+                    args_json: "{}".into(),
+                    result_body: "".into(),
+                    duration_ms: i,
+                    approval: "auto".into(),
+                    outcome: "ok".into(),
+                    error_kind: None,
+                    workflow_run_id: None,
+                },
+            );
+        }
+        assert_eq!(trim(&conn), 3, "trim must delete the rows beyond the cap");
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_audit", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, CAP);
+        // The surviving rows are the newest CAP (largest durations we inserted).
+        let min_dur: i64 = conn
+            .query_row("SELECT MIN(duration_ms) FROM agent_audit", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(min_dur, 3, "oldest survivor is the (total-CAP)th insert");
     }
 
     #[test]

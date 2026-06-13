@@ -291,13 +291,25 @@ export function applyContextBudget(
 
   // ── Pass 1: truncate large tool-result bodies, oldest first. ──
   // The first message is never touched even if (defensively) it were a tool.
+  //
+  // Perf review (low, 2026-06-13): the under-budget check formerly re-ran
+  // estimateMessagesTokens(working) — a full O(n) scan — at the top of every
+  // iteration, making Pass 1 O(n²) on over-budget turns. Track a running scalar
+  // instead, adjusting it by the delta on each truncation (the same prefix-sum
+  // technique Pass 2 uses below). The truncated message is a fresh object that
+  // misses the WeakMap cache, so estimateOneMessage recomputes its cost once —
+  // exactly the work we need — and the whole pass is now O(n).
+  let runningTotal = estimatedBefore;
   for (let i = 1; i < working.length; i++) {
-    if (estimateMessagesTokens(working) <= budget) break;
+    if (runningTotal <= budget) break;
     const m = working[i];
     if (m.role !== "tool") continue;
     const body = m.content ?? "";
     if (body.length <= headBytes) continue;
-    working[i] = { ...m, content: truncateToolBody(body, headBytes) };
+    const before = estimateOneMessage(m);
+    const next = { ...m, content: truncateToolBody(body, headBytes) };
+    working[i] = next;
+    runningTotal += estimateOneMessage(next) - before;
     toolResultsTruncated++;
   }
 

@@ -303,9 +303,16 @@ fn use_keychain_backend() -> bool {
 /// dropped on the floor.
 fn keychain_set(account: &str, key: &str) -> bool {
     if keychain_disabled() {
-        // Test mode treats success as "do nothing" so the disk path keeps
-        // its plaintext (which is the contract the test suite relies on).
-        return true;
+        // Test/disabled mode: never touch the real Keychain, but DO persist to
+        // the 0600 file so set/get/delete stay symmetric and the secret can be
+        // resolved later (the integration surface exercises real resolution).
+        // Previously this was a pure no-op that stored nothing, which — paired
+        // with save() blanking the on-disk plaintext on a "success" return —
+        // made the key unrecoverable and keychain_get always None (bug, low).
+        let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = load_secrets();
+        map.insert(account.to_string(), key.to_string());
+        return write_secrets(&map);
     }
     let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if use_keychain_backend() {
@@ -350,19 +357,57 @@ fn keychain_set(account: &str, key: &str) -> bool {
 /// miss transparently migrates any legacy 0600-file copy INTO the Keychain (and
 /// purges the file copy) so existing installs upgrade on first read.
 pub fn keychain_get(account: &str) -> Option<String> {
+    keychain_get_cached(account, None)
+}
+
+/// Resolution core for `keychain_get`. `file_cache`, when `Some`, is a secrets
+/// snapshot the caller already read this pass — used to satisfy the FILE-backed
+/// read paths (disabled mode, non-Keychain backend, Keychain-miss migration
+/// source) WITHOUT re-reading/re-stat'ing secrets.json per entry (perf, low:
+/// `load()` resolves N backends + M APIs and otherwise paid N+M file reads).
+/// `None` falls back to `load_secrets()`, preserving the standalone contract.
+/// Migration WRITES always re-load fresh under the lock so the on-disk purge
+/// stays correct under concurrency; the cache only short-circuits reads.
+fn keychain_get_cached(
+    account: &str,
+    file_cache: Option<&std::collections::BTreeMap<String, String>>,
+) -> Option<String> {
+    let from_cache = |map: &std::collections::BTreeMap<String, String>| {
+        map.get(account).filter(|s| !s.is_empty()).cloned()
+    };
     if keychain_disabled() {
-        return None;
+        // Symmetric with keychain_set's disabled-mode path: resolve from the
+        // 0600 file backend instead of returning None unconditionally, so the
+        // set→get round-trip works under FROGLIPS_SETTINGS_DIR (bug, low).
+        return match file_cache {
+            Some(map) => from_cache(map),
+            None => {
+                let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                from_cache(&load_secrets())
+            }
+        };
     }
     let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if use_keychain_backend() {
         if let Ok(bytes) = security_framework::passwords::get_generic_password(KC_SERVICE, account) {
-            return String::from_utf8(bytes).ok().filter(|s| !s.is_empty());
+            // Real Keychain hit. Self-heal: opportunistically purge any stale
+            // 0600-file copy left behind by a migration whose write_secrets()
+            // failed (bug, low) — a BTreeMap lookup that's cheap on the common
+            // path (load_secrets returns empty once migration is complete).
+            let val = String::from_utf8(bytes).ok().filter(|s| !s.is_empty());
+            if val.is_some() {
+                let mut map = load_secrets();
+                if map.remove(account).is_some() {
+                    let _ = write_secrets(&map);
+                }
+            }
+            return val;
         }
         // Not in the Keychain (or access failed) — migrate from the legacy file.
-        let from_file = load_secrets()
-            .get(account)
-            .filter(|s| !s.is_empty())
-            .cloned();
+        let from_file = match file_cache {
+            Some(map) => from_cache(map),
+            None => from_cache(&load_secrets()),
+        };
         if let Some(v) = from_file {
             if security_framework::passwords::set_generic_password(
                 KC_SERVICE,
@@ -380,16 +425,24 @@ pub fn keychain_get(account: &str) -> Option<String> {
         }
         return None;
     }
-    load_secrets()
-        .get(account)
-        .filter(|s| !s.is_empty())
-        .cloned()
+    match file_cache {
+        Some(map) => from_cache(map),
+        None => from_cache(&load_secrets()),
+    }
 }
 
 /// Delete an API key for `account` (best-effort). Removes from BOTH the Keychain
 /// and any legacy file copy so a delete can't leave a stale plaintext behind.
 fn keychain_delete(account: &str) {
     if keychain_disabled() {
+        // Test/disabled mode: delete from the 0600 file backend (the only store
+        // set/get use in this mode) so delete stays symmetric with them (bug,
+        // low). Never touch the real Keychain.
+        let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = load_secrets();
+        if map.remove(account).is_some() {
+            let _ = write_secrets(&map);
+        }
         return;
     }
     let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -468,13 +521,32 @@ pub fn load() -> Settings {
         },
     };
 
+    // Perf (low): read the 0600 secrets file ONCE for this whole resolution
+    // pass instead of once per blank/redacted entry. Each entry's file-backed
+    // read (disabled mode, file backend, or Keychain-miss migration source)
+    // shares this snapshot; only Keychain round-trips and migration writes still
+    // hit per entry, which is inherent. Snapshot under the same lock the helpers
+    // use. Skipped entirely when there are no secret-bearing entries to resolve.
+    let needs_resolution = s
+        .custom_backends
+        .as_ref()
+        .is_some_and(|v| !v.is_empty())
+        || s.saved_apis.as_ref().is_some_and(|v| !v.is_empty());
+    let file_cache = if needs_resolution {
+        let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Some(load_secrets())
+    } else {
+        None
+    };
+    let file_cache = file_cache.as_ref();
+
     let mut migrated = false;
     if let Some(backends) = s.custom_backends.as_mut() {
         for b in backends.iter_mut() {
             match b.api_key.as_deref() {
                 // Already redacted/blank on disk → pull the real key from Keychain.
                 Some("") | Some(REDACTED_MARKER) | None => {
-                    b.api_key = keychain_get(&b.id);
+                    b.api_key = keychain_get_cached(&b.id, file_cache);
                 }
                 // Plaintext key on disk → migrate it into the Keychain.
                 // Only mark `migrated` (which triggers the blank-on-disk
@@ -498,7 +570,7 @@ pub fn load() -> Settings {
             let acct = format!("api:{}", a.id);
             match a.api_key.as_deref() {
                 Some("") | Some(REDACTED_MARKER) | None => {
-                    a.api_key = keychain_get(&acct);
+                    a.api_key = keychain_get_cached(&acct, file_cache);
                 }
                 Some(plain) => {
                     let plain_owned = plain.to_string();
@@ -789,6 +861,48 @@ mod tests {
             let r = redacted(s.clone());
             let key = r.custom_backends.unwrap()[0].api_key.clone().unwrap();
             assert_ne!(key, "sk-secret-value");
+        });
+    }
+
+    /// Regression for the test-mode keychain asymmetry (bug, low): under
+    /// FROGLIPS_SETTINGS_DIR, `keychain_set` used to be a pure no-op and
+    /// `keychain_get` returned `None` unconditionally, so a saved key was
+    /// unrecoverable and the integration surface could never exercise real
+    /// secret resolution. After the fix the set→get round-trip must work, and
+    /// `load()` must re-resolve the key the save blanked on disk.
+    #[test]
+    fn keychain_roundtrips_in_test_mode() {
+        with_tempdir(|dir| {
+            // Direct set→get round-trip via the disabled-mode file backend.
+            assert!(keychain_set("api:rt", "sk-roundtrip"));
+            assert_eq!(keychain_get("api:rt").as_deref(), Some("sk-roundtrip"));
+
+            // End-to-end: save() blanks the on-disk plaintext, load() resolves
+            // it back from the file backend (was None before the fix).
+            let s = Settings {
+                custom_backends: Some(vec![CustomBackend {
+                    id: "b1".into(),
+                    name: "Test".into(),
+                    base_url: "https://example.com".into(),
+                    model: "m".into(),
+                    api_key: Some("sk-secret-value".into()),
+                }]),
+                ..Default::default()
+            };
+            save(&s).expect("save");
+
+            // Plaintext is gone from settings.json...
+            let raw = std::fs::read_to_string(dir.join("settings.json")).expect("read");
+            assert!(!raw.contains("sk-secret-value"), "secret leaked to disk");
+
+            // ...but load() resolves the real key back from the file backend.
+            let loaded = load();
+            let resolved = loaded.custom_backends.unwrap()[0].api_key.clone();
+            assert_eq!(resolved.as_deref(), Some("sk-secret-value"));
+
+            // delete() clears it from the file backend too.
+            keychain_delete("b1");
+            assert_eq!(keychain_get("b1"), None);
         });
     }
 }

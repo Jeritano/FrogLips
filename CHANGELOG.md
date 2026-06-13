@@ -4,6 +4,39 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.14] — 2026-06-13
+
+### Full-codebase review remediation (76 findings)
+A multi-agent review (14 areas, every finding adversarially verified) surfaced 76
+confirmed issues — no criticals or highs; 10 medium, 66 low — weighted toward
+performance, correctness, and optimization since the security audit was already
+done. 74 fixed, 2 deferred (cross-file boot-bundle lazy-loading). Full write-up:
+`docs/REVIEW-2026-06.md`. Highlights:
+
+- **Correctness:** dry-run `edit_file`/`multi_edit` preview now mirrors the real
+  Rust executor exactly ($-patterns, multi-match reject, literal first-occurrence)
+  so the diff you review matches what gets written; `readLines` no longer drops
+  already-complete earlier lines on a giant stream chunk; `keychain_get` now
+  distinguishes `errSecItemNotFound` from a transient access failure (a denied
+  prompt no longer silently presents the key as "absent"); `keychain_set` won't
+  silently downgrade a key to the plaintext file on a recoverable Keychain error.
+- **Security hardening:** `applescript_run` output is now injection-fenced like
+  every other untrusted subprocess channel; `validate_read_src`/apply-patch commit
+  re-canonicalize the parent to close a leaf/parent symlink-swap TOCTOU; MCP
+  registry fetches are size-capped (no unbounded `.json()` on a hostile upstream);
+  policy bare-token allow rules no longer match a basename anywhere in a nested path.
+- **Performance:** `read_file` pagination seeks to the requested window instead of
+  re-reading the whole file per page (was O(file×pages)); protected-path prefix
+  sets cached once (no ~35 PathBuf allocations + home_dir syscalls per scanned
+  entry in the search hot loop); the fs watcher debounce map is now bounded;
+  RoundtableView caches parsed markdown; MoA proposers run with diverse params;
+  katex no longer lands in the main boot bundle.
+- **Robustness:** `agent_audit` trim is a contiguous primary-key range delete
+  (keeps exactly the newest N) instead of a NOT-IN anti-join.
+
+All gates green: tsc clean · vitest 846 · cargo test 327 (native) / 327
+(no-default) · clippy clean (both feature sets). Notarized + stapled.
+
 ## [0.13.13] — 2026-06-13
 
 ### Security — the three audit residuals closed (A01/A10, A28, A16)

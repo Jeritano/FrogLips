@@ -168,6 +168,33 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Same general (non-normalized) cosine as `cosine`, but scored straight off a
+/// borrowed little-endian f32 BLOB so the dedupe/recall paths don't allocate a
+/// fresh `Vec<f32>` per row just to throw it away (perf finding; mirrors
+/// `rag::score_blob`'s zero-per-row-alloc pattern but keeps the full
+/// two-norm cosine semantics `cosine` documents). `query` is the decoded query
+/// vector; `blob` is the candidate's raw embedding bytes.
+fn cosine_blob(query: &[f32], blob: &[u8]) -> f32 {
+    // A valid embedding BLOB is a whole number of 4-byte f32s of equal dim.
+    if query.is_empty() || blob.len() != query.len() * 4 {
+        return 0.0;
+    }
+    let mut dot: f32 = 0.0;
+    let mut nb: f32 = 0.0;
+    for (q, chunk) in query.iter().zip(blob.chunks_exact(4)) {
+        let y = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        dot += q * y;
+        nb += y * y;
+    }
+    let na: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb = nb.sqrt();
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
+}
+
 fn row_to_memory(r: &rusqlite::Row) -> rusqlite::Result<Memory> {
     Ok(Memory {
         id: r.get(0)?,
@@ -191,9 +218,13 @@ fn row_to_memory(r: &rusqlite::Row) -> rusqlite::Result<Memory> {
 /// one edit.
 const MEM_COLS: &str = "id, content, conversation_id, source_msg_id, tags, status, created_at, last_used_at, scope, project_root";
 
-fn fetch_by_ids(ids: &[i64]) -> Result<Vec<Memory>> {
+/// Fetch the given memories indexed by id. `id IN (...)` returns rows in
+/// arbitrary order, so callers that need score order should iterate their own
+/// ordered id list and look each row up here — cheaper than re-sorting the
+/// fetched Vec.
+fn fetch_by_ids(ids: &[i64]) -> Result<HashMap<i64, Memory>> {
     if ids.is_empty() {
-        return Ok(vec![]);
+        return Ok(HashMap::new());
     }
     let conn = get_db()?;
     // Build "?1,?2,...,?n" without allocating one format! per id. Each id
@@ -213,11 +244,15 @@ fn fetch_by_ids(ids: &[i64]) -> Result<Vec<Memory>> {
     let mut stmt = conn.prepare(&sql)?;
     let params_vec: Vec<&dyn rusqlite::ToSql> =
         ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
-    // Score order is re-applied by caller — this query returns rows in arbitrary order.
-    let rows = stmt
-        .query_map(params_vec.as_slice(), row_to_memory)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+    // Score order is re-applied by caller via the returned map — this query
+    // returns rows in arbitrary order.
+    let mut by_id: HashMap<i64, Memory> = HashMap::with_capacity(ids.len());
+    let mut rows = stmt.query(params_vec.as_slice())?;
+    while let Some(row) = rows.next()? {
+        let m = row_to_memory(row)?;
+        by_id.insert(m.id, m);
+    }
+    Ok(by_id)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -510,20 +545,22 @@ pub fn search_vector(
     let over_fetch = limit.saturating_mul(4).clamp(limit, 200);
     scored.truncate(over_fetch);
     let ids: Vec<i64> = scored.iter().map(|(id, _)| *id).collect();
-    let mut mems = fetch_by_ids(&ids)?;
-    // Attach scores in the order returned
-    let score_map: HashMap<i64, f32> = scored.into_iter().collect();
-    for m in mems.iter_mut() {
-        m.score = score_map.get(&m.id).copied();
+    let mut by_id = fetch_by_ids(&ids)?;
+    // `scored` is already sorted by score DESC, so walk it in order and pull
+    // each Memory out of the by-id map — building the result already ordered.
+    // Avoids the old HashMap-of-scores rebuild + second sort over `mems`.
+    let mut mems: Vec<Memory> = Vec::with_capacity(scored.len().min(limit));
+    for (id, score) in scored {
+        if let Some(mut m) = by_id.remove(&id) {
+            if scope_matches(&m, ctx) {
+                m.score = Some(score);
+                mems.push(m);
+                if mems.len() >= limit {
+                    break;
+                }
+            }
+        }
     }
-    mems.retain(|m| scope_matches(m, ctx));
-    mems.sort_by(|a, b| {
-        b.score
-            .unwrap_or(0.0)
-            .partial_cmp(&a.score.unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    mems.truncate(limit);
     // Touch returned hits (see search_keyword for rationale).
     if !mems.is_empty() {
         let touch_ids: Vec<i64> = mems.iter().map(|m| m.id).collect();
@@ -665,9 +702,12 @@ pub fn find_duplicate(query_emb: Vec<f32>, threshold: f32) -> Result<Option<i64>
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let id: i64 = row.get(0)?;
-        let blob: Vec<u8> = row.get(1)?;
-        let emb = blob_to_embedding(&blob);
-        if cosine(&query_emb, &emb) >= threshold {
+        // Borrow the BLOB in place — no Vec<u8>/Vec<f32> per pending row.
+        let score = match row.get_ref(1)?.as_blob() {
+            Ok(b) => cosine_blob(&query_emb, b),
+            _ => 0.0,
+        };
+        if score >= threshold {
             return Ok(Some(id));
         }
     }

@@ -89,11 +89,17 @@ function parseScore(text: string): number | null {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null;
 }
 
-/** Pick a 1-based route number out of a classifier reply; clamps into range. */
+/** Pick a 1-based route number out of a classifier reply; clamps into range.
+ *  Bug fix: `text.match(/\d+/)` took the FIRST digit run anywhere, so reasoning
+ *  preamble ("Looking at all 3 routes, route 2 fits best") poisoned the parse.
+ *  Prefer the structured `ROUTE: <n>` token the prompt requests; otherwise take
+ *  the LAST number (models end with their verdict), mirroring structuredKey's
+ *  bottom-up scan so a terminal decision wins over incidental earlier digits. */
 function parseRouteIndex(text: string, n: number): number {
-  const m = text.match(/\d+/);
-  if (!m) return 0;
-  const i = parseInt(m[0], 10) - 1;
+  const tagged = text.match(/ROUTE\s*[:=]?\s*(\d+)/i);
+  const nums = tagged ? [tagged[1]] : text.match(/\d+/g);
+  if (!nums || nums.length === 0) return 0;
+  const i = parseInt(nums[nums.length - 1], 10) - 1;
   if (!Number.isFinite(i) || i < 0) return 0;
   return Math.min(i, n - 1); // clamp an out-of-range high index to the last route
 }
@@ -241,9 +247,13 @@ async function runMoa(ctx: NodeRunContext): Promise<string> {
   const task = taskText(ctx.base);
   if (ctx.signal.aborted) return "";
   ctx.emit(`Mixture-of-Agents — ${n} proposers running in parallel…\n`);
+  // Vary the sampling temperature per proposer (index-derived, deterministic) so
+  // the N drafts genuinely diverge — otherwise they collapse to near-identical
+  // text and the synthesis pass has nothing independent to reconcile. Same fix
+  // and helper as runConsistency so the two nodes can't drift.
   const proposals = await Promise.all(
     Array.from({ length: n }, (_, i) =>
-      runSub(ctx, { stream: false }).catch(
+      runSub(ctx, { stream: false, temperature: sampleTemperature(i, n) }).catch(
         (e) => `[proposer ${i + 1} failed: ${errMsg(e)}]`,
       ),
     ),
@@ -492,7 +502,7 @@ async function runRouter(ctx: NodeRunContext): Promise<string> {
     .map((r, i) => `${i + 1}. [${r.label}] ${r.when}`)
     .join("\n");
   const decision = await runSub(ctx, {
-    userContent: `You are a routing classifier. Choose the single best-fit route for the task. Reply with ONLY the route number.\n\n## Task\n${task}\n\n## Routes\n${list}\n\n## Best route number:`,
+    userContent: `You are a routing classifier. Choose the single best-fit route for the task. End your reply with exactly 'ROUTE: <number>'.\n\n## Task\n${task}\n\n## Routes\n${list}\n\n## Best route (end with ROUTE: <number>):`,
     model: cfg.routerModel,
     backend: coerceBackend(cfg.routerBackend),
     stream: false,

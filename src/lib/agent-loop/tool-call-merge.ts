@@ -10,6 +10,18 @@ import type { ToolCall } from "../../types";
 import type { PartialToolCall } from "./stream-types";
 
 /**
+ * Upper bound on streaming tool-call slots accumulated in a single turn. The
+ * slot index is supplied by the LLM backend on the wire; a misbehaving cloud
+ * route or buggy server could send a huge `index` (e.g. 1_000_000), which
+ * `acc[index] = slot` would turn into a giant sparse array. No real turn emits
+ * anywhere near this many parallel tool calls, so anything past the cap is
+ * treated as out-of-range and folded back to the array-position fallback. Low /
+ * bug+perf hardening: bounds memory and avoids sparse-array blowups regardless
+ * of upstream behavior.
+ */
+export const MAX_TOOL_CALL_SLOTS = 256;
+
+/**
  * Resolve which accumulator slot a streaming tool_call chunk belongs to.
  *
  * Servers disagree on where the slot index lives:
@@ -36,9 +48,16 @@ export function toolCallIndex(
   },
   fallback: number,
 ): number {
-  if (typeof tc.index === "number") return tc.index;
-  if (tc.function && typeof tc.function.index === "number") {
-    return tc.function.index;
+  // Only trust a wire index that is a non-negative integer within the slot
+  // cap; a non-finite/negative/oversized value (from a buggy or hostile
+  // backend) would otherwise create a sparse accumulator. Fall back to the
+  // array position when neither shape carries a valid index.
+  const valid = (n: number): boolean =>
+    Number.isInteger(n) && n >= 0 && n < MAX_TOOL_CALL_SLOTS;
+  if (typeof tc.index === "number") {
+    if (valid(tc.index)) return tc.index;
+  } else if (tc.function && typeof tc.function.index === "number") {
+    if (valid(tc.function.index)) return tc.function.index;
   }
   return fallback;
 }
@@ -53,6 +72,12 @@ export function mergeToolCallChunk(
   index: number,
   chunk: Partial<ToolCall> & { function?: Partial<ToolCall["function"]> },
 ): void {
+  // Defensive cap: even though toolCallIndex validates the wire index, guard
+  // here too so any out-of-range index (e.g. a raw value passed directly)
+  // can't balloon the accumulator into a giant sparse array. Clamp to the last
+  // slot rather than dropping the chunk, so its data isn't silently lost.
+  if (!Number.isInteger(index) || index < 0) index = 0;
+  if (index >= MAX_TOOL_CALL_SLOTS) index = MAX_TOOL_CALL_SLOTS - 1;
   let slot = acc[index];
   if (!slot) {
     slot = { function: { name: "", arguments: undefined } };

@@ -14,6 +14,14 @@ pub struct WebFetchResult {
 
 const WEB_FETCH_MAX_BYTES: usize = 1_048_576; // 1 MiB
 const WEB_FETCH_TIMEOUT_SECS: u64 = 15;
+// Larger read cap for the web_search parse path. The DDG HTML is parsed for
+// result blocks and never returned wholesale, so a bigger cap costs only
+// transient memory while ensuring the first `n` `result__a` blocks aren't
+// clipped mid-tag by the 1 MiB body cap (bug: silent mid-result truncation of
+// a structured parse — the result blocks sit early but the page can exceed
+// 1 MiB once footer/scripts are counted). Still bounded so a hostile/huge
+// page can't OOM us.
+const WEB_SEARCH_MAX_BYTES: usize = 4 * 1_048_576; // 4 MiB
 
 pub fn is_safe_public_host(host: &str) -> bool {
     // Reject localhost + RFC1918 + link-local + .local — defends against SSRF.
@@ -187,7 +195,7 @@ fn validate_outbound_headers(
 /// we resolved-and-validated for that specific host — closing the
 /// DNS-rebinding TOCTOU where reqwest's auto-follow would re-resolve at
 /// connect time and reach 127.0.0.1 / 169.254.169.254.
-fn pinned_no_redirect_client(
+fn build_pinned_no_redirect_client(
     host: &str,
     safe_addrs: &[std::net::SocketAddr],
     timeout: std::time::Duration,
@@ -201,6 +209,56 @@ fn pinned_no_redirect_client(
     }
     b.build()
         .map_err(|e| err_string(ToolError::io(e.to_string())))
+}
+
+/// Pinned-client cache (perf review, mirrors custom_backend.rs's
+/// PINNED_CLIENT_CACHE). Rebuilding a reqwest client per hop re-ran TLS from
+/// scratch and reused no connection pool across agent tool calls — ~30-120ms
+/// per send even in the common zero-redirect case. We still RESOLVE + VALIDATE
+/// the host on every call (the redirect loop below does that before reaching
+/// here); we only reuse the *built* client+pool, keyed by host + the exact
+/// sorted validated address set + timeout. Because the pin travels with the
+/// cached client, a cache hit can only ever connect to the addresses it was
+/// validated against, so the SSRF posture is unchanged and the rebind window
+/// stays bounded by `PINNED_CLIENT_TTL`.
+static PINNED_CLIENT_CACHE: once_cell::sync::Lazy<
+    std::sync::Mutex<
+        std::collections::HashMap<String, (std::time::Instant, reqwest::Client)>,
+    >,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+const PINNED_CLIENT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn pinned_no_redirect_client(
+    host: &str,
+    safe_addrs: &[std::net::SocketAddr],
+    timeout: std::time::Duration,
+) -> Result<reqwest::Client, String> {
+    // Key on host + sorted validated addrs + timeout so a hit can only reuse a
+    // client pinned to the exact same address set the caller just validated.
+    let mut sorted: Vec<std::net::SocketAddr> = safe_addrs.to_vec();
+    sorted.sort();
+    let key = {
+        use std::fmt::Write;
+        let mut k = format!("{host}|{}|", timeout.as_millis());
+        for a in &sorted {
+            let _ = write!(k, "{a},");
+        }
+        k
+    };
+    if let Ok(cache) = PINNED_CLIENT_CACHE.lock() {
+        if let Some((built, client)) = cache.get(&key) {
+            if built.elapsed() < PINNED_CLIENT_TTL {
+                return Ok(client.clone());
+            }
+        }
+    }
+    let client = build_pinned_no_redirect_client(host, safe_addrs, timeout)?;
+    if let Ok(mut cache) = PINNED_CLIENT_CACHE.lock() {
+        // Opportunistic sweep so transient hosts don't accumulate stale pools.
+        cache.retain(|_, (built, _)| built.elapsed() < PINNED_CLIENT_TTL);
+        cache.insert(key, (std::time::Instant::now(), client.clone()));
+    }
+    Ok(client)
 }
 
 /// Manually follow redirects with per-hop SSRF validation + DNS pinning.
@@ -372,7 +430,10 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
         .map_err(|e| err_string(ToolError::invalid(format!("bad url: {e}"))))?;
     let timeout = std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS);
     let resp = send_following_redirects(url, timeout, |client, u| client.get(u.clone())).await?;
-    let (bytes, _total, _truncated) = read_capped(resp, WEB_FETCH_MAX_BYTES).await?;
+    // Read with the larger search cap so the structured `result__a` parse below
+    // can't be clipped mid-tag (which would silently drop the final hit). The
+    // body is parsed, never returned wholesale, so the larger cap is parse-only.
+    let (bytes, _total, _truncated) = read_capped(resp, WEB_SEARCH_MAX_BYTES).await?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
 
     // Parse <a class="result__a" href="..."> + <a class="result__snippet">

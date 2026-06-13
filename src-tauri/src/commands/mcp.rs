@@ -241,6 +241,13 @@ type RegistryCacheMap =
 static REGISTRY_CACHE: once_cell::sync::Lazy<std::sync::Mutex<RegistryCacheMap>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 const REGISTRY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+/// Hard byte cap on a registry response body (fix: perf/low). Both upstreams are
+/// hardcoded so this is not attacker-controlled, but `.json()` buffers the whole
+/// body first; cap it so a compromised/misbehaving upstream (or a MITM) can't
+/// force an unbounded allocation, matching the rest of the codebase's discipline.
+/// Official `/v0/servers?limit=30` and PulseMCP `count_per_page=100` are both far
+/// under this.
+const REGISTRY_BODY_CAP: usize = 4 * 1024 * 1024;
 
 /// Browse MCP server registries. `source` = "official" (the canonical
 /// modelcontextprotocol.io registry) or "pulse" (PulseMCP). `query` filters
@@ -262,8 +269,11 @@ pub async fn mcp_registry_search(
         .map(str::to_lowercase);
 
     // Serve the full list from cache when fresh (lock released before await).
+    // The cache is a pure perf optimization (fix: bug/low) — recover a poisoned
+    // guard with `into_inner()` rather than `.unwrap()` so a panic-while-held
+    // elsewhere can't brick this command for the rest of the process lifetime.
     let cached = {
-        let guard = REGISTRY_CACHE.lock().unwrap();
+        let guard = REGISTRY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         guard
             .get(&source)
             .filter(|(t, _)| t.elapsed() < REGISTRY_CACHE_TTL)
@@ -284,7 +294,7 @@ pub async fn mcp_registry_search(
         v.retain(|e| seen.insert(e.id.clone()));
         REGISTRY_CACHE
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(source.clone(), (std::time::Instant::now(), v.clone()));
         v
     };
@@ -308,12 +318,14 @@ async fn fetch_official(client: &reqwest::Client) -> Result<Vec<McpRegistryEntry
     // has been observed to hang on large `limit` values (server-side). 30 keeps
     // the response light; the frontend falls back to PulseMCP if this still
     // fails.
-    let v: serde_json::Value = client
+    let resp = client
         .get("https://registry.modelcontextprotocol.io/v0/servers?limit=30")
         .send()
         .await
-        .map_err(|e| format!("registry request failed: {e}"))?
-        .json()
+        .map_err(|e| format!("registry request failed: {e}"))?;
+    // Cap the buffered body (fix: perf/low) — `.json()` buffers the whole
+    // response first; stream with a hard cap instead.
+    let v: serde_json::Value = mcp::read_json_capped(resp, REGISTRY_BODY_CAP)
         .await
         .map_err(|e| format!("registry bad JSON: {e}"))?;
 
@@ -412,8 +424,8 @@ async fn fetch_pulse() -> Result<Vec<McpRegistryEntry>, String> {
         }
     }
     let resp = resp_ok.ok_or(last)?;
-    let v: serde_json::Value = resp
-        .json()
+    // Cap the buffered body (fix: perf/low) — see fetch_official.
+    let v: serde_json::Value = mcp::read_json_capped(resp, REGISTRY_BODY_CAP)
         .await
         .map_err(|e| format!("PulseMCP bad JSON: {e}"))?;
 

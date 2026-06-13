@@ -677,15 +677,22 @@ pub fn model_perf_record(s: &PerfSample) -> Result<()> {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![now_unix(), s.model, s.backend, s.ttft_ms, s.tok_per_sec, s.completion_tokens, s.cold_load as i64],
     )?;
-    // Bound the ledger: keep the most recent ~5000 samples.
-    conn.execute(
-        "DELETE FROM model_perf_samples WHERE id < (
-            SELECT COALESCE(MIN(id), 0) FROM (
-                SELECT id FROM model_perf_samples ORDER BY id DESC LIMIT 5000
-            )
-         )",
-        [],
-    )?;
+    // Bound the ledger: keep the most recent ~5000 samples. Perf (low):
+    // model_perf_record fires once per generated reply, so pruning on every
+    // INSERT runs an `ORDER BY id DESC LIMIT 5000` walk + no-op DELETE + WAL
+    // touch even when the table is far under the cap. Only prune periodically
+    // (every 256th insert) — the cap stays effectively honoured (we never
+    // exceed 5000 + ~255) without paying the prune cost on the common path.
+    if (conn.last_insert_rowid() as u64).is_multiple_of(256) {
+        conn.execute(
+            "DELETE FROM model_perf_samples WHERE id < (
+                SELECT COALESCE(MIN(id), 0) FROM (
+                    SELECT id FROM model_perf_samples ORDER BY id DESC LIMIT 5000
+                )
+             )",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -1210,6 +1217,16 @@ fn make_snippet(content: &str, needle: &str) -> String {
 /// Full-text-ish search across message bodies. Returns at most one hit per
 /// conversation (the most recent matching message), newest conversation first.
 /// Matching uses SQL `LIKE` with `%`/`_` escaped so the query matches literally.
+///
+/// Perf (low): the leading-wildcard `LIKE '%…%'` cannot use any B-tree index,
+/// so this is O(total message bytes) — an unavoidable full scan of
+/// `messages.content` plus the `MAX(id) … GROUP BY conversation_id` aggregate.
+/// It is intentionally NOT routed through the faster `search_messages_fts`
+/// (messages_fts, v18): FTS5 porter stemming changes substring/sub-token match
+/// semantics, so swapping it in would silently regress what the debounced
+/// sidebar filter finds. The cost is bounded in practice (single-user desktop
+/// DB, 220ms debounce, min 2 chars); revisit only if one user's history grows
+/// to tens of thousands of messages.
 pub fn search_messages(query: &str) -> Result<Vec<MessageSearchHit>> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -1343,13 +1360,20 @@ pub fn add_message(
                 .optional()?;
             if let Some(current_title) = current_title {
                 if title_is_placeholder(&current_title) {
-                    let prior_user_msgs: i64 = tx.query_row(
-                        "SELECT COUNT(*) FROM messages
-                         WHERE conversation_id = ?1 AND role = 'user' AND id <> ?2",
-                        params![conv_id, message_id],
-                        |r| r.get(0),
-                    )?;
-                    if prior_user_msgs == 0 {
+                    // Perf (low): an existence probe that stops at the first
+                    // prior user row, rather than COUNT(*)-ing them all just
+                    // for a `== 0` check. Auto-title only fires when there is
+                    // no earlier user message in this conversation.
+                    let has_prior_user_msg: Option<i64> = tx
+                        .query_row(
+                            "SELECT 1 FROM messages
+                             WHERE conversation_id = ?1 AND role = 'user' AND id <> ?2
+                             LIMIT 1",
+                            params![conv_id, message_id],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if has_prior_user_msg.is_none() {
                         tx.execute(
                             "UPDATE conversations SET title = ?1 WHERE id = ?2",
                             params![new_title, conv_id],

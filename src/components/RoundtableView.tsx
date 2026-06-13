@@ -36,6 +36,28 @@ import type {
 } from "../lib/roundtable/types";
 import "../styles/roundtable.css";
 
+// Cross-render markdown cache (perf, medium). The RtTurnBubble memo only holds
+// while turn objects keep referential identity during a live run; discrete
+// events (opening a saved outcome, view-switch/remount, theme toggle) drop that
+// identity and would otherwise re-run the full marked → highlight.js → DOMPurify
+// pipeline for every visible bubble. Keyed by the (immutable) content string so
+// a completed turn's HTML is parsed once and reused thereafter, mirroring
+// MessageList's `cachedMarkdown` (which is module-private there, so we keep a
+// local twin rather than reach across files). FIFO eviction bounds it.
+const RT_MARKDOWN_CACHE_MAX = 500;
+const rtMarkdownCache = new Map<string, string>();
+function rtCachedMarkdown(text: string): string {
+  const hit = rtMarkdownCache.get(text);
+  if (hit !== undefined) return hit;
+  const rendered = renderMarkdown(text);
+  if (rtMarkdownCache.size >= RT_MARKDOWN_CACHE_MAX) {
+    const firstKey = rtMarkdownCache.keys().next().value;
+    if (firstKey !== undefined) rtMarkdownCache.delete(firstKey);
+  }
+  rtMarkdownCache.set(text, rendered);
+  return rendered;
+}
+
 /**
  * One transcript bubble. Memoized: done turns keep referential identity across
  * the 16ms delta flushes (the provider's flush map returns unchanged turns by
@@ -65,7 +87,7 @@ const RtTurnBubble = memo(function RtTurnBubble({ turn: t }: { turn: Turn }) {
       ) : (
         <div
           className="rt-bubble-body markdown"
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(t.text) }}
+          dangerouslySetInnerHTML={{ __html: rtCachedMarkdown(t.text) }}
         />
       )}
     </div>
@@ -689,24 +711,77 @@ export function RoundtableView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // While editing, auto-save the config back into its saved entry.
+  // While editing, auto-save the config back into its saved entry. Debounced
+  // (perf, low): the seat-name / persona / topic inputs change `seats`/`topic`
+  // on EVERY keystroke, so an un-debounced write-back rebuilt the whole
+  // savedTables array AND re-serialized the full blob to localStorage per
+  // character. Coalesce to one write ~400ms after the user pauses, mirroring
+  // WorkflowsPage's `saveTimer` pattern.
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mirror the latest savedTables so the unmount-only flush can compute + write
+  // the final array directly (the usePersistedState write-back effect won't run
+  // once the component is unmounting).
+  const savedTablesRef = useRef(savedTables);
+  savedTablesRef.current = savedTables;
+  // The newest queued write. Kept in a ref so the unmount-only flush below can
+  // persist a pause-less edit (typed then navigated away) without dropping it —
+  // re-run cleanups must NOT flush, or every keystroke would write and the
+  // debounce would do nothing. `direct` writes localStorage itself, for the
+  // unmount path where the hook's effect can no longer fire.
+  const pendingSavePersist = useRef<((direct: boolean) => void) | null>(null);
   useEffect(() => {
     if (!editing || !loadedId) return;
-    setSavedTables((cur) =>
+    // Capture the current snapshot so the deferred write persists what the user
+    // had typed when this effect ran, not whatever state exists at fire time.
+    const snapshot = {
+      name: saveName.trim(),
+      seats,
+      topic,
+      memoryMode,
+      maxRounds,
+      maxUsd,
+    };
+    const apply = (cur: SavedTable[]) =>
       cur.map((t) =>
         t.id === loadedId
           ? {
               ...t,
-              name: saveName.trim() || t.name,
-              seats,
-              topic,
-              memoryMode,
-              maxRounds,
-              maxUsd,
+              name: snapshot.name || t.name,
+              seats: snapshot.seats,
+              topic: snapshot.topic,
+              memoryMode: snapshot.memoryMode,
+              maxRounds: snapshot.maxRounds,
+              maxUsd: snapshot.maxUsd,
             }
           : t,
-      ),
-    );
+      );
+    const flush = (direct: boolean) => {
+      autoSaveTimer.current = null;
+      pendingSavePersist.current = null;
+      if (direct) {
+        // Unmount path: setState won't reach localStorage via the hook, so
+        // write the computed array straight to the persisted slot.
+        const next = apply(savedTablesRef.current);
+        try {
+          localStorage.setItem("roundtable.saved", JSON.stringify(next));
+        } catch {
+          /* quota / unavailable — best-effort, mirrors usePersistedState */
+        }
+        return;
+      }
+      setSavedTables(apply);
+    };
+    pendingSavePersist.current = flush;
+    autoSaveTimer.current = setTimeout(() => flush(false), 400);
+    // Re-run cleanup only cancels the pending timer; it does NOT flush, since a
+    // newer keystroke is about to schedule a fresher write. The final flush is
+    // handled by the unmount-only effect below.
+    return () => {
+      if (autoSaveTimer.current) {
+        clearTimeout(autoSaveTimer.current);
+        autoSaveTimer.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     editing,
@@ -718,6 +793,14 @@ export function RoundtableView() {
     maxRounds,
     maxUsd,
   ]);
+  // Unmount-only: flush any write the user queued then navigated away from
+  // before the 400ms debounce fired, so the last edit is never lost.
+  useEffect(
+    () => () => {
+      pendingSavePersist.current?.(true);
+    },
+    [],
+  );
 
   const loadTable = useCallback(
     (id: string) => {

@@ -19,7 +19,7 @@
 //!     `String::from_utf8_lossy`).
 
 use once_cell::sync::Lazy;
-use regex::Regex;
+use regex::{Regex, RegexSet};
 
 /// One detected pattern instance. `pattern` is a stable human-readable name
 /// (safe to surface in the wrapper warning). `snippet` is up to 80 chars of
@@ -52,47 +52,52 @@ struct Pattern {
     re: Regex,
 }
 
+/// Single source of truth for the (friendly name, regex source) catalogue.
+/// Both the per-pattern [`PATTERNS`] and the combined [`PATTERN_SET`] are
+/// derived from this table, so their indices stay aligned by construction.
+const PATTERN_TABLE: &[(&str, &str)] = &[
+    (
+        "ignore previous instructions",
+        r"(?i)ignore\s+(all\s+)?previous\s+instructions",
+    ),
+    ("ignore the above", r"(?i)ignore\s+the\s+above"),
+    ("disregard prior", r"(?i)disregard\s+(all\s+)?prior"),
+    // "you are now (DAN|developer mode|jailbroken|unrestricted)"
+    (
+        "jailbreak persona prompt",
+        r"(?i)you\s+are\s+now\s+(dan\b|developer\s+mode|jailbroken|unrestricted)",
+    ),
+    // role-marker hijack at start of a line
+    ("system: role marker at line start", r"(?im)^\s*system\s*:"),
+    (
+        "assistant: role marker at line start",
+        r"(?im)^\s*assistant\s*:",
+    ),
+    // ChatML tokens — never appear in benign text
+    ("ChatML <|im_start|> token", r"<\|im_start\|>"),
+    ("ChatML <|im_end|> token", r"<\|im_end\|>"),
+    ("ChatML <|system|> token", r"<\|system\|>"),
+    // Gemma role framing
+    ("Gemma <start_of_turn> token", r"<start_of_turn>"),
+    ("Gemma <end_of_turn> token", r"<end_of_turn>"),
+    // Phi-3 turn terminator
+    ("Phi <|end|> token", r"<\|end\|>"),
+    // Llama instruction tokens
+    ("Llama [INST] token", r"\[INST\]"),
+    ("Llama [/INST] token", r"\[/INST\]"),
+    // Model EOS / BOS hijack
+    ("raw </s> EOS token", r"</s>"),
+    ("raw <s> BOS token", r"(^|[^<\w])<s>"),
+    // Hidden-prompt smuggling via huge whitespace runs.
+    ("hidden whitespace padding", r" {500,}"),
+    // Repeated-token attack handled by `detect_repeated_token_spam`
+    // below — Rust's `regex` crate has no backreferences, so we do
+    // that scan procedurally.
+];
+
 static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
-    let raw: &[(&str, &str)] = &[
-        (
-            "ignore previous instructions",
-            r"(?i)ignore\s+(all\s+)?previous\s+instructions",
-        ),
-        ("ignore the above", r"(?i)ignore\s+the\s+above"),
-        ("disregard prior", r"(?i)disregard\s+(all\s+)?prior"),
-        // "you are now (DAN|developer mode|jailbroken|unrestricted)"
-        (
-            "jailbreak persona prompt",
-            r"(?i)you\s+are\s+now\s+(dan\b|developer\s+mode|jailbroken|unrestricted)",
-        ),
-        // role-marker hijack at start of a line
-        ("system: role marker at line start", r"(?im)^\s*system\s*:"),
-        (
-            "assistant: role marker at line start",
-            r"(?im)^\s*assistant\s*:",
-        ),
-        // ChatML tokens — never appear in benign text
-        ("ChatML <|im_start|> token", r"<\|im_start\|>"),
-        ("ChatML <|im_end|> token", r"<\|im_end\|>"),
-        ("ChatML <|system|> token", r"<\|system\|>"),
-        // Gemma role framing
-        ("Gemma <start_of_turn> token", r"<start_of_turn>"),
-        ("Gemma <end_of_turn> token", r"<end_of_turn>"),
-        // Phi-3 turn terminator
-        ("Phi <|end|> token", r"<\|end\|>"),
-        // Llama instruction tokens
-        ("Llama [INST] token", r"\[INST\]"),
-        ("Llama [/INST] token", r"\[/INST\]"),
-        // Model EOS / BOS hijack
-        ("raw </s> EOS token", r"</s>"),
-        ("raw <s> BOS token", r"(^|[^<\w])<s>"),
-        // Hidden-prompt smuggling via huge whitespace runs.
-        ("hidden whitespace padding", r" {500,}"),
-        // Repeated-token attack handled by `detect_repeated_token_spam`
-        // below — Rust's `regex` crate has no backreferences, so we do
-        // that scan procedurally.
-    ];
-    raw.iter()
+    PATTERN_TABLE
+        .iter()
         .map(|(name, pat)| Pattern {
             name,
             // Regex compile failure here is a developer error — every pattern
@@ -101,6 +106,22 @@ static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
             re: Regex::new(pat).expect("static injection-scan regex must compile"),
         })
         .collect()
+});
+
+/// Combined `RegexSet` over the exact same patterns as [`PATTERNS`], built
+/// from [`PATTERN_TABLE`] so set-index ↔ `PATTERNS` index stay aligned.
+///
+/// Perf (review, low): `scan` used to run one full linear pass per compiled
+/// regex over the whole slice. The overwhelmingly common case is clean text
+/// where *no* pattern matches, so we first run a single combined pass via the
+/// set; only patterns the set reports as matching get their per-pattern
+/// `find_iter` (needed to extract snippets + per-match counts). On clean input
+/// this collapses ~17 passes into one; output is byte-for-byte identical
+/// because a pattern absent from the set never has any `find_iter` match
+/// anyway.
+static PATTERN_SET: Lazy<RegexSet> = Lazy::new(|| {
+    RegexSet::new(PATTERN_TABLE.iter().map(|(_, pat)| *pat))
+        .expect("static injection-scan regex set must compile")
 });
 
 /// Maximum input length we'll scan in characters. Upstream tools already
@@ -178,7 +199,17 @@ pub fn scan(text: &str) -> Vec<InjectionFinding> {
     };
 
     let mut out: Vec<InjectionFinding> = Vec::new();
-    for p in PATTERNS.iter() {
+    // Perf (review, low): one combined pass to learn *which* patterns match,
+    // then run the expensive per-pattern `find_iter` (which we still need for
+    // snippets + per-match counts) only for those. On the hot path the text is
+    // clean, so this is a single pass and the per-pattern loop is skipped
+    // entirely. Behavior is identical: a pattern not in `matched` would yield
+    // zero `find_iter` matches anyway.
+    let matched = PATTERN_SET.matches(scan_slice);
+    for (idx, p) in PATTERNS.iter().enumerate() {
+        if !matched.matched(idx) {
+            continue;
+        }
         for m in p.re.find_iter(scan_slice) {
             if out.len() >= MAX_FINDINGS {
                 return out;

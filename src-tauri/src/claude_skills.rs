@@ -167,9 +167,16 @@ fn parse_skill_md(source: &str) -> Result<ParsedSkill> {
     // trailing newline — we need to know where the fence ENDS in the source
     // to slice out the body. `split_inclusive('\n')` keeps each line's
     // terminator, so summing `line.len()` gives the exact byte offset.
-    let mut frontmatter = String::new();
+    //
+    // We also record the YAML block's byte range (`fm_start..fm_end`) so the
+    // frontmatter can be sliced from the source directly rather than rebuilt
+    // line-by-line into a growing String (low-severity optimization cleanup):
+    // serde_yaml tolerates CRLF, so the per-line trim+push was redundant copy
+    // work over offsets we already compute.
     let mut state = FrontmatterState::SeekOpen;
     let mut body_start: usize = 0;
+    let mut fm_start: usize = 0;
+    let mut fm_end: usize = 0;
     let mut cursor: usize = 0;
 
     for raw in source.split_inclusive('\n') {
@@ -182,6 +189,8 @@ fn parse_skill_md(source: &str) -> Result<ParsedSkill> {
                 }
                 if trimmed == "---" {
                     state = FrontmatterState::InBlock;
+                    // YAML block begins at the byte after the opening fence.
+                    fm_start = cursor;
                     continue;
                 }
                 return Err(err(
@@ -192,11 +201,12 @@ fn parse_skill_md(source: &str) -> Result<ParsedSkill> {
             FrontmatterState::InBlock => {
                 if trimmed == "---" {
                     state = FrontmatterState::Done;
+                    // YAML block ends at the start of the closing fence line
+                    // (cursor was already advanced past it above).
+                    fm_end = cursor - raw.len();
                     body_start = cursor;
                     break;
                 }
-                frontmatter.push_str(trimmed);
-                frontmatter.push('\n');
             }
             FrontmatterState::Done => break,
         }
@@ -239,7 +249,9 @@ fn parse_skill_md(source: &str) -> Result<ParsedSkill> {
         allowed_tools: Option<Vec<String>>,
     }
 
-    let raw: RawFrontmatter = serde_yaml::from_str(&frontmatter)
+    // Slice the YAML block straight from the source (offsets captured during
+    // the walk); serde_yaml handles the CRLF line endings we left in place.
+    let raw: RawFrontmatter = serde_yaml::from_str(&source[fm_start..fm_end])
         .map_err(|e| err("bad_skill_md", format!("YAML parse error: {e}")))?;
 
     let name = raw

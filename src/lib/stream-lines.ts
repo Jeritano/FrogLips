@@ -35,26 +35,31 @@ export async function readLines(
       const { value, done } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
-      if (buf.length > MAX_BUF) {
-        const lastNl = buf.lastIndexOf("\n", buf.length - MAX_BUF);
-        const dropped = lastNl >= 0 ? lastNl + 1 : buf.length;
-        logDiag({
-          level: "warn",
-          source: "stream-lines",
-          message: `readLines buffer exceeded ${MAX_BUF} bytes; dropping ${dropped} bytes`,
-          detail: {
-            bufLength: buf.length,
-            droppedBytes: dropped,
-            keepingTail: buf.length - dropped,
-          },
-        });
-        buf = lastNl >= 0 ? buf.slice(lastNl + 1) : "";
-      }
+      // Drain every complete line FIRST so already-parseable NDJSON lines are
+      // never collateral damage of the overflow guard below. Otherwise a single
+      // read that coalesces normal lines with an oversized unterminated tail
+      // (e.g. a multi-MB tool_call blob) would silently drop the earlier,
+      // fully-formed lines before processLine ever saw them. (bug, medium)
       let nl: number;
       while ((nl = buf.indexOf("\n")) !== -1) {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         onLine(line);
+      }
+      // Only the residual unterminated tail remains. Cap it: a malformed server
+      // that never emits a newline would otherwise grow the buffer unbounded.
+      if (buf.length > MAX_BUF) {
+        logDiag({
+          level: "warn",
+          source: "stream-lines",
+          message: `readLines buffer exceeded ${MAX_BUF} bytes; dropping ${buf.length} bytes`,
+          detail: {
+            bufLength: buf.length,
+            droppedBytes: buf.length,
+            keepingTail: 0,
+          },
+        });
+        buf = "";
       }
     }
     if (buf.length > 0) onLine(buf);

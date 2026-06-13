@@ -728,7 +728,6 @@ export function MessageList({
   // Autoscroll on streaming/message/agent-status changes. Throttled to every
   // Nth frame while streaming so the scroll-thread has headroom; un-throttled
   // for one-shot events (new message lands, agent status flips).
-  const streamingKey = streaming !== undefined ? "s" : "n";
   useEffect(() => {
     if (!stickRef.current) return;
     if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
@@ -749,7 +748,7 @@ export function MessageList({
     return () => {
       if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
     };
-  }, [messages.length, streaming, agentStatus, streamingKey]);
+  }, [messages.length, streaming, agentStatus]);
 
   // Last assistant model anywhere in history (incl. tool turns) — the
   // streaming-bubble divider keys off this so a history ending on a tool

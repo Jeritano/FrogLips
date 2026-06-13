@@ -30,19 +30,26 @@ export default defineConfig(async () => ({
     },
   },
   // Maturity review P1 #20: split the heavy markdown/syntax-highlight +
-  // sanitization deps into their own chunks. They're not on the cold-
-  // start critical path (the empty chat shell renders before any
-  // markdown ever needs to highlight), so isolating them lets the
-  // main chunk land faster on first paint. React-flow is similarly
-  // workflow-only — chunk it separately so chat-only sessions never
+  // sanitization deps into their own "markdown" chunk so they're grouped
+  // and cached together rather than scattered through the main chunk.
+  // NOTE (perf #2, medium): markdown.ts is reached via a fully STATIC
+  // import chain (App -> ChatWindow -> MessageList -> ../lib/markdown), so
+  // this chunk is modulepreloaded and parsed on every launch — the split
+  // does NOT defer it off first paint. Truly deferring it would require
+  // lazy-loading MessageList/renderMarkdown (touches src/ component files,
+  // out of scope here). React-flow IS genuinely deferred: its only
+  // importer (WorkflowsPage) is React.lazy, so chat-only sessions never
   // download it.
   build: {
     // Audit M17 (2026-05-27): explicit chunk budget. Default warns at
-    // 500 KB; we've been seeing the main chunk live ~511 KB and growing.
-    // Lowering the warn threshold makes accidental dep weight noisy at
-    // build time. CI doesn't fail on warnings yet; a follow-up will add
-    // a hard check against scripts/bundle-budget.json once the existing
-    // chunks are trimmed (highlight.js languages, markdown lib).
+    // 500 KB; we lower it to make accidental dep weight noisy at build
+    // time. NOTE (cleanup #3, low): this is a soft, log-only warning —
+    // it does NOT fail the build, and the main chunk currently builds
+    // well over this limit, so the warning already fires on every build.
+    // It is a tripwire, not an enforced gate. A real hard check (e.g. a
+    // generateBundle hook with a committed bundle-budget) is intentionally
+    // not wired here yet: enabling it now would fail the build until the
+    // main chunk is trimmed back under budget.
     chunkSizeWarningLimit: 400,
     rollupOptions: {
       output: {
@@ -57,11 +64,16 @@ export default defineConfig(async () => ({
         //   subpath imports (64.5 KB of grammars in markdown.ts) leaked into
         //   the main chunk. Match by path so every hljs/marked/dompurify
         //   module lands in the markdown chunk together.
+        // - Perf #1 (medium): katex (~270 KB) is statically imported by
+        //   markdown.ts too, but was omitted here, so it folded into the
+        //   main chunk. Route it to the markdown chunk so it travels with
+        //   the renderer it belongs to instead of bloating the entry chunk.
         manualChunks(id: string) {
           if (
             id.includes("node_modules/highlight.js") ||
             id.includes("node_modules/marked") ||
-            id.includes("node_modules/dompurify")
+            id.includes("node_modules/dompurify") ||
+            id.includes("node_modules/katex")
           ) {
             return "markdown";
           }

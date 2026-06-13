@@ -147,8 +147,19 @@ if [[ -n "${APPLE_SIGNING_IDENTITY:-}" && -d "$NOTARIZE_APP" ]]; then
         --password "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$REPAIR_TAR"
     fi
   fi
-  # Hard gate: never ship a build Gatekeeper rejects.
-  if ! spctl -a -vv "$NOTARIZE_APP" 2>&1 | grep -q "Notarized Developer ID"; then
+  # Hard gate: never ship a build Gatekeeper rejects. spctl's ONLINE assessment
+  # is flaky for the first few seconds after a staple (same race the installed
+  # check at the bottom of this script already retries for) — so retry here too
+  # instead of aborting on the first transient "rejected".
+  gate_ok=0
+  for _ in 1 2 3 4 5 6; do
+    if spctl -a -vv "$NOTARIZE_APP" 2>&1 | grep -q "Notarized Developer ID"; then
+      gate_ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$gate_ok" -ne 1 ]]; then
     echo "✗ Gatekeeper does not accept the build as Notarized Developer ID — aborting." >&2
     exit 1
   fi

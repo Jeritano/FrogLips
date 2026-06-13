@@ -49,9 +49,22 @@ export function usePersistedState<T>(
   // the value we just hydrated on every mount (which, for a per-keystroke
   // state like the prompt, would also churn localStorage on remount).
   const didMount = useRef(false);
+  // Track the key the current `state` was hydrated/persisted under. `key` is
+  // contractually stable, but if a caller ever passes a dynamic key the lazy
+  // initializer won't re-hydrate the new slot — yet this effect would still
+  // fire (deps include `key`) and write the OLD state under the NEW key,
+  // silently clobbering it. Bailing on a key change makes that destructive
+  // write impossible while preserving the read-once contract. [bug/low]
+  const keyRef = useRef(key);
   useEffect(() => {
     if (!didMount.current) {
       didMount.current = true;
+      return;
+    }
+    if (keyRef.current !== key) {
+      // Key changed: `state` belongs to the previous key, so don't write it
+      // into the new slot. Adopt the new key for subsequent writes.
+      keyRef.current = key;
       return;
     }
     try {

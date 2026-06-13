@@ -145,9 +145,25 @@ export async function dryRunExecute(
           message: `dry-run: could not read '${path}' for diff: ${(e as Error).message ?? e}`,
         });
       }
-      const after = replaceAll
-        ? before.split(oldStr).join(newStr)
-        : before.replace(oldStr, newStr);
+      // [bug] Mirror the Rust executor (fs.rs): when replace_all is false and
+      // old_string matches more than once, the real run REJECTS the call. A JS
+      // first-match replace would show a misleading clean diff for an op that
+      // would actually error out, defeating the purpose of the dry-run preview.
+      let after: string;
+      if (replaceAll) {
+        after = before.split(oldStr).join(newStr);
+      } else {
+        const matchCount = oldStr === "" ? 0 : before.split(oldStr).length - 1;
+        if (matchCount > 1) {
+          return JSON.stringify({
+            ok: false,
+            dry_run: true,
+            kind: "multiple_matches",
+            message: `dry-run: old_string matches ${matchCount} times; pass replace_all=true to replace all`,
+          });
+        }
+        after = before.replace(oldStr, newStr);
+      }
       const diff = makeUnifiedDiff(path, before, after);
       return JSON.stringify({
         ok: true,
@@ -185,6 +201,18 @@ export async function dryRunExecute(
         if (ed.replace_all === true) {
           after = after.split(oldStr).join(newStr);
         } else {
+          // [bug] Same multi-match guard as edit_file: the Rust executor rejects
+          // a non-replace_all edit whose old_string matches >1 time, so the
+          // preview must too rather than silently replacing the first match.
+          const matchCount = oldStr === "" ? 0 : after.split(oldStr).length - 1;
+          if (matchCount > 1) {
+            return JSON.stringify({
+              ok: false,
+              dry_run: true,
+              kind: "multiple_matches",
+              message: `dry-run: old_string matches ${matchCount} times; pass replace_all=true to replace all`,
+            });
+          }
           after = after.replace(oldStr, newStr);
         }
       }

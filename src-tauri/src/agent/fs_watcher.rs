@@ -34,6 +34,11 @@ const DEFAULT_MAX_EVENTS: u32 = 100;
 const INACTIVITY_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 /// How often the GC thread checks for idle watchers.
 const GC_INTERVAL: Duration = Duration::from_secs(60);
+/// Once the per-watch debounce map exceeds this many entries, prune the ones
+/// already outside the debounce window (they can never debounce again) so a
+/// recursive watch over a churning tree doesn't accumulate a String key per
+/// distinct path ever seen. PERF (medium).
+const DEBOUNCE_MAP_PRUNE_CAP: usize = 4096;
 
 /* ── Public types ───────────────────────────────────────────────────────── */
 
@@ -168,19 +173,26 @@ fn ensure_gc_running() {
     std::thread::spawn(|| loop {
         std::thread::sleep(GC_INTERVAL);
         let now = now_ms();
-        let stale: Vec<String> = {
+        // PERF (low): snapshot the (id, Arc) pairs under the REGISTRY lock, then
+        // release it before locking each entry. Reading every entry's
+        // last_poll_ms while still holding REGISTRY would block event-delivery
+        // callbacks (which take REGISTRY.lock() per filesystem event) for the
+        // whole sweep.
+        let pairs: Vec<(String, Arc<Mutex<WatchEntry>>)> = {
             let g = REGISTRY.lock();
-            g.iter()
-                .filter_map(|(id, e)| {
-                    let last = e.lock().last_poll_ms;
-                    if now.saturating_sub(last) >= INACTIVITY_TIMEOUT_MS {
-                        Some(id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+            g.iter().map(|(id, e)| (id.clone(), e.clone())).collect()
         };
+        let stale: Vec<String> = pairs
+            .into_iter()
+            .filter_map(|(id, e)| {
+                let last = e.lock().last_poll_ms;
+                if now.saturating_sub(last) >= INACTIVITY_TIMEOUT_MS {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect();
         for id in stale {
             let _ = stop_watch(id);
         }
@@ -261,13 +273,20 @@ pub async fn watch_path(
             }
             // Debounce: skip same-path same-kind events inside the window.
             if !debounce.is_zero() {
+                let window = debounce.as_millis() as u64;
                 let mut g = last_seen_for_cb.lock();
                 if let Some((prev_ts, prev_kind)) = g.get(&p_str) {
-                    if *prev_kind == kind
-                        && ts.saturating_sub(*prev_ts) < debounce.as_millis() as u64
-                    {
+                    if *prev_kind == kind && ts.saturating_sub(*prev_ts) < window {
                         continue;
                     }
+                }
+                // PERF (medium): bound the map. Entries whose last_ts is already
+                // older than the debounce window can never debounce again, so
+                // dropping them is correctness-neutral. Prune opportunistically
+                // only when the map grows past the cap to keep the common path
+                // cheap.
+                if g.len() >= DEBOUNCE_MAP_PRUNE_CAP {
+                    g.retain(|_, (prev_ts, _)| ts.saturating_sub(*prev_ts) < window);
                 }
                 g.insert(p_str.clone(), (ts, kind.clone()));
             }

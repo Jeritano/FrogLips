@@ -9,7 +9,6 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::async_runtime::JoinHandle;
 use tokio::sync::oneshot;
 
 use crate::agent::{run_shell, ShellOpts, ShellResult};
@@ -37,7 +36,6 @@ pub struct TaskInfo {
 
 struct TaskEntry {
     info: TaskInfo,
-    handle: Option<JoinHandle<()>>,
     cancel: Option<oneshot::Sender<()>>,
 }
 
@@ -66,8 +64,8 @@ fn rand_seed() -> u32 {
 
 /// Opportunistic auto-prune budget. Code review H2: TASKS never shrank on
 /// its own; a long session that fires many background commands leaked
-/// `TaskEntry`s forever (their `JoinHandle` is `None` after completion but
-/// the map row stayed). Run on every `create` call so the worst case is
+/// `TaskEntry`s forever (the map row stayed even after the task reached a
+/// terminal state). Run on every `create` call so the worst case is
 /// "next task you start cleans up the previous ones." 30-minute window is
 /// long enough that diagnostic introspection (`task_status`/`task_list`)
 /// still sees recent runs.
@@ -77,23 +75,6 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
     // Opportunistic auto-prune of long-completed tasks before we count
     // against the cap. Best-effort; no error path matters here.
     let _ = prune(AUTO_PRUNE_AFTER_SECS);
-    // Count only non-terminal tasks — terminal entries linger in the map
-    // until pruned and must not count against the concurrency cap.
-    let active = TASKS
-        .lock()
-        .values()
-        .filter(|e| {
-            !matches!(
-                e.lock().info.status,
-                TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled
-            )
-        })
-        .count();
-    if active >= MAX_CONCURRENT_TASKS {
-        return Err(format!(
-            "task queue full ({MAX_CONCURRENT_TASKS} active) — cancel finished ones first"
-        ));
-    }
     let id = random_id();
     let info = TaskInfo {
         id: id.clone(),
@@ -107,7 +88,6 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
     let (cancel_tx, cancel_rx) = oneshot::channel();
     let entry = Arc::new(Mutex::new(TaskEntry {
         info,
-        handle: None,
         cancel: Some(cancel_tx),
     }));
     let entry_for_task = entry.clone();
@@ -121,7 +101,7 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
     // first agent `task_create` call. Use `tauri::async_runtime::spawn`
     // instead — it's a thin wrapper that grabs Tauri's managed runtime
     // handle and works from both sync and async command contexts.
-    let handle = tauri::async_runtime::spawn(async move {
+    drop(tauri::async_runtime::spawn(async move {
         // Flip to Running
         entry_for_task.lock().info.status = TaskStatus::Running;
 
@@ -148,10 +128,39 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
                 crate::agent::cancel_shell(id_for_task.clone());
             }
         }
-    });
-    entry.lock().handle = Some(handle);
+    }));
+    // bug (TOCTOU): hold a single TASKS guard across the cap re-count and the
+    // insert so the count-check and insert are atomic. Counting under a guard
+    // that's dropped before insert would let two concurrent creates both
+    // observe `active < MAX` and both insert, exceeding the cap. Today
+    // task_create is a sync command serialized on the main thread, but this
+    // keeps the cap correct regardless of how the command is scheduled.
+    let mut map = TASKS.lock();
+    // Count only non-terminal tasks — terminal entries linger in the map
+    // until pruned and must not count against the concurrency cap.
+    let active = map
+        .values()
+        .filter(|e| {
+            !matches!(
+                e.lock().info.status,
+                TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled
+            )
+        })
+        .count();
+    if active >= MAX_CONCURRENT_TASKS {
+        // Roll back the just-spawned task: signal cancellation so the detached
+        // shell tears down instead of leaking past the cap. The entry was
+        // never inserted into the map, so signal its cancel sender directly.
+        drop(map);
+        if let Some(tx) = entry.lock().cancel.take() {
+            let _ = tx.send(());
+        }
+        return Err(format!(
+            "task queue full ({MAX_CONCURRENT_TASKS} active) — cancel finished ones first"
+        ));
+    }
     let info = entry.lock().info.clone();
-    TASKS.lock().insert(id.clone(), entry);
+    map.insert(id.clone(), entry);
     Ok(info)
 }
 
@@ -192,13 +201,17 @@ pub fn prune(older_than_secs: u64) -> usize {
     let mut to_remove = Vec::new();
     let map = TASKS.lock();
     for (id, entry) in map.iter() {
-        let info = entry.lock().info.clone();
+        // perf: read only the two scalar fields under the inner lock instead
+        // of cloning the whole TaskInfo (which carries captured stdout/stderr).
+        let g = entry.lock();
         let finished = matches!(
-            info.status,
+            g.info.status,
             TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled
         );
+        let finished_at = g.info.finished_at;
+        drop(g);
         if finished {
-            if let Some(t) = info.finished_at {
+            if let Some(t) = finished_at {
                 if now.saturating_sub(t) >= older_than_secs {
                     to_remove.push(id.clone());
                 }
@@ -235,7 +248,6 @@ mod tests {
                 result: None,
                 error: None,
             },
-            handle: None,
             cancel: None,
         }));
         TASKS.lock().insert(id.to_string(), entry);
@@ -280,7 +292,6 @@ mod tests {
                 result: None,
                 error: None,
             },
-            handle: None,
             cancel: None,
         }));
         TASKS.lock().insert("running".into(), entry);

@@ -76,30 +76,38 @@ async function getCachedSettings(): Promise<AppSettings> {
   // lost, leaving the cache forever stale until the user reloaded.
   // Now the listener is awaited synchronously on first call so any
   // subsequent settings-changed event is guaranteed to reach us.
-  if (!invalidatorBound) {
-    try {
-      await listen("settings-changed", () => {
-        cachedSettings = null;
-      });
-      invalidatorBound = true;
-    } catch {
-      // Registration failed — leave invalidatorBound=false so the next
-      // getCachedSettings() call retries it. The cache will not
-      // auto-invalidate this round; the user must navigate away or
-      // reload before stale settings flush.
+  //
+  // Code review (low/bug): assign `cacheInFlight` SYNCHRONOUSLY before any
+  // await so the in-flight guard atomically covers BOTH the listener bind
+  // and the fetch. The previous version awaited listen() while cacheInFlight
+  // was still null, so two concurrent first-sends (double-Enter, programmatic
+  // resend, StrictMode double-invoke) each passed the unguarded checks above,
+  // registering a duplicate (permanent, never-unlistened) listener plus a
+  // redundant settings IPC. One shared promise now serializes both entrants.
+  cacheInFlight = (async () => {
+    if (!invalidatorBound) {
+      try {
+        await listen("settings-changed", () => {
+          cachedSettings = null;
+        });
+        invalidatorBound = true;
+      } catch {
+        // Registration failed — leave invalidatorBound=false so the next
+        // getCachedSettings() call retries it. The cache will not
+        // auto-invalidate this round; the user must navigate away or
+        // reload before stale settings flush.
+      }
     }
-  }
-  cacheInFlight = api
-    .settingsGet()
-    .then((s) => {
+    try {
+      const s = await api.settingsGet();
       cachedSettings = s;
       cacheInFlight = null;
       return s;
-    })
-    .catch((err) => {
+    } catch (err) {
       cacheInFlight = null;
       throw err;
-    });
+    }
+  })();
   return cacheInFlight;
 }
 

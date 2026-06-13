@@ -9,6 +9,24 @@ use tokio::task::AbortHandle;
 
 use super::fs::{err_string, validate_for_read, workspace_root_clone, ToolError, MAX_SHELL_OUTPUT};
 
+/// `O_NOFOLLOW` open flag (mirrors `fs.rs`, which keeps its copy module-private
+/// to avoid pulling in `libc` as a direct dependency). Used to refuse a
+/// pre-planted symlink leaf when atomically create-new'ing the run_code temp
+/// file at mode 0600. Values match the platforms' `<fcntl.h>`:
+///   - macOS / BSDs: 0x0100
+///   - Linux: 0o400000 (0x20000)
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly"
+))]
+const O_NOFOLLOW: i32 = 0x0100;
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW: i32 = 0o400000;
+
 /// Default per-command wall-clock budget when the caller doesn't specify one.
 /// Tuned for read-only inspection commands (`ls`, `git status`, `cargo
 /// check --message-format=short`) that almost always finish under a few
@@ -138,9 +156,9 @@ pub async fn run_code(
     let seq = CODE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // The snippet can embed secrets, so don't drop it world-readable in the
     // shared temp dir, and don't let a pre-planted symlink redirect the write.
-    // Private per-process dir (0700) + O_NOFOLLOW|O_EXCL write (via
-    // write_nofollow_sync, must_be_new=true) + file mode 0600.
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    // Private per-process dir (0700) + O_NOFOLLOW|O_EXCL create at mode 0600 +
+    // O_NOFOLLOW write (via write_nofollow_sync).
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     let mut dir = std::env::temp_dir();
     dir.push(format!("froglips-code-{}", std::process::id()));
     std::fs::DirBuilder::new()
@@ -152,9 +170,22 @@ pub async fn run_code(
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     let mut path = dir.clone();
     path.push(format!("code_{nanos}_{seq}.{ext}"));
-    super::fs::write_nofollow_sync(&path, code.as_bytes(), true)
+    // Security (defense-in-depth): create the file at mode 0600 ATOMICALLY at
+    // open time rather than chmod-ing after the bytes land — a separate
+    // set_permissions after the write left a window where the secret-bearing
+    // snippet file was momentarily ~0644. create_new (O_EXCL) + O_NOFOLLOW also
+    // refuses a pre-planted file/symlink leaf, preserving the must-be-new
+    // guarantee. The subsequent write_nofollow_sync (must_be_new=false) re-opens
+    // the now-existing 0600 file with O_NOFOLLOW to write + fsync the snippet.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(O_NOFOLLOW)
+        .open(&path)
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
-    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    super::fs::write_nofollow_sync(&path, code.as_bytes(), false)
+        .map_err(|e| err_string(ToolError::io(e.to_string())))?;
 
     let run_path = path.clone();
     let cwd = workspace_root_clone();
@@ -400,6 +431,19 @@ fn shell_sandbox_profile() -> Option<String> {
     Some(p)
 }
 
+/// Memoized sandbox profile (perf cleanup): the profile is deterministic for the
+/// process lifetime (home dir doesn't change), so build it ONCE rather than on
+/// every run_shell/run_code spawn. `sandbox_active`'s probe and `base_command`'s
+/// wrap both read from this cache instead of re-running the home_dir() syscall +
+/// ~8 format! allocations per tool call.
+static SANDBOX_PROFILE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+fn cached_sandbox_profile() -> Option<&'static str> {
+    SANDBOX_PROFILE
+        .get_or_init(shell_sandbox_profile)
+        .as_deref()
+}
+
 /// Probed once: whether sandbox-exec actually works with our profile. A
 /// malformed profile or a missing/deprecated sandbox-exec must NEVER brick the
 /// shell tool — we only sandbox when a trivial probe command runs clean.
@@ -411,12 +455,12 @@ fn sandbox_active() -> bool {
         return false;
     }
     *SANDBOX_OK.get_or_init(|| {
-        let Some(profile) = shell_sandbox_profile() else {
+        let Some(profile) = cached_sandbox_profile() else {
             return false;
         };
         std::process::Command::new("/usr/bin/sandbox-exec")
             .arg("-p")
-            .arg(&profile)
+            .arg(profile)
             .arg("/usr/bin/true")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -431,7 +475,7 @@ fn sandbox_active() -> bool {
 /// `sandbox_active` guarantees the wrap can't brick shell on a bad profile.
 fn base_command(argv: &[&str]) -> tokio::process::Command {
     if sandbox_active() {
-        if let Some(profile) = shell_sandbox_profile() {
+        if let Some(profile) = cached_sandbox_profile() {
             let mut c = tokio::process::Command::new("/usr/bin/sandbox-exec");
             c.arg("-p").arg(profile);
             for a in argv {
@@ -455,26 +499,41 @@ fn base_command(argv: &[&str]) -> tokio::process::Command {
 /// process env (API keys live in secrets.json, not env). So: keep the inherited
 /// env, but `env_remove` anything that looks like a credential or could hijack
 /// the child, then layer the user-supplied env_pairs on top.
+/// The set of sensitive parent-process env-var names to strip, computed ONCE
+/// (perf cleanup): the parent process env is immutable for the process lifetime,
+/// so scan it + uppercase-classify each key a single time rather than re-scanning
+/// std::env::vars() and re-uppercasing every key on every run_shell/run_code
+/// spawn. `env_remove` only needs the stable key names.
+static SENSITIVE_ENV_KEYS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+fn sensitive_env_keys() -> &'static [String] {
+    SENSITIVE_ENV_KEYS.get_or_init(|| {
+        std::env::vars()
+            .filter_map(|(k, _)| {
+                let up = k.to_ascii_uppercase();
+                let sensitive = is_dynlinker_env_key(&k)
+                    || up.contains("SECRET")
+                    || up.contains("TOKEN")
+                    || up.contains("PASSWORD")
+                    || up.contains("API_KEY")
+                    || up.contains("APIKEY")
+                    || up.ends_with("_KEY")
+                    || up.starts_with("AWS_")
+                    || up.starts_with("APPLE_")
+                    || up.starts_with("TAURI_")
+                    || up.starts_with("GITHUB_")
+                    || up.starts_with("GH_")
+                    || up.starts_with("ANTHROPIC")
+                    || up.starts_with("OPENAI");
+                sensitive.then_some(k)
+            })
+            .collect()
+    })
+}
+
 fn harden_env(cmd: &mut tokio::process::Command, user_env: Option<&[(String, String)]>) {
-    for (k, _) in std::env::vars() {
-        let up = k.to_ascii_uppercase();
-        let sensitive = is_dynlinker_env_key(&k)
-            || up.contains("SECRET")
-            || up.contains("TOKEN")
-            || up.contains("PASSWORD")
-            || up.contains("API_KEY")
-            || up.contains("APIKEY")
-            || up.ends_with("_KEY")
-            || up.starts_with("AWS_")
-            || up.starts_with("APPLE_")
-            || up.starts_with("TAURI_")
-            || up.starts_with("GITHUB_")
-            || up.starts_with("GH_")
-            || up.starts_with("ANTHROPIC")
-            || up.starts_with("OPENAI");
-        if sensitive {
-            cmd.env_remove(&k);
-        }
+    for k in sensitive_env_keys() {
+        cmd.env_remove(k);
     }
     if let Some(env) = user_env {
         for (k, v) in env {

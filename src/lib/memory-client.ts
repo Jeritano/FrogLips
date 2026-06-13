@@ -140,6 +140,64 @@ let embeddingCheckedAt = 0;
 let embeddingUnavailableWarned = false;
 let embeddingProbeWarned = false;
 
+// Perf review (low): embeddingsReady and pickExtractorModel each fetched and
+// JSON-parsed GET /api/tags independently, with separate caches/TTLs — so a
+// send that triggers both recall and fact-extraction issued two identical
+// loopback requests in one turn. One shared TTL-cached fetch (with in-flight
+// coalescing, mirroring embedInFlight) serves both. The result is a
+// discriminated union so callers can still tell "non-ok HTTP" from "fetch
+// threw" — embeddingsReady warns differently for each.
+type TagListResult =
+  | { ok: true; names: string[] }
+  | { ok: false; status: number | null };
+
+const TAG_LIST_TTL_MS = 60_000;
+let tagListCache: TagListResult | null = null;
+let tagListCheckedAt = 0;
+let tagListInFlight: Promise<TagListResult> | null = null;
+
+async function getInstalledModelNames(
+  signal?: AbortSignal,
+): Promise<TagListResult> {
+  const now = Date.now();
+  if (tagListCache && now - tagListCheckedAt < TAG_LIST_TTL_MS) {
+    return tagListCache;
+  }
+  if (tagListInFlight) return tagListInFlight;
+  const p = (async (): Promise<TagListResult> => {
+    const to = withTimeout(signal, MEMORY_FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: to.signal });
+      to.clear();
+      if (!res.ok) {
+        // Don't cache failures: embeddingsReady deliberately rechecks on a
+        // short 5s negative TTL when Ollama is down, and caching the failure
+        // here for the full 60s would suppress that fast recovery probe.
+        // In-flight coalescing alone is enough to drop the within-turn dup.
+        return { ok: false, status: res.status };
+      }
+      const data = await res.json();
+      const names: string[] = (data?.models ?? []).map((m: any) =>
+        String(m.name),
+      );
+      const result: TagListResult = { ok: true, names };
+      tagListCache = result;
+      tagListCheckedAt = Date.now();
+      return result;
+    } catch {
+      return { ok: false, status: null };
+    } finally {
+      to.clear();
+    }
+  })();
+  tagListInFlight = p;
+  try {
+    return await p;
+  } finally {
+    tagListInFlight = null;
+  }
+}
+
 const embedLru = new Map<string, number[]>();
 function lruGet(k: string): number[] | undefined {
   const v = embedLru.get(k);
@@ -166,63 +224,54 @@ export async function embeddingsReady(signal?: AbortSignal): Promise<boolean> {
   if (embeddingAvailable !== null && now - embeddingCheckedAt < ttl) {
     return embeddingAvailable;
   }
-  const to = withTimeout(signal, MEMORY_FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: to.signal });
-    to.clear();
-    if (!res.ok) {
-      embeddingAvailable = false;
-      embeddingCheckedAt = now;
-      if (!embeddingUnavailableWarned) {
-        embeddingUnavailableWarned = true;
+  const tags = await getInstalledModelNames(signal);
+  if (!tags.ok) {
+    embeddingAvailable = false;
+    embeddingCheckedAt = now;
+    // status === null means the fetch threw (probe failure); a number means a
+    // non-ok HTTP response. Keep the two distinct one-shot warnings.
+    if (tags.status === null) {
+      if (!embeddingProbeWarned) {
+        embeddingProbeWarned = true;
         logDiag({
           level: "warn",
           source: "memory-client",
           message:
-            `embeddingsReady: Ollama /api/tags returned ${res.status} — disabling recall ` +
-            `(this message is shown once per process).`,
+            "embeddingsReady: Ollama /api/tags probe failed — disabling recall " +
+            "(this message is shown once per process).",
         });
       }
-      return false;
-    }
-    const data = await res.json();
-    const models: string[] = (data?.models ?? []).map((m: any) => m.name);
-    const hasEmbedder = models.some((n) => n.startsWith("nomic-embed-text"));
-    embeddingAvailable = hasEmbedder;
-    embeddingCheckedAt = now;
-    if (!hasEmbedder && !embeddingUnavailableWarned) {
+    } else if (!embeddingUnavailableWarned) {
       embeddingUnavailableWarned = true;
       logDiag({
         level: "warn",
         source: "memory-client",
         message:
-          `embeddingsReady: no embedding model installed (looked for '${DEFAULT_EMBED_MODEL}'). ` +
-          `Recall will fall back to keyword search. ` +
-          `(this message is shown once per process)`,
-      });
-    } else if (hasEmbedder) {
-      // Probe recovered — allow a fresh warn next time it goes away.
-      embeddingUnavailableWarned = false;
-      embeddingProbeWarned = false;
-    }
-    return embeddingAvailable;
-  } catch (err) {
-    to.clear();
-    if (!embeddingProbeWarned) {
-      embeddingProbeWarned = true;
-      logDiag({
-        level: "warn",
-        source: "memory-client",
-        message:
-          "embeddingsReady: Ollama /api/tags probe failed — disabling recall " +
-          "(this message is shown once per process).",
-        detail: err,
+          `embeddingsReady: Ollama /api/tags returned ${tags.status} — disabling recall ` +
+          `(this message is shown once per process).`,
       });
     }
-    embeddingAvailable = false;
-    embeddingCheckedAt = now;
     return false;
   }
+  const hasEmbedder = tags.names.some((n) => n.startsWith("nomic-embed-text"));
+  embeddingAvailable = hasEmbedder;
+  embeddingCheckedAt = now;
+  if (!hasEmbedder && !embeddingUnavailableWarned) {
+    embeddingUnavailableWarned = true;
+    logDiag({
+      level: "warn",
+      source: "memory-client",
+      message:
+        `embeddingsReady: no embedding model installed (looked for '${DEFAULT_EMBED_MODEL}'). ` +
+        `Recall will fall back to keyword search. ` +
+        `(this message is shown once per process)`,
+    });
+  } else if (hasEmbedder) {
+    // Probe recovered — allow a fresh warn next time it goes away.
+    embeddingUnavailableWarned = false;
+    embeddingProbeWarned = false;
+  }
+  return embeddingAvailable;
 }
 
 // Perf review M22 (2026-06-09): pre-send recall and semantic routing run
@@ -310,13 +359,14 @@ export async function recall(
   const emb = await embed(query, signal);
   if (emb && emb.length) {
     try {
-      const hits = await api.searchMemoriesVector(
-        emb,
-        k,
-        _recallThreshold,
-        ctx,
-      );
-      if (hits.length) return hits;
+      // Perf review (low): a successful-but-empty vector search is NOT the same
+      // as an unavailable/failed one. Previously `if (hits.length) return hits`
+      // let an empty success fall through to the keyword query, so a user with
+      // memory enabled but no matching memory paid an extra (local SQLite)
+      // search on the pre-first-token path of every send. Return the vector
+      // result whenever the call resolved — fall back to keyword only when the
+      // embedder is unavailable (emb null) or the vector call threw.
+      return await api.searchMemoriesVector(emb, k, _recallThreshold, ctx);
     } catch (err) {
       logDiag({
         level: "warn",
@@ -399,36 +449,34 @@ async function pickExtractorModel(
   if (extractorModel && now - extractorPickedAt < EXTRACTOR_TTL_MS) {
     return extractorModel;
   }
-  const to = withTimeout(signal, MEMORY_FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: to.signal });
-    to.clear();
-    if (!res.ok) return extractorModel; // network blip — keep prior pick
-    const data = await res.json();
-    const installed: string[] = (data?.models ?? []).map((m: any) => m.name);
-    for (const candidate of [EXTRACTOR_MODEL, ...EXTRACTOR_FALLBACKS]) {
-      if (
-        installed.some(
-          (n) => n === candidate || n.startsWith(candidate.split(":")[0] + ":"),
-        )
-      ) {
-        extractorModel = candidate;
-        extractorPickedAt = now;
-        return extractorModel;
-      }
+  const tags = await getInstalledModelNames(signal);
+  if (!tags.ok) {
+    // status === null means the tag-list fetch threw; a number is a non-ok
+    // HTTP response (a network blip — keep prior pick silently, as before).
+    if (tags.status === null) {
+      logDiag({
+        level: "warn",
+        source: "memory-client",
+        message: "pickExtractorModel: failed to query Ollama tag list",
+      });
     }
-    // None of the candidates installed — invalidate stale pick
-    extractorModel = null;
-    extractorPickedAt = now;
-  } catch (err) {
-    to.clear();
-    logDiag({
-      level: "warn",
-      source: "memory-client",
-      message: "pickExtractorModel: failed to query Ollama tag list",
-      detail: err,
-    });
+    return extractorModel;
   }
+  const installed = tags.names;
+  for (const candidate of [EXTRACTOR_MODEL, ...EXTRACTOR_FALLBACKS]) {
+    if (
+      installed.some(
+        (n) => n === candidate || n.startsWith(candidate.split(":")[0] + ":"),
+      )
+    ) {
+      extractorModel = candidate;
+      extractorPickedAt = now;
+      return extractorModel;
+    }
+  }
+  // None of the candidates installed — invalidate stale pick
+  extractorModel = null;
+  extractorPickedAt = now;
   return extractorModel;
 }
 
