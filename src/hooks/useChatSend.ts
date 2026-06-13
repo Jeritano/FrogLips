@@ -724,8 +724,19 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
               message: "agent run failed",
               detail: e,
             });
+            // The user's own controller did NOT abort (checked above), yet we
+            // caught an abort — that means an INNER watchdog fired: the model
+            // stream stalled (no bytes for the idle window) or never started in
+            // the connect window. WKWebView masks our timeout reason as the
+            // generic "AbortError: Fetch is aborted", so detect it by name and
+            // show an actionable message instead of the cryptic abort.
+            const isStall =
+              (e instanceof Error && e.name === "AbortError") ||
+              /\baborted\b/i.test(String(e));
             setErr(
-              `Agent run failed: ${e}. Your message was kept — send again to retry.`,
+              isStall
+                ? "The model stream stalled and was stopped (no response for a while). Your message was kept — send again to retry. Cloud models can take a bit to start; a retry usually works."
+                : `Agent run failed: ${e}. Your message was kept — send again to retry.`,
             );
           }
         } finally {

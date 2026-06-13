@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Message, ToolCall } from "../../types";
-import { withTimeout } from "../signal-utils";
+import { withInactivityTimeout } from "../signal-utils";
 import { readLines } from "../stream-lines";
 import { finalizeToolCalls, mergeToolCallChunk } from "./tool-call-merge";
 import type { PartialToolCall, StreamChatResult } from "./stream-types";
@@ -9,7 +9,16 @@ export const OLLAMA_BASE = "http://127.0.0.1:11434";
 export const RETRY_MAX = 2;
 export const RETRY_BACKOFF_MS = 500;
 
-const OLLAMA_REQUEST_TIMEOUT_MS = 120_000;
+// First-byte / cold-start window. A cloud route (qwen3-coder:480b-cloud, …) can
+// queue + spin up a huge remote MoE before the first token; a local heavy model
+// cold-loads off disk. Generous so neither is killed before it starts emitting.
+const OLLAMA_CONNECT_TIMEOUT_MS = 300_000;
+// Between-token idle cap, RE-ARMED on every received line. Replaces the old flat
+// 120s TOTAL-request timeout, which aborted a long-but-actively-streaming reply
+// mid-flight ("AbortError: Fetch is aborted") — exactly what a 480B cloud model
+// doing multi-minute agentic reasoning would trip. Now only a genuinely stalled
+// connection (no bytes for this long) aborts.
+const OLLAMA_IDLE_TIMEOUT_MS = 120_000;
 
 export type { PartialToolCall, StreamChatResult } from "./stream-types";
 export { finalizeToolCalls, mergeToolCallChunk } from "./tool-call-merge";
@@ -141,11 +150,14 @@ export async function streamOllamaChat(
   signal: AbortSignal,
   onContentChunk: (delta: string) => void,
 ): Promise<StreamChatResult> {
-  const to = withTimeout(
+  // Inactivity watchdog: arm with the generous first-byte window, then drop to
+  // the per-token idle cadence once headers arrive and re-arm on every line.
+  const to = withInactivityTimeout(
     signal,
-    OLLAMA_REQUEST_TIMEOUT_MS,
-    "Ollama request timed out",
+    OLLAMA_IDLE_TIMEOUT_MS,
+    "Ollama stream stalled",
   );
+  to.kick(OLLAMA_CONNECT_TIMEOUT_MS);
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -154,7 +166,10 @@ export async function streamOllamaChat(
     body: JSON.stringify({ ...(body as object), stream: true }),
     signal: to.signal,
   });
+  // Headers arrived — switch from the cold-start window to the idle cadence.
+  to.kick();
   if (!res.ok) {
+    to.clear();
     const errText = await res.text().catch(() => "");
     // Cloud routing (kimi-k2.6:cloud, deepseek-v4-pro:cloud, …) re-validates
     // the body strictly and returns 400 with cryptic JSON-shape errors. Dump
@@ -183,6 +198,7 @@ export async function streamOllamaChat(
     throw new Error(`Ollama ${res.status}: ${errText}`);
   }
   if (!res.body) {
+    to.clear();
     throw new Error("Ollama response has no body");
   }
 
@@ -192,6 +208,9 @@ export async function streamOllamaChat(
   let evalTok: number | undefined;
 
   const processLine = (line: string) => {
+    // Any line — including an empty keep-alive — proves the stream is alive, so
+    // re-arm the idle watchdog before doing anything else.
+    to.kick();
     const trimmed = line.trim();
     if (!trimmed) return;
     let obj: Record<string, unknown>;

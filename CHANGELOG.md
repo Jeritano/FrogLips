@@ -4,6 +4,20 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.9] — 2026-06-12
+
+### Fixed
+- **Agent runs on cloud (and big local) models aborted mid-reply with
+  "AbortError: Fetch is aborted."** The Ollama agent client used a flat 120s
+  *total*-request timeout, so a long-but-actively-streaming response — e.g.
+  `qwen3-coder:480b-cloud` doing multi-minute agentic reasoning — was killed at
+  120s even while tokens were flowing. It now uses an inactivity (idle) timeout
+  that resets on every received line, with a generous first-byte/cold-start
+  window — matching the MLX client. Only a genuinely stalled connection aborts.
+- The "run failed" banner for an inner stall/timeout (not a user Stop) now reads
+  as an actionable "the stream stalled — send again to retry" instead of the
+  cryptic `AbortError: Fetch is aborted`.
+
 ## [0.13.8] — 2026-06-12
 
 ### Fixed
