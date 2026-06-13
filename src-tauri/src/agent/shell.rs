@@ -168,12 +168,14 @@ pub async fn run_code(
         if let Some(c) = cwd {
             cmd.current_dir(c);
         }
+        // Minimal env — the snippet runs with no app-env leak (A23).
+        harden_env(&mut cmd, None);
         let timeout = std::time::Duration::from_secs(timeout_secs);
         // capped_output drains stdout+stderr CONCURRENTLY with a hard byte cap,
         // so a child spewing gigabytes can't OOM the app before truncation
         // (the old cmd.output() buffered the entire output first).
         let (out, err, exit_code) =
-            match tokio::time::timeout(timeout, capped_output(cmd, MAX_SHELL_OUTPUT)).await {
+            match tokio::time::timeout(timeout, capped_output(cmd, MAX_SHELL_OUTPUT, true)).await {
                 Ok(Ok(triple)) => triple,
                 Ok(Err(e)) => {
                     return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string())))
@@ -283,18 +285,15 @@ pub async fn run_shell(
         if let Some(c) = cwd_path {
             cmd.current_dir(c);
         }
-        if let Some(env) = env_pairs {
-            for (k, v) in env {
-                cmd.env(k, v);
-            }
-        }
+        // Minimal env (clear + allowlist + user env) — no app-env leak (A23).
+        harden_env(&mut cmd, env_pairs.as_deref());
 
         let timeout = std::time::Duration::from_secs(timeout_secs);
         // capped_output drains stdout+stderr CONCURRENTLY with a hard byte cap,
         // so a child spewing gigabytes can't OOM the app before truncation
         // (the old cmd.output() buffered the entire output first).
         let (out, err, exit_code) =
-            match tokio::time::timeout(timeout, capped_output(cmd, MAX_SHELL_OUTPUT)).await {
+            match tokio::time::timeout(timeout, capped_output(cmd, MAX_SHELL_OUTPUT, true)).await {
                 Ok(Ok(triple)) => triple,
                 Ok(Err(e)) => {
                     return Err::<ShellResult, String>(err_string(ToolError::io(e.to_string())))
@@ -370,15 +369,102 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
     Ok((buf, truncated))
 }
 
+/// Strip secret-/hijack-prone keys from a spawned child's environment (audit
+/// A23) WITHOUT wiping the inherited env. A full env_clear+allowlist would drop
+/// the user's real build environment (CARGO_*, NODE_OPTIONS, HOMEBREW_*,
+/// PKG_CONFIG_PATH, …) and break legitimate heavy builds — the wrong trade on a
+/// developer workstation, especially since the app keeps no secrets in its own
+/// process env (API keys live in secrets.json, not env). So: keep the inherited
+/// env, but `env_remove` anything that looks like a credential or could hijack
+/// the child, then layer the user-supplied env_pairs on top.
+fn harden_env(cmd: &mut tokio::process::Command, user_env: Option<&[(String, String)]>) {
+    for (k, _) in std::env::vars() {
+        let up = k.to_ascii_uppercase();
+        let sensitive = is_dynlinker_env_key(&k)
+            || up.contains("SECRET")
+            || up.contains("TOKEN")
+            || up.contains("PASSWORD")
+            || up.contains("API_KEY")
+            || up.contains("APIKEY")
+            || up.ends_with("_KEY")
+            || up.starts_with("AWS_")
+            || up.starts_with("APPLE_")
+            || up.starts_with("TAURI_")
+            || up.starts_with("GITHUB_")
+            || up.starts_with("GH_")
+            || up.starts_with("ANTHROPIC")
+            || up.starts_with("OPENAI");
+        if sensitive {
+            cmd.env_remove(&k);
+        }
+    }
+    if let Some(env) = user_env {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+}
+
+/// On Drop, SIGKILL the whole process GROUP (audit A06). With `setsid` the
+/// child is a new group leader (pgid == pid), so killing the group reaps any
+/// backgrounded grandchildren a command detached (`nohup … &`, `setsid …`) —
+/// which `kill_on_drop` (single direct child only) does not. Disarmed once the
+/// child has exited normally so we never signal a reused pid.
+struct KillGroupGuard {
+    pgid: i32,
+    armed: bool,
+}
+impl Drop for KillGroupGuard {
+    fn drop(&mut self) {
+        if self.armed && self.pgid > 1 {
+            // SAFETY: killpg on a process-group id; SIGKILL is always valid.
+            unsafe {
+                libc::killpg(self.pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 /// Run a child to completion, reading stdout and stderr each with a hard
-/// byte cap. Returns `(stdout, stderr, exit_code)` where the byte vecs are
-/// capped at `cap` (with a "\n[truncated]" marker appended when truncated).
+/// byte cap. Returns `(stdout, stderr, exit_code)`. When `harden` is set (the
+/// agent RCE tools run_shell/run_code), the child is started in its own
+/// session/process-group with `setsid` + bounded with `RLIMIT_FSIZE`/no core
+/// dumps, and on timeout/cancel the ENTIRE group is killed (audit A06). Trusted
+/// internal subprocesses (ps, git, prettier) pass `harden=false` so their
+/// resource use is never artificially capped.
 pub(super) async fn capped_output(
     mut cmd: tokio::process::Command,
     cap: usize,
+    harden: bool,
 ) -> std::io::Result<(Vec<u8>, Vec<u8>, i32)> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if harden {
+        // SAFETY: pre_exec runs in the forked child before exec; only async-
+        // signal-safe libc calls. setsid → own group; rlimits bound disk-fill
+        // and core dumps. We deliberately do NOT cap RLIMIT_AS/CPU/NPROC —
+        // those would break legitimate heavy builds on a workstation.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                let fsize = libc::rlimit {
+                    rlim_cur: 20 * 1024 * 1024 * 1024, // 20 GiB write ceiling
+                    rlim_max: 20 * 1024 * 1024 * 1024,
+                };
+                libc::setrlimit(libc::RLIMIT_FSIZE, &fsize);
+                let nocore = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                libc::setrlimit(libc::RLIMIT_CORE, &nocore);
+                Ok(())
+            });
+        }
+    }
     let mut child = cmd.spawn()?;
+    let mut group_guard = KillGroupGuard {
+        pgid: child.id().map(|p| p as i32).unwrap_or(-1),
+        armed: harden,
+    };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     // Drain stdout and stderr CONCURRENTLY. Reading them sequentially
@@ -414,6 +500,8 @@ pub(super) async fn capped_output(
     let out = out_r?;
     let err = err_r?;
     let status = child.wait().await?;
+    // Child exited on its own — don't group-kill a now-reusable pgid.
+    group_guard.armed = false;
     Ok((out, err, status.code().unwrap_or(-1)))
 }
 

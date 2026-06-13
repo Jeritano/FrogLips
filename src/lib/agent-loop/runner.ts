@@ -843,6 +843,14 @@ export async function runAgentLoop(
   // reset on the first success. Once it crosses MAX_CONSECUTIVE_TOOL_ERRORS
   // the loop injects a stop-and-report hint.
   let consecutiveToolErrors = 0;
+  // Turn-level non-progress counter (audit A09): the per-call consecutiveToolErrors
+  // only counts calls that EXECUTED and errored — a turn where every call was
+  // DENIED/blocked (allowlist, permission, policy, stall, duplicate) short-
+  // circuits before that counter and used to burn the whole iteration budget.
+  // This bumps on any turn that issued tool calls but landed zero successes,
+  // resets on a turn with ≥1 success, and trips the same stop-and-report hint.
+  let nonProgressTurns = 0;
+  const MAX_NONPROGRESS_TURNS = 4;
   let stopAndReportHintPending = false;
   // Per-run cache for read-only tool results. Keyed by
   // `${name}::${stableArgsHash}`. Invalidated whenever any mutating tool
@@ -1175,6 +1183,22 @@ export async function runAgentLoop(
             opts.workflowRunId ?? null,
           );
         }
+        // Audit A30: a cloud-route turn truncated to one call (the rest dropped)
+        // that then hits the dedupe branch would lose the "calls were dropped"
+        // reminder (emitted only after the serial loop the dedupe `continue`
+        // skips). Surface it here too so the model still knows to reissue them.
+        if (droppedParallelCount > 0) {
+          msgs.push({
+            _tmpKey: makeTmpKey(),
+            conversation_id: opts.conversationId,
+            role: "system",
+            content:
+              `[agent-loop] Cloud-route only executes ONE tool call per turn. ` +
+              `${droppedParallelCount} additional tool call(s) you issued were dropped — ` +
+              `reissue any that still matter on your next turn.`,
+          });
+          onUpdate([...msgs]);
+        }
         // Record the dup turn too so an oscillation keeps matching history.
         pushTurnSigs(sigs);
         continue;
@@ -1258,8 +1282,44 @@ export async function runAgentLoop(
         await runWithConcurrency(tasks, PARALLEL_READ_CAP);
       }
 
-      for (const tc of toolCalls) {
-        if (signal.aborted) return null;
+      // Per-turn progress flag (audit A09): set true when any tool call this
+      // turn actually executes (non-error outcome). After the loop, a turn that
+      // issued calls but made zero progress bumps nonProgressTurns.
+      let anyToolProgressThisTurn = false;
+      // Audit A33: on abort mid-turn, pair EVERY not-yet-resulted tool call in
+      // this assistant turn with an aborted result before returning. Otherwise a
+      // multi-call turn is left partially paired; stripUnpairedToolCalls then
+      // drops the whole turn (including completed results) at the next send.
+      const abortedBody = rejectionBody(
+        "permission_denied",
+        DENY_MESSAGE_BY_REASON.aborted ?? DENY_MESSAGE_BY_REASON.user_deny,
+      );
+      const pairAbortedFrom = (start: number) => {
+        for (let j = start; j < toolCalls.length; j++) {
+          const t = toolCalls[j];
+          const ap = parseArgs(t.function?.arguments);
+          pushToolResult(
+            msgs,
+            opts.conversationId,
+            onUpdate,
+            t,
+            abortedBody,
+            {
+              approval: "denied",
+              outcome: "denied",
+              errorKind: "aborted",
+              args: ap.ok ? ap.args : {},
+            },
+            opts.workflowRunId ?? null,
+          );
+        }
+      };
+      for (let ti = 0; ti < toolCalls.length; ti++) {
+        const tc = toolCalls[ti];
+        if (signal.aborted) {
+          pairAbortedFrom(ti);
+          return null;
+        }
 
         const fnName = tc.function?.name ?? "";
 
@@ -1481,6 +1541,7 @@ export async function runAgentLoop(
             },
             opts.workflowRunId ?? null,
           );
+          pairAbortedFrom(ti + 1); // A33: pair the rest of the turn too
           return null;
         }
 
@@ -1648,6 +1709,7 @@ export async function runAgentLoop(
             },
             opts.workflowRunId ?? null,
           );
+          pairAbortedFrom(ti + 1); // A33: pair the rest of the turn too
           return null;
         }
         metrics.totalToolMs += durationMs;
@@ -1745,15 +1807,37 @@ export async function runAgentLoop(
           }
         } else {
           consecutiveToolErrors = 0;
+          // A real (non-error) execution = progress this turn (A09).
+          anyToolProgressThisTurn = true;
         }
 
-        // Invalidate the read-only cache whenever a non-read-only tool ran
-        // successfully — any cached read for the affected file/dir/process
-        // table could now be stale. Conservative: nuke the whole map rather
-        // than try to dependency-track by path.
-        if (outcome !== "error" && !isReadOnlyTool(fnName)) {
+        // Invalidate the read-only cache whenever a non-read-only tool RAN —
+        // regardless of ok status (audit A02). A multi-target write
+        // (apply_patch / write_files / multi_edit) can fail PART WAY THROUGH and
+        // return an error outcome while having already changed disk; gating the
+        // clear on `outcome !== "error"` left the cache serving stale reads of
+        // the just-mutated files. Conservative: nuke the whole map.
+        if (!isReadOnlyTool(fnName)) {
           readOnlyCache.clear();
+          // Audit A20: also drop the dedupe history. After a write the model
+          // legitimately re-reads the changed file to verify; that read's
+          // signature would otherwise match a pre-write read and be rejected as
+          // a duplicate. Clearing here keeps re-read-after-write flowing.
+          prevTurnSigsHistory.length = 0;
         }
+      }
+
+      // Turn-level non-progress guard (A09): a turn that issued tool calls but
+      // executed none successfully (all denied/blocked/errored) counts as
+      // non-progress; a streak trips the stop-and-report hint so an unattended
+      // run can't burn its whole budget on a permission wall.
+      if (toolCalls.length > 0 && !anyToolProgressThisTurn) {
+        nonProgressTurns++;
+        if (nonProgressTurns >= MAX_NONPROGRESS_TURNS) {
+          stopAndReportHintPending = true;
+        }
+      } else if (anyToolProgressThisTurn) {
+        nonProgressTurns = 0;
       }
 
       // Surface dropped parallel tool_calls (cloud-route truncation) as a

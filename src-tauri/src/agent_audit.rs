@@ -205,6 +205,22 @@ pub fn record(entry: AuditEntry) -> Result<()> {
             entry.workflow_run_id,
         ],
     )?;
+    // Audit A07: self-bound on insert so the table can't grow without limit
+    // (the only purge was a manual IPC nothing called). Best-effort, every 256th
+    // insert, keep the newest MAX_AUDIT_ROWS by rowid. Cheap + non-fatal.
+    const MAX_AUDIT_ROWS: i64 = 50_000;
+    static INSERTS_SINCE_TRIM: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    if INSERTS_SINCE_TRIM
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .is_multiple_of(256)
+    {
+        let _ = conn.execute(
+            "DELETE FROM agent_audit WHERE rowid NOT IN \
+             (SELECT rowid FROM agent_audit ORDER BY rowid DESC LIMIT ?1)",
+            params![MAX_AUDIT_ROWS],
+        );
+    }
     Ok(())
 }
 

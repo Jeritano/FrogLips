@@ -196,6 +196,21 @@ export function Dashboard({ open, onClose }: Props) {
     return sorted;
   }, [summary, sortKey, sortDir]);
 
+  // Audit A19: histogramIterations + bucketSessions spread+sort up to 10k
+  // session rows; computing them in the render body re-ran the whole pass on
+  // every render (sort toggles, hover, parent re-render). Memoize on `summary`.
+  const { iterHist, maxIter, throughput, maxTokps } = useMemo(() => {
+    const s = summary?.session_metrics ?? [];
+    const hist = histogramIterations(s);
+    const tp = bucketSessions(s, 30);
+    return {
+      iterHist: hist,
+      maxIter: hist.reduce((m, c) => Math.max(m, c), 0),
+      throughput: tp,
+      maxTokps: tp.reduce((m, t) => Math.max(m, t.tokps), 0),
+    };
+  }, [summary]);
+
   function toggleSort(k: LatencyKey) {
     if (sortKey === k) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -211,10 +226,7 @@ export function Dashboard({ open, onClose }: Props) {
   const maxToolCount = toolCounts.reduce((m, t) => Math.max(m, t.count), 0);
 
   const sessions = summary?.session_metrics ?? [];
-  const iterHist = histogramIterations(sessions);
-  const maxIter = iterHist.reduce((m, c) => Math.max(m, c), 0);
-  const throughput = bucketSessions(sessions, 30);
-  const maxTokps = throughput.reduce((m, t) => Math.max(m, t.tokps), 0);
+  // iterHist / maxIter / throughput / maxTokps are memoized above (A19).
 
   const approvals = summary?.approval_counts ?? [];
   const approvalTotal = approvals.reduce((s, a) => s + a.count, 0);

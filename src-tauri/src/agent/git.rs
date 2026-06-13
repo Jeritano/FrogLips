@@ -33,7 +33,7 @@ async fn git_invoke(cwd: PathBuf, args: &[&str]) -> Result<GitResult, String> {
     let timeout = std::time::Duration::from_secs(10);
     // capped_output bounds stdout/stderr buffering — git output can be huge.
     let (out, err, code) =
-        match tokio::time::timeout(timeout, super::shell::capped_output(cmd, MAX_SHELL_OUTPUT))
+        match tokio::time::timeout(timeout, super::shell::capped_output(cmd, MAX_SHELL_OUTPUT, false))
             .await
         {
             Ok(Ok(o)) => o,
@@ -87,6 +87,11 @@ pub async fn git_status(path: Option<String>) -> Result<GitResult, String> {
 fn wrap_stdout(mut r: GitResult) -> GitResult {
     let (wrapped, _n) = crate::agent::injection_scan::scan_and_wrap(&r.stdout);
     r.stdout = wrapped;
+    // stderr is equally attacker-controllable (git echoes branch names, refs,
+    // and pathspecs from a hostile repo on error) and is serialized to the
+    // model alongside stdout — fence it too.
+    let (werr, _n) = crate::agent::injection_scan::scan_and_wrap(&r.stderr);
+    r.stderr = werr;
     r
 }
 

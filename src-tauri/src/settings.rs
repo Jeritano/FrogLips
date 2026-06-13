@@ -191,6 +191,19 @@ fn load_secrets() -> std::collections::BTreeMap<String, String> {
         Ok(b) => b,
         Err(_) => return Default::default(),
     };
+    // Audit A28: this store is deliberately a mode-0600 file (not Keychain —
+    // see above). Defensively re-assert 0600 on load: a backup/restore, a
+    // manual edit, or a umask quirk could have left it group/other-readable,
+    // exposing API keys to other users. Tighten it back if so.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&p) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
     match serde_json::from_slice(&bytes) {
         Ok(map) => map,
         Err(e) => {

@@ -570,7 +570,22 @@ pub async fn read_file(
     const MIN_READ_BYTES: u64 = 8_192;
     let requested = limit.unwrap_or(MAX_READ_BYTES as u64);
     let cap = requested.max(MIN_READ_BYTES).min(MAX_READ_BYTES as u64);
-    let end = (start + cap).min(total);
+    let mut end = (start + cap).min(total);
+    // Audit A31: back `end` off to a UTF-8 char boundary when truncating
+    // mid-file, so a multibyte char straddling the page edge is NOT split into
+    // U+FFFD on BOTH this page and the next. A continuation byte is 0b10xxxxxx;
+    // walk back past any to land on a char start. (No-op at EOF, where end ==
+    // total and there is no next page.) Keeps next_offset char-aligned too.
+    if end < total {
+        while end > start && (bytes[end as usize] & 0xC0) == 0x80 {
+            end -= 1;
+        }
+        // Degenerate guard: if the whole page was one oversized char run, fall
+        // back to the raw cap rather than returning an empty page.
+        if end == start {
+            end = (start + cap).min(total);
+        }
+    }
     let slice = &bytes[start as usize..end as usize];
     let truncated = end < total;
     let mut content = String::from_utf8_lossy(slice).into_owned();
@@ -800,6 +815,20 @@ async fn write_one_confined(
     snapshot_label: &'static str,
 ) -> Result<(), String> {
     let resolved = validate_for_write(path).map_err(err_string)?;
+    write_one_validated(resolved, content, snapshot_label).await
+}
+
+/// Write to a PathBuf that has ALREADY passed `validate_for_write`. Skips the
+/// gate (caller validated) so `apply_patch` can validate every target up front
+/// in its dry pass and then commit the EXACT canonical paths — no re-resolve,
+/// no read/write-gate divergence, no TOCTOU between validation and write
+/// (audit A35). Does the size cap → parent create → undo snapshot → no-follow
+/// write that `write_one_confined` does after its own validation.
+async fn write_one_validated(
+    resolved: std::path::PathBuf,
+    content: String,
+    snapshot_label: &'static str,
+) -> Result<(), String> {
     if content.len() > MAX_WRITE_BYTES {
         return Err(err_string(ToolError::TooLarge {
             message: format!("content exceeds {MAX_WRITE_BYTES} bytes"),
@@ -810,9 +839,6 @@ async fn write_one_confined(
             .await
             .map_err(|e| err_string(classify_io(&e)))?;
     }
-    // Snapshot prior contents (or mark absent) for agent_undo. Cheap — runs
-    // off the tokio runtime via spawn_blocking. Only captured after path
-    // validation so a rejected write can't pollute the undo stack.
     let snap_path = resolved.clone();
     let _ =
         tokio::task::spawn_blocking(move || super::snapshot::capture(&snap_path, snapshot_label))
@@ -1464,7 +1490,14 @@ fn split_lines(s: &str) -> Vec<String> {
 }
 
 /// Find where `needle` (the hunk's context+removed lines, in order) matches in
-/// `orig` at or after `from`, preferring the diff's hinted `expected` position.
+/// `orig` at or after `from`, at the diff's hinted `expected` position.
+///
+/// Audit A04: a stale LLM line number used to fall back to a forward scan that
+/// applied the hunk to the FIRST match — on a file with repeated lines that
+/// silently rewrites the wrong region (the per-line drift check can't catch it
+/// because the wrong region matches too). Now: accept the hinted position if it
+/// matches; otherwise accept ONLY a UNIQUE whole-file match. Zero or multiple
+/// matches → None (fail loud) so a misplaced hunk is rejected, not misapplied.
 fn locate_hunk(orig: &[String], from: usize, expected: usize, needle: &[String]) -> Option<usize> {
     if needle.is_empty() {
         return Some(expected.clamp(from, orig.len()));
@@ -1478,7 +1511,17 @@ fn locate_hunk(orig: &[String], from: usize, expected: usize, needle: &[String])
     if exp <= last && matches_at(exp) {
         return Some(exp);
     }
-    (from..=last).find(|&pos| matches_at(pos))
+    // Hinted position failed — only a single unambiguous match is safe.
+    let mut found: Option<usize> = None;
+    for pos in from..=last {
+        if matches_at(pos) {
+            if found.is_some() {
+                return None; // ambiguous: refuse rather than guess
+            }
+            found = Some(pos);
+        }
+    }
+    found
 }
 
 /// Apply one file's hunks to `orig` lines, returning the new lines. Exact match
@@ -1565,15 +1608,19 @@ pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
         ))));
     }
 
-    // ── Dry pass: validate every file + compute new content. No writes yet. ──
+    // ── Dry pass: validate EVERY target (creates included) through the WRITE
+    // gate, reject duplicate targets, and compute new content. No writes yet, so
+    // a confinement failure or hunk mismatch on file N never leaves files 1..N-1
+    // written (audit A18/A21/A35). ────────────────────────────────────────────
     struct Planned {
         raw_path: String,
-        resolved: String,
+        resolved: std::path::PathBuf, // canonical, write-gate-validated
         content: String,
         created: bool,
         hunks: u32,
     }
     let mut planned: Vec<Planned> = Vec::with_capacity(patches.len());
+    let mut seen: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
     for fp in &patches {
         if fp.new_path == "/dev/null" {
             return Err(err_string(ToolError::invalid(
@@ -1586,13 +1633,22 @@ pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
             )));
         }
         let created = fp.old_path == "/dev/null";
-        let resolved = resolve_patch_path(&fp.new_path);
-        // Read current content through the read gate (skip for new files).
+        // ONE gate for both read and write — the canonical write target. Avoids
+        // the prior read-gate/write-gate divergence + re-resolve TOCTOU (A35).
+        let resolved = validate_for_write(&resolve_patch_path(&fp.new_path)).map_err(err_string)?;
+        // Reject duplicate targets: two sections for the same file each read the
+        // same original and the second silently clobbered the first (A18).
+        if !seen.insert(resolved.clone()) {
+            return Err(err_string(ToolError::invalid(format!(
+                "apply_patch: duplicate target path in one patch: {}",
+                fp.new_path
+            ))));
+        }
+        // Read current content from the SAME validated path (skip for new files).
         let orig_text = if created {
             String::new()
         } else {
-            let read_path = validate_for_read(&resolved).map_err(err_string)?;
-            let bytes = tokio::fs::read(&read_path)
+            let bytes = tokio::fs::read(&resolved)
                 .await
                 .map_err(|e| format!("{}: {}", fp.new_path, err_string(classify_io(&e))))?;
             if bytes.len() > MAX_WRITE_BYTES {
@@ -1625,12 +1681,12 @@ pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
         });
     }
 
-    // ── Commit pass: every file validated; write through the confined path
-    // (workspace confinement + per-file undo snapshot). ───────────────────────
+    // ── Commit pass: write the EXACT validated canonical paths (no re-resolve)
+    // with per-file undo snapshots. ───────────────────────────────────────────
     let mut results: Vec<ApplyPatchFileResult> = Vec::with_capacity(planned.len());
     for p in planned {
         let new_size = p.content.len() as u64;
-        write_one_confined(&p.resolved, p.content, "apply_patch")
+        write_one_validated(p.resolved, p.content, "apply_patch")
             .await
             .map_err(|e| format!("apply_patch failed at {}: {e}", p.raw_path))?;
         results.push(ApplyPatchFileResult {
@@ -1694,6 +1750,35 @@ mod tests {
         )
         .unwrap();
         assert!(apply_file_hunks(&split_lines(orig), &patches[0].hunks).is_err());
+    }
+
+    #[test]
+    fn locate_hunk_refuses_ambiguous_match_on_stale_line(/* audit A04 */) {
+        // File with repeated lines; needle ["bar"] matches at idx 1 AND 3. The
+        // hint (old_start) points to neither after edits → must refuse, not
+        // forward-scan to the first and rewrite the wrong "bar".
+        let orig = split_lines("foo\nbar\nfoo\nbar\nbaz\n");
+        let needle = vec!["bar".to_string()];
+        // hinted position 7 (out of range) → ambiguous whole-file match → None
+        assert_eq!(locate_hunk(&orig, 0, 7, &needle), None);
+        // unique needle still resolves by scan
+        let uniq = vec!["baz".to_string()];
+        assert_eq!(locate_hunk(&orig, 0, 99, &uniq), Some(4));
+        // exact hint still wins even when ambiguous elsewhere
+        assert_eq!(locate_hunk(&orig, 0, 1, &needle), Some(1));
+    }
+
+    #[test]
+    fn parse_unified_diff_keeps_duplicate_sections_for_dedup_check() {
+        // Two sections for the same path parse as two FilePatches; apply_patch's
+        // dry pass rejects the duplicate (A18). Here we assert the parser
+        // surfaces both so the dedup guard has something to catch.
+        let patches = parse_unified_diff(
+            "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+A\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-A\n+B\n",
+        )
+        .unwrap();
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0].new_path, patches[1].new_path);
     }
 
     #[test]

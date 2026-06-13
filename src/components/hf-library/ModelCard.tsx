@@ -9,7 +9,7 @@
  * "Hide files ▴" expander toggle and the parent renders the actual file
  * list inside `children` underneath the card body when expanded.
  */
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import { abbrev, paramPill, relTime } from "../../lib/format";
 import { Zap, Download, Heart, Check } from "lucide-react";
 import { PIPELINE_COLOR } from "./constants";
@@ -40,7 +40,11 @@ interface Props {
   children?: ReactNode;
 }
 
-export function ModelCard(props: Props) {
+// Audit A37: memoized — the HF grid renders hundreds of these unvirtualized, so
+// without memo any parent state change (a pull starting, progress tick) re-ran
+// every card. Parent passes stable (useCallback'd) handlers, so memo skips the
+// untouched rows.
+function ModelCardInner(props: Props) {
   const { model: m } = props;
   const tags = (m.tags ?? []).map((t) => t.toLowerCase());
   const isMlx = tags.includes("mlx") || m.id.startsWith("mlx-community/");
@@ -166,3 +170,5 @@ export function ModelCard(props: Props) {
     </div>
   );
 }
+
+export const ModelCard = memo(ModelCardInner);

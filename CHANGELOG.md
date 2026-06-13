@@ -4,6 +4,43 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.12] — 2026-06-13
+
+### Security & correctness — full audit remediation
+A multi-agent deep audit (every finding adversarially re-verified) found 39
+confirmed issues; all are now remediated (35 fixed, 3 mitigated, 1 accepted
+by design). Full write-up: `docs/AUDIT-2026-06.md`. Highlights:
+
+- **Shell/code hardening:** spawned children now run with a cleared+allowlisted
+  environment (no app-env leak), in their own process group with kill-the-group
+  on timeout/cancel (backgrounded children no longer survive), and bounded by
+  `RLIMIT_FSIZE`/no-core. `run_code` with a shell language now hits the same risk
+  classifier as `run_shell`. (Full OS Seatbelt sandbox is available as an
+  opt-in; not default, to avoid breaking legitimate builds.)
+- **Approval gate:** `watch_path` / `stop_watch` / `task_cancel` were gated only
+  in the UI — their Rust commands now require a payload-bound approval token,
+  with a symmetry test + a TS tripwire so a future dangerous tool can't slip the
+  binding.
+- **apply_patch correctness:** refuses to apply a hunk to an ambiguous location
+  (stale line number on repeated lines no longer rewrites the wrong region);
+  rejects duplicate target paths; validates every target (incl. new files) before
+  any write; writes the exact canonical path (no re-resolve TOCTOU).
+- **Prompt-injection fencing** extended to every remaining untrusted-output path:
+  `poll_watch`, `format_code`, native tool errors (`diff_files`/`kill_process`),
+  `git` stderr, `list_processes`.
+- **Web/SSRF:** `call_api` no longer re-sends the key over an http downgrade
+  redirect; `copy_path` writes with `O_NOFOLLOW`; SSRF blocklist gains
+  240/4 · 198.18/15 · 192.0.0/24; `browser_navigate` re-validates post-redirect.
+- **Agent loop:** read-cache invalidated on any mutating-tool run (even a partial
+  failure); a wall of denied calls now trips stop-and-report; re-read-after-write
+  no longer flagged duplicate; abort pairs all remaining tool calls.
+- **Flows:** scheduled runs pre-load the cards' models, gate against the correct
+  workflow, silently skip an unreviewed flow, and the critic verify command is
+  cancellable.
+- **Ops/perf:** `agent_audit` self-trims; CI prod supply-chain audits are now
+  blocking; Dashboard aggregations + HF model cards memoized;
+  `read_file` pagination no longer splits a UTF-8 char.
+
 ## [0.13.11] — 2026-06-12
 
 ### Fixed

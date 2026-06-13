@@ -30,6 +30,7 @@ import {
   type FlowTemplate,
 } from "../../lib/workflow/templates";
 import { healStaleTemplateClones } from "../../lib/workflow/heal-templates";
+import { resolveLinearOrder } from "../../lib/workflow/graph";
 import { flowToDoc, flowFromDoc } from "../../lib/workflow/export";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { CardForm, type FormOrigin } from "./CardForm";
@@ -813,32 +814,54 @@ export function WorkflowsPage({ status }: Props) {
         }
         const trigger = parseWorkflowTrigger(e.payload);
         if (!trigger) return;
-        const targetsOpen = !!selected && trigger.workflow_id === selected.id;
-        const subset: WorkflowCard[] | undefined =
-          targetsOpen && trigger.card_id
-            ? cards.slice(
-                Math.max(
-                  0,
-                  cards.findIndex((c) => c.id === trigger.card_id),
-                ),
-              )
-            : undefined;
-        const opts = baseRunOpts(subset);
-        if (!opts) return;
-        // Route the scheduled trigger through the provider too. Fetches
-        // the workflow graph from DB (same as the old
-        // handleWorkflowTrigger did internally) then hands off. If the
-        // user navigates away mid-trigger the run survives — same as
-        // the manual path.
+        // Fetch the DB graph FIRST, then derive everything from THAT graph (not
+        // the editor's `cards`, which may be a different/none-open workflow).
         void (async () => {
           try {
             const raw = await api.workflowGet(trigger.workflow_id);
             if (!raw) return;
             const wf = parseWorkflow(raw);
+            // The cards that will ACTUALLY run: linear order from the DB graph,
+            // sliced from the triggered card forward.
+            const order = resolveLinearOrder(wf.graph);
+            const startIdx = trigger.card_id
+              ? Math.max(
+                  0,
+                  order.findIndex((c) => c.id === trigger.card_id),
+                )
+              : 0;
+            const reachable = order.slice(startIdx);
+            // A26: silent no-op on an unreviewed flow (mirrors schedule.ts's
+            // handleWorkflowTrigger gate) — never surface a scary "run failed".
+            const unreviewed = reachable.filter((c) => c.needsReview === true);
+            if (unreviewed.length > 0) {
+              logDiag({
+                level: "warn",
+                source: "workflows",
+                message: `scheduled run skipped — ${unreviewed.length} card(s) still need review; Arm the flow first`,
+              });
+              return;
+            }
+            // A15: evaluate the model-missing gate against the cards that will
+            // run (from the DB graph), not the editor's open workflow.
+            const opts = baseRunOpts(reachable);
+            if (!opts) return;
             run.start({
               workflowId: wf.id,
               graph: wf.graph,
               opts: { ...opts, scheduled: true, startCardId: trigger.card_id },
+              // A05: pre-load the models of the cards that will run, exactly like
+              // every manual entry point — otherwise a scheduled local-model
+              // flow runs with no server up and times out.
+              preflight: async (signal) => {
+                const loaded = new Set<string>();
+                for (const c of reachable) {
+                  if (signal.aborted) break;
+                  if (c.model && loaded.has(c.model)) continue;
+                  await ensureCardModelLoaded(c);
+                  if (c.model) loaded.add(c.model);
+                }
+              },
             });
             void refreshList();
           } catch (err) {
@@ -851,7 +874,8 @@ export function WorkflowsPage({ status }: Props) {
           }
         })();
       },
-      [baseRunOpts, refreshList, run, selected, cards],
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [baseRunOpts, refreshList, run],
     ),
   );
 

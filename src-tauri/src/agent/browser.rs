@@ -229,6 +229,24 @@ mod backend {
             .ok()
             .flatten()
             .unwrap_or_else(|| url.to_string());
+        // Audit A03: the resolver pin only covers the INITIAL host. A redirect
+        // (or meta-refresh) to a DIFFERENT host is resolved freely by Chrome and
+        // could land on an internal/metadata IP (SSRF). Re-validate the landed
+        // URL; if it resolves unsafe, do NOT hand its content back — close the
+        // page and fail. (The fetch already happened in-browser, but the
+        // attacker never receives the internal response through the tool.)
+        let landed_host = url::Url::parse(&landed)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_string()));
+        let pinned_host = host_pin.as_ref().map(|(h, _)| h.clone());
+        if landed.starts_with("http") && landed_host != pinned_host {
+            if let Err(e) = validate_navigate_url(&landed).await {
+                let _ = session.page.goto("about:blank").await;
+                return Err(err_string(ToolError::PermissionDenied {
+                    message: format!("navigation redirected to a blocked address: {e}"),
+                }));
+            }
+        }
         // Best-effort response status — chromiumoxide doesn't surface this
         // from `goto` cleanly without subscribing to Network events first.
         // Report 200 for http(s) (page loaded) and 0 for non-network schemes.

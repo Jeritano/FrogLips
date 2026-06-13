@@ -26,7 +26,7 @@ pub async fn applescript_run(script: String) -> Result<ShellResult, String> {
     // capped_output bounds stdout/stderr buffering (concurrent drain + hard cap)
     // so an osascript spewing unbounded output can't OOM the app.
     let (out, err, exit_code) =
-        match tokio::time::timeout(timeout, super::shell::capped_output(cmd, MAX_SHELL_OUTPUT))
+        match tokio::time::timeout(timeout, super::shell::capped_output(cmd, MAX_SHELL_OUTPUT, false))
             .await
         {
             Ok(Ok(triple)) => triple,
@@ -107,7 +107,7 @@ pub async fn clipboard_get() -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("pbpaste");
     cmd.kill_on_drop(true);
     // capped_output bounds stdout buffering — clipboard contents are unbounded.
-    let (out, _err, code) = super::shell::capped_output(cmd, MAX_READ_BYTES)
+    let (out, _err, code) = super::shell::capped_output(cmd, MAX_READ_BYTES, false)
         .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     if code != 0 {

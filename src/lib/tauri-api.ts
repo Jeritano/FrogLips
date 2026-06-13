@@ -548,15 +548,16 @@ export const api = {
       right,
     }),
   agentListProcesses: (filter?: string) =>
-    invoke<
-      Array<{
+    invoke<{
+      rows: Array<{
         pid: number;
         ppid: number;
         cpu_pct: number;
         mem_mib: number;
         command: string;
-      }>
-    >("agent_list_processes", { filter: filter ?? null }),
+      }>;
+      injection_warning?: string;
+    }>("agent_list_processes", { filter: filter ?? null }),
   agentKillProcess: async (pid: number, signal?: string) =>
     invoke<{ pid: number; signal: string }>("agent_kill_process", {
       pid,
@@ -722,11 +723,12 @@ export const api = {
     }),
 
   // Filesystem watcher
-  agentWatchPath: (path: string, glob?: string, debounceMs?: number) =>
+  agentWatchPath: async (path: string, glob?: string, debounceMs?: number) =>
     invoke<WatchHandle>("agent_watch_path", {
       path,
       glob: glob ?? null,
       debounceMs: debounceMs ?? null,
+      approval: await mintApproval("agent_watch_path", { path }),
     }),
   agentListWatches: () => invoke<WatchInfo[]>("agent_list_watches"),
   agentPollWatch: (id: string, sinceMs?: number, maxEvents?: number) =>
@@ -735,7 +737,11 @@ export const api = {
       sinceMs: sinceMs ?? null,
       maxEvents: maxEvents ?? null,
     }),
-  agentStopWatch: (id: string) => invoke<void>("agent_stop_watch", { id }),
+  agentStopWatch: async (id: string) =>
+    invoke<void>("agent_stop_watch", {
+      id,
+      approval: await mintApproval("agent_stop_watch", { text: id }),
+    }),
 
   // Task queue. task_create runs `sh -c` like agent_run_shell, so it goes
   // through the same command-bound approval gate (SEC-HIGH 2026-05-30).
@@ -747,7 +753,11 @@ export const api = {
     }),
   taskStatus: (id: string) => invoke<TaskInfo>("task_status", { id }),
   taskList: () => invoke<TaskInfo[]>("task_list"),
-  taskCancel: (id: string) => invoke<void>("task_cancel", { id }),
+  taskCancel: async (id: string) =>
+    invoke<void>("task_cancel", {
+      id,
+      approval: await mintApproval("task_cancel", { text: id }),
+    }),
   // task_prune binding deleted 2026-05-26 SE review round 2 — no FE
   // consumer; opportunistic prune already runs inside task_queue::create.
 

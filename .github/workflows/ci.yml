@@ -158,9 +158,13 @@ jobs:
       # mistralrs-core / candle-core / indexmap / either / serde_yaml, none
       # of which the lean no-default-features build sees) is what actually
       # protects releases.
+      # Audit A16: BLOCKING (was continue-on-error). A production-dependency
+      # advisory must FAIL this job — the reqwest "blocking"-feature drift +
+      # esbuild advisories shipped green while these were non-blocking. Mark
+      # `supply-chain-advisory` as a REQUIRED status check in branch protection
+      # so a prod-dep finding actually blocks merge.
       - name: cargo audit (production)
         working-directory: src-tauri
-        continue-on-error: true
         run: cargo audit
 
       - name: Install cargo-deny
@@ -174,10 +178,13 @@ jobs:
       # Production deps only — bare `--omit=dev` masks devtime supply chain
       # risk (vite plugins, vitest). This step covers prod; the next covers
       # the full tree.
+      # A16: BLOCKING for PRODUCTION deps (--omit=dev excludes the vite/esbuild
+      # dev-only advisories, so those don't block here).
       - name: npm audit (production, high+)
-        continue-on-error: true
         run: npm audit --omit=dev --audit-level=high
 
+      # Devtime advisories (esbuild via vite, vitest) stay ADVISORY — dev-only,
+      # not shipped to users; surfaced in the run summary but not blocking.
       - name: npm audit (devtime, high+)
         continue-on-error: true
         run: npm audit --audit-level=high

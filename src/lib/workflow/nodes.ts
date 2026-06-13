@@ -339,6 +339,15 @@ async function runVerifyCmd(
   cmd: string,
 ): Promise<VerifyOutcome> {
   ctx.emit(`Running verification: ${cmd}\n`);
+  // Audit A14: wire the run's abort signal to shell cancellation. The verify
+  // command runs up to VERIFY_TIMEOUT_SECS (300s); without this a user Stop or
+  // the budget node's maxMs timer leaves it running and the critic/cascade loop
+  // blocked on it. Cancel the exact op id on abort.
+  const opId = `wf-verify-${crypto.randomUUID()}`;
+  const onAbort = () => {
+    void api.agentCancelShell(opId).catch(() => undefined);
+  };
+  ctx.signal.addEventListener("abort", onAbort, { once: true });
   try {
     const r = await api.agentRunShell(
       cmd,
@@ -346,7 +355,7 @@ async function runVerifyCmd(
         cwd: ctx.base.workspaceRoot ?? undefined,
         timeout_secs: VERIFY_TIMEOUT_SECS,
       },
-      `wf-verify-${crypto.randomUUID()}`,
+      opId,
     );
     const combined = [r.stdout, r.stderr].filter(Boolean).join("\n");
     const tail =
@@ -366,6 +375,8 @@ async function runVerifyCmd(
       exitCode: null,
       tail: `[verification command failed to execute: ${errMsg(e)}]`,
     };
+  } finally {
+    ctx.signal.removeEventListener("abort", onAbort);
   }
 }
 

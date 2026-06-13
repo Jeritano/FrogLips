@@ -57,7 +57,14 @@ fn is_safe_v4(a: &std::net::Ipv4Addr) -> bool {
         // CGNAT 100.64.0.0/10 — covers Alibaba Cloud's metadata endpoint
         // 100.100.100.200, matching the MCP remote-URL guard
         // (mcp::is_blocked_ip). `is_private()` does NOT cover CGNAT.
-        || (oct[0] == 100 && (oct[1] & 0xc0) == 0x40))
+        || (oct[0] == 100 && (oct[1] & 0xc0) == 0x40)
+        // Audit A29: reserved/non-global ranges std's predicates miss —
+        // 240.0.0.0/4 (reserved/future), 198.18.0.0/15 (benchmarking, RFC2544),
+        // 192.0.0.0/24 (IETF protocol assignments). Block them too so an SSRF
+        // target can't reach a non-routable/reserved address.
+        || (oct[0] >= 240)
+        || (oct[0] == 198 && (oct[1] == 18 || oct[1] == 19))
+        || (oct[0] == 192 && oct[1] == 0 && oct[2] == 0))
 }
 
 fn is_safe_ip(ip: &std::net::IpAddr) -> bool {
@@ -573,7 +580,9 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
         || ct.contains("javascript")
         || ct.contains("yaml")
         || ct.is_empty(); // unknown → treat as text, the body is already UTF-8 lossy
-    let body = if text_like && body.len() < WEB_FETCH_MAX_BYTES {
+    // Audit A32: `<=` not `<` — read_capped fills to EXACTLY the cap, so a
+    // maximal attacker-chosen body landing on the boundary must still be scanned.
+    let body = if text_like && body.len() <= WEB_FETCH_MAX_BYTES {
         injection_scan::scan_and_wrap(&body).0
     } else {
         body
@@ -712,7 +721,22 @@ pub async fn call_api(input: CallApiInput) -> Result<HttpResp, String> {
             .host_str()
             .map(|h| h.eq_ignore_ascii_case(&registered_host))
             .unwrap_or(false);
-        if same_host {
+        // Audit A17: host-only was not enough — a same-host https→http
+        // downgrade redirect re-sent the bearer key in CLEARTEXT. Attach auth
+        // only on a same-host hop that is https, OR http to a loopback host
+        // (local APIs). Never attach the key to a plaintext http hop on a
+        // non-loopback host.
+        let host_is_loopback = u
+            .host_str()
+            .map(|h| {
+                h.eq_ignore_ascii_case("localhost")
+                    || h == "127.0.0.1"
+                    || h == "::1"
+                    || h.eq_ignore_ascii_case("[::1]")
+            })
+            .unwrap_or(false);
+        let auth_safe_hop = u.scheme() == "https" || (u.scheme() == "http" && host_is_loopback);
+        if same_host && auth_safe_hop {
             if let Some(av) = &auth_value {
                 req = req.header(auth_header_name.as_str(), av);
             }

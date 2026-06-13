@@ -861,6 +861,28 @@ export async function classifyToolRisk(
       });
       return "destructive";
     }
+  } else if (fnName === "run_code") {
+    // Audit A24: run_code with language bash/sh/shell re-enters a full shell —
+    // identical RCE surface to run_shell — but used to skip the shell risk
+    // classifier, so a destructive `rm -rf /` snippet showed only the generic
+    // dangerous badge. Route shell-language code through the SAME classifier so
+    // the destructive/privileged badge fires identically. Other languages keep
+    // the default dangerous risk (already gated + sandboxed temp-file run).
+    const lang = String(args.language ?? "").toLowerCase();
+    if (lang === "bash" || lang === "sh" || lang === "shell") {
+      try {
+        return (await api.agentClassifyShell(String(args.code ?? ""))) as Risk;
+      } catch (err) {
+        logDiag({
+          level: "warn",
+          source: "agent-loop",
+          message:
+            "classifyToolRisk: run_code shell classifier failed — failing closed to destructive",
+          detail: redactDiagDetail(err),
+        });
+        return "destructive";
+      }
+    }
   } else if (fnName === "applescript_run") {
     try {
       return (await api.agentClassifyApplescript(

@@ -105,7 +105,7 @@ pub async fn format_code(path: String) -> Result<FormatResult, String> {
     // capped_output bounds stdout/stderr buffering instead of `.output()`.
     let (out, err, code) = match tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        super::shell::capped_output(process_cmd, MAX_READ_BYTES),
+        super::shell::capped_output(process_cmd, MAX_READ_BYTES, false),
     )
     .await
     {
@@ -117,10 +117,17 @@ pub async fn format_code(path: String) -> Result<FormatResult, String> {
             }))
         }
     };
+    // Fence both channels: a formatter echoes offending source lines on syntax
+    // errors, so a poisoned source file's injection tokens can surface in
+    // stdout/stderr. Wrap like every other subprocess output channel.
+    let (stdout, _) =
+        super::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&out));
+    let (stderr, _) =
+        super::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&err));
     Ok(FormatResult {
         formatter: cmd.to_string(),
-        stdout: String::from_utf8_lossy(&out).into_owned(),
-        stderr: String::from_utf8_lossy(&err).into_owned(),
+        stdout,
+        stderr,
         exit_code: code,
         duration_ms: started.elapsed().as_millis() as u64,
     })

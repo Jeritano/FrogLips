@@ -262,6 +262,23 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
             ("server", p.mcp_server.as_deref().unwrap_or("")),
             ("tool", p.mcp_tool.as_deref().unwrap_or("")),
         ]))),
+        // Runtime-state-mutating tools that ARE in the frontend DANGEROUS_TOOLS
+        // set but previously had no Rust-side binding (audit A08/A25/A38) — a
+        // gate that only the renderer enforced. watch_path spawns a persistent
+        // OS watcher (bind to the watched path); stop_watch/task_cancel destroy
+        // other runtime state by id (bind to that id, carried in `text`).
+        "agent_watch_path" => Some(sha256_hex(&kv(&[(
+            "path",
+            p.path.as_deref().unwrap_or(""),
+        )]))),
+        "agent_stop_watch" => Some(sha256_hex(&kv(&[(
+            "watch_id",
+            p.text.as_deref().unwrap_or(""),
+        )]))),
+        "task_cancel" => Some(sha256_hex(&kv(&[(
+            "task_id",
+            p.text.as_deref().unwrap_or(""),
+        )]))),
         _ => None,
     }
 }
@@ -908,7 +925,19 @@ pub async fn agent_watch_path(
     path: String,
     glob: Option<String>,
     debounce_ms: Option<u64>,
+    approval: String,
 ) -> Result<agent::fs_watcher::WatchHandle, String> {
+    // Path-bound: watch_path spawns a persistent OS filesystem watcher; gate it
+    // with a token like every other DANGEROUS tool so the renderer can't start
+    // one without the confirmation modal (audit A08).
+    verify_bound(
+        "agent_watch_path",
+        &approval,
+        ApprovalPayload {
+            path: Some(path.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::fs_watcher::watch_path(path, glob, debounce_ms).await
 }
 
@@ -927,7 +956,17 @@ pub async fn agent_poll_watch(
 }
 
 #[tauri::command]
-pub fn agent_stop_watch(id: String) -> Result<(), String> {
+pub fn agent_stop_watch(id: String, approval: String) -> Result<(), String> {
+    // Destroys runtime state (a watcher the user set up) by id — bound to that
+    // id so the gate isn't renderer-only (audit A25).
+    verify_bound(
+        "agent_stop_watch",
+        &approval,
+        ApprovalPayload {
+            text: Some(id.clone()),
+            ..Default::default()
+        },
+    )?;
     agent::fs_watcher::stop_watch(id)
 }
 
@@ -967,7 +1006,17 @@ pub fn task_list() -> Vec<task_queue::TaskInfo> {
 }
 
 #[tauri::command]
-pub fn task_cancel(id: String) -> Result<(), String> {
+pub fn task_cancel(id: String, approval: String) -> Result<(), String> {
+    // Destroys other runtime state (kills an in-flight background task) by id —
+    // bound to that id; sibling task_create is already bound (audit A38).
+    verify_bound(
+        "task_cancel",
+        &approval,
+        ApprovalPayload {
+            text: Some(id.clone()),
+            ..Default::default()
+        },
+    )?;
     task_queue::cancel(&id)
 }
 
@@ -1266,7 +1315,7 @@ pub async fn agent_diff_files(
 #[tauri::command]
 pub async fn agent_list_processes(
     filter: Option<String>,
-) -> Result<Vec<agent::extras::ProcessRow>, String> {
+) -> Result<agent::extras::ProcessList, String> {
     agent::extras::list_processes(filter).await
 }
 
@@ -1380,8 +1429,14 @@ mod binding_tests {
             "agent_browser_get_text",
             "agent_browser_screenshot",
             "agent_browser_close",
+            "agent_git_commit",
+            "agent_call_api",
             "mcp_start_server",
             "mcp_call_tool",
+            // Runtime-state mutators — bindings added in audit A08/A25/A38.
+            "agent_watch_path",
+            "agent_stop_watch",
+            "task_cancel",
         ] {
             assert!(
                 binding_for(t, &p).is_some(),
