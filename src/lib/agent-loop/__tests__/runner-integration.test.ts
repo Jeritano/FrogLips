@@ -344,4 +344,61 @@ describe("runAgentLoop integration", () => {
     expect(dup).toBeDefined();
     expect(JSON.parse(dup!.content).kind).toBe("duplicate_call");
   });
+
+  it("nudges a narrate-without-acting turn instead of ending, then proceeds", () => {
+    // Turn 1: a "let me fix it:" preamble with ZERO tool calls. Pre-fix the
+    // loop treated this as the final answer and stopped (the "says it's working
+    // but does nothing" bug). Now it injects an ACT nudge and continues; the
+    // model then actually calls a tool.
+    const fetchMock = scriptedFetch([
+      ollamaFinal("Let me continue fixing the issues. I'll update the file:"),
+      ollamaToolCall("t-1", "list_dir", { path: "/work" }),
+      ollamaFinal("Done — the directory was listed."),
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const collected: Message[][] = [];
+    const metrics = { last: null as AgentMetrics | null };
+    return runAgentLoop(baseOpts(collected, metrics)).then((result) => {
+      expect(result).toBe("Done — the directory was listed.");
+      // The model acted after the nudge.
+      expect(listDirMock).toHaveBeenCalledTimes(1);
+      // The ACT nudge was injected.
+      const last = collected[collected.length - 1] ?? [];
+      const nudge = last.find(
+        (m) =>
+          m.role === "system" &&
+          /described what you intend to do but issued NO tool call/.test(
+            m.content,
+          ),
+      );
+      expect(nudge).toBeDefined();
+    });
+  });
+
+  it("stops nudging after MAX and accepts the text (no infinite loop)", () => {
+    // Every turn is a 0-tool preamble. The guard fires at most twice, then the
+    // text is accepted as final — the loop must not spin to the iteration cap.
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            message: { content: "Let me keep working on the fixes:" },
+            prompt_eval_count: 1,
+            eval_count: 1,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const collected: Message[][] = [];
+    const metrics = { last: null as AgentMetrics | null };
+    return runAgentLoop(baseOpts(collected, metrics)).then((result) => {
+      expect(result).toBe("Let me keep working on the fixes:");
+      // 1 initial + 2 nudge-driven retries = 3 LLM calls, then it gives up.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(listDirMock).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -4,6 +4,20 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.11] — 2026-06-12
+
+### Fixed
+- **Agent stops at "let me fix that…" without doing anything.** When a model
+  returns only a preamble ("I'll work on X:", "Let me continue with the fixes:")
+  with no tool call — and has made zero tool calls all run — the loop used to
+  accept that as the final answer and stop. Now it recognizes the narrate-
+  without-acting stall (common once a long chat fills with the model's own no-op
+  "I'm working on it" turns) and injects one firm "call the tool now, don't
+  narrate" nudge, then continues — so the agent actually acts instead of just
+  describing. Bounded (max 2 nudges) so a model that genuinely can't act still
+  exits cleanly, and it never fires after real work has started (a true
+  completion summary is left alone). Pairs with the 0.13.10 multi-tool fix.
+
 ## [0.13.10] — 2026-06-12
 
 ### Fixed

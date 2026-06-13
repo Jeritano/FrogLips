@@ -408,6 +408,30 @@ const STALL_SAME_PATH_LIMIT = 6;
 // How many prior turns the dedupe guard compares against. >1 so an A/B/A/B
 // oscillation (which a one-turn-back check never catches) trips the guard.
 const DEDUPE_HISTORY = 3;
+// How many times an agent run will nudge a model that returns a "let me fix X:"
+// preamble with ZERO tool calls (and zero tools all run) before accepting the
+// text as final. Bounded so a model that genuinely can't act still exits.
+const MAX_NARRATION_NUDGES = 2;
+
+/**
+ * True when an assistant text reply READS like a preamble that announces an
+ * action ("Let me fix X:", "I'll work on Y", "I'm working on the fixes:") —
+ * i.e. the model is describing what it's about to do rather than reporting a
+ * finished result. Used to detect the "narrates instead of calling tools"
+ * stall: a coding agent that emits this with NO tool call (and has done no
+ * work) isn't finished, it's stuck talking. Deliberately conservative — a
+ * genuine completion summary ("I fixed X, Y, Z. All tests pass.") matches none
+ * of these.
+ */
+function looksLikeActionPreamble(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // Ends with a colon — "Here are the fixes:" / "Let me continue with the fixes:"
+  if (/[:：]\s*$/.test(t)) return true;
+  return /\b(let me|i'?ll|i will|i'?m going to|i am going to|let'?s|now,? i'?ll|first,? i'?ll|next,? i'?ll|i'?m (now )?(working|fixing|going)|continue (fixing|working|with the))\b/i.test(
+    t,
+  );
+}
 // Max read-only tool calls executed concurrently in one turn's prefetch
 // (opt #1). Bounded so a turn that issues many reads doesn't slam the IPC
 // bridge / disk with unlimited parallelism.
@@ -951,6 +975,9 @@ export async function runAgentLoop(
   let researchCallCount = 0;
   let writeCallCount = 0;
   let researchNudgeFired = false;
+  // Bounded counter for the narrate-without-acting guard (see the
+  // toolCalls.length === 0 branch).
+  let narrationNudges = 0;
 
   // Per-run turn budget: the setting (opts.maxIterations) overrides the
   // default, clamped so a bad value can't spin forever or stall instantly.
@@ -1062,6 +1089,44 @@ export async function runAgentLoop(
       const preludeText = result.content;
 
       if (toolCalls.length === 0) {
+        // Narrate-without-acting guard: a coding agent that returns ONLY a
+        // "let me fix X:" / "I'll work on Y:" preamble with NO tool call — and
+        // has made ZERO tool calls the whole run — is not finished, it's stuck
+        // narrating. (Seen live on qwen3-coder:480b-cloud once a conversation
+        // fills with its own no-op "I'm working on it" turns: the model
+        // pattern-matches and keeps describing instead of calling tools, so
+        // nothing ever changes.) Don't accept that as the final answer — keep
+        // the text, inject one strong "ACT, don't narrate" nudge, and continue.
+        // Bounded by MAX_NARRATION_NUDGES so a model that truly can't act still
+        // exits. Only fires when the card CAN write and no tool has run yet, so
+        // a genuine completion summary after real work is never interrupted.
+        if (
+          canWriteFile &&
+          metrics.toolCalls === 0 &&
+          narrationNudges < MAX_NARRATION_NUDGES &&
+          looksLikeActionPreamble(preludeText)
+        ) {
+          narrationNudges++;
+          msgs.push({
+            _tmpKey: makeTmpKey(),
+            conversation_id: opts.conversationId,
+            role: "assistant",
+            content: preludeText,
+          });
+          msgs.push({
+            _tmpKey: makeTmpKey(),
+            conversation_id: opts.conversationId,
+            role: "system",
+            content:
+              "[agent-loop] You described what you intend to do but issued NO tool call, so nothing happened. " +
+              "In agent mode, describing an action does NOT perform it — you MUST call the tool. " +
+              "On THIS turn, call the actual tool to make the change (edit_file / write_file / apply_patch / multi_edit / read_file / run_shell) — no preamble, no “let me”, just the tool call. " +
+              "If you are genuinely finished and nothing remains to change, reply with a final summary that does NOT promise further edits.",
+          });
+          onUpdate([...msgs]);
+          onStatusChange("thinking");
+          continue;
+        }
         // Final text response
         const finalMsg: Message = {
           _tmpKey: makeTmpKey(),
