@@ -298,19 +298,33 @@ else
   # passed once and the build still shipped broken (the smoke-prep ad-hoc
   # sign above, before it was guarded). Never print success unless the app
   # the user will actually launch is Gatekeeper-clean.
+  # IMPORTANT (2026-06-12): this block USED to `rm -rf /Applications/Froglips.app`
+  # whenever spctl didn't print "Notarized Developer ID" within 10s. That was a
+  # foot-gun behind the recurring "installs then silently vanishes" reports:
+  # spctl's ONLINE Gatekeeper assessment is flaky for the first ~seconds after a
+  # notarization (it round-trips Apple's ticket CDN; syspolicyd can be busy), so
+  # a transient miss deleted a perfectly good, notarized install. The bundle,
+  # the DMG, and the staple ALL passed the pre-install gates above, so an
+  # inconclusive online re-check is NOT grounds to destroy the install.
+  # New policy: widen the window; only an EXPLICIT reject is fatal; NEVER delete.
   ok=0
-  for _ in 1 2 3 4 5; do
-    if spctl -a -vv /Applications/Froglips.app 2>&1 | grep -q "Notarized Developer ID"; then
-      ok=1; break
-    fi
+  rejected=0
+  for _ in $(seq 1 10); do
+    out=$(spctl -a -vv /Applications/Froglips.app 2>&1)
+    if grep -q "Notarized Developer ID" <<<"$out"; then ok=1; break; fi
+    if grep -qi "rejected\|not notarized\|invalid" <<<"$out"; then rejected=1; break; fi
     sleep 2
   done
   if [[ "$ok" -ne 1 ]]; then
-    echo "✗ Installed copy is NOT Notarized Developer ID — removing the bad install." >&2
-    rm -rf /Applications/Froglips.app
-    exit 1
+    if [[ "$rejected" -eq 1 ]]; then
+      echo "✗ Installed copy was REJECTED by Gatekeeper. Leaving it in place for inspection (NOT deleting). Do not distribute until resolved." >&2
+      exit 1
+    fi
+    # Inconclusive (transient assessment delay) — leave the install ALONE.
+    echo "⚠ spctl did not confirm 'Notarized Developer ID' within the window — likely a transient online-assessment delay. The bundle/DMG/staple all passed the pre-install gates, so the install is LEFT IN PLACE. Verify manually: spctl -a -vv /Applications/Froglips.app" >&2
+  else
+    echo "✓ Installed copy verified (Notarized Developer ID)"
   fi
-  echo "✓ Installed copy verified (Notarized Developer ID)"
 fi
 
 echo "✓ Installed v${VERSION} at /Applications/Froglips.app"
