@@ -4,6 +4,33 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.13.13] — 2026-06-13
+
+### Security — the three audit residuals closed (A01/A10, A28, A16)
+v0.13.12 left three items as deliberate trade-offs. All three are now resolved:
+
+- **OS Seatbelt sandbox is now DEFAULT-ON (A01/A10).** Agent `run_shell` /
+  `run_code` children run under `sandbox-exec` with a deny profile covering the
+  credential set no build tool legitimately reads — `~/.ssh`, `~/.gnupg`,
+  Keychains, browser cookies, Mail/Messages, and Froglips' own stores. Network and
+  everything else (`~/.gitconfig`, `~/.npmrc`, `~/.aws`, project files) stay
+  allowed so git/npm/aws builds are unaffected. A one-time startup probe means a
+  malformed profile or a missing `sandbox-exec` silently falls back to unsandboxed
+  rather than bricking the shell tool. Escape hatch: `FROGLIPS_NO_SHELL_SANDBOX=1`.
+- **API keys now live in the macOS Keychain (A28).** The default secret backend
+  moved from the 0600 `secrets.json` file to the login Keychain (in-process
+  Security.framework, so the item ACL binds to the stable notarized Developer ID
+  signature — the ad-hoc-resign ACL churn that drove the original file choice is
+  gone). Existing file-stored keys auto-migrate into the Keychain on first read
+  and the plaintext copy is purged. A Keychain failure transparently falls back to
+  the 0600 file so a key is never lost. Escape hatch: `FROGLIPS_SECRETS_FILE=1`.
+- **Supply-chain audit is a failing CI check (A16).** The production `cargo audit`
+  and `npm audit` steps are blocking (red on any prod-dep advisory) on every push
+  and PR — already shipped in 0.13.12's `ci.yml`. (Marking it a *required* status
+  check in GitHub branch protection is a one-time repo-settings toggle the
+  maintainer applies; it interacts with the direct-push release flow, so it's left
+  to a deliberate manual decision rather than changed programmatically.)
+
 ## [0.13.12] — 2026-06-13
 
 ### Security & correctness — full audit remediation

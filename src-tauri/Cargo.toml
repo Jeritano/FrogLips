@@ -1,6 +1,6 @@
 [package]
 name = "local-llm-app"
-version = "0.13.12"
+version = "0.13.13"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["Joseph D Eritano"]
 edition = "2021"
@@ -41,6 +41,11 @@ objc2-foundation = "0.3"
 objc2-speech = "0.3"
 objc2-avf-audio = "0.3"
 objc2-av-foundation = "0.3"
+# Audit A28: encrypted-at-rest API-key storage in the login Keychain (replaces
+# the 0600 plaintext file as the default). In-process Security.framework, so the
+# item ACL binds to the notarized Developer ID signature — stable across launches
+# (the ad-hoc-resign ACL churn that drove the original file choice is gone).
+security-framework = "2"
 
 
 [dependencies]

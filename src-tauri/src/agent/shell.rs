@@ -160,8 +160,9 @@ pub async fn run_code(
     let cwd = workspace_root_clone();
     let task = tokio::spawn(async move {
         let started = Instant::now();
-        let mut cmd = tokio::process::Command::new(interp);
-        cmd.arg(&run_path);
+        // Sandboxed (credential-deny Seatbelt profile) when active — A01/A10.
+        let rp = run_path.to_string_lossy().into_owned();
+        let mut cmd = base_command(&[interp, &rp]);
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -277,8 +278,8 @@ pub async fn run_shell(
 
     let task = tokio::spawn(async move {
         let started = Instant::now();
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c").arg(&cmd_str);
+        // Sandboxed (credential-deny Seatbelt profile) when active — A01/A10.
+        let mut cmd = base_command(&["sh", "-c", &cmd_str]);
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -367,6 +368,83 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
         }
     }
     Ok((buf, truncated))
+}
+
+/// Build the Seatbelt (sandbox-exec) profile for agent shell/code children
+/// (audit A01/A10). DENY-only on the credential set NO build tool legitimately
+/// reads — SSH keys, GPG, Keychains, browser cookies, Mail/Messages, and the
+/// app's own stores. `(allow default)` keeps network + everything else working
+/// (`~/.gitconfig`, `~/.npmrc`, `~/.aws` stay READABLE so git/npm/aws builds
+/// don't break — the approval click is the boundary for those). Returns None
+/// when there is no home dir to anchor the paths.
+fn shell_sandbox_profile() -> Option<String> {
+    let home = dirs::home_dir()?;
+    let h = home.to_string_lossy();
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let he = esc(&h);
+    let deny_subpaths = [
+        format!("{he}/.ssh"),
+        format!("{he}/.gnupg"),
+        format!("{he}/Library/Keychains"),
+        format!("{he}/Library/Cookies"),
+        format!("{he}/Library/Mail"),
+        format!("{he}/Library/Messages"),
+        format!("{he}/.local-llm-app"),
+        format!("{he}/Library/Application Support/Froglips"),
+    ];
+    let mut p = String::from("(version 1)\n(allow default)\n(deny file-read* file-write*\n");
+    for sp in &deny_subpaths {
+        p.push_str(&format!("  (subpath \"{sp}\")\n"));
+    }
+    p.push_str(")\n");
+    Some(p)
+}
+
+/// Probed once: whether sandbox-exec actually works with our profile. A
+/// malformed profile or a missing/deprecated sandbox-exec must NEVER brick the
+/// shell tool — we only sandbox when a trivial probe command runs clean.
+static SANDBOX_OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn sandbox_active() -> bool {
+    // Escape hatch: FROGLIPS_NO_SHELL_SANDBOX=1 disables the cage entirely.
+    if std::env::var("FROGLIPS_NO_SHELL_SANDBOX").is_ok() {
+        return false;
+    }
+    *SANDBOX_OK.get_or_init(|| {
+        let Some(profile) = shell_sandbox_profile() else {
+            return false;
+        };
+        std::process::Command::new("/usr/bin/sandbox-exec")
+            .arg("-p")
+            .arg(&profile)
+            .arg("/usr/bin/true")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Base Command for an inner argv, wrapped in sandbox-exec (credential-deny
+/// profile) when sandboxing is active, else the argv run directly. The probe in
+/// `sandbox_active` guarantees the wrap can't brick shell on a bad profile.
+fn base_command(argv: &[&str]) -> tokio::process::Command {
+    if sandbox_active() {
+        if let Some(profile) = shell_sandbox_profile() {
+            let mut c = tokio::process::Command::new("/usr/bin/sandbox-exec");
+            c.arg("-p").arg(profile);
+            for a in argv {
+                c.arg(a);
+            }
+            return c;
+        }
+    }
+    let mut c = tokio::process::Command::new(argv[0]);
+    for a in &argv[1..] {
+        c.arg(a);
+    }
+    c
 }
 
 /// Strip secret-/hijack-prone keys from a spawned child's environment (audit

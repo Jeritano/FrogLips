@@ -159,12 +159,14 @@ fn default_true() -> bool {
     true
 }
 
-/// Local secret store: a mode-0600 JSON file (account → key) kept next to
-/// settings.json. Replaces the macOS login Keychain so the OS never prompts
-/// for access — the Keychain ACL reset on every ad-hoc re-sign, re-prompting
-/// despite "Always Allow". Trade-off (accepted 2026-06-02): keys sit in a
-/// local file readable by any process running as the user, vs the Keychain's
-/// per-app ACL. Single-user local build; the file is mode 0600.
+/// FALLBACK secret store: a mode-0600 JSON file (account → key) next to
+/// settings.json. As of audit A28 the default backend is the macOS Keychain
+/// (`keychain_*` above); this file is used only when the user reverts via
+/// FROGLIPS_SECRETS_FILE=1, when a Keychain op fails (so a key is never lost),
+/// and as the migration source on first Keychain read. Original no-Keychain
+/// rationale (2026-06-02): the Keychain ACL reset on every ad-hoc re-sign,
+/// re-prompting despite "Always Allow" — resolved now that releases ship under
+/// a stable notarized Developer ID signature. File stays mode 0600 throughout.
 fn secrets_path() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("FROGLIPS_SETTINGS_DIR") {
         if !dir.is_empty() {
@@ -282,9 +284,23 @@ fn keychain_disabled() -> bool {
     std::env::var("FROGLIPS_SETTINGS_DIR").is_ok_and(|d| !d.is_empty())
 }
 
-/// Store an API key for `account` in the local secret store. Returns true iff
-/// the write landed — the caller MUST check before blanking the on-disk
-/// plaintext (infra audit M11), else the only copy of the key is lost.
+/// Keychain service name for all Froglips API-key items (audit A28).
+const KC_SERVICE: &str = "Froglips";
+
+/// True when the Keychain backend is active. Off only when the user reverts to
+/// the 0600 file via FROGLIPS_SECRETS_FILE=1 (escape hatch for the prompt churn
+/// that drove the original file choice — on a notarized stable signature the
+/// ACL should persist, but the file fallback is always there). Test mode is
+/// handled separately by `keychain_disabled` at each call site.
+fn use_keychain_backend() -> bool {
+    !std::env::var("FROGLIPS_SECRETS_FILE").is_ok_and(|v| !v.is_empty())
+}
+
+/// Store an API key for `account`. Returns true iff the write landed — the
+/// caller MUST check before blanking any on-disk plaintext (infra audit M11),
+/// else the only copy of the key is lost. Default backend is the macOS Keychain
+/// (A28); a Keychain failure falls back to the 0600 file so a key is never
+/// dropped on the floor.
 fn keychain_set(account: &str, key: &str) -> bool {
     if keychain_disabled() {
         // Test mode treats success as "do nothing" so the disk path keeps
@@ -292,6 +308,30 @@ fn keychain_set(account: &str, key: &str) -> bool {
         return true;
     }
     let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if use_keychain_backend() {
+        match security_framework::passwords::set_generic_password(
+            KC_SERVICE,
+            account,
+            key.as_bytes(),
+        ) {
+            Ok(()) => {
+                // Purge any legacy plaintext copy now the Keychain holds it.
+                let mut map = load_secrets();
+                if map.remove(account).is_some() {
+                    let _ = write_secrets(&map);
+                }
+                return true;
+            }
+            Err(e) => {
+                crate::diagnostics::warn_with(
+                    "settings",
+                    &format!("keychain_set({account}) failed — falling back to 0600 file"),
+                    serde_json::json!({ "account": account, "error": e.to_string() }),
+                );
+                // fall through to the file backend
+            }
+        }
+    }
     let mut map = load_secrets();
     map.insert(account.to_string(), key.to_string());
     if write_secrets(&map) {
@@ -306,24 +346,56 @@ fn keychain_set(account: &str, key: &str) -> bool {
     }
 }
 
-/// Fetch an API key for `account` from the local secret store. `None` if absent.
+/// Fetch an API key for `account`. `None` if absent. On the Keychain backend a
+/// miss transparently migrates any legacy 0600-file copy INTO the Keychain (and
+/// purges the file copy) so existing installs upgrade on first read.
 pub fn keychain_get(account: &str) -> Option<String> {
     if keychain_disabled() {
         return None;
     }
     let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if use_keychain_backend() {
+        if let Ok(bytes) = security_framework::passwords::get_generic_password(KC_SERVICE, account) {
+            return String::from_utf8(bytes).ok().filter(|s| !s.is_empty());
+        }
+        // Not in the Keychain (or access failed) — migrate from the legacy file.
+        let from_file = load_secrets()
+            .get(account)
+            .filter(|s| !s.is_empty())
+            .cloned();
+        if let Some(v) = from_file {
+            if security_framework::passwords::set_generic_password(
+                KC_SERVICE,
+                account,
+                v.as_bytes(),
+            )
+            .is_ok()
+            {
+                let mut map = load_secrets();
+                if map.remove(account).is_some() {
+                    let _ = write_secrets(&map);
+                }
+            }
+            return Some(v);
+        }
+        return None;
+    }
     load_secrets()
         .get(account)
         .filter(|s| !s.is_empty())
         .cloned()
 }
 
-/// Delete an API key for `account` from the local secret store (best-effort).
+/// Delete an API key for `account` (best-effort). Removes from BOTH the Keychain
+/// and any legacy file copy so a delete can't leave a stale plaintext behind.
 fn keychain_delete(account: &str) {
     if keychain_disabled() {
         return;
     }
     let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if use_keychain_backend() {
+        let _ = security_framework::passwords::delete_generic_password(KC_SERVICE, account);
+    }
     let mut map = load_secrets();
     if map.remove(account).is_some() {
         let _ = write_secrets(&map);
