@@ -4,6 +4,22 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-06-14
+
+### Critical — fix DB lockout when upgrading from <= 0.13.x
+The v0.14.0 migration folded `agent_audit::ensure_schema` into the ladder as rung
+v20, which eagerly created an index on the `conv_id` column — but `conv_id` is only
+added to a pre-existing table by the later v24/v25 rungs. On any DB created before
+v0.14.0, rung v20 ran `CREATE INDEX … ON agent_audit(conv_id)` against a table that
+did not yet have that column → "no such column: conv_id" → the migration aborted
+and the database failed to open. Fresh installs were unaffected (the column is in
+the CREATE TABLE body), which is why the build/smoke tests missed it. The two
+`conv_id` indexes in `ensure_schema` are now guarded by `column_exists`, so an old
+table skips them in v20 and the v24/v25 rung creates the column + index. Added a
+regression test that ages a full schema back to the real pre-v0.14.0 shape and
+re-runs the ladder. **Anyone who installed 0.14.0 and was locked out should update
+to 0.14.1** (no data was lost — the migration rolled back atomically).
+
 ## [0.14.0] — 2026-06-14
 
 ### Architecture remediation — 10-phase refactor (44 review findings)

@@ -46,7 +46,6 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_agent_audit_ts_id ON agent_audit(ts DESC, id DESC);
          CREATE INDEX IF NOT EXISTS idx_agent_audit_conv ON agent_audit(conversation_id);
          CREATE INDEX IF NOT EXISTS idx_agent_audit_workflow_run ON agent_audit(workflow_run_id);
-         CREATE INDEX IF NOT EXISTS idx_agent_audit_conv_id ON agent_audit(conv_id);
          CREATE TABLE IF NOT EXISTS agent_session_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts INTEGER NOT NULL,
@@ -62,9 +61,26 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
          );
          CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_ts ON agent_session_metrics(ts);
          CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_ts_id ON agent_session_metrics(ts DESC, id DESC);
-         CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_conv ON agent_session_metrics(conversation_id);
-         CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_conv_id ON agent_session_metrics(conv_id);",
+         CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_conv ON agent_session_metrics(conversation_id);",
     )?;
+    // CRITICAL upgrade-safety (v0.14.1): the `conv_id` sibling column is only
+    // ADDED to a pre-v0.14.0 table by the v24/v25 rungs. Indexing it here — the
+    // folded v20 rung, which runs BEFORE v24 — referenced a column that does not
+    // yet exist on an existing DB → "no such column: conv_id" → the whole
+    // migration aborted → DB lockout on every upgrade from <= v0.13.x. Create
+    // the conv_id indexes ONLY when the column is actually present (a fresh table
+    // gets it from the CREATE TABLE bodies above; an old table gets it + this
+    // index via the v24/v25 rung's guarded ALTER). Same guard the rungs use.
+    if crate::history::column_exists(conn, "agent_audit", "conv_id")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_agent_audit_conv_id ON agent_audit(conv_id);",
+        )?;
+    }
+    if crate::history::column_exists(conn, "agent_session_metrics", "conv_id")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_conv_id ON agent_session_metrics(conv_id);",
+        )?;
+    }
     Ok(())
 }
 

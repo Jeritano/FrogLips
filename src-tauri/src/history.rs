@@ -3159,6 +3159,55 @@ mod tests {
         assert_vec_tables_after_seed(&conn);
     }
 
+    /// REGRESSION (v0.14.1 — critical upgrade-brick): a real pre-v0.14.0 DB has
+    /// an `agent_audit` table WITHOUT the `conv_id` column at user_version 19.
+    /// The folded v20 rung (`agent_audit::ensure_schema`) ran BEFORE v24 added
+    /// `conv_id`, yet eagerly created `idx_agent_audit_conv_id ON agent_audit(conv_id)`
+    /// → "no such column: conv_id" → the whole migration aborted → every
+    /// upgrading user was locked out of their DB. This test ages a full schema
+    /// back to the real pre-v0.14.0 shape and re-runs the ladder; it must reach
+    /// latest without aborting and preserve the legacy audit row.
+    #[test]
+    fn migration_ladder_upgrades_pre_v0140_agent_audit_without_conv_id() {
+        let conn = test_open_in_memory_with_vec();
+        run_migrations(&conn).expect("build full schema");
+        // Seed a legacy audit row, then strip conv_id + its index and stamp the
+        // DB at v19 — exactly what a 0.13.x install looks like before upgrading.
+        conn.execute_batch(
+            "INSERT INTO agent_audit
+               (ts, conversation_id, tool_name, args_json, result_hash, result_size,
+                duration_ms, approval, outcome)
+             VALUES (1, '7', 'read_file', '{}', 'h', 0, 1, 'auto', 'ok');
+             DROP INDEX IF EXISTS idx_agent_audit_conv_id;
+             DROP INDEX IF EXISTS idx_agent_session_metrics_conv_id;
+             ALTER TABLE agent_audit DROP COLUMN conv_id;
+             ALTER TABLE agent_session_metrics DROP COLUMN conv_id;
+             PRAGMA user_version = 19;",
+        )
+        .expect("age schema back to pre-v0.14.0");
+        assert!(!column_exists(&conn, "agent_audit", "conv_id").unwrap());
+
+        // The bug: this aborted with "no such column: conv_id".
+        run_migrations(&conn).expect("upgrade from a real pre-v0.14.0 agent_audit must not abort");
+
+        assert_eq!(user_version(&conn), latest_version());
+        assert!(column_exists(&conn, "agent_audit", "conv_id").unwrap());
+        assert!(column_exists(&conn, "agent_session_metrics", "conv_id").unwrap());
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_audit", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "legacy audit row must survive the upgrade");
+        let has_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name='idx_agent_audit_conv_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_idx, 1, "conv_id index must be (re)created by the v24 rung");
+    }
+
     /// Migration v10 (`images`) is safe to apply twice in a row and against a
     /// DB that already has rows in upstream tables — exercises the CREATE
     /// TABLE IF NOT EXISTS + index path without trying to re-create columns.
