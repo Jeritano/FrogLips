@@ -35,8 +35,19 @@ export interface ToolResultFail {
 }
 export type ToolResult = ToolResultOk | ToolResultFail;
 
-/** Backends the agent loop can run a tool-calling chat against. */
-export type AgentBackend = "ollama" | "mlx" | "native";
+/** Backends the agent loop can run a tool-calling chat against.
+ *  - `ollama | mlx | native` — local / in-process.
+ *  - `custom | openrouter`    — OpenAI-compatible cloud endpoints, routed
+ *    through Rust (`custom_chat_stream` / `custom_chat_stream_tools`). For
+ *    `custom`, `model` carries the `CustomBackend.id`; for `openrouter`, `model`
+ *    is the catalogue model id (the per-call override). Both run un-gated by the
+ *    local-inference semaphore (see `shouldBypassInferenceGate`). */
+export type AgentBackend =
+  | "ollama"
+  | "mlx"
+  | "native"
+  | "custom"
+  | "openrouter";
 
 /** Per-tool execution stats. Maturity review P1 #23 — was previously only
  *  recorded as a total, so a chatty `web_fetch` dominating the run was

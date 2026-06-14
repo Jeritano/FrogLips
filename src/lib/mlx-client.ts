@@ -10,6 +10,7 @@ import type {
 } from "./agent-loop/stream-types";
 import type { ChatParams } from "./agent-loop/types";
 import { resolveAgentChatConfig } from "./agent-loop/types";
+import { toOpenAiMessages } from "./openai-messages";
 import { withInactivityTimeout } from "./signal-utils";
 import { readLines } from "./stream-lines";
 
@@ -29,54 +30,6 @@ export interface ChatChunk {
   delta: string;
   done: boolean;
   usage?: ReplyUsage;
-}
-
-/** Serialise app messages into the OpenAI chat-completions wire format. */
-function toOpenAiMessages(messages: Message[]) {
-  return messages.map((m) => {
-    // Vision: OpenAI-compat endpoints accept the multi-content form. Use it
-    // only when the user message actually carries images.
-    if (m.role === "user" && m.images && m.images.length > 0) {
-      const parts: Array<
-        | { type: "text"; text: string }
-        | { type: "image_url"; image_url: { url: string } }
-      > = [];
-      if (m.content) parts.push({ type: "text", text: m.content });
-      for (const img of m.images) {
-        parts.push({
-          type: "image_url",
-          image_url: { url: `data:${img.mime};base64,${img.base64}` },
-        });
-      }
-      return { role: m.role, content: parts };
-    }
-    // Assistant turn that issued tool calls — forward them so the server
-    // can match the following `tool` messages to their requests. Normalize
-    // `arguments` to a string: the OpenAI spec (which MLX's OpenAI-compatible
-    // server enforces) defines it as string, and some models round-trip the
-    // field as a parsed object which the server then rejects.
-    if (m.tool_calls?.length) {
-      const normalized = m.tool_calls.map((tc) => ({
-        ...tc,
-        function: {
-          ...tc.function,
-          arguments:
-            typeof tc.function.arguments === "string"
-              ? tc.function.arguments
-              : JSON.stringify(tc.function.arguments ?? {}),
-        },
-      }));
-      return {
-        role: "assistant",
-        content: m.content ?? "",
-        tool_calls: normalized,
-      };
-    }
-    if (m.role === "tool") {
-      return { role: "tool", content: m.content, tool_call_id: m.tool_call_id };
-    }
-    return { role: m.role, content: m.content };
-  });
 }
 
 // Time-to-first-byte cap. Aborts the request if the server hasn't replied

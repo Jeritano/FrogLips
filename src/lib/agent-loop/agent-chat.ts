@@ -25,10 +25,24 @@ import {
 import type { StreamChatResult } from "./stream-types";
 import { streamMlxAgentChat } from "../mlx-client";
 import { streamNativeAgentChat } from "../native-client";
+import { streamCustomAgentChat } from "../custom-client";
 import {
   shouldBypassInferenceGate,
   withInferenceSlot,
 } from "../inference-gate";
+
+/**
+ * Whether a model/backend pair routes to a cloud provider's infra (so it should
+ * bypass the LOCAL-inference admission gate). Covers the OpenAI-compatible cloud
+ * backends (`custom` / `openrouter`) AND Ollama `:cloud` model ids. Equivalent
+ * to {@link shouldBypassInferenceGate}; named for the agent-loop call sites.
+ */
+export function isCloudBackend(
+  backend: string | undefined | null,
+  model: string | undefined | null,
+): boolean {
+  return shouldBypassInferenceGate(model, backend);
+}
 
 /**
  * One streaming, tool-calling chat turn against the active backend, with
@@ -52,7 +66,7 @@ export async function streamAgentChat(
   // ONLY around the per-attempt dispatch below — NOT around the retry loop (so
   // backoff never squats a permit) and NOT across a full runAgentLoop (so a
   // parent never holds a permit while awaiting a child subagent's turns).
-  const bypassGate = shouldBypassInferenceGate(opts.model, backend);
+  const bypassGate = isCloudBackend(backend, opts.model);
   // The per-attempt dispatch: one streaming, tool-calling turn against the
   // active backend. Wrapped in a thunk so it can run gated or un-gated.
   const dispatch = async (): Promise<StreamChatResult> => {
@@ -78,6 +92,25 @@ export async function streamAgentChat(
         signal,
         onContentChunk,
         params,
+      );
+    }
+    if (backend === "custom" || backend === "openrouter") {
+      // OpenAI-compatible cloud backend, routed through Rust. For `openrouter`
+      // the backend id is fixed and `opts.model` is the catalogue model (passed
+      // as the per-call override); for a user `custom` backend, `opts.model`
+      // carries the CustomBackend id and the model is resolved from settings.
+      // Mirrors the plain-chat dispatch in `useChatSend`.
+      const isOpenRouter = backend === "openrouter";
+      const backendId = isOpenRouter ? "openrouter" : opts.model;
+      const modelOverride = isOpenRouter ? opts.model : undefined;
+      return await streamCustomAgentChat(
+        backendId,
+        msgs,
+        tools,
+        signal,
+        onContentChunk,
+        params,
+        modelOverride,
       );
     }
     // Default: Ollama. Base AgentChatConfig resolved once; per-conversation

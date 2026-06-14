@@ -33,9 +33,14 @@ const DetachedChatView = lazy(() =>
   })),
 );
 
-// Single bundle, three entrypoints. The Rust side opens auxiliary webviews
-// with query-string flags; we branch here so each window only loads the
-// shell it actually needs.
+// index.html is the MAIN App entry. As of 2026-06-14 the auxiliary webviews
+// have their own dedicated HTML entries (quick.html / main-quick.tsx and
+// detached.html / main-detached.tsx) that the Rust side opens directly, so the
+// lightweight Quick Prompt popover no longer boots from this (App-bearing)
+// bundle. The query-string branch below is retained as a FALLBACK only: if any
+// URL still loads index.html with `?quick=1` / `?detached=1`, it resolves the
+// right view here. (The lazy QuickPrompt/DetachedChatView chunks referenced by
+// this fallback stay split out, so keeping it costs the main entry nothing.)
 //   * quick-prompt window  → `?quick=1` (or `/quick` path)
 //   * detached conv window → `?detached=1&conversation_id=NN`
 //   * everything else      → full `App`

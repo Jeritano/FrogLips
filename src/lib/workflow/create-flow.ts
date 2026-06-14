@@ -37,6 +37,7 @@ import type {
   WorkflowNodeConfig,
   WorkflowNodeType,
 } from "../../types";
+import { NODE_META } from "./node-handlers/metadata";
 
 export const MAX_FLOW_STEPS = 12;
 export const MAX_INSTRUCTIONS = 4000;
@@ -116,14 +117,14 @@ export const ADVANCED_FLOW_ROLES = new Set([
 /** Node types the model MAY request in advanced mode. router/blackboard/budget
  *  are deliberately excluded — they need structured config (routes, ops, caps)
  *  the high-level step shape can't express safely, and the linear-chain
- *  invariant must hold. */
-export const ADVANCED_NODE_TYPES = new Set<WorkflowNodeType>([
-  "agent",
-  "moa",
-  "consistency",
-  "critic",
-  "cascade",
-]);
+ *  invariant must hold. Derived from each node's `advancedAllowed` flag in the
+ *  cycle-free `NODE_META` so the allowlist tracks the handlers (single source of
+ *  truth) without dragging the agent-loop runtime into this module's init. */
+export const ADVANCED_NODE_TYPES = new Set<WorkflowNodeType>(
+  Object.values(NODE_META)
+    .filter((m) => m.advancedAllowed)
+    .map((m) => m.type),
+);
 
 /**
  * Advanced tool allowlist — SAFE-BUT-WIDER than the curated read-only set. An
@@ -348,35 +349,11 @@ function buildAdvancedNodeConfig(
   nodeType: WorkflowNodeType,
   verifyCmd: string | null,
 ): WorkflowNodeConfig | null {
-  switch (nodeType) {
-    case "moa":
-      // MoA: 3 proposers → one synthesis pass. Matches runMoa's runtime
-      // `members ?? 3` default — stamp it explicitly so the built value
-      // tracks the handler's intent rather than relying on the fallback.
-      return { members: 3 };
-    case "consistency":
-      // Self-consistency: 5 samples → vote/merge. Matches runConsistency's
-      // runtime `members ?? 5` default. The prior shared `members:3` literal
-      // silently under-sampled an advanced-built consistency node vs. what
-      // the same node type does when its config is left unset.
-      return { members: 5 };
-    case "critic":
-      return {
-        maxIters: 3,
-        passThreshold: 75,
-        ...(verifyCmd ? { verifyCmd } : {}),
-      };
-    case "cascade":
-      return {
-        passThreshold: 75,
-        escalateModel: null,
-        escalateBackend: null,
-        ...(verifyCmd ? { verifyCmd } : {}),
-      };
-    default:
-      // "agent" — a plain pass, no orchestration config.
-      return null;
-  }
+  // Delegate to the node's `buildDefaultConfig` (cycle-free `NODE_META`, the
+  // single source of truth) so the built config tracks each handler's intent
+  // rather than a duplicated literal here. `verifyCmd` is only honored by
+  // critic/cascade.
+  return NODE_META[nodeType].buildDefaultConfig(verifyCmd);
 }
 
 /**

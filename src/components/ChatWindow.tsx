@@ -387,10 +387,52 @@ export function ChatWindow({
 
   const isWorking =
     isStreaming || agentStatus === "thinking" || agentStatus === "tool";
-  // Agent mode (tool-calling loop) runs on Ollama and MLX. The native
-  // (mistralrs) backend has no tool-call support — agent mode is disabled.
+  // For an active OpenRouter model, agent mode is gated on whether the catalogue
+  // says the model supports tools. The catalogue is fetched lazily (below) and
+  // cached per model id; until it resolves, agent mode is held off.
+  const [orToolsByModel, setOrToolsByModel] = useState<Record<string, boolean>>(
+    {},
+  );
+  useEffect(() => {
+    if (status?.backend !== "openrouter") return;
+    const model = status.model;
+    if (!model || model in orToolsByModel) return;
+    let cancelled = false;
+    void api
+      .openrouterListModels()
+      .then((models) => {
+        if (cancelled) return;
+        const hit = models.find((m) => m.id === model);
+        // Unknown model → assume tool-capable (the user opted into OpenRouter
+        // agent mode); a model the catalogue marks tool-less stays disabled.
+        setOrToolsByModel((prev) => ({
+          ...prev,
+          [model]: hit ? hit.tools : true,
+        }));
+      })
+      .catch(() => {
+        // Catalogue fetch failed (offline / no key) — don't block agent mode on
+        // a transient lookup error; let the user try (degrades gracefully).
+        if (!cancelled) setOrToolsByModel((prev) => ({ ...prev, [model]: true }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [status?.backend, status?.model, orToolsByModel]);
+
+  // Agent mode (tool-calling loop) runs on Ollama, MLX, and the
+  // OpenAI-compatible cloud backends (custom / OpenRouter). The native
+  // (mistralrs) backend has no tool-call support — agent mode is disabled
+  // there. For a user `custom` backend the user opted in, so it's allowed (it
+  // degrades to a text pass if the model ignores tools); for `openrouter` it's
+  // gated on the catalogue tools flag once that resolves.
   const agentAvailable =
-    status?.backend === "ollama" || status?.backend === "mlx";
+    status?.backend === "ollama" ||
+    status?.backend === "mlx" ||
+    status?.backend === "custom" ||
+    (status?.backend === "openrouter" &&
+      !!status.model &&
+      orToolsByModel[status.model] === true);
 
   /* ── Send pipeline ── */
   // Self-healing send: when nothing is running, the first send warms the

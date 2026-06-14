@@ -65,10 +65,26 @@ const REPLY_MAX_BYTES: usize = 8 * 1024 * 1024;
 const LINE_BUF_MAX: usize = 1024 * 1024;
 
 /// One message in the OpenAI chat-completions request.
+///
+/// `tool_calls` / `tool_call_id` / `name` are OPTIONAL and skipped when absent,
+/// so a plain content-only message serializes BYTE-IDENTICALLY to the pre-tool
+/// shape (the agent tool-less path is unaffected). They carry the agent loop's
+/// assistant-tool-call turns and `role:"tool"` results so a tool-calling cloud
+/// model can match results to requests.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// Assistant turn's tool calls (OpenAI shape). Forwarded verbatim — the
+    /// frontend already normalizes `arguments` to a string before sending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<serde_json::Value>,
+    /// `role:"tool"` result → the assistant tool_call id it answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Optional function name (some providers want it on the tool message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Per-call sampling params. All optional — omitted fields fall to the
@@ -78,6 +94,11 @@ pub struct CustomChatParams {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub max_tokens: Option<u32>,
+    /// Tool/function schemas (OpenAI shape) for the agent-loop tool-calling
+    /// path. Omitted (None) for the content-only chat path → the request body
+    /// stays byte-identical to the pre-tool shape.
+    #[serde(default)]
+    pub tools: Option<serde_json::Value>,
 }
 
 /// Streamed delta event payload (`custom-chunk:{op_id}`).
@@ -86,8 +107,18 @@ struct CustomChunk {
     delta: String,
 }
 
+/// Streamed tool-call delta payload (`custom-toolcall:{op_id}`). Carries the
+/// raw OpenAI `delta.tool_calls` array verbatim; the frontend's existing
+/// `tool-call-merge.ts` (toolCallIndex / mergeToolCallChunk / finalizeToolCalls)
+/// reassembles the piecewise chunks — it's already the OpenAI delta format.
+#[derive(Serialize, Clone)]
+struct CustomToolCallChunk {
+    tool_calls: serde_json::Value,
+}
+
 /// Build the OpenAI-compatible request body. Pure — unit-tested for the
-/// optional-field shaping. `stream` is always true.
+/// optional-field shaping. `stream` is always true. `tools` is included ONLY
+/// when present, so the content-only path's body is byte-identical to before.
 fn build_request_body(
     model: &str,
     messages: &[ChatMessage],
@@ -108,6 +139,12 @@ fn build_request_body(
     if let Some(m) = params.max_tokens {
         obj.insert("max_tokens".into(), serde_json::json!(m));
     }
+    // Tool schemas — only when the caller supplied them (agent tool-calling
+    // path). Absent → the body omits `tools` entirely and is byte-identical to
+    // the content-only request.
+    if let Some(tools) = &params.tools {
+        obj.insert("tools".into(), tools.clone());
+    }
     body
 }
 
@@ -119,6 +156,10 @@ struct StreamProgress {
     /// ("thinking") models. Used as a fallback when a turn produces no
     /// `content` at all, so reasoning-only replies aren't dropped as empty.
     reasoning: Vec<String>,
+    /// `delta.tool_calls` arrays from the agent tool-calling path, each the raw
+    /// OpenAI delta array for one SSE frame. Empty for content-only streams, so
+    /// the existing content path is unaffected.
+    tool_calls: Vec<serde_json::Value>,
     done: bool,
 }
 
@@ -129,6 +170,7 @@ fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
     buf.push_str(chunk);
     let mut deltas = Vec::new();
     let mut reasoning = Vec::new();
+    let mut tool_calls = Vec::new();
     let mut done = false;
     // Process every COMPLETE line in one pass over `buf[..=last_nl]` by slices
     // (no per-line `to_string`), then drain that prefix in a SINGLE shift. The
@@ -139,6 +181,7 @@ fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
         return StreamProgress {
             deltas,
             reasoning,
+            tool_calls,
             done,
         };
     };
@@ -174,12 +217,27 @@ fn parse_openai_chunk(buf: &mut String, chunk: &str) -> StreamProgress {
                     }
                 }
             }
+            // Tool-calling (agent loop only): the OpenAI streaming format puts
+            // tool calls under `delta.tool_calls` as a piecewise array (name in
+            // one frame, argument fragments in later frames). Forward each
+            // non-empty array verbatim — the frontend's tool-call-merge.ts
+            // reassembles them. ADDITIVE: a content-only stream never carries
+            // this key, so the content path above is unchanged.
+            if let Some(tc) = v
+                .pointer("/choices/0/delta/tool_calls")
+                .and_then(|x| x.as_array())
+            {
+                if !tc.is_empty() {
+                    tool_calls.push(serde_json::Value::Array(tc.clone()));
+                }
+            }
         }
     }
     buf.drain(..=last_nl);
     StreamProgress {
         deltas,
         reasoning,
+        tool_calls,
         done,
     }
 }
@@ -422,6 +480,26 @@ pub async fn chat_stream(
     res.map_err(|e| e.to_string())
 }
 
+/// Stream a TOOL-CALLING chat completion from a custom OpenAI-compatible
+/// backend (agent loop + Flows). Identical to [`chat_stream`] in every respect
+/// — it reuses ALL of `resolve_backend` / `reject_ssrf_base` /
+/// `pinned_client_for` / cancel-token / body-cap, with zero SSRF or Keychain
+/// change — the only difference is that `params.tools` is populated, so the
+/// request body carries `tools` and the model can stream `delta.tool_calls`
+/// (emitted over `custom-toolcall:{op_id}`). Kept as a distinct entry point so
+/// the content-only `custom_chat_stream` command stays byte-identical for the
+/// plain chat path; both funnel into the same `chat_stream`.
+pub async fn chat_stream_tools(
+    app: AppHandle,
+    op_id: String,
+    backend_id: String,
+    messages: Vec<ChatMessage>,
+    params: CustomChatParams,
+    model_override: Option<String>,
+) -> Result<(), String> {
+    chat_stream(app, op_id, backend_id, messages, params, model_override).await
+}
+
 async fn chat_stream_inner(
     app: &AppHandle,
     op_id: &str,
@@ -494,6 +572,16 @@ async fn chat_stream_inner(
             return Err(anyhow!(
                 "stream line exceeded {LINE_BUF_MAX} bytes without a delimiter"
             ));
+        }
+        // Tool-call deltas (agent tool-calling path only; never present on the
+        // content-only stream since `tools` is then absent from the request).
+        // Forward each frame's raw OpenAI delta array to the frontend, which
+        // merges them via the shared tool-call-merge helpers.
+        for tc in progress.tool_calls {
+            let _ = app.emit(
+                &format!("custom-toolcall:{op_id}"),
+                CustomToolCallChunk { tool_calls: tc },
+            );
         }
         for delta in progress.deltas {
             any_content = true;
@@ -842,22 +930,116 @@ mod tests {
         }
     }
 
+    /// Build a plain content-only message (the common case).
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    fn toolcall_line(arr: &str) -> String {
+        format!("data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":{arr}}}}}]}}\n")
+    }
+
+    /// Collect content + the raw tool_call delta arrays across chunks.
+    fn collect_tool_calls(chunks: &[&str]) -> (String, Vec<serde_json::Value>) {
+        let mut buf = String::new();
+        let mut content = String::new();
+        let mut tcs = Vec::new();
+        for c in chunks {
+            let p = parse_openai_chunk(&mut buf, c);
+            for d in p.deltas {
+                content.push_str(&d);
+            }
+            tcs.extend(p.tool_calls);
+            if p.done {
+                break;
+            }
+        }
+        (content, tcs)
+    }
+
     #[test]
     fn build_body_omits_absent_params() {
-        let body = build_request_body(
-            "m",
-            &[ChatMessage {
-                role: "user".into(),
-                content: "hi".into(),
-            }],
-            &CustomChatParams::default(),
-        );
+        let body = build_request_body("m", &[msg("user", "hi")], &CustomChatParams::default());
         let obj = body.as_object().unwrap();
         assert_eq!(obj["model"], "m");
         assert_eq!(obj["stream"], true);
         assert!(!obj.contains_key("temperature"));
         assert!(!obj.contains_key("top_p"));
         assert!(!obj.contains_key("max_tokens"));
+        // The content-only path must NOT carry tools — byte-identical body.
+        assert!(!obj.contains_key("tools"));
+    }
+
+    #[test]
+    fn build_body_includes_tools_when_present() {
+        let tools = serde_json::json!([{
+            "type": "function",
+            "function": { "name": "read_file", "parameters": {} }
+        }]);
+        let body = build_request_body(
+            "m",
+            &[msg("user", "hi")],
+            &CustomChatParams {
+                tools: Some(tools.clone()),
+                ..Default::default()
+            },
+        );
+        let obj = body.as_object().unwrap();
+        assert_eq!(obj["tools"], tools);
+    }
+
+    #[test]
+    fn content_only_message_serializes_byte_identically() {
+        // A plain content message must serialize WITHOUT the new optional tool
+        // fields — the wire shape is unchanged from before the tool support.
+        let body = build_request_body("m", &[msg("user", "hi")], &CustomChatParams::default());
+        let sent = &body["messages"][0];
+        let obj = sent.as_object().unwrap();
+        assert_eq!(obj["role"], "user");
+        assert_eq!(obj["content"], "hi");
+        assert!(!obj.contains_key("tool_calls"));
+        assert!(!obj.contains_key("tool_call_id"));
+        assert!(!obj.contains_key("name"));
+        assert_eq!(obj.len(), 2); // exactly role + content
+    }
+
+    #[test]
+    fn parse_extracts_tool_calls_without_disturbing_content() {
+        // A frame carrying a tool_calls delta is captured; a plain content
+        // frame is unaffected (content path byte-identical).
+        let tc = r#"[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{\"path\""}}]"#;
+        let (content, tcs) = collect_tool_calls(&[&line("answer"), &toolcall_line(tc)]);
+        assert_eq!(content, "answer");
+        assert_eq!(tcs.len(), 1);
+        assert_eq!(tcs[0][0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn parse_content_only_yields_no_tool_calls() {
+        // The regression guard: a content-only stream must produce an EMPTY
+        // tool_calls vec, so the agent tool-less path is unchanged.
+        let (content, tcs) = collect_tool_calls(&[&line("hello"), &line(" world")]);
+        assert_eq!(content, "hello world");
+        assert!(tcs.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_calls_split_across_chunks() {
+        // The OpenAI streaming format sends name then argument fragments in
+        // separate frames; each non-empty array is forwarded for the frontend
+        // merge to reassemble.
+        let f1 = toolcall_line(r#"[{"index":0,"function":{"name":"calc"}}]"#);
+        let f2 = toolcall_line(r#"[{"index":0,"function":{"arguments":"{\"x\":1}"}}]"#);
+        let (_, tcs) = collect_tool_calls(&[&f1, &f2]);
+        assert_eq!(tcs.len(), 2);
+        assert_eq!(tcs[0][0]["function"]["name"], "calc");
+        assert_eq!(tcs[1][0]["function"]["arguments"], "{\"x\":1}");
     }
 
     #[test]
@@ -869,6 +1051,7 @@ mod tests {
                 temperature: Some(0.5),
                 top_p: Some(0.9),
                 max_tokens: Some(256),
+                ..Default::default()
             },
         );
         let obj = body.as_object().unwrap();

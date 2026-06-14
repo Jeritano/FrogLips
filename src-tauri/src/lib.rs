@@ -742,6 +742,7 @@ pub fn run() {
             commands::misc::quick_prompt_open,
             commands::misc::quick_prompt_hide,
             commands::misc::custom_chat_stream,
+            commands::misc::custom_chat_stream_tools,
             commands::misc::custom_cancel,
             commands::misc::openrouter_list_models,
             commands::misc::openrouter_set_key,

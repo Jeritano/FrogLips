@@ -166,7 +166,11 @@ pub fn ensure_window(app: &AppHandle) -> Result<()> {
     let win = WebviewWindowBuilder::new(
         app,
         QUICK_LABEL,
-        WebviewUrl::App("index.html?quick=1".into()),
+        // Dedicated lightweight entry (quick.html / main-quick.tsx) — imports
+        // only <QuickPrompt>, not the chat App or the ~415 KB markdown render
+        // graph. The `?quick=1` flag is retained so the legacy index.html
+        // branch in main.tsx still resolves if this ever falls back to it.
+        WebviewUrl::App("quick.html?quick=1".into()),
     )
     .title("Froglips Quick Prompt")
     .inner_size(QUICK_WIDTH, QUICK_HEIGHT)

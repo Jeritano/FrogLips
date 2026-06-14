@@ -9,4 +9,5 @@ export type {
   AgentMetrics,
   ConfirmDecision,
   AgentRunOptions,
+  AgentBackend,
 } from "./types";

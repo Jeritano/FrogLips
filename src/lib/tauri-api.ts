@@ -1071,6 +1071,39 @@ export const api = {
       },
     }),
 
+  /**
+   * Stream a TOOL-CALLING chat completion from a custom/OpenRouter backend
+   * (agent loop + Flows). Same Keychain/SSRF posture as `customChatStream`;
+   * `tools` carries the OpenAI tool schemas and `messages` carries the full
+   * OpenAI shape (assistant `tool_calls` + `role:"tool"` results). Tool-call
+   * deltas arrive via `custom-toolcall:{op_id}` events (see `custom-client.ts`).
+   */
+  customChatStreamTools: (args: {
+    op_id: string;
+    backend_id: string;
+    /** Full OpenAI-shape messages (already serialized by `toOpenAiMessages`). */
+    messages: unknown[];
+    /** OpenAI tool/function schemas. */
+    tools: unknown[];
+    /** Per-call model override (required for the OpenRouter built-in). */
+    model?: string;
+    temperature?: number;
+    top_p?: number;
+    max_tokens?: number;
+  }) =>
+    invoke<void>("custom_chat_stream_tools", {
+      opId: args.op_id,
+      backendId: args.backend_id,
+      messages: args.messages,
+      model: args.model,
+      params: {
+        temperature: args.temperature,
+        top_p: args.top_p,
+        max_tokens: args.max_tokens,
+        tools: args.tools,
+      },
+    }),
+
   /** Cancel an in-flight custom/OpenRouter chat stream by op_id. Best-effort;
    *  resolves true if a stream was actually pending. (2026-05-30) */
   customCancel: (opId: string) => invoke<boolean>("custom_cancel", { opId }),

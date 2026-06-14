@@ -732,6 +732,37 @@ pub async fn custom_chat_stream(
     .await
 }
 
+/// Stream a TOOL-CALLING chat completion from a custom/OpenRouter backend
+/// (agent loop + Flows). Identical wiring to `custom_chat_stream` — the API
+/// key never crosses IPC, the backend id resolves base_url + model + key in
+/// Rust — but `params.tools` carries the tool schemas so the model can stream
+/// `delta.tool_calls` over `custom-toolcall:{op_id}`.
+#[tauri::command]
+pub async fn custom_chat_stream_tools(
+    op_id: String,
+    backend_id: String,
+    messages: Vec<crate::custom_backend::ChatMessage>,
+    params: Option<crate::custom_backend::CustomChatParams>,
+    model: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if op_id.is_empty() || op_id.len() > 128 {
+        return Err("invalid op_id".into());
+    }
+    if backend_id.is_empty() || backend_id.len() > 128 {
+        return Err("invalid backend_id".into());
+    }
+    crate::custom_backend::chat_stream_tools(
+        app,
+        op_id,
+        backend_id,
+        messages,
+        params.unwrap_or_default(),
+        model,
+    )
+    .await
+}
+
 /// Cancel an in-flight custom/OpenRouter chat stream by its `op_id`.
 /// Best-effort: `true` if a stream was actually pending. (2026-05-30)
 #[tauri::command]
@@ -802,10 +833,13 @@ fn open_conversation_window_impl<R: tauri::Runtime>(
         Some(t) if !t.trim().is_empty() => format!("Froglips — {}", t.trim()),
         _ => format!("Froglips — Conversation {conversation_id}"),
     };
-    // URL: same frontend bundle, query-string toggles the detached single-conv
-    // view. The hash fragment isn't used because Tauri's WebviewUrl::App
-    // collapses query strings cleanly via `index.html?…`.
-    let url_path = format!("index.html?detached=1&conversation_id={conversation_id}");
+    // URL: dedicated detached entry (detached.html / main-detached.tsx) — it
+    // mounts <DetachedChatView> directly instead of booting the full chat App
+    // shell. The `detached=1` flag is retained so the legacy index.html branch
+    // in main.tsx still resolves on fallback. The hash fragment isn't used
+    // because Tauri's WebviewUrl::App collapses query strings cleanly.
+    let url_path =
+        format!("detached.html?detached=1&conversation_id={conversation_id}");
     WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url_path.into()))
         .title(display_title)
         .inner_size(700.0, 500.0)

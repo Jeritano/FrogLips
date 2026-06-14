@@ -98,6 +98,16 @@ fi
 
 set -e
 
+# ── Bundle budget gate ──────────────────────────────────────────────────────
+# `tauri build` ran the frontend build (beforeBuildCommand: npm run build),
+# producing dist/. Hard-fail the release if any window's boot graph or a
+# watched chunk grew past its committed limit (scripts/check-bundle-budget.mjs).
+# This is the ENFORCED counterpart to vite's log-only chunkSizeWarningLimit:
+# a regression that re-welds the markdown payload onto the lightweight Quick
+# Prompt window, or bloats the shared vendor chunk, stops the release here.
+echo "▶ Checking bundle budget…"
+node scripts/check-bundle-budget.mjs
+
 # ── Notarization verify + self-heal ─────────────────────────────────────────
 # Observed 2026-06-09 (first notarized build): the Tauri bundler notarized and
 # stapled the .app, then a later bundling step RE-SIGNED it AD-HOC — stripping

@@ -1,6 +1,18 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "./tauri-api";
-import type { Message } from "../types";
+import type { Message, ToolCall } from "../types";
+import {
+  finalizeToolCalls,
+  mergeToolCallChunk,
+  toolCallIndex,
+} from "./agent-loop/tool-call-merge";
+import type {
+  PartialToolCall,
+  StreamChatResult,
+} from "./agent-loop/stream-types";
+import type { ChatParams } from "./agent-loop/types";
+import { resolveAgentChatConfig } from "./agent-loop/types";
+import { toOpenAiMessages } from "./openai-messages";
 
 export interface CustomChunk {
   delta: string;
@@ -119,6 +131,168 @@ export async function* streamCustomChat(
     offErr();
     // Surface a command-level rejection (HTTP error, bad backend id) that
     // didn't already arrive via the custom-error event.
+    try {
+      await reqPromise;
+    } catch (e) {
+      if (!errMsg) throw e;
+    }
+  }
+}
+
+/**
+ * Agent-mode chat against a custom / OpenRouter OpenAI-compatible cloud
+ * backend. Returns the same `StreamChatResult` shape the agent runner consumes
+ * from Ollama / MLX (content + merged tool_calls + token counts), making
+ * custom/openrouter a first-class agent-loop + Flows backend.
+ *
+ * `backendId` is the `CustomBackend.id` (or `"openrouter"` for the built-in);
+ * `modelOverride` is the catalogue model for OpenRouter. Content deltas arrive
+ * via `custom-chunk:{op_id}`; tool-call deltas (OpenAI streaming shape) via
+ * `custom-toolcall:{op_id}` and are merged through the SAME `tool-call-merge`
+ * helpers MLX uses.
+ *
+ * Tool-less route (tools=[]): goes through the content-only `customChatStream`
+ * command — NO Rust tool path needed (the request body omits `tools` and the
+ * model can't emit tool_calls), so synth/critic/router roles work everywhere.
+ * Tool-calling route (tools non-empty): goes through `customChatStreamTools`,
+ * which sends the schemas and streams `delta.tool_calls`.
+ */
+export async function streamCustomAgentChat(
+  backendId: string,
+  messages: Message[],
+  tools: readonly unknown[],
+  signal: AbortSignal,
+  onContentChunk: (delta: string) => void,
+  params?: ChatParams | null,
+  modelOverride?: string,
+): Promise<StreamChatResult> {
+  const opId = `custom-agent-${crypto.randomUUID()}`;
+  const cfg = resolveAgentChatConfig(params);
+  const withTools = Array.isArray(tools) && tools.length > 0;
+
+  let content = "";
+  const toolAcc: PartialToolCall[] = [];
+  let done = false;
+  let errMsg: string | null = null;
+  let resolver: (() => void) | null = null;
+
+  const wake = () => {
+    if (resolver) {
+      resolver();
+      resolver = null;
+    }
+  };
+  const wait = () =>
+    new Promise<void>((r) => {
+      resolver = r;
+    });
+
+  // Buffer raw deltas; drain on the main loop so onContentChunk + merge run in
+  // arrival order (the listeners fire on the Tauri event thread).
+  const contentQueue: string[] = [];
+  const toolQueue: Array<Array<Partial<ToolCall> & { index?: number }>> = [];
+
+  const offChunk: UnlistenFn = await listen<{ delta: string }>(
+    `custom-chunk:${opId}`,
+    (e) => {
+      if (e.payload?.delta) contentQueue.push(e.payload.delta);
+      wake();
+    },
+  );
+  const offToolCall: UnlistenFn = await listen<{
+    tool_calls: Array<Partial<ToolCall> & { index?: number }>;
+  }>(`custom-toolcall:${opId}`, (e) => {
+    if (Array.isArray(e.payload?.tool_calls))
+      toolQueue.push(e.payload.tool_calls);
+    wake();
+  });
+  const offDone: UnlistenFn = await listen<unknown>(
+    `custom-done:${opId}`,
+    () => {
+      done = true;
+      wake();
+    },
+  );
+  const offErr: UnlistenFn = await listen<string>(
+    `custom-error:${opId}`,
+    (e) => {
+      errMsg =
+        typeof e.payload === "string" ? e.payload : "custom backend error";
+      done = true;
+      wake();
+    },
+  );
+
+  const onAbort = () => {
+    void api.customCancel(opId).catch(() => {});
+    wake();
+  };
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+
+  // Serialize once via the shared OpenAI serializer (vision / tool_calls /
+  // tool-results all handled). Tool-less route uses the content-only command.
+  const serialized = toOpenAiMessages(messages);
+  const reqPromise = withTools
+    ? api.customChatStreamTools({
+        op_id: opId,
+        backend_id: backendId,
+        messages: serialized,
+        tools: tools as unknown[],
+        model: modelOverride,
+        temperature: cfg.temperature,
+        top_p: cfg.top_p,
+        max_tokens: cfg.max_tokens,
+      })
+    : api.customChatStream({
+        op_id: opId,
+        backend_id: backendId,
+        // The content-only command maps {role, content}; serialized messages
+        // include only those for plain turns. For the tool-less agent path the
+        // history is content-only anyway (no tool turns issued).
+        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        model: modelOverride,
+        temperature: cfg.temperature,
+        top_p: cfg.top_p,
+        max_tokens: cfg.max_tokens,
+      });
+
+  const drain = () => {
+    while (contentQueue.length > 0) {
+      const d = contentQueue.shift()!;
+      content += d;
+      onContentChunk(d);
+    }
+    while (toolQueue.length > 0) {
+      const arr = toolQueue.shift()!;
+      arr.forEach((tc, i) => {
+        const idx = toolCallIndex(tc, i);
+        mergeToolCallChunk(toolAcc, idx, tc);
+      });
+    }
+  };
+
+  try {
+    while (!done || contentQueue.length > 0 || toolQueue.length > 0) {
+      if (signal.aborted) break;
+      if (contentQueue.length === 0 && toolQueue.length === 0 && !done) {
+        await Promise.race([wait(), reqPromise.catch(() => {})]);
+        continue;
+      }
+      drain();
+    }
+    drain(); // final sweep of anything that landed after the last wake
+    if (errMsg) throw new Error(errMsg);
+    return {
+      content,
+      tool_calls: finalizeToolCalls(toolAcc),
+    };
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    offChunk();
+    offToolCall();
+    offDone();
+    offErr();
     try {
       await reqPromise;
     } catch (e) {

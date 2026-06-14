@@ -20,6 +20,7 @@ import {
 const loadAgentLoop = () => import("../lib/agent-loop");
 import { applyContextBudget } from "../lib/agent-loop/context-manager";
 import type {
+  AgentBackend,
   AgentMetrics,
   AgentStatus,
   ConfirmDecision,
@@ -56,6 +57,18 @@ import { listen } from "@tauri-apps/api/event";
 
 function tmpKey(): string {
   return `tmp:${crypto.randomUUID()}`;
+}
+
+/** Resolve the active server backend string to an agent-loop {@link AgentBackend}.
+ *  mlx/native/custom/openrouter pass through; everything else (plain ollama and
+ *  the ollama `:cloud` tags, which run on the `ollama` backend) maps to ollama. */
+function resolveAgentBackend(backend: string | null): AgentBackend {
+  return backend === "mlx" ||
+    backend === "native" ||
+    backend === "custom" ||
+    backend === "openrouter"
+    ? backend
+    : "ollama";
 }
 
 // ── Settings cache for per-send reads ────────────────────────────────────
@@ -661,8 +674,13 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             maxIterations:
               (await getCachedSettings().catch(() => null))
                 ?.agent_max_iterations ?? undefined,
-            // Gated by `agentAvailable` above, so backend is "ollama" | "mlx".
-            backend: status.backend === "mlx" ? "mlx" : "ollama",
+            // Resolved agent backend. Routing is disabled in agent mode, so the
+            // active `status.backend` is the target. mlx/native/custom/openrouter
+            // pass through; anything else (incl. plain ollama + `:cloud`) is the
+            // ollama agent path. For custom, `status.model` carries the backend
+            // id; for openrouter, the catalogue model — the same convention the
+            // agent-chat dispatch expects.
+            backend: resolveAgentBackend(status.backend),
             serverStatus: status,
             contextTokens: sendCtx,
             keepAlive,
