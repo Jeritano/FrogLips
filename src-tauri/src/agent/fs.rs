@@ -119,79 +119,21 @@ fn resolve_path_status(p: &str, must_exist: bool) -> Result<(PathBuf, bool /* fu
     }
 }
 
-fn home_prefixes() -> Vec<PathBuf> {
-    let mut v = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        for sub in [
-            ".ssh",
-            ".aws",
-            ".config/gh",
-            ".gnupg",
-            "Library/Keychains",
-            "Library/Cookies",
-            "Library/Application Support/com.apple.TCC",
-            "Library/Mail",
-            "Library/Messages",
-        ] {
-            v.push(home.join(sub));
-        }
-    }
-    v
-}
-
+/// Absolute + `$HOME`-relative prefixes blocked for WRITE, sourced from the
+/// single security manifest (`security_manifest.json`) so the denylist lives in
+/// exactly ONE place. The write gate is a superset of the read gate (every
+/// `read:true` entry is also `write:true` — invariant pinned by a manifest
+/// test), so this returns every `write:true` row.
+///
+/// Sec review H2: the write set covers macOS persistence (LaunchAgents),
+/// shell-init rc files, credential/config files, and Froglips' own data dir, so
+/// a prompt-injected agent can't plant persistence or rewrite our DB even when
+/// WORKSPACE_ROOT is unset on a fresh install.
 fn protected_prefixes() -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = [
-        "/System",
-        "/private/etc",
-        "/etc",
-        "/private/var/db/sudo",
-        "/var/db/sudo",
-        "/Library/Keychains",
-        "/Library/Application Support/com.apple.TCC",
-        // App's own install path — don't let agent overwrite itself
-        "/Applications/Froglips.app",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .collect();
-    v.extend(home_prefixes());
-    // Sec review H2 — broader macOS persistence / shell-init / IDE state
-    // surface. These were previously writable when WORKSPACE_ROOT was unset
-    // (e.g. on a fresh install): a prompt-injected agent could drop a
-    // LaunchAgent plist for persistence or rewrite the user's shell rc.
+    let m = crate::security_manifest::manifest();
+    let mut v: Vec<PathBuf> = m.absolute_write().map(PathBuf::from).collect();
     if let Some(home) = dirs::home_dir() {
-        for sub in [
-            // Per-user launchd persistence — single biggest macOS foothold.
-            "Library/LaunchAgents",
-            "Library/LaunchDaemons",
-            // Shell init files — modifying these gives every new shell
-            // session whatever the attacker wrote.
-            ".bash_profile",
-            ".bashrc",
-            ".profile",
-            ".zshrc",
-            ".zprofile",
-            ".zshenv",
-            "Library/Preferences/com.apple.Terminal.plist",
-            // Common credential / config files (some already in
-            // is_protected_for_read; repeat here so write is denied even
-            // when read is intentionally allowed in the future).
-            ".netrc",
-            ".npmrc",
-            ".pypirc",
-            ".gitconfig",
-            ".docker/config.json",
-            ".kube",
-            ".config/gh",
-            ".config/gcloud",
-            // Froglips' own data dir — the agent should not be able to
-            // rewrite the DB, settings, or backup snapshots from inside
-            // a workspace.
-            ".local-llm-app",
-            "Library/Application Support/Froglips",
-        ] {
-            v.push(home.join(sub));
-        }
+        v.extend(m.home_write().map(|sub| home.join(sub)));
     }
     v
 }
@@ -233,74 +175,37 @@ pub(crate) fn path_starts_with_ci(p: &Path, prefix: &Path) -> bool {
 }
 
 pub(super) fn is_protected_for_read(p: &Path) -> bool {
-    // Keychain + TCC database etc. blocked even for read. Component-wise +
-    // case-insensitive (see `path_starts_with_ci`) so `/ETC/sudoers` and
-    // `~/.SSH` can't slip past, while `/etc/sudoersfoo` still does NOT match.
-    let read_block: &[&str] = &[
-        "/Library/Keychains",
-        "/private/var/db/sudo",
-        "/var/db/sudo",
-        // Whole /etc (and its canonical /private/etc) — parity with the write
-        // gate. Reading system config offers the agent nothing legitimate and
-        // /etc holds sudoers, master.passwd, etc. `within_workspace` already
-        // blocks these unless the user set the workspace root to `/`.
-        "/etc",
-        "/private/etc",
-    ];
-    if read_block
-        .iter()
+    // Read denylist is sourced from the single security manifest
+    // (`security_manifest.json`). Component-wise + case-insensitive (see
+    // `path_starts_with_ci`) so `/ETC/sudoers` and `~/.SSH` can't slip past,
+    // while `/etc/sudoersfoo` still does NOT match.
+    //
+    // Sec audit (2026-06): the READ gate must never be a strict subset of the
+    // WRITE gate for credential dirs — a path write-protected because it holds
+    // secrets would otherwise stay readable + exfiltratable. The manifest's
+    // `read:true` rows are the reconciled set (Keychains, /etc, sudo state,
+    // ~/.ssh/~/.aws/~/.gnupg, ~/.gitconfig/~/.npmrc/~/.pypirc, gh/gcloud,
+    // browser profiles, Mail/Messages, and Froglips' own 0600 store / DB).
+    let m = crate::security_manifest::manifest();
+    if m.absolute_read()
         .any(|r| path_starts_with_ci(p, Path::new(r)))
     {
         return true;
     }
-    // Sec audit (2026-06): the READ gate must never be a strict subset of the
-    // WRITE gate for credential dirs — a path write-protected because it holds
-    // secrets would otherwise stay readable + exfiltratable. Consult the shared
-    // credential-dir set used by the write gate. This closes a real gap where
-    // ~/.aws/config, ~/.aws/sso/cache/* (live SSO bearer tokens), ~/Library/Mail
-    // and ~/Library/Messages were readable by a prompt-injected agent.
-    if home_prefixes()
-        .iter()
-        .any(|pre| path_starts_with_ci(p, pre))
-    {
-        return true;
-    }
     if let Some(home) = dirs::home_dir() {
-        for sub in [
-            ".ssh",
-            ".gnupg",
-            "Library/Keychains",
-            "Library/Cookies",
-            "Library/Application Support/com.apple.TCC",
-            // Credential files blocked for write but previously readable.
-            ".netrc",
-            ".npmrc",
-            ".pypirc",
-            ".gitconfig",
-            ".docker/config.json",
-            ".kube",
-            ".config/gh",
-            ".config/gcloud",
-            // Browser profile dirs holding cookies / saved credentials.
-            "Library/Application Support/Google/Chrome",
-            "Library/Application Support/Firefox",
-            "Library/Application Support/com.apple.Safari",
-            "Library/Safari",
-            // Froglips' OWN data: the 0600 secret store, DB, backups, settings.
-            // Block the whole dir, not just settings.json.
-            ".local-llm-app",
-            "Library/Application Support/Froglips",
-        ] {
-            if path_starts_with_ci(p, &home.join(sub)) {
-                return true;
-            }
+        if m.home_read()
+            .any(|sub| path_starts_with_ci(p, &home.join(sub)))
+        {
+            return true;
         }
     }
-    // Block .env-style files containing credentials. Case-fold the filename so
-    // `.ENV` / `Credentials` don't slip past on case-insensitive volumes.
+    // Block .env-style files / credential basenames anywhere. Case-fold the
+    // filename so `.ENV` / `Credentials` don't slip past on case-insensitive
+    // volumes. Sourced from the manifest's `credentialBasenames`.
     if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
         let lower = name.to_ascii_lowercase();
-        if lower.starts_with(".env") || lower == "credentials" || lower == "credentials.json" {
+        let cb = &m.credential_basenames;
+        if cb.prefixes.iter().any(|pre| lower.starts_with(pre)) || cb.exact.contains(&lower) {
             return true;
         }
     }
@@ -2173,5 +2078,107 @@ mod tests {
             _ => panic!("expected One"),
         };
         assert_eq!(spliced, original.replacen(old, new, 1));
+    }
+
+    /* ── Behavior-snapshot battery (security-manifest dedup, Step 0) ──────────
+     *
+     * A ~40-path battery pinning the EXACT read/write verdicts the path gates
+     * produce, captured from the pre-manifest code. Steps 1-3 of the manifest
+     * migration must leave EVERY row in this table byte-identical (pure
+     * refactor). It is the canary that the JSON manifest transcribes the
+     * hand-written denylists 1:1. Each row is `(home_relative_path, read_block,
+     * write_block)`; absolute paths use an empty `home` and the literal path. */
+    struct Row {
+        /// Path relative to $HOME, or absolute when `absolute` is set.
+        path: &'static str,
+        absolute: bool,
+        read_block: bool,
+        write_block: bool,
+    }
+
+    const SNAPSHOT_BATTERY: &[Row] = &[
+        // ── credential dirs / files: blocked for BOTH read and write ──
+        Row { path: ".ssh/id_rsa", absolute: false, read_block: true, write_block: true },
+        Row { path: ".ssh/config", absolute: false, read_block: true, write_block: true },
+        Row { path: ".aws/config", absolute: false, read_block: true, write_block: true },
+        Row { path: ".aws/credentials", absolute: false, read_block: true, write_block: true },
+        Row { path: ".aws/sso/cache/tok.json", absolute: false, read_block: true, write_block: true },
+        Row { path: ".gnupg/secring.gpg", absolute: false, read_block: true, write_block: true },
+        Row { path: ".netrc", absolute: false, read_block: true, write_block: true },
+        Row { path: ".npmrc", absolute: false, read_block: true, write_block: true },
+        Row { path: ".pypirc", absolute: false, read_block: true, write_block: true },
+        Row { path: ".gitconfig", absolute: false, read_block: true, write_block: true },
+        Row { path: ".docker/config.json", absolute: false, read_block: true, write_block: true },
+        Row { path: ".kube/config", absolute: false, read_block: true, write_block: true },
+        Row { path: ".config/gh/hosts.yml", absolute: false, read_block: true, write_block: true },
+        Row { path: ".config/gcloud/creds.db", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Keychains/login.keychain-db", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Cookies/Cookies.binarycookies", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Application Support/com.apple.TCC/TCC.db", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Mail/x", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Messages/chat.db", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Application Support/Google/Chrome/Default/Cookies", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Application Support/Firefox/profiles.ini", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Application Support/com.apple.Safari/x", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Safari/History.db", absolute: false, read_block: true, write_block: true },
+        Row { path: ".local-llm-app/secrets.json", absolute: false, read_block: true, write_block: true },
+        Row { path: ".local-llm-app/db.sqlite", absolute: false, read_block: true, write_block: true },
+        Row { path: "Library/Application Support/Froglips/db.sqlite", absolute: false, read_block: true, write_block: true },
+        // ── persistence / shell-init: WRITE-blocked but READABLE ──
+        Row { path: "Library/LaunchAgents/x.plist", absolute: false, read_block: false, write_block: true },
+        Row { path: "Library/LaunchDaemons/x.plist", absolute: false, read_block: false, write_block: true },
+        Row { path: ".bashrc", absolute: false, read_block: false, write_block: true },
+        Row { path: ".bash_profile", absolute: false, read_block: false, write_block: true },
+        Row { path: ".profile", absolute: false, read_block: false, write_block: true },
+        Row { path: ".zshrc", absolute: false, read_block: false, write_block: true },
+        Row { path: ".zprofile", absolute: false, read_block: false, write_block: true },
+        Row { path: ".zshenv", absolute: false, read_block: false, write_block: true },
+        Row { path: "Library/Preferences/com.apple.Terminal.plist", absolute: false, read_block: false, write_block: true },
+        // ── absolute system paths ──
+        Row { path: "/etc/passwd", absolute: true, read_block: true, write_block: true },
+        Row { path: "/private/etc/master.passwd", absolute: true, read_block: true, write_block: true },
+        Row { path: "/var/db/sudo/x", absolute: true, read_block: true, write_block: true },
+        Row { path: "/private/var/db/sudo/x", absolute: true, read_block: true, write_block: true },
+        Row { path: "/Library/Keychains/System.keychain", absolute: true, read_block: true, write_block: true },
+        Row { path: "/Library/Application Support/com.apple.TCC/TCC.db", absolute: true, read_block: false, write_block: true },
+        Row { path: "/System/Library/x", absolute: true, read_block: false, write_block: true },
+        Row { path: "/Applications/Froglips.app/Contents/MacOS/Froglips", absolute: true, read_block: false, write_block: true },
+        // ── case-fold positives (APFS case-insensitive) ──
+        Row { path: "/ETC/passwd", absolute: true, read_block: true, write_block: true },
+        Row { path: ".SSH/authorized_keys", absolute: false, read_block: true, write_block: true },
+        // ── credential basename anywhere in home ──
+        Row { path: "Documents/.env", absolute: false, read_block: true, write_block: true },
+        Row { path: "project/credentials", absolute: false, read_block: true, write_block: true },
+        Row { path: "project/credentials.json", absolute: false, read_block: true, write_block: true },
+        // ── NEGATIVES: prefix-sibling + ordinary files must NOT match ──
+        Row { path: ".sshfoo/x", absolute: false, read_block: false, write_block: false },
+        Row { path: "Documents/notes.txt", absolute: false, read_block: false, write_block: false },
+        Row { path: "Downloads/foo.json", absolute: false, read_block: false, write_block: false },
+    ];
+
+    #[test]
+    fn behavior_snapshot_read_write_battery() {
+        let Some(home) = dirs::home_dir() else { return };
+        for r in SNAPSHOT_BATTERY {
+            let p = if r.absolute {
+                PathBuf::from(r.path)
+            } else {
+                home.join(r.path)
+            };
+            assert_eq!(
+                is_protected_for_read(&p),
+                r.read_block,
+                "read verdict drifted for {} (path {})",
+                r.path,
+                p.display()
+            );
+            assert_eq!(
+                is_protected_for_write(&p),
+                r.write_block,
+                "write verdict drifted for {} (path {})",
+                r.path,
+                p.display()
+            );
+        }
     }
 }

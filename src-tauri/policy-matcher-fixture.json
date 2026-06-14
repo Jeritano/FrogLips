@@ -1,0 +1,26 @@
+{
+  "_comment": "Cross-language parity fixture for the policy glob matcher (security-manifest dedup, Step 5). policy.rs matches_pattern and runner.ts matchesPolicyPattern are intentionally TWIN CODE (not merged) — this fixture is the contract that keeps them in lockstep. Both the Rust test (policy.rs) and the TS test (security-manifest-snapshot.test.ts) load THIS file and assert the verdict. Add a case once; both languages must agree.",
+  "cases": [
+    { "path": "anything", "pattern": "*", "expect": true },
+    { "path": "", "pattern": "", "expect": false },
+    { "path": "foo.key", "pattern": "*.key", "expect": true },
+    { "path": "dir/foo.key", "pattern": "*.key", "expect": true },
+    { "path": "foo.txt", "pattern": "*.key", "expect": false },
+    { "path": "evil.KEY", "pattern": "*.key", "expect": true },
+    { "path": "Foo.Key", "pattern": "*.key", "expect": true },
+    { "path": "secrets/db.json", "pattern": "secrets/", "expect": true },
+    { "path": "nested/secrets/k", "pattern": "secrets/", "expect": true },
+    { "path": "secrets", "pattern": "secrets/", "expect": true },
+    { "path": "public/index.html", "pattern": "secrets/", "expect": false },
+    { "path": "Secrets/db.json", "pattern": "secrets/", "expect": true },
+    { "path": "nested/SECRETS/k", "pattern": "secrets/", "expect": true },
+    { "path": "publicsecrets/x", "pattern": "secrets/", "expect": false },
+    { "path": "src/main.rs", "pattern": "src*", "expect": true },
+    { "path": "tests/foo.rs", "pattern": "src*", "expect": false },
+    { "path": "SRC/main.rs", "pattern": "src*", "expect": true },
+    { "path": ".env", "pattern": ".env", "expect": true },
+    { "path": "path/to/.env", "pattern": ".env", "expect": true },
+    { "path": ".ENV", "pattern": ".env", "expect": true },
+    { "path": "path/to/.Env", "pattern": ".env", "expect": true }
+  ]
+}

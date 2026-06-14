@@ -168,7 +168,7 @@ async function injectClaudeSkillsContext(
  */
 type PolicyVerdict = "auto" | "needs-confirm" | "denied";
 
-function matchesPolicyPattern(path: string, pattern: string): boolean {
+export function matchesPolicyPattern(path: string, pattern: string): boolean {
   if (!pattern) return false;
   if (pattern === "*") return true;
   // Sec audit round 3/4: case-fold both sides. macOS APFS is case-insensitive,

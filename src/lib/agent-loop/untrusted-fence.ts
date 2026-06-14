@@ -13,31 +13,22 @@
  * can't drift (a token added for one is added for both).
  */
 
+import securityManifest from "../../../src-tauri/security-manifest.json";
+
 /** Tokenizer-special role-framing sequences. Many local backends (llama.cpp,
  *  MLX) materialize these as real role tokens when they appear in raw text
  *  input, silently bypassing the prose "treat as data" guardrail. Covers
- *  ChatML, Llama-2/3, Gemma, and Phi framing. */
-export const ROLE_FRAMING_TOKENS = [
-  "<|im_start|>",
-  "<|im_end|>",
-  "<|start_header_id|>",
-  "<|end_header_id|>",
-  "<|eot_id|>",
-  "<|begin_of_text|>",
-  "<|end_of_text|>",
-  "<|system|>",
-  "<|user|>",
-  "<|assistant|>",
-  "[INST]",
-  "[/INST]",
-  "<<SYS>>",
-  "<</SYS>>",
-  // Gemma role framing (no pipe delimiters).
-  "<start_of_turn>",
-  "<end_of_turn>",
-  // Phi-3 turn terminator.
-  "<|end|>",
-] as const;
+ *  ChatML, Llama-2/3, Gemma, and Phi framing.
+ *
+ *  Sourced from the SINGLE security manifest (`security-manifest.json`
+ *  `injectionRoleTokens`) — the SAME catalogue the Rust injection scanner
+ *  (`agent::injection_scan`) derives its token rows from, so the strip-list and
+ *  the scanner can never drift. The Rust-only EOS/BOS regexes (`</s>`, `<s>`)
+ *  are intentionally NOT here: stripping a literal `<s>` would mangle benign
+ *  HTML/markup the user pasted, so they live only in the (context-guarded)
+ *  scanner. */
+export const ROLE_FRAMING_TOKENS: readonly string[] =
+  securityManifest.injectionRoleTokens.tokens.map((t) => t.token);
 
 /**
  * Strip stray `<untrusted-data>` fence tags (so adversarial text can't "close"

@@ -120,26 +120,16 @@ pub fn validate_read_src(src: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-/// Denylist mirrored from `agent::fs::is_protected_for_write`. Sec
-/// re-review H-NEW-1: the H2 sweep expanded the agent/fs.rs list but
-/// missed THIS one, so `backup_database` / `export_data` / `import_data`
-/// could still target a LaunchAgent plist, shell rc, or Froglips' own DB
-/// to plant persistence or rewrite settings. Kept in sync with
-/// `agent::fs::protected_prefixes` — add new entries to BOTH places.
+/// Renderer-IPC write denylist, sourced from the SINGLE security manifest
+/// (`security_manifest.json`) — the SAME `write:true` rows the agent fs gate
+/// (`agent::fs::is_protected_for_write` via `protected_prefixes`) enforces. This
+/// removes the former "add new entries to BOTH places" hazard: there is now one
+/// list, so `backup_database` / `export_data` / `import_data` can never drift
+/// behind the agent gate and let a renderer-supplied dest target a LaunchAgent
+/// plist, shell rc, or Froglips' own DB.
 fn is_denied(resolved: &std::path::Path) -> bool {
-    let mut deny: Vec<PathBuf> = [
-        "/System",
-        "/private/etc",
-        "/etc",
-        "/private/var/db/sudo",
-        "/var/db/sudo",
-        "/Library/Keychains",
-        "/Library/Application Support/com.apple.TCC",
-        "/Applications/Froglips.app",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .collect();
+    let m = crate::security_manifest::manifest();
+    let mut deny: Vec<PathBuf> = m.absolute_write().map(PathBuf::from).collect();
     let Some(home) = dirs::home_dir() else {
         // Sec re-review M-2: when $HOME is unset, the entire per-user
         // denylist disappears and any path under /Users or /home becomes
@@ -153,48 +143,7 @@ fn is_denied(resolved: &std::path::Path) -> bool {
         );
         return true;
     };
-    {
-        for sub in [
-            ".ssh",
-            ".aws",
-            ".config/gh",
-            ".config/gcloud",
-            ".gnupg",
-            "Library/Keychains",
-            "Library/Cookies",
-            "Library/Application Support/com.apple.TCC",
-            "Library/Mail",
-            "Library/Messages",
-            // Sec re-review H-NEW-1: persistence + shell-init + IDE-state
-            // surface — matches agent/fs.rs::protected_prefixes.
-            "Library/LaunchAgents",
-            "Library/LaunchDaemons",
-            ".bash_profile",
-            ".bashrc",
-            ".profile",
-            ".zshrc",
-            ".zprofile",
-            ".zshenv",
-            "Library/Preferences/com.apple.Terminal.plist",
-            ".netrc",
-            ".npmrc",
-            ".pypirc",
-            ".gitconfig",
-            ".docker/config.json",
-            ".kube",
-            ".local-llm-app",
-            "Library/Application Support/Froglips",
-            // Browser profile dirs — match agent/fs.rs::is_protected_for_read so
-            // a write-dest can't clobber/tamper browser state (Secure
-            // Preferences, extensions, cookies) that the agent fs layer blocks.
-            "Library/Application Support/Google/Chrome",
-            "Library/Application Support/Firefox",
-            "Library/Application Support/com.apple.Safari",
-            "Library/Safari",
-        ] {
-            deny.push(home.join(sub));
-        }
-    }
+    deny.extend(m.home_write().map(|sub| home.join(sub)));
     // Case-INSENSITIVE component-wise containment (sec audit round 2): macOS
     // APFS is case-insensitive but case-preserving, so a plain `starts_with`
     // let a renderer-supplied dest like `~/.SSH/authorized_keys` or `~/.ZSHRC`
@@ -206,13 +155,15 @@ fn is_denied(resolved: &std::path::Path) -> bool {
 
 /// Reject credential-style basenames so a stray click can't overwrite or
 /// read `~/.env`, `~/credentials.json`, etc. (would otherwise be inside
-/// home and outside the explicit denylist above).
+/// home and outside the explicit denylist above). Sourced from the manifest's
+/// `credentialBasenames` — same set the agent fs read gate uses.
 fn is_credential_basename(resolved: &std::path::Path) -> bool {
     if let Some(name) = resolved.file_name().and_then(|n| n.to_str()) {
         // Case-fold the basename (sec audit round 2) so `.ENV` / `Credentials`
         // can't slip past on a case-insensitive volume.
         let lower = name.to_ascii_lowercase();
-        if lower.starts_with(".env") || lower == "credentials" || lower == "credentials.json" {
+        let cb = &crate::security_manifest::manifest().credential_basenames;
+        if cb.prefixes.iter().any(|pre| lower.starts_with(pre)) || cb.exact.contains(&lower) {
             return true;
         }
     }

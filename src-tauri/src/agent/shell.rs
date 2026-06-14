@@ -413,19 +413,16 @@ fn shell_sandbox_profile() -> Option<String> {
     let h = home.to_string_lossy();
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let he = esc(&h);
-    let deny_subpaths = [
-        format!("{he}/.ssh"),
-        format!("{he}/.gnupg"),
-        format!("{he}/Library/Keychains"),
-        format!("{he}/Library/Cookies"),
-        format!("{he}/Library/Mail"),
-        format!("{he}/Library/Messages"),
-        format!("{he}/.local-llm-app"),
-        format!("{he}/Library/Application Support/Froglips"),
-    ];
+    // Deny-set is sourced from the SINGLE security manifest
+    // (`security_manifest.json`): every `$HOME`-relative entry flagged
+    // `sandboxDeny:true`. The carve-out (`~/.gitconfig`, `~/.npmrc`,
+    // `~/.aws/config`) is encoded by those rows being `sandboxDeny:false`, so
+    // git/npm/aws builds still read them while the credential-bearing siblings
+    // (`~/.aws/credentials`, `~/.aws/sso`, …) stay denied.
     let mut p = String::from("(version 1)\n(allow default)\n(deny file-read* file-write*\n");
-    for sp in &deny_subpaths {
-        p.push_str(&format!("  (subpath \"{sp}\")\n"));
+    for sub in crate::security_manifest::manifest().home_sandbox_deny() {
+        let sp = esc(sub);
+        p.push_str(&format!("  (subpath \"{he}/{sp}\")\n"));
     }
     p.push_str(")\n");
     Some(p)
@@ -787,5 +784,120 @@ mod tests {
         ] {
             assert_eq!(classify_shell_risk(cmd), "normal", "case: {cmd}");
         }
+    }
+
+    /// Extract the `(subpath "…")` entries from a generated Seatbelt profile,
+    /// stripping the `$HOME` prefix so the assertion is host-independent.
+    fn profile_deny_homerel(profile: &str, home: &str) -> Vec<String> {
+        profile
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("(subpath \""))
+            .filter_map(|l| l.strip_suffix("\")"))
+            .map(|sp| {
+                sp.strip_prefix(home)
+                    .and_then(|s| s.strip_prefix('/'))
+                    .unwrap_or(sp)
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn behavior_snapshot_sandbox_deny_set() {
+        // Seatbelt deny-set for run_shell/run_code children, sourced from the
+        // security manifest. Step 6 of the security-manifest dedup DELIBERATELY
+        // widened this column from the original 8 to the reconciled credential
+        // set below — the ONE intentional tightening in the refactor, closing
+        // the Seatbelt⊂read-denylist gap. Newly-denied vs the original 8 are
+        // marked `[+6]`. The carve-out (.gitconfig/.npmrc/.aws/config) stays
+        // readable so git/npm/aws builds keep working.
+        let Some(home) = dirs::home_dir() else { return };
+        let h = home.to_string_lossy();
+        let profile = shell_sandbox_profile().expect("home dir present → profile built");
+        let mut got = profile_deny_homerel(&profile, &h);
+        got.sort();
+        let mut expected = vec![
+            // ── original 8 (unchanged) ──
+            ".ssh".to_string(),
+            ".gnupg".to_string(),
+            "Library/Keychains".to_string(),
+            "Library/Cookies".to_string(),
+            "Library/Mail".to_string(),
+            "Library/Messages".to_string(),
+            ".local-llm-app".to_string(),
+            "Library/Application Support/Froglips".to_string(),
+            // ── [+6] gap-closure additions (Step 6 tightening) ──
+            ".aws/credentials".to_string(),
+            ".aws/sso".to_string(),
+            ".config/gh".to_string(),
+            ".config/gcloud".to_string(),
+            ".netrc".to_string(),
+            ".docker/config.json".to_string(),
+            ".kube".to_string(),
+            ".pypirc".to_string(),
+            "Library/Application Support/com.apple.TCC".to_string(),
+            "Library/Application Support/Google/Chrome".to_string(),
+            "Library/Application Support/Firefox".to_string(),
+            "Library/Application Support/com.apple.Safari".to_string(),
+            "Library/Safari".to_string(),
+        ];
+        expected.sort();
+        assert_eq!(got, expected, "Seatbelt deny-set drifted from the manifest");
+        // The carve-out — these MUST stay readable so git/npm/aws builds work.
+        // (.aws/config readable; only .aws/credentials + .aws/sso are denied.)
+        for keep in [".gitconfig", ".npmrc", ".aws/config", ".aws"] {
+            assert!(
+                !got.iter().any(|d| d == keep),
+                "{keep} must remain shell-readable (carve-out)"
+            );
+        }
+    }
+
+    /// The READ credential subpath under a manifest home entry that "covers"
+    /// it for the superset check. `.aws` is special: the whole dir is
+    /// read-blocked, but the sandbox carve-out keeps `.aws/config` readable, so
+    /// `.aws` is "covered" by denying its credential-bearing subpaths
+    /// (`.aws/credentials`, `.aws/sso`) rather than the whole dir.
+    fn is_carved_out(home_rel: &str) -> bool {
+        // The exactly-three entries that stay shell-READABLE (sandboxDeny=false)
+        // even though they are read-blocked from the agent fs gate.
+        matches!(home_rel, ".gitconfig" | ".npmrc" | ".aws")
+    }
+
+    #[test]
+    fn sandbox_deny_is_superset_of_read_credential_set() {
+        // The Seatbelt cage must deny EVERY home credential subpath the agent
+        // read gate blocks, minus the carve-out {.gitconfig, .npmrc, .aws}
+        // (those stay shell-readable so builds work; .aws's credential subpaths
+        // .aws/credentials + .aws/sso are denied individually instead).
+        //
+        // ENFORCING since Step 6 (the gap-closure tightening): the gap MUST be
+        // empty. If anyone later adds a read-credential entry to the manifest
+        // without a matching sandboxDeny (or carve-out), this fails — keeping
+        // the Seatbelt cage a true superset of the read denylist.
+        let m = crate::security_manifest::manifest();
+        let sandbox: std::collections::BTreeSet<&str> = m.home_sandbox_deny().collect();
+        // Read-credential home set minus carve-out → must each be covered.
+        let mut gap: Vec<&str> = Vec::new();
+        for sub in m.home_read() {
+            if is_carved_out(sub) {
+                continue;
+            }
+            // `.aws` is covered when BOTH its credential subpaths are denied.
+            let covered = if sub == ".aws" {
+                sandbox.contains(".aws/credentials") && sandbox.contains(".aws/sso")
+            } else {
+                sandbox.contains(sub)
+            };
+            if !covered {
+                gap.push(sub);
+            }
+        }
+        gap.sort();
+        assert!(
+            gap.is_empty(),
+            "Seatbelt cage is NOT a superset of the read-credential denylist; \
+             uncovered (add sandboxDeny:true or carve out): {gap:?}"
+        );
     }
 }

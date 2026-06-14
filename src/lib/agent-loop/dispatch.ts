@@ -7,6 +7,7 @@ import { looksLikeSecret } from "../memory-client";
 import { DRY_RUN_READ_ONLY, DRY_RUN_TOOLS, dryRunExecute } from "./dry-run";
 import { REGISTRY_BY_NAME, TOOL_REGISTRY } from "./tool-registry";
 import { lazyDerivedSet } from "./lazy-set";
+import securityManifest from "../../../src-tauri/security-manifest.json";
 
 // Re-exported for tests that import it from `./dispatch`.
 export { dryRunValidateUrl } from "./url-safety";
@@ -655,6 +656,41 @@ export function recordAuditSafe(input: AuditInput): void {
 
 /* ── Risk classifier hookups for dangerous tools ── */
 
+/**
+ * Lowercased protected-path tokens from the SINGLE security manifest, used by
+ * `isSensitive` to escalate the write-confirmation badge. UX-only (the Rust
+ * path gates are authoritative), but sourcing the credential/home/system set
+ * from the manifest means this badge can't fall behind the real gate. We keep
+ * EVERY manifest entry — read- or write-flagged — since any of them landing a
+ * write deserves the loud badge.
+ *
+ *   • homeTokens  — `$HOME`-relative subpaths, matched component-wise as
+ *     `(^|/)<tok>(/|$)` against the normalized path.
+ *   • absoluteTokens — literal absolute prefixes, matched with `startsWith`.
+ */
+const MANIFEST_HOME_TOKENS: readonly string[] =
+  securityManifest.protectedPaths.homeRelative.map((e) =>
+    e.path.toLowerCase(),
+  );
+const MANIFEST_ABSOLUTE_TOKENS: readonly string[] =
+  securityManifest.protectedPaths.absolute.map(
+    (e) => `${e.path.toLowerCase()}/`,
+  );
+
+/** True when `lower` (already normalized + lowercased) falls under a manifest
+ *  protected path. Component-anchored for home tokens so `~/.sshfoo` does not
+ *  match `~/.ssh`; the `escapeRe` keeps regex metachars (`.`) literal. */
+function matchesManifestProtected(lower: string): boolean {
+  for (const tok of MANIFEST_ABSOLUTE_TOKENS) {
+    if (lower.startsWith(tok)) return true;
+  }
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const tok of MANIFEST_HOME_TOKENS) {
+    if (new RegExp(`(^|/)${escapeRe(tok)}(/|$)`).test(lower)) return true;
+  }
+  return false;
+}
+
 export async function classifyToolRisk(
   fnName: string,
   args: Record<string, unknown>,
@@ -741,28 +777,25 @@ export async function classifyToolRisk(
     // the path beginning so it isn't tricked by an arbitrary substring.
     const isSensitive = (raw: string): boolean => {
       const lower = normalizePath(raw).toLowerCase();
+      const base = lower.split("/").pop() ?? lower;
+      const cb = securityManifest.credentialBasenames;
       return (
-        // System dirs
-        lower.startsWith("/etc/") ||
-        lower.startsWith("/system/") ||
+        // Manifest-sourced credential / home / system protected paths — the
+        // SAME set the Rust path gate enforces, so this badge can't lag behind
+        // it. Covers ~/.ssh, ~/.aws, ~/.gnupg, gh/gcloud, browser profiles,
+        // Keychains, /etc, /System, LaunchAgents, Froglips' own store, etc.
+        matchesManifestProtected(lower) ||
+        // Credential-style basenames anywhere (`.env*`, `credentials[.json]`).
+        cb.prefixes.some((p) => base.startsWith(p)) ||
+        cb.exact.includes(base) ||
+        // ── UX-only extras with NO Rust gate (kept verbatim) ──
+        // System dirs not in the manifest's path list.
         lower.startsWith("/usr/") ||
         lower.startsWith("/bin/") ||
         lower.startsWith("/sbin/") ||
-        lower.startsWith("/private/etc/") ||
         lower.startsWith("/private/var/") ||
-        // macOS auto-launch locations — writing a plist here is a
-        // privilege-escalation pivot.
-        lower.includes("/library/launchagents/") ||
-        lower.includes("/library/launchdaemons/") ||
+        // macOS auto-launch / startup locations.
         lower.includes("/library/startupitems/") ||
-        // Dotfiles + shell rc — match `/.foo` style so we don't pick up
-        // user files like `notes.zshrc.md`.
-        /(^|\/)\.(zshrc|bashrc|bash_profile|zprofile|profile|zshenv)$/.test(
-          lower,
-        ) ||
-        /(^|\/)\.ssh\//.test(lower) ||
-        /(^|\/)\.aws\//.test(lower) ||
-        /(^|\/)\.gnupg\//.test(lower) ||
         // Executable-bound extensions that the user might double-click.
         // The `(\/|$)` boundary catches both the bundle root (`foo.app`)
         // and writes INSIDE the bundle (`foo.app/Contents/Info.plist`)

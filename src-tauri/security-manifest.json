@@ -1,0 +1,89 @@
+{
+  "_comment": "SINGLE SOURCE OF TRUTH for Froglips' path-safety + injection security definitions, consumed by BOTH the Rust backend (include_str! + serde, src-tauri/src/agent/fs.rs, commands/path_safety.rs, agent/shell.rs, agent/injection_scan.rs) and the TS renderer gate (src/lib/agent-loop/dispatch.ts, untrusted-fence.ts). Do NOT re-introduce literal denylist arrays in those files — they filter THIS manifest by flag. A wrong entry here is a vulnerability; parity tests pin every consumer (behavior_snapshot_* in fs.rs/shell.rs, the additive token tests, the cross-language policy fixture).",
+
+  "protectedPaths": {
+    "_doc": "Each entry: path = literal absolute path OR path relative to $HOME (homeRelative). read = blocked from the agent read_file/list/search gate. write = blocked from the agent write gate AND the renderer IPC write/read-src gate (path_safety.rs). sandboxDeny = denied (file-read* file-write*) inside the run_shell/run_code Seatbelt cage. Invariant enforced by code: write is ALWAYS true wherever read is true (the write gate calls the read gate first).",
+
+    "absolute": [
+      { "path": "/Library/Keychains", "read": true, "write": true, "sandboxDeny": false },
+      { "path": "/private/var/db/sudo", "read": true, "write": true, "sandboxDeny": false },
+      { "path": "/var/db/sudo", "read": true, "write": true, "sandboxDeny": false },
+      { "path": "/etc", "read": true, "write": true, "sandboxDeny": false },
+      { "path": "/private/etc", "read": true, "write": true, "sandboxDeny": false },
+      { "path": "/System", "read": false, "write": true, "sandboxDeny": false },
+      { "path": "/Library/Application Support/com.apple.TCC", "read": false, "write": true, "sandboxDeny": false },
+      { "path": "/Applications/Froglips.app", "read": false, "write": true, "sandboxDeny": false }
+    ],
+
+    "homeRelative": [
+      { "path": ".ssh", "read": true, "write": true, "sandboxDeny": true },
+      { "_carveOut": ".aws stays sandboxDeny:false so .aws/config remains shell-readable for aws-cli builds; its credential subpaths (.aws/credentials, .aws/sso) are denied individually below.",
+        "path": ".aws", "read": true, "write": true, "sandboxDeny": false },
+      { "path": ".gnupg", "read": true, "write": true, "sandboxDeny": true },
+      { "path": ".netrc", "read": true, "write": true, "sandboxDeny": true },
+      { "_carveOut": ".npmrc stays shell-readable so npm/yarn builds resolve registries + scoped auth from the project.",
+        "path": ".npmrc", "read": true, "write": true, "sandboxDeny": false },
+      { "path": ".pypirc", "read": true, "write": true, "sandboxDeny": true },
+      { "_carveOut": ".gitconfig stays shell-readable so git operations in builds pick up user identity / url rewrites.",
+        "path": ".gitconfig", "read": true, "write": true, "sandboxDeny": false },
+      { "path": ".docker/config.json", "read": true, "write": true, "sandboxDeny": true },
+      { "path": ".kube", "read": true, "write": true, "sandboxDeny": true },
+      { "path": ".config/gh", "read": true, "write": true, "sandboxDeny": true },
+      { "path": ".config/gcloud", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Keychains", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Cookies", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Application Support/com.apple.TCC", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Mail", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Messages", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Application Support/Google/Chrome", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Application Support/Firefox", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Application Support/com.apple.Safari", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Safari", "read": true, "write": true, "sandboxDeny": true },
+      { "path": ".local-llm-app", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "Library/Application Support/Froglips", "read": true, "write": true, "sandboxDeny": true },
+
+      { "path": "Library/LaunchAgents", "read": false, "write": true, "sandboxDeny": false },
+      { "path": "Library/LaunchDaemons", "read": false, "write": true, "sandboxDeny": false },
+      { "path": ".bash_profile", "read": false, "write": true, "sandboxDeny": false },
+      { "path": ".bashrc", "read": false, "write": true, "sandboxDeny": false },
+      { "path": ".profile", "read": false, "write": true, "sandboxDeny": false },
+      { "path": ".zshrc", "read": false, "write": true, "sandboxDeny": false },
+      { "path": ".zprofile", "read": false, "write": true, "sandboxDeny": false },
+      { "path": ".zshenv", "read": false, "write": true, "sandboxDeny": false },
+      { "path": "Library/Preferences/com.apple.Terminal.plist", "read": false, "write": true, "sandboxDeny": false },
+
+      { "_doc": ".aws sub-entries: read/write are already covered by the whole-.aws entry above. They exist as separate rows ONLY so the Seatbelt cage can deny the credential-bearing subpaths (.aws/credentials, .aws/sso) WITHOUT denying .aws/config — which git/npm/aws builds legitimately read (carve-out).",
+        "path": ".aws/credentials", "read": false, "write": false, "sandboxDeny": true },
+      { "path": ".aws/sso", "read": false, "write": false, "sandboxDeny": true }
+    ]
+  },
+
+  "credentialBasenames": {
+    "_doc": "Filename-only matches anywhere under home (case-folded). prefixes = startsWith; exact = full case-folded equality. Blocks both read and write.",
+    "prefixes": [".env"],
+    "exact": ["credentials", "credentials.json"]
+  },
+
+  "injectionRoleTokens": {
+    "_doc": "Tokenizer-special role-framing sequences that local backends (llama.cpp/MLX) can materialize as REAL role tokens, bypassing the prose 'treat as data' guardrail. UNION of the Rust injection-scan token rows and the TS untrusted-fence strip-list. The Rust scanner derives a regex-escaped literal pattern per token (named via `name`); the context-guarded BOS `<s>` and the literal EOS `</s>` stay Rust-only prose regexes (NOT here — `<s>` would over-strip in TS). The TS fence strips each `token` verbatim.",
+    "tokens": [
+      { "token": "<|im_start|>", "name": "ChatML <|im_start|> token" },
+      { "token": "<|im_end|>", "name": "ChatML <|im_end|> token" },
+      { "token": "<|system|>", "name": "ChatML <|system|> token" },
+      { "token": "<|user|>", "name": "ChatML <|user|> token" },
+      { "token": "<|assistant|>", "name": "ChatML <|assistant|> token" },
+      { "token": "<|start_header_id|>", "name": "Llama-3 <|start_header_id|> token" },
+      { "token": "<|end_header_id|>", "name": "Llama-3 <|end_header_id|> token" },
+      { "token": "<|eot_id|>", "name": "Llama-3 <|eot_id|> token" },
+      { "token": "<|begin_of_text|>", "name": "Llama-3 <|begin_of_text|> token" },
+      { "token": "<|end_of_text|>", "name": "Llama-3 <|end_of_text|> token" },
+      { "token": "[INST]", "name": "Llama [INST] token" },
+      { "token": "[/INST]", "name": "Llama [/INST] token" },
+      { "token": "<<SYS>>", "name": "Llama <<SYS>> token" },
+      { "token": "<</SYS>>", "name": "Llama <</SYS>> token" },
+      { "token": "<start_of_turn>", "name": "Gemma <start_of_turn> token" },
+      { "token": "<end_of_turn>", "name": "Gemma <end_of_turn> token" },
+      { "token": "<|end|>", "name": "Phi <|end|> token" }
+    ]
+  }
+}

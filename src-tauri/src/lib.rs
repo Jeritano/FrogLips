@@ -24,6 +24,7 @@ mod policy;
 mod quick_prompt;
 mod rag;
 mod roundtable;
+mod security_manifest;
 mod settings;
 mod sse_decode;
 mod stream_cancel;

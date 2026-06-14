@@ -534,6 +534,38 @@ mod tests {
         assert!(!matches_pattern("publicsecrets/x", "secrets/"));
     }
 
+    /// Cross-language parity (security-manifest dedup, Step 5). policy.rs
+    /// `matches_pattern` and runner.ts `matchesPolicyPattern` are intentionally
+    /// TWIN CODE — not merged — so this checked-in fixture is the contract that
+    /// keeps them in lockstep. The TS test
+    /// (`security-manifest-snapshot.test.ts`) loads the SAME JSON and asserts
+    /// the same verdicts; any drift fails on one side.
+    #[test]
+    fn glob_matcher_matches_cross_language_fixture() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            path: String,
+            pattern: String,
+            expect: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            cases: Vec<Case>,
+        }
+        let raw = include_str!("../policy-matcher-fixture.json");
+        let fixture: Fixture =
+            serde_json::from_str(raw).expect("policy-matcher fixture must parse");
+        for c in fixture.cases {
+            assert_eq!(
+                matches_pattern(&c.path, &c.pattern),
+                c.expect,
+                "matches_pattern({:?}, {:?}) drifted from the shared fixture",
+                c.path,
+                c.pattern
+            );
+        }
+    }
+
     #[test]
     fn evaluate_write_respects_deny_then_allow() {
         let p = ProjectPolicy {

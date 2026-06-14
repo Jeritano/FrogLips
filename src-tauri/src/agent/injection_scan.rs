@@ -48,14 +48,23 @@ pub const END_MARKER: &str = "---END UNTRUSTED CONTENT---";
 /// trigger could otherwise show up inside legitimate prose (e.g. "system"
 /// as a substring).
 struct Pattern {
-    name: &'static str,
+    name: String,
     re: Regex,
 }
 
-/// Single source of truth for the (friendly name, regex source) catalogue.
-/// Both the per-pattern [`PATTERNS`] and the combined [`PATTERN_SET`] are
-/// derived from this table, so their indices stay aligned by construction.
-const PATTERN_TABLE: &[(&str, &str)] = &[
+/// Rust-only prose / EOS-BOS / padding patterns. The role-framing TOKEN rows
+/// (ChatML / Gemma / Phi / Llama instruction + Llama-3 header tokens) are NOT
+/// here — they are sourced from the SINGLE security manifest
+/// (`security_manifest.json` `injectionRoleTokens`), unified with the TS
+/// `untrusted-fence` strip-list so the two cannot drift. These prose patterns
+/// stay Rust-only: they have no literal-token equivalent the TS fence can strip
+/// (a phrase / line-anchored / context-guarded match would over-strip), so they
+/// live only in the scanner.
+///
+/// `<s>` (BOS) is context-guarded (`(^|[^<\w])<s>`) so it never matches a
+/// literal `<s>` substring inside benign HTML/markup; `</s>` (EOS) is a plain
+/// literal. Both stay Rust-only for the same reason (TS strips literals only).
+const PROSE_PATTERN_TABLE: &[(&str, &str)] = &[
     (
         "ignore previous instructions",
         r"(?i)ignore\s+(all\s+)?previous\s+instructions",
@@ -73,19 +82,7 @@ const PATTERN_TABLE: &[(&str, &str)] = &[
         "assistant: role marker at line start",
         r"(?im)^\s*assistant\s*:",
     ),
-    // ChatML tokens — never appear in benign text
-    ("ChatML <|im_start|> token", r"<\|im_start\|>"),
-    ("ChatML <|im_end|> token", r"<\|im_end\|>"),
-    ("ChatML <|system|> token", r"<\|system\|>"),
-    // Gemma role framing
-    ("Gemma <start_of_turn> token", r"<start_of_turn>"),
-    ("Gemma <end_of_turn> token", r"<end_of_turn>"),
-    // Phi-3 turn terminator
-    ("Phi <|end|> token", r"<\|end\|>"),
-    // Llama instruction tokens
-    ("Llama [INST] token", r"\[INST\]"),
-    ("Llama [/INST] token", r"\[/INST\]"),
-    // Model EOS / BOS hijack
+    // Model EOS / BOS hijack (Rust-only — literal-substring / context-guarded).
     ("raw </s> EOS token", r"</s>"),
     ("raw <s> BOS token", r"(^|[^<\w])<s>"),
     // Hidden-prompt smuggling via huge whitespace runs.
@@ -95,33 +92,58 @@ const PATTERN_TABLE: &[(&str, &str)] = &[
     // that scan procedurally.
 ];
 
-static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
-    PATTERN_TABLE
+/// Combined catalogue: the Rust-only prose table FOLLOWED BY the manifest's
+/// role-framing tokens (each turned into an escaped-literal regex). Built once
+/// so [`PATTERNS`] and [`PATTERN_SET`] derive from a single ordered source and
+/// their indices stay aligned by construction.
+///
+/// Sourcing the tokens from the manifest is ADDITIVE: the catalogue now also
+/// catches the role tokens that previously lived only in the TS fence
+/// (`<|user|>`, `<|assistant|>`, `<|start_header_id|>`, `<<SYS>>`, …), so a
+/// payload carrying them is detected where it was silently missed before.
+fn pattern_catalogue() -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = PROSE_PATTERN_TABLE
         .iter()
+        .map(|(name, pat)| ((*name).to_string(), (*pat).to_string()))
+        .collect();
+    for t in &crate::security_manifest::manifest().injection_role_tokens.tokens {
+        // Escape the literal token so regex metachars (`|`, `[`, `]`, …) match
+        // verbatim — same effect as the hand-escaped `r"<\|im_start\|>"` rows.
+        v.push((t.name.clone(), regex::escape(&t.token)));
+    }
+    v
+}
+
+static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
+    pattern_catalogue()
+        .into_iter()
         .map(|(name, pat)| Pattern {
+            // Regex compile failure here is a developer error — every prose
+            // pattern is a literal in this file and every token regex is
+            // `regex::escape`d, so it always compiles. Failing-fast at first use
+            // surfaces a manifest typo in tests / dev rather than silently
+            // swallowing matches.
             name,
-            // Regex compile failure here is a developer error — every pattern
-            // is a literal in this file. Failing-fast at first use surfaces
-            // it in tests / dev rather than silently swallowing matches.
-            re: Regex::new(pat).expect("static injection-scan regex must compile"),
+            re: Regex::new(&pat).expect("injection-scan regex must compile"),
         })
         .collect()
 });
 
-/// Combined `RegexSet` over the exact same patterns as [`PATTERNS`], built
-/// from [`PATTERN_TABLE`] so set-index ↔ `PATTERNS` index stay aligned.
+/// Combined `RegexSet` over the exact same patterns as [`PATTERNS`], built from
+/// the same [`pattern_catalogue`] order so set-index ↔ `PATTERNS` index stay
+/// aligned.
 ///
 /// Perf (review, low): `scan` used to run one full linear pass per compiled
 /// regex over the whole slice. The overwhelmingly common case is clean text
 /// where *no* pattern matches, so we first run a single combined pass via the
 /// set; only patterns the set reports as matching get their per-pattern
 /// `find_iter` (needed to extract snippets + per-match counts). On clean input
-/// this collapses ~17 passes into one; output is byte-for-byte identical
+/// this collapses all passes into one; output is byte-for-byte identical
 /// because a pattern absent from the set never has any `find_iter` match
 /// anyway.
 static PATTERN_SET: Lazy<RegexSet> = Lazy::new(|| {
-    RegexSet::new(PATTERN_TABLE.iter().map(|(_, pat)| *pat))
-        .expect("static injection-scan regex set must compile")
+    RegexSet::new(pattern_catalogue().into_iter().map(|(_, pat)| pat))
+        .expect("injection-scan regex set must compile")
 });
 
 /// Maximum input length we'll scan in characters. Upstream tools already
@@ -626,5 +648,74 @@ mod tests {
         // Snippet must remain valid UTF-8 — implicit since it's &str, but
         // we also assert it's non-empty.
         assert!(!f[0].snippet.is_empty());
+    }
+
+    /// Step 4 (security-manifest dedup): the role-token catalogue now derives
+    /// from the shared manifest. This must be ADDITIVE — every token the
+    /// scanner detected before (the original PATTERN_TABLE token rows) must
+    /// STILL be detected.
+    #[test]
+    fn manifest_token_catalogue_is_additive() {
+        // The exact literal tokens the pre-manifest PATTERN_TABLE caught.
+        for tok in [
+            "<|im_start|>",
+            "<|im_end|>",
+            "<|system|>",
+            "<start_of_turn>",
+            "<end_of_turn>",
+            "<|end|>",
+            "[INST]",
+            "[/INST]",
+        ] {
+            let f = scan(&format!("benign text {tok} more text"));
+            assert!(
+                !f.is_empty(),
+                "previously-detected token {tok} must still trip the scanner"
+            );
+        }
+        // EOS/BOS stay Rust-only (not literal-strippable in TS) — still caught.
+        assert!(!scan("end here </s> then").is_empty());
+        assert!(!scan("start <s> here").is_empty());
+    }
+
+    /// Step 4: the NEW tokens unified in from the TS fence are now caught too
+    /// (the additive widening — these were silently missed by the scanner
+    /// before, even though the TS fence stripped them).
+    #[test]
+    fn manifest_adds_ts_only_role_tokens() {
+        for tok in [
+            "<|user|>",
+            "<|assistant|>",
+            "<|start_header_id|>",
+            "<|end_header_id|>",
+            "<|eot_id|>",
+            "<|begin_of_text|>",
+            "<|end_of_text|>",
+            "<<SYS>>",
+            "<</SYS>>",
+        ] {
+            let f = scan(&format!("data {tok} data"));
+            assert!(
+                !f.is_empty(),
+                "TS-fence token {tok} should now also trip the scanner (additive)"
+            );
+        }
+    }
+
+    /// Every manifest role token must compile + match its own literal — the
+    /// catalogue is built from the manifest at runtime, so a malformed entry
+    /// would otherwise only surface in production.
+    #[test]
+    fn every_manifest_token_is_detected_with_its_name() {
+        let m = crate::security_manifest::manifest();
+        for t in &m.injection_role_tokens.tokens {
+            let f = scan(&format!("x {} y", t.token));
+            assert!(
+                f.iter().any(|hit| hit.pattern == t.name),
+                "manifest token {:?} (name {:?}) not detected under its name",
+                t.token,
+                t.name
+            );
+        }
     }
 }
