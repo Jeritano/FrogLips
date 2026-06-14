@@ -4,6 +4,60 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-06-14
+
+### Architecture remediation — 10-phase refactor (44 review findings)
+A master-architect review found 44 structural issues (3 high, 30 medium, 11 low;
+no criticals). All were remediated as a sequenced, behavior-preserving, gate-green
+program. Full write-up: `docs/REVIEW-2026-06.md`.
+
+**Maintainability / structure**
+- **Single tool registry** — the 77 agent tools are defined once; the model schema,
+  the dispatch table, every risk-classifier Set, dry-run tables, and flow allowlists
+  all derive from it (a cross-layer test fails CI if the TS registry and the Rust
+  command surface drift). Replaces ~10 hand-synced parallel layers.
+- **Single security manifest** — protected paths, credential basenames, and the
+  injection-token catalog live in one `security-manifest.json` consumed by both Rust
+  and TS (was duplicated across 5+ hand-synced definitions). **Closed a real gap:**
+  the Seatbelt sandbox now denies the credential set `run_shell` could previously
+  read but `read_file` blocked (`~/.aws/credentials`, `~/.config/gh`, browser
+  cookies, TCC, …) while keeping `~/.gitconfig`/`~/.npmrc`/`~/.aws/config` readable
+  so builds don't break.
+- **God-modules decomposed** — App.tsx, ChatWindow, dispatch.ts, runner.ts split into
+  focused hooks/handlers (behavior-preserving extraction). Flow node types are now
+  per-node handler modules + a registry instead of a switch + flat-config bag.
+- **Central settings store** — one `SettingsProvider` (load once, subscribe once,
+  selector hooks) replaces ~20 components each refetching the whole blob; settings.json
+  is authoritative, localStorage demoted to a first-paint cache (split-brain removed).
+
+**New capabilities**
+- **DB/storage maintenance agent** — periodic, safe (archive-not-delete to a cold
+  attached DB, incremental vacuum/WAL-checkpoint/FTS-optimize, consistent table caps);
+  configurable; a Storage panel with "Optimize now" + confirm-gated "Reclaim disk".
+- **sqlite-vec ANN** — RAG + memory vector search now use a vec0 index (was a full
+  linear cosine scan) with a verbatim linear fallback; BLOB columns stay the source of
+  truth. No new dylib / no notarization impact.
+- **Cloud/OpenRouter agent backends** — custom + OpenRouter are now first-class
+  agent-loop + Flows backends with streamed tool-calling (was content-only chat, with
+  "cloud" faked via `:cloud` Ollama ids).
+
+**Resilience / performance**
+- Inference admission control (bounded local-slot concurrency; cloud bypasses),
+  subagent concurrency budget, backend liveness probe (detects wedged-but-alive),
+  a health/degradation registry surfaced as a UI pill, and durable per-iteration
+  agent-run checkpointing.
+- Migration ladder consolidated (one `user_version` authority); single-writer DB
+  serialization.
+- Build/startup: the lightweight Quick Prompt window's boot graph dropped ~68%
+  (619KB→198KB); the 415KB markdown chunk split (marked/highlight/katex); an enforced
+  bundle budget gates the release.
+
+Behavior-preserving throughout. Deferred (documented, each mitigated): DAG Flows
+engine, agent-run auto-recovery-on-reload, full per-run workspace threading,
+approval-into-executeTool chokepoint, renderer privilege separation. Gates: cargo
+364 (native/no-default) · clippy clean both · tsc clean · vitest 911 · build +
+bundle-budget pass. Notarized + stapled.
+
 ## [0.13.14] — 2026-06-13
 
 ### Full-codebase review remediation (76 findings)
