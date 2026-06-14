@@ -156,9 +156,8 @@ pub fn persist_card_last_fired_batch(rows: &[(String, i64, i64)]) -> Result<()> 
     if rows.is_empty() {
         return Ok(());
     }
-    let mut conn = get_db()?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    {
+    // WS3: single-writer gate. The whole batch upsert is one serialized txn.
+    crate::history::with_write(|tx| {
         let mut stmt = tx.prepare(
             "INSERT INTO workflow_card_fired (card_key, workflow_id, last_fired)
              VALUES (?1, ?2, ?3)
@@ -169,9 +168,8 @@ pub fn persist_card_last_fired_batch(rows: &[(String, i64, i64)]) -> Result<()> 
         for (card_key, workflow_id, ts) in rows {
             stmt.execute(params![card_key, workflow_id, ts])?;
         }
-    }
-    tx.commit()?;
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Persist a tick's batched card fire/seed times and, on failure, emit a
@@ -207,20 +205,23 @@ fn warn_if_persist_batch_failed(rows: &[(String, i64, i64)]) {
 /// list rather than `rarray(?1)`. One statement, one implicit transaction, no
 /// SELECT and no per-key Vec allocation.
 pub fn prune_card_last_fired(keep: &std::collections::HashSet<String>) -> Result<()> {
-    let conn = get_db()?;
-    if keep.is_empty() {
-        // `NOT IN ()` is not valid SQL — an empty keep set means "drop all".
-        conn.execute("DELETE FROM workflow_card_fired", [])?;
-        return Ok(());
-    }
-    // Build `?,?,…` once, then bind each kept key positionally.
-    let placeholders = std::iter::repeat_n("?", keep.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!("DELETE FROM workflow_card_fired WHERE card_key NOT IN ({placeholders})");
-    let params: Vec<&dyn rusqlite::ToSql> = keep.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
-    conn.execute(&sql, params.as_slice())?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        if keep.is_empty() {
+            // `NOT IN ()` is not valid SQL — an empty keep set means "drop all".
+            tx.execute("DELETE FROM workflow_card_fired", [])?;
+            return Ok(());
+        }
+        // Build `?,?,…` once, then bind each kept key positionally.
+        let placeholders = std::iter::repeat_n("?", keep.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("DELETE FROM workflow_card_fired WHERE card_key NOT IN ({placeholders})");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            keep.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
+        tx.execute(&sql, params.as_slice())?;
+        Ok(())
+    })
 }
 
 /// Validate that `graph_json` parses as a JSON object of the shared shape:
@@ -487,19 +488,19 @@ pub fn get_workflow(id: i64) -> Result<Workflow> {
 /// before any write. Returns the workflow id.
 pub fn save_workflow(id: Option<i64>, name: &str, graph_json: &str) -> Result<i64> {
     validate_graph_json(graph_json)?;
-    let conn = get_db()?;
     let now = now_unix();
-    match id {
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| match id {
         None => {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO workflows (name, graph_json, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?3)",
                 params![name, graph_json, now],
             )?;
-            Ok(conn.last_insert_rowid())
+            Ok(tx.last_insert_rowid())
         }
         Some(existing) => {
-            let changed = conn.execute(
+            let changed = tx.execute(
                 "UPDATE workflows SET name = ?1, graph_json = ?2, updated_at = ?3 WHERE id = ?4",
                 params![name, graph_json, now, existing],
             )?;
@@ -508,30 +509,29 @@ pub fn save_workflow(id: Option<i64>, name: &str, graph_json: &str) -> Result<i6
             }
             Ok(existing)
         }
-    }
+    })
 }
 
 pub fn delete_workflow(id: i64) -> Result<()> {
-    let mut conn = get_db()?;
-    // All three deletes go in a single transaction so a crash mid-delete can
-    // never leave orphan run rows or fire-tracking rows pointing at a
-    // workflow that no longer exists. `workflow_card_fired` carries a
-    // dedicated `workflow_id` integer column (v9 migration) so we delete by
-    // equality — the prior `card_key LIKE '<id>:%'` approach was fragile
-    // against any future prefix-collision and over-matched once GLOB-style
-    // patterns were considered.
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute(
-        "DELETE FROM workflow_runs WHERE workflow_id = ?1",
-        params![id],
-    )?;
-    tx.execute(
-        "DELETE FROM workflow_card_fired WHERE workflow_id = ?1",
-        params![id],
-    )?;
-    tx.execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
-    tx.commit()?;
-    Ok(())
+    // WS3: single-writer gate. All three deletes go in a single transaction so
+    // a crash mid-delete can never leave orphan run rows or fire-tracking rows
+    // pointing at a workflow that no longer exists. `workflow_card_fired`
+    // carries a dedicated `workflow_id` integer column (v9 migration) so we
+    // delete by equality — the prior `card_key LIKE '<id>:%'` approach was
+    // fragile against any future prefix-collision and over-matched once
+    // GLOB-style patterns were considered.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "DELETE FROM workflow_runs WHERE workflow_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM workflow_card_fired WHERE workflow_id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
+        Ok(())
+    })
 }
 
 /// Number of historical runs kept per workflow. Anything older is pruned on
@@ -555,35 +555,30 @@ pub fn record_run(workflow_id: i64, status: &str, results_json: &str) -> Result<
             results_json.len()
         );
     }
-    let mut conn = get_db()?;
-    // Insert + retention-prune in ONE transaction so the table can't be left
-    // in a half-pruned state if the second statement fails (matches
-    // delete_workflow's transactional cleanup). last_insert_rowid is read off
-    // the same transaction's connection before commit. IMMEDIATE (post-bump
-    // review 2026-06-11) — was the one write tx the 517-fix sweep missed
-    // (unchecked_transaction is DEFERRED, fails on write-promotion under the
-    // concurrent per-reply perf-ledger writer).
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute(
-        "INSERT INTO workflow_runs (workflow_id, started_at, status, results_json)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![workflow_id, now_unix(), status, results_json],
-    )?;
-    let id = tx.last_insert_rowid();
-    // Trim the oldest rows beyond the retention window for this workflow.
-    tx.execute(
-        "DELETE FROM workflow_runs
-         WHERE workflow_id = ?1
-           AND id NOT IN (
-               SELECT id FROM workflow_runs
-               WHERE workflow_id = ?1
-               ORDER BY started_at DESC, id DESC
-               LIMIT ?2
-           )",
-        params![workflow_id, RUNS_RETAIN],
-    )?;
-    tx.commit()?;
-    Ok(id)
+    // WS3: single-writer gate. Insert + retention-prune in ONE serialized txn
+    // so the table can't be left in a half-pruned state if the second statement
+    // fails (matches delete_workflow's transactional cleanup).
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "INSERT INTO workflow_runs (workflow_id, started_at, status, results_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![workflow_id, now_unix(), status, results_json],
+        )?;
+        let id = tx.last_insert_rowid();
+        // Trim the oldest rows beyond the retention window for this workflow.
+        tx.execute(
+            "DELETE FROM workflow_runs
+             WHERE workflow_id = ?1
+               AND id NOT IN (
+                   SELECT id FROM workflow_runs
+                   WHERE workflow_id = ?1
+                   ORDER BY started_at DESC, id DESC
+                   LIMIT ?2
+               )",
+            params![workflow_id, RUNS_RETAIN],
+        )?;
+        Ok(id)
+    })
 }
 
 /// Maximum number of recent runs returned per workflow.

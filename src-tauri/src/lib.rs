@@ -15,6 +15,7 @@ mod embedder;
 mod gguf;
 mod history;
 mod logging;
+mod maintenance;
 mod mcp;
 mod memory;
 mod models;
@@ -293,6 +294,17 @@ pub fn run() {
                 // to the shared shutdown Notify so it exits cleanly on app
                 // exit instead of being torn down mid-sleep.
                 workflows::start_scheduler(app.handle().clone(), shutdown_signal());
+
+                // App-lifetime DB/storage maintenance agent (WS4). The scheduler
+                // wakes on a long interval and runs the SAFE phases (caps,
+                // archive-not-delete, reclaim) per the user's policy; it never
+                // VACUUMs (that's the explicit opt-in command only). A light
+                // boot pass runs off the first-paint path via spawn_blocking.
+                maintenance::start_maintenance_scheduler(
+                    app.handle().clone(),
+                    shutdown_signal(),
+                );
+                maintenance::light_boot_pass();
 
                 // LOW (2026-05-30): sweep abandoned `*.gguf.part` files left by
                 // interrupted GGUF downloads. No download is in flight in a
@@ -646,6 +658,10 @@ pub fn run() {
             commands::claude_skills::claude_skill_set_enabled,
             commands::claude_skills::claude_skill_set_pinned,
             commands::claude_skills::claude_skill_delete,
+            commands::maintenance::db_maintenance_stats,
+            commands::maintenance::db_maintenance_run,
+            commands::maintenance::db_maintenance_vacuum,
+            commands::maintenance::db_maintenance_restore_archived,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

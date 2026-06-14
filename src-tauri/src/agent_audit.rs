@@ -36,12 +36,17 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
             approval TEXT NOT NULL,
             outcome TEXT NOT NULL,
             error_kind TEXT,
-            workflow_run_id INTEGER
+            workflow_run_id INTEGER,
+            -- WS2: additive numeric sibling for the legacy TEXT conversation_id.
+            -- A fresh table gets it here; older DBs gain it via the v24 rung's
+            -- guarded ALTER. The TEXT column is unchanged.
+            conv_id INTEGER
          );
          CREATE INDEX IF NOT EXISTS idx_agent_audit_ts ON agent_audit(ts);
          CREATE INDEX IF NOT EXISTS idx_agent_audit_ts_id ON agent_audit(ts DESC, id DESC);
          CREATE INDEX IF NOT EXISTS idx_agent_audit_conv ON agent_audit(conversation_id);
          CREATE INDEX IF NOT EXISTS idx_agent_audit_workflow_run ON agent_audit(workflow_run_id);
+         CREATE INDEX IF NOT EXISTS idx_agent_audit_conv_id ON agent_audit(conv_id);
          CREATE TABLE IF NOT EXISTS agent_session_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts INTEGER NOT NULL,
@@ -51,10 +56,14 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
             total_tool_ms INTEGER NOT NULL,
             total_llm_ms INTEGER NOT NULL,
             prompt_tokens INTEGER NOT NULL,
-            completion_tokens INTEGER NOT NULL
+            completion_tokens INTEGER NOT NULL,
+            -- WS2 sibling (nullable INTEGER; legacy conversation_id stays NOT NULL TEXT).
+            conv_id INTEGER
          );
          CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_ts ON agent_session_metrics(ts);
-         CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_conv ON agent_session_metrics(conversation_id);",
+         CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_ts_id ON agent_session_metrics(ts DESC, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_conv ON agent_session_metrics(conversation_id);
+         CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_conv_id ON agent_session_metrics(conv_id);",
     )?;
     Ok(())
 }
@@ -141,6 +150,16 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+/// Parse the legacy TEXT `conversation_id` into the numeric `conv_id` sibling
+/// (WS2). The frontend passes the conversation id as a string over IPC; the
+/// additive INTEGER column lets future joins/cascades use a real FK without
+/// changing the TEXT column or the `Option<String>` IPC contract. Only
+/// purely-numeric values map to a number; anything else (UUIDs, empty, None)
+/// yields `None`, matching the migration backfill semantics.
+fn parse_conv_id(text: Option<&str>) -> Option<i64> {
+    text.and_then(|s| s.trim().parse::<i64>().ok())
+}
+
 /// SHA-256 truncated to first 16 hex chars (64 bits) — enough to dedupe
 /// identical results without bloating the index.
 fn hash_result(body: &str) -> String {
@@ -163,7 +182,6 @@ pub const MAX_ARGS_JSON_BYTES: usize = 32 * 1024;
 
 /// Insert one audit row. Errors are returned (caller decides whether to swallow).
 pub fn record(entry: AuditEntry) -> Result<()> {
-    let conn = get_db()?;
     let ts = if entry.ts > 0 { entry.ts } else { now_millis() };
     let hash = hash_result(&entry.result_body);
     let size = entry.result_body.len() as i64;
@@ -186,57 +204,66 @@ pub fn record(entry: AuditEntry) -> Result<()> {
     } else {
         entry.args_json
     };
-    conn.execute(
-        "INSERT INTO agent_audit
-            (ts, conversation_id, tool_name, args_json, result_hash, result_size,
-             duration_ms, approval, outcome, error_kind, workflow_run_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            ts,
-            entry.conversation_id,
-            entry.tool_name,
-            args_capped,
-            hash,
-            size,
-            entry.duration_ms,
-            entry.approval,
-            entry.outcome,
-            entry.error_kind,
-            entry.workflow_run_id,
-        ],
-    )?;
-    // Audit A07: self-bound on insert so the table can't grow without limit
-    // (the only purge was a manual IPC nothing called). Best-effort, every 256th
-    // insert, keep the newest MAX_AUDIT_ROWS by id. Cheap + non-fatal.
-    //
-    // perf (low): the counter is seeded at 1 and we test `fetch_add(1)+1` so the
-    // first insert of the process is tick 1 (not 0) — a fresh `AtomicU64::new(0)`
-    // returns 0 on its first read, and `0.is_multiple_of(256)` would fire a
-    // needless cold-start trim. The trim itself is a contiguous primary-key
-    // range delete keyed off `id` (monotonic AUTOINCREMENT) rather than a
-    // `rowid NOT IN (… LIMIT 50000)` anti-join, so it uses the PK index instead
-    // of materializing + probing up to 50k rowids per row.
-    const MAX_AUDIT_ROWS: i64 = 50_000;
-    static INSERTS_SINCE_TRIM: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
-    if (INSERTS_SINCE_TRIM.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
-        .is_multiple_of(256)
-    {
-        // Delete everything older than the MAX_AUDIT_ROWS-th newest id. The
-        // subquery returns NULL (no row) until the table exceeds the cap, in
-        // which case `id < NULL` matches nothing — so this is a no-op range
-        // delete on a small table and a single contiguous PK-index sweep once
-        // the cap is reached.
-        // OFFSET is the 0-indexed position of the MAX_AUDIT_ROWS-th newest id,
-        // i.e. MAX_AUDIT_ROWS - 1; deleting `id <` that keeps exactly the newest
-        // MAX_AUDIT_ROWS (OFFSET MAX_AUDIT_ROWS would keep one row too many).
-        let _ = conn.execute(
-            "DELETE FROM agent_audit WHERE id < \
-             (SELECT id FROM agent_audit ORDER BY id DESC LIMIT 1 OFFSET ?1)",
-            params![MAX_AUDIT_ROWS - 1],
-        );
-    }
-    Ok(())
+    // WS2: write the numeric `conv_id` sibling alongside the unchanged TEXT
+    // `conversation_id`. Parsed from the same incoming string; `None` for
+    // non-numeric ids so the FK/IN constraints stay satisfiable.
+    let conv_id = parse_conv_id(entry.conversation_id.as_deref());
+    // WS3: route through the single-writer gate. The INSERT + periodic trim
+    // share the one serialized IMMEDIATE transaction.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "INSERT INTO agent_audit
+                (ts, conversation_id, conv_id, tool_name, args_json, result_hash, result_size,
+                 duration_ms, approval, outcome, error_kind, workflow_run_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                ts,
+                entry.conversation_id,
+                conv_id,
+                entry.tool_name,
+                args_capped,
+                hash,
+                size,
+                entry.duration_ms,
+                entry.approval,
+                entry.outcome,
+                entry.error_kind,
+                entry.workflow_run_id,
+            ],
+        )?;
+        // Audit A07: self-bound on insert so the table can't grow without limit
+        // (the only purge was a manual IPC nothing called). Best-effort, every 256th
+        // insert, keep the newest MAX_AUDIT_ROWS by id. Cheap + non-fatal.
+        //
+        // perf (low): the counter is seeded at 1 and we test `fetch_add(1)+1` so the
+        // first insert of the process is tick 1 (not 0) — a fresh `AtomicU64::new(0)`
+        // returns 0 on its first read, and `0.is_multiple_of(256)` would fire a
+        // needless cold-start trim. The trim itself is a contiguous primary-key
+        // range delete keyed off `id` (monotonic AUTOINCREMENT) rather than a
+        // `rowid NOT IN (… LIMIT 50000)` anti-join, so it uses the PK index instead
+        // of materializing + probing up to 50k rowids per row.
+        const MAX_AUDIT_ROWS: i64 = 50_000;
+        static INSERTS_SINCE_TRIM: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        if (INSERTS_SINCE_TRIM.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
+            .is_multiple_of(256)
+        {
+            // Delete everything older than the MAX_AUDIT_ROWS-th newest id. The
+            // subquery returns NULL (no row) until the table exceeds the cap, in
+            // which case `id < NULL` matches nothing — so this is a no-op range
+            // delete on a small table and a single contiguous PK-index sweep once
+            // the cap is reached.
+            // OFFSET is the 0-indexed position of the MAX_AUDIT_ROWS-th newest id,
+            // i.e. MAX_AUDIT_ROWS - 1; deleting `id <` that keeps exactly the newest
+            // MAX_AUDIT_ROWS (OFFSET MAX_AUDIT_ROWS would keep one row too many).
+            let _ = tx.execute(
+                "DELETE FROM agent_audit WHERE id < \
+                 (SELECT id FROM agent_audit ORDER BY id DESC LIMIT 1 OFFSET ?1)",
+                params![MAX_AUDIT_ROWS - 1],
+            );
+        }
+        Ok(())
+    })
 }
 
 /// Paginated query. Defaults: limit=100 (capped at 1000), offset=0.
@@ -307,9 +334,11 @@ pub fn list(filter: AuditFilter) -> Result<Vec<AuditRow>> {
 /// Housekeeping: drop rows older than `days` days. Returns rows deleted.
 pub fn purge_older_than(days: u32) -> Result<usize> {
     let cutoff = now_millis() - (days as i64) * 86_400_000;
-    let conn = get_db()?;
-    let n = conn.execute("DELETE FROM agent_audit WHERE ts < ?1", params![cutoff])?;
-    Ok(n)
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        let n = tx.execute("DELETE FROM agent_audit WHERE ts < ?1", params![cutoff])?;
+        Ok(n)
+    })
 }
 
 /// Quick counts: 24h totals, top 5 tools, avg duration per tool.
@@ -394,25 +423,31 @@ pub struct SessionMetricsRow {
 }
 
 pub fn session_metrics_record(entry: SessionMetricsEntry) -> Result<()> {
-    let conn = get_db()?;
     let ts = if entry.ts > 0 { entry.ts } else { now_millis() };
-    conn.execute(
-        "INSERT INTO agent_session_metrics
-            (ts, conversation_id, iterations, tool_calls, total_tool_ms,
-             total_llm_ms, prompt_tokens, completion_tokens)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            ts,
-            entry.conversation_id,
-            entry.iterations,
-            entry.tool_calls,
-            entry.total_tool_ms,
-            entry.total_llm_ms,
-            entry.prompt_tokens,
-            entry.completion_tokens,
-        ],
-    )?;
-    Ok(())
+    // WS2: numeric `conv_id` sibling (see `record`). The legacy
+    // `conversation_id` here is a non-Option String, so parse it directly.
+    let conv_id = parse_conv_id(Some(entry.conversation_id.as_str()));
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "INSERT INTO agent_session_metrics
+                (ts, conversation_id, conv_id, iterations, tool_calls, total_tool_ms,
+                 total_llm_ms, prompt_tokens, completion_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                ts,
+                entry.conversation_id,
+                conv_id,
+                entry.iterations,
+                entry.tool_calls,
+                entry.total_tool_ms,
+                entry.total_llm_ms,
+                entry.prompt_tokens,
+                entry.completion_tokens,
+            ],
+        )?;
+        Ok(())
+    })
 }
 
 pub fn session_metrics_query(filter: AuditFilter) -> Result<Vec<SessionMetricsRow>> {

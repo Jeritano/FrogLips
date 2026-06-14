@@ -11,6 +11,7 @@ pub mod claude_skills;
 pub mod data;
 pub mod history;
 pub mod llmpm;
+pub mod maintenance;
 pub mod mcp;
 pub mod memory;
 pub mod misc;

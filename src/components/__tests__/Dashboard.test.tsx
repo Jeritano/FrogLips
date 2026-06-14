@@ -81,6 +81,20 @@ vi.mock("../../lib/tauri-api", () => {
     api: {
       agentDashboardSummary: vi.fn(async () => summaryToReturn),
       modelPerfSummary: vi.fn(async () => []),
+      // WS4 Storage panel reads stats on every dashboard refresh.
+      dbMaintenanceStats: vi.fn(async () => ({
+        db_bytes: 1024,
+        wal_bytes: 0,
+        archive_bytes: 0,
+        conversations: 0,
+        messages: 0,
+        messages_archived: 0,
+        agent_audit_rows: 0,
+        model_perf_rows: 0,
+        agent_session_metrics_rows: 0,
+      })),
+      dbMaintenanceRun: vi.fn(async () => ({})),
+      dbMaintenanceVacuum: vi.fn(async () => ({})),
     },
   };
 });

@@ -305,7 +305,6 @@ pub fn add_memory(
             }
         }
     }
-    let conn = get_db()?;
     let blob = embedding.as_ref().map(|v| embedding_to_blob(v));
     // project_root is only meaningful for scope='project'. Drop it otherwise
     // so it doesn't accidentally leak across scope changes via demote/promote.
@@ -314,13 +313,16 @@ pub fn add_memory(
     } else {
         None
     };
-    conn.execute(
-        "INSERT INTO memories (content, conversation_id, source_msg_id, tags, embedding, status, created_at, scope, project_root)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![content, conversation_id, source_msg_id, tags, blob, status, now_unix(), scope, pr_for_insert],
-    )?;
-    let id = conn.last_insert_rowid();
-    drop(conn);
+    // WS3: single-writer gate. (warm_cache above is a reader and runs outside
+    // the lock; the cache-write below stays after the DB write as before.)
+    let id = crate::history::with_write(|tx| {
+        tx.execute(
+            "INSERT INTO memories (content, conversation_id, source_msg_id, tags, embedding, status, created_at, scope, project_root)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![content, conversation_id, source_msg_id, tags, blob, status, now_unix(), scope, pr_for_insert],
+        )?;
+        Ok(tx.last_insert_rowid())
+    })?;
     if let Some(emb) = embedding {
         if status == "active" {
             if let Some(map) = EMB_CACHE.write().as_mut() {
@@ -385,10 +387,12 @@ pub fn delete_memory(id: i64) -> Result<()> {
     // take the cache lock just long enough to drop the entry. The brief
     // window where a recall might score a row that's already been
     // DB-deleted is harmless — `fetch_by_ids` filters missing ids.
-    {
-        let conn = get_db()?;
-        conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
-    }
+    // WS3: single-writer gate. The cache lock is still taken after the DB
+    // write so a recall reader is never blocked behind the DELETE.
+    crate::history::with_write(|tx| {
+        tx.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+        Ok(())
+    })?;
     let mut cache = EMB_CACHE.write();
     if let Some(map) = cache.as_mut() {
         map.remove(&id);
@@ -397,14 +401,18 @@ pub fn delete_memory(id: i64) -> Result<()> {
 }
 
 pub fn update_memory_status(id: i64, status: &str) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
-        "UPDATE memories SET status = ?1 WHERE id = ?2",
-        params![status, id],
-    )?;
+    // WS3: single-writer gate for the status UPDATE.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "UPDATE memories SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        )?;
+        Ok(())
+    })?;
     // Update cache surgically instead of full invalidation
     if status == "active" {
-        // Pull the embedding for this id and insert into cache
+        let conn = get_db()?;
+        // Pull the embedding for this id and insert into cache (read path).
         let blob: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT embedding FROM memories WHERE id = ?1",
@@ -428,11 +436,8 @@ pub fn update_memory_status(id: i64, status: &str) -> Result<()> {
                 }
             }
         }
-    } else {
-        drop(conn);
-        if let Some(map) = EMB_CACHE.write().as_mut() {
-            map.remove(&id);
-        }
+    } else if let Some(map) = EMB_CACHE.write().as_mut() {
+        map.remove(&id);
     }
     Ok(())
 }
@@ -451,7 +456,6 @@ pub fn touch_memories(ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
     }
-    let conn = get_db()?;
     let now = now_unix();
     // Build numbered placeholders so the same param style is used throughout
     // ($1 = now, $2 = coalesce_floor, $3.. = ids).
@@ -481,8 +485,11 @@ pub fn touch_memories(ids: &[i64]) -> Result<()> {
          WHERE id IN ({placeholders})
          AND (last_used_at IS NULL OR last_used_at < ?2)"
     );
-    conn.execute(&sql, params_vec.as_slice())?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute(&sql, params_vec.as_slice())?;
+        Ok(())
+    })
 }
 
 pub fn search_keyword(query: &str, limit: i64, ctx: &MemoryContext) -> Result<Vec<Memory>> {
@@ -602,21 +609,24 @@ pub fn promote_memory(id: i64) -> Result<()> {
             "cannot promote to project: memory has no project_root set"
         ));
     }
-    let conn = get_db()?;
+    // WS3: single-writer gate.
     // When promoting to global, null out project_root + conversation_id so
     // demote later requires the user to re-specify context (avoids stale
     // bindings that don't reflect the new use case).
-    if next_scope == "global" {
-        conn.execute(
-            "UPDATE memories SET scope = ?1, project_root = NULL WHERE id = ?2",
-            params![next_scope, id],
-        )?;
-    } else {
-        conn.execute(
-            "UPDATE memories SET scope = ?1 WHERE id = ?2",
-            params![next_scope, id],
-        )?;
-    }
+    crate::history::with_write(|tx| {
+        if next_scope == "global" {
+            tx.execute(
+                "UPDATE memories SET scope = ?1, project_root = NULL WHERE id = ?2",
+                params![next_scope, id],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE memories SET scope = ?1 WHERE id = ?2",
+                params![next_scope, id],
+            )?;
+        }
+        Ok(())
+    })?;
     // Silence unused warning when promotion path doesn't need conv_id
     let _ = conv_id;
     Ok(())
@@ -648,12 +658,14 @@ pub fn demote_memory(id: i64) -> Result<()> {
             "cannot demote to conversation: memory has no conversation_id set"
         ));
     }
-    let conn = get_db()?;
-    conn.execute(
-        "UPDATE memories SET scope = ?1 WHERE id = ?2",
-        params![next_scope, id],
-    )?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "UPDATE memories SET scope = ?1 WHERE id = ?2",
+            params![next_scope, id],
+        )?;
+        Ok(())
+    })
 }
 
 /// Used by `memory_promote`/`memory_demote` when the frontend wants to
@@ -661,22 +673,24 @@ pub fn demote_memory(id: i64) -> Result<()> {
 /// transition — e.g. demoting a global memory to project requires us to
 /// know which project it belongs to.
 pub fn set_memory_context(id: i64, project_root: Option<&str>, conv_id: Option<i64>) -> Result<()> {
-    let conn = get_db()?;
-    // Only update fields the caller actually supplied — pass-through NULLs
-    // would clobber existing bindings.
-    if let Some(pr) = project_root {
-        conn.execute(
-            "UPDATE memories SET project_root = ?1 WHERE id = ?2",
-            params![pr, id],
-        )?;
-    }
-    if let Some(c) = conv_id {
-        conn.execute(
-            "UPDATE memories SET conversation_id = ?1 WHERE id = ?2",
-            params![c, id],
-        )?;
-    }
-    Ok(())
+    // WS3: single-writer gate. Both conditional UPDATEs share the txn.
+    crate::history::with_write(|tx| {
+        // Only update fields the caller actually supplied — pass-through NULLs
+        // would clobber existing bindings.
+        if let Some(pr) = project_root {
+            tx.execute(
+                "UPDATE memories SET project_root = ?1 WHERE id = ?2",
+                params![pr, id],
+            )?;
+        }
+        if let Some(c) = conv_id {
+            tx.execute(
+                "UPDATE memories SET conversation_id = ?1 WHERE id = ?2",
+                params![c, id],
+            )?;
+        }
+        Ok(())
+    })
 }
 
 pub fn find_duplicate(query_emb: Vec<f32>, threshold: f32) -> Result<Option<i64>> {

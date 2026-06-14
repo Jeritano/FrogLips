@@ -92,30 +92,30 @@ pub fn save_run(
             transcript_json.len()
         );
     }
-    let mut conn = get_db()?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute(
-        "INSERT INTO roundtable_runs (table_id, name, topic, turns, transcript_json, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![table_id, name, topic, turns, transcript_json, now_unix()],
-    )?;
-    let id = tx.last_insert_rowid();
-    // Retention, scoped to THIS source table. `table_id IS ?1` matches the NULL
-    // (ad-hoc) bucket too, so ad-hoc runs trim among themselves and never evict
-    // a named table's history.
-    tx.execute(
-        "DELETE FROM roundtable_runs
-         WHERE table_id IS ?1
-           AND id NOT IN (
-             SELECT id FROM roundtable_runs
+    // WS3: single-writer gate. INSERT + retention trim share the txn.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "INSERT INTO roundtable_runs (table_id, name, topic, turns, transcript_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![table_id, name, topic, turns, transcript_json, now_unix()],
+        )?;
+        let id = tx.last_insert_rowid();
+        // Retention, scoped to THIS source table. `table_id IS ?1` matches the NULL
+        // (ad-hoc) bucket too, so ad-hoc runs trim among themselves and never evict
+        // a named table's history.
+        tx.execute(
+            "DELETE FROM roundtable_runs
              WHERE table_id IS ?1
-             ORDER BY created_at DESC, id DESC
-             LIMIT ?2
-           )",
-        params![table_id, RUNS_RETAIN],
-    )?;
-    tx.commit()?;
-    Ok(id)
+               AND id NOT IN (
+                 SELECT id FROM roundtable_runs
+                 WHERE table_id IS ?1
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?2
+               )",
+            params![table_id, RUNS_RETAIN],
+        )?;
+        Ok(id)
+    })
 }
 
 /// List outcome summaries, newest first. `None` lists ALL; `Some(id)` filters to
@@ -184,9 +184,11 @@ pub fn get_run(id: i64) -> Result<RoundtableRun> {
 
 /// Delete one outcome.
 pub fn delete_run(id: i64) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute("DELETE FROM roundtable_runs WHERE id = ?1", params![id])?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute("DELETE FROM roundtable_runs WHERE id = ?1", params![id])?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]

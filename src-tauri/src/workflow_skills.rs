@@ -251,78 +251,74 @@ pub fn save(
     validate_description(description)?;
     validate_steps_json(steps_json)?;
 
-    let mut conn = get_db()?;
     let now = now_unix();
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // WS3: single-writer gate. Collision read + history push + trim + upsert all
+    // run on the one serialized IMMEDIATE transaction; an early Err rolls back.
+    crate::history::with_write(|tx| {
+        // Look up the existing row, if any. The UNIQUE(workflow_id, name) index
+        // backs the lookup.
+        let existing: Option<(i64, String, String, String)> = tx
+            .query_row(
+                "SELECT id, name, description, steps_json
+                 FROM workflow_skills WHERE workflow_id = ?1 AND name = ?2",
+                params![workflow_id, name],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .ok();
 
-    // Look up the existing row, if any. The UNIQUE(workflow_id, name) index
-    // backs the lookup.
-    let existing: Option<(i64, String, String, String)> = tx
-        .query_row(
-            "SELECT id, name, description, steps_json
-             FROM workflow_skills WHERE workflow_id = ?1 AND name = ?2",
-            params![workflow_id, name],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .ok();
-
-    let id = match existing {
-        None => {
-            tx.execute(
-                "INSERT INTO workflow_skills
-                    (workflow_id, name, description, steps_json,
-                     created_at, last_used_at, invocation_count)
-                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, 0)",
-                params![workflow_id, name, description, steps_json, now],
-            )?;
-            tx.last_insert_rowid()
-        }
-        Some((existing_id, old_name, old_desc, old_steps)) => {
-            if !overwrite {
-                // Drop the open transaction (no writes happened on this path,
-                // but be explicit).
-                drop(tx);
-                return Err(err(
-                    "name_collision",
-                    format!(
-                        "skill '{}' already exists for workflow {}",
-                        name, workflow_id
-                    ),
-                ));
+        let id = match existing {
+            None => {
+                tx.execute(
+                    "INSERT INTO workflow_skills
+                        (workflow_id, name, description, steps_json,
+                         created_at, last_used_at, invocation_count)
+                     VALUES (?1, ?2, ?3, ?4, ?5, NULL, 0)",
+                    params![workflow_id, name, description, steps_json, now],
+                )?;
+                tx.last_insert_rowid()
             }
-            // Push the prior row to history before overwriting.
-            tx.execute(
-                "INSERT INTO workflow_skills_history
-                    (workflow_id, name, description, steps_json, overwrote_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![workflow_id, old_name, old_desc, old_steps, now],
-            )?;
-            // Trim history beyond the cap. The OFFSET-LIMIT trick selects ids
-            // older than the most recent `HISTORY_CAP_PER_SKILL`; SQLite's
-            // `LIMIT -1 OFFSET N` form means "all rows past the first N".
-            tx.execute(
-                "DELETE FROM workflow_skills_history
-                 WHERE id IN (
-                    SELECT id FROM workflow_skills_history
-                    WHERE workflow_id = ?1 AND name = ?2
-                    ORDER BY overwrote_at DESC, id DESC
-                    LIMIT -1 OFFSET ?3
-                 )",
-                params![workflow_id, name, HISTORY_CAP_PER_SKILL],
-            )?;
-            // Update the live row in place.
-            tx.execute(
-                "UPDATE workflow_skills
-                 SET description = ?1, steps_json = ?2
-                 WHERE id = ?3",
-                params![description, steps_json, existing_id],
-            )?;
-            existing_id
-        }
-    };
-
-    tx.commit()?;
-    Ok(id)
+            Some((existing_id, old_name, old_desc, old_steps)) => {
+                if !overwrite {
+                    return Err(err(
+                        "name_collision",
+                        format!(
+                            "skill '{}' already exists for workflow {}",
+                            name, workflow_id
+                        ),
+                    ));
+                }
+                // Push the prior row to history before overwriting.
+                tx.execute(
+                    "INSERT INTO workflow_skills_history
+                        (workflow_id, name, description, steps_json, overwrote_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![workflow_id, old_name, old_desc, old_steps, now],
+                )?;
+                // Trim history beyond the cap. The OFFSET-LIMIT trick selects ids
+                // older than the most recent `HISTORY_CAP_PER_SKILL`; SQLite's
+                // `LIMIT -1 OFFSET N` form means "all rows past the first N".
+                tx.execute(
+                    "DELETE FROM workflow_skills_history
+                     WHERE id IN (
+                        SELECT id FROM workflow_skills_history
+                        WHERE workflow_id = ?1 AND name = ?2
+                        ORDER BY overwrote_at DESC, id DESC
+                        LIMIT -1 OFFSET ?3
+                     )",
+                    params![workflow_id, name, HISTORY_CAP_PER_SKILL],
+                )?;
+                // Update the live row in place.
+                tx.execute(
+                    "UPDATE workflow_skills
+                     SET description = ?1, steps_json = ?2
+                     WHERE id = ?3",
+                    params![description, steps_json, existing_id],
+                )?;
+                existing_id
+            }
+        };
+        Ok(id)
+    })
 }
 
 /// List the skills for a workflow, summary form only (no `steps_json`).
@@ -378,12 +374,14 @@ pub fn get(workflow_id: i64, name: &str) -> Result<Option<SkillFull>> {
 /// Delete a skill. No-op (returns Ok) if the row doesn't exist — keeps the
 /// caller's idempotent "remove it if you have it" semantics simple.
 pub fn delete(workflow_id: i64, name: &str) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
-        "DELETE FROM workflow_skills WHERE workflow_id = ?1 AND name = ?2",
-        params![workflow_id, name],
-    )?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "DELETE FROM workflow_skills WHERE workflow_id = ?1 AND name = ?2",
+            params![workflow_id, name],
+        )?;
+        Ok(())
+    })
 }
 
 /// Bump `invocation_count` and stamp `last_used_at = now` for a skill. Used
@@ -392,15 +390,17 @@ pub fn delete(workflow_id: i64, name: &str) -> Result<()> {
 /// "the skill was deleted between fetch and invoke" and the metric is
 /// best-effort.
 pub fn record_invocation(workflow_id: i64, name: &str) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
-        "UPDATE workflow_skills
-         SET invocation_count = invocation_count + 1,
-             last_used_at = ?1
-         WHERE workflow_id = ?2 AND name = ?3",
-        params![now_unix(), workflow_id, name],
-    )?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "UPDATE workflow_skills
+             SET invocation_count = invocation_count + 1,
+                 last_used_at = ?1
+             WHERE workflow_id = ?2 AND name = ?3",
+            params![now_unix(), workflow_id, name],
+        )?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]

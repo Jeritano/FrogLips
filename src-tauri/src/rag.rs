@@ -113,12 +113,25 @@ pub fn ensure_schema(conn: &rusqlite::Connection) -> Result<()> {
          );",
     )?;
     // Act 2 (2026-06-10): which embedder produced this corpus's vectors.
-    // Old DBs lack the column — the ALTER fails harmlessly when it exists.
-    let _ = conn.execute(
-        "ALTER TABLE rag_corpora ADD COLUMN embedder TEXT NOT NULL DEFAULT 'hashed-v1'",
-        [],
-    );
+    // Old DBs lack the column. Guard the ALTER with `column_exists` so a real
+    // failure surfaces instead of being swallowed by a bare `let _ =`
+    // (consolidation pass 2026-06-13 — this is the v21 ladder rung body too).
+    if !crate::history::column_exists(conn, "rag_corpora", "embedder")? {
+        conn.execute(
+            "ALTER TABLE rag_corpora ADD COLUMN embedder TEXT NOT NULL DEFAULT 'hashed-v1'",
+            [],
+        )?;
+    }
     Ok(())
+}
+
+/// v21 ladder rung: install the RAG schema in migration-version order. Thin
+/// alias over `ensure_schema` (which is already idempotent + guarded) so the
+/// `Migration { apply: ... }` slot has a stable function pointer and the
+/// connection-scoped `ensure_schema` stays callable from the in-memory test
+/// paths that bypass the ladder.
+pub(crate) fn ensure_schema_rung(conn: &rusqlite::Connection) -> Result<()> {
+    ensure_schema(conn)
 }
 
 /* ─────────────────────────── Types ──────────────────────────────────── */
@@ -482,8 +495,14 @@ const FLUSH_CHUNKS: usize = 1024;
 /// Embed + insert every buffered file: ONE batched embed call over all
 /// pending chunks, then per-file transactions (rows + fingerprint) so a
 /// failure mid-flush still leaves whole-file units committed.
+///
+/// WS3: the embedding call (`embed_batch`, potentially a network round-trip to
+/// Ollama) runs BEFORE any write lock is taken; only the per-file insert
+/// transactions go through the single-writer gate, so a slow embed never stalls
+/// other writers. `conn` is no longer needed (each tx now comes from the gate),
+/// but is retained as a no-op param to keep the call sites unchanged.
 fn flush_pending(
-    conn: &mut r2d2::PooledConnection<crate::history::SqliteManager>,
+    _conn: &mut r2d2::PooledConnection<crate::history::SqliteManager>,
     corpus_id: i64,
     chosen: &crate::embedder::Embedder,
     pending: &mut Vec<PendingFile>,
@@ -503,32 +522,36 @@ fn flush_pending(
         .with_context(|| format!("embedding failed via {}", chosen.id()))?;
     let mut ei = 0usize;
     for f in pending.iter() {
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )?;
-            for (start, end, chunk) in &f.chunks {
-                stmt.execute(params![
-                    corpus_id,
-                    f.rel,
-                    *start as i64,
-                    *end as i64,
-                    chunk,
-                    vec_to_blob(&embs[ei]),
-                ])?;
-                ei += 1;
-                *chunks_created += 1;
+        // WS3: single-writer gate, one tx per file (rows + fingerprint).
+        let inserted = crate::history::with_write(|tx| {
+            let mut count = 0usize;
+            {
+                let mut stmt = tx.prepare(
+                    "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )?;
+                for (start, end, chunk) in &f.chunks {
+                    stmt.execute(params![
+                        corpus_id,
+                        f.rel,
+                        *start as i64,
+                        *end as i64,
+                        chunk,
+                        vec_to_blob(&embs[ei]),
+                    ])?;
+                    ei += 1;
+                    count += 1;
+                }
             }
-        }
-        tx.execute(
-            "INSERT INTO rag_files (corpus_id, path, mtime_ms, size) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(corpus_id, path) DO UPDATE SET
-               mtime_ms = excluded.mtime_ms, size = excluded.size",
-            params![corpus_id, f.rel, f.mtime_ms, f.size],
-        )?;
-        tx.commit()?;
+            tx.execute(
+                "INSERT INTO rag_files (corpus_id, path, mtime_ms, size) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(corpus_id, path) DO UPDATE SET
+                   mtime_ms = excluded.mtime_ms, size = excluded.size",
+                params![corpus_id, f.rel, f.mtime_ms, f.size],
+            )?;
+            Ok(count)
+        })?;
+        *chunks_created += inserted;
         *files_indexed += 1;
     }
     pending.clear();
@@ -587,10 +610,10 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     // corpus's existing learned embedder unless it's genuinely gone.
     let detected = crate::embedder::Embedder::detect();
 
-    let mut conn = get_db()?;
     let now = now_unix();
-    let (corpus_id, watermark, force_reembed, chosen): (i64, i64, bool, crate::embedder::Embedder) = {
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // WS3: single-writer gate for the corpus-setup transaction.
+    let (corpus_id, watermark, force_reembed, chosen): (i64, i64, bool, crate::embedder::Embedder) =
+        crate::history::with_write(|tx| {
         tx.execute(
             "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
              VALUES (?1, ?2, 0, ?3, ?3)
@@ -642,10 +665,8 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
                 ),
             );
         }
-        tx.commit()?;
-        (id, wm, force, chosen)
-    };
-    drop(conn);
+        Ok((id, wm, force, chosen))
+    })?;
 
     let mut files_indexed = 0usize;
     let mut chunks_created = 0usize;
@@ -712,14 +733,17 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
                 .is_some();
             if unchanged {
                 let remaining = (MAX_CHUNKS_PER_INGEST - chunks_created) as i64;
-                let copied = conn.execute(
-                    "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
-                     SELECT corpus_id, path, start_byte, end_byte, text, embedding
-                     FROM rag_chunks
-                     WHERE corpus_id = ?1 AND path = ?2 AND id <= ?3
-                     ORDER BY id LIMIT ?4",
-                    params![corpus_id, rel, watermark, remaining],
-                )?;
+                // WS3: single-writer gate for the copy-forward insert.
+                let copied = crate::history::with_write(|tx| {
+                    Ok(tx.execute(
+                        "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
+                         SELECT corpus_id, path, start_byte, end_byte, text, embedding
+                         FROM rag_chunks
+                         WHERE corpus_id = ?1 AND path = ?2 AND id <= ?3
+                         ORDER BY id LIMIT ?4",
+                        params![corpus_id, rel, watermark, remaining],
+                    )?)
+                })?;
                 if copied > 0 {
                     chunks_created += copied;
                     files_indexed += 1;
@@ -843,8 +867,8 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     // watermark) and publish the new count in ONE transaction. Until this
     // commits, search still sees the old corpus; after, it sees only the new
     // chunks. An interruption before this point leaves the old corpus whole.
-    {
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
         tx.execute(
             "DELETE FROM rag_chunks WHERE corpus_id = ?1 AND id <= ?2",
             params![corpus_id, watermark],
@@ -862,8 +886,8 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
              )",
             params![corpus_id],
         )?;
-        tx.commit()?;
-    }
+        Ok(())
+    })?;
 
     Ok(IngestReport {
         corpus_id,
@@ -1062,9 +1086,11 @@ pub fn list_corpora() -> Result<Vec<CorpusInfo>> {
 
 pub fn delete_corpus(name: &str) -> Result<()> {
     validate_name(name)?;
-    let conn = get_db()?;
-    conn.execute("DELETE FROM rag_corpora WHERE name = ?1", params![name])?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute("DELETE FROM rag_corpora WHERE name = ?1", params![name])?;
+        Ok(())
+    })
 }
 
 /* ─────────────────────────── Tests ──────────────────────────────────── */

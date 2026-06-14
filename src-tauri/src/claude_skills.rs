@@ -363,72 +363,72 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
     let source_path = canon.to_string_lossy().to_string();
     let now = now_unix();
 
-    let mut conn = get_db()?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let existing: Option<(i64, bool, bool)> = tx
-        .query_row(
-            "SELECT id, enabled, pinned FROM claude_skills WHERE name = ?1",
-            params![parsed.name],
-            |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)? != 0,
-                    r.get::<_, i64>(2)? != 0,
-                ))
-            },
-        )
-        .ok();
+    // WS3: single-writer gate. The collision read + INSERT/UPDATE run on the
+    // one serialized IMMEDIATE transaction; an early `Err` rolls it back.
+    let (id, enabled, pinned) = crate::history::with_write(|tx| {
+        let existing: Option<(i64, bool, bool)> = tx
+            .query_row(
+                "SELECT id, enabled, pinned FROM claude_skills WHERE name = ?1",
+                params![parsed.name],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)? != 0,
+                        r.get::<_, i64>(2)? != 0,
+                    ))
+                },
+            )
+            .ok();
 
-    let (id, enabled, pinned) = match existing {
-        None => {
-            tx.execute(
-                "INSERT INTO claude_skills
-                    (name, description, body_md, allowed_tools_json,
-                     source_path, imported_at, enabled, pinned)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0)",
-                params![
-                    parsed.name,
-                    parsed.description,
-                    parsed.body_md,
-                    allowed_tools_json,
-                    source_path,
-                    now,
-                ],
-            )?;
-            (tx.last_insert_rowid(), true, false)
-        }
-        Some((existing_id, existing_enabled, existing_pinned)) => {
-            if !overwrite {
-                drop(tx);
-                return Err(err(
-                    "name_collision",
-                    format!("claude skill '{}' already exists", parsed.name),
-                ));
+        let out = match existing {
+            None => {
+                tx.execute(
+                    "INSERT INTO claude_skills
+                        (name, description, body_md, allowed_tools_json,
+                         source_path, imported_at, enabled, pinned)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0)",
+                    params![
+                        parsed.name,
+                        parsed.description,
+                        parsed.body_md,
+                        allowed_tools_json,
+                        source_path,
+                        now,
+                    ],
+                )?;
+                (tx.last_insert_rowid(), true, false)
             }
-            // Update body / metadata / source_path in place; preserve the
-            // user's enabled+pinned toggles.
-            tx.execute(
-                "UPDATE claude_skills
-                 SET description = ?1,
-                     body_md = ?2,
-                     allowed_tools_json = ?3,
-                     source_path = ?4,
-                     imported_at = ?5
-                 WHERE id = ?6",
-                params![
-                    parsed.description,
-                    parsed.body_md,
-                    allowed_tools_json,
-                    source_path,
-                    now,
-                    existing_id,
-                ],
-            )?;
-            (existing_id, existing_enabled, existing_pinned)
-        }
-    };
-
-    tx.commit()?;
+            Some((existing_id, existing_enabled, existing_pinned)) => {
+                if !overwrite {
+                    return Err(err(
+                        "name_collision",
+                        format!("claude skill '{}' already exists", parsed.name),
+                    ));
+                }
+                // Update body / metadata / source_path in place; preserve the
+                // user's enabled+pinned toggles.
+                tx.execute(
+                    "UPDATE claude_skills
+                     SET description = ?1,
+                         body_md = ?2,
+                         allowed_tools_json = ?3,
+                         source_path = ?4,
+                         imported_at = ?5
+                     WHERE id = ?6",
+                    params![
+                        parsed.description,
+                        parsed.body_md,
+                        allowed_tools_json,
+                        source_path,
+                        now,
+                        existing_id,
+                    ],
+                )?;
+                (existing_id, existing_enabled, existing_pinned)
+            }
+        };
+        Ok(out)
+    })?;
 
     Ok(ClaudeSkillRow {
         id,
@@ -503,30 +503,36 @@ pub fn get(name: &str) -> Result<Option<ClaudeSkillRow>> {
 /// exist — still returns Ok (idempotent semantics; the caller typically
 /// reads the latest state right after).
 pub fn set_enabled(name: &str, enabled: bool) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
-        "UPDATE claude_skills SET enabled = ?1 WHERE name = ?2",
-        params![if enabled { 1 } else { 0 }, name],
-    )?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "UPDATE claude_skills SET enabled = ?1 WHERE name = ?2",
+            params![if enabled { 1 } else { 0 }, name],
+        )?;
+        Ok(())
+    })
 }
 
 /// Set the `pinned` toggle on a skill. Same idempotent semantics as
 /// `set_enabled`.
 pub fn set_pinned(name: &str, pinned: bool) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
-        "UPDATE claude_skills SET pinned = ?1 WHERE name = ?2",
-        params![if pinned { 1 } else { 0 }, name],
-    )?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute(
+            "UPDATE claude_skills SET pinned = ?1 WHERE name = ?2",
+            params![if pinned { 1 } else { 0 }, name],
+        )?;
+        Ok(())
+    })
 }
 
 /// Delete a skill. No-op (returns Ok) if the row doesn't exist.
 pub fn delete(name: &str) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute("DELETE FROM claude_skills WHERE name = ?1", params![name])?;
-    Ok(())
+    // WS3: single-writer gate.
+    crate::history::with_write(|tx| {
+        tx.execute("DELETE FROM claude_skills WHERE name = ?1", params![name])?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]

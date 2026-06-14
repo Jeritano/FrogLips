@@ -58,6 +58,11 @@ pub struct Settings {
     /// installs → `None` → re-detected on next mount. No DB migration — rides
     /// settings.json via serde(default).
     pub hardware_profile: Option<HardwareProfile>,
+    /// DB/storage maintenance policy (WS4, 2026-06-13). `None` on legacy files →
+    /// the maintenance agent uses `MaintenanceConfig::default()` (safe phases
+    /// enabled, archive-not-delete, no auto-VACUUM). Rides settings.json via
+    /// serde(default); no DB migration. Old files load unchanged.
+    pub maintenance: Option<MaintenanceConfig>,
     /// HIGH-2 (2026-05-29): forward-compatibility capture. Any top-level key
     /// this build doesn't recognise (because it was written by a NEWER build)
     /// is parked here and re-serialized verbatim on save, so opening an old
@@ -78,6 +83,70 @@ pub struct HardwareProfile {
     pub performance_cores: u32,
     pub cpu_brand: String,
     pub detected_at: i64,
+}
+
+/// DB/storage maintenance policy (WS4). All fields carry conservative
+/// defaults via `#[serde(default = …)]` so an old settings.json (which lacks
+/// the whole `maintenance` block, or any individual field a newer build adds)
+/// deserializes into the safe configuration. `Default` matches those defaults
+/// so `maintenance: None` and an explicit all-defaults block behave identically.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct MaintenanceConfig {
+    /// Master switch for the SAFE maintenance phases (caps, archive, reclaim).
+    /// VACUUM is never run by the timer regardless — only via the explicit
+    /// opt-in command. Default on.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Move messages older than `archive_age_days` to the cold archive DB
+    /// instead of leaving them in the hot DB. Default on (archive, never
+    /// delete — fully recoverable via `db_maintenance_restore_archived`).
+    #[serde(default = "default_true")]
+    pub archive_messages: bool,
+    /// Age threshold (days) for archiving a message. Default 365.
+    #[serde(default = "default_archive_age_days")]
+    pub archive_age_days: i64,
+    /// A conversation with any activity (newest message) within this many
+    /// seconds is NEVER archived, even if some of its messages are old.
+    /// Default 86400 (1 day).
+    #[serde(default = "default_active_window_secs")]
+    pub active_window_secs: i64,
+    /// When true, archived rows are also hard-deleted from the archive DB after
+    /// a retention window. Default FALSE — archive-not-delete is the contract.
+    #[serde(default)]
+    pub hard_delete_archived: bool,
+    /// Run a full `VACUUM` automatically. Default FALSE — VACUUM rewrites the
+    /// whole DB and takes a global lock; it only runs via the explicit
+    /// `db_maintenance_vacuum` command.
+    #[serde(default)]
+    pub auto_vacuum: bool,
+    /// Minimum hours between scheduled maintenance passes. Default 6.
+    #[serde(default = "default_idle_interval_hours")]
+    pub idle_interval_hours: u64,
+}
+
+fn default_archive_age_days() -> i64 {
+    365
+}
+fn default_active_window_secs() -> i64 {
+    86_400
+}
+fn default_idle_interval_hours() -> u64 {
+    6
+}
+
+impl Default for MaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            archive_messages: true,
+            archive_age_days: default_archive_age_days(),
+            active_window_secs: default_active_window_secs(),
+            hard_delete_archived: false,
+            auto_vacuum: false,
+            idle_interval_hours: default_idle_interval_hours(),
+        }
+    }
 }
 
 /// Explicit, user-edited identity facts (the "Custom Instructions" pattern).
@@ -861,6 +930,60 @@ mod tests {
             let r = redacted(s.clone());
             let key = r.custom_backends.unwrap()[0].api_key.clone().unwrap();
             assert_ne!(key, "sk-secret-value");
+        });
+    }
+
+    /// WS4: an OLD settings.json that lacks the `maintenance` block (and a
+    /// block missing individual fields a newer build adds) must load cleanly —
+    /// `maintenance` deserializes to `None`/conservative defaults, never errors,
+    /// and a save round-trips the explicit config back.
+    #[test]
+    fn maintenance_config_back_compat_and_roundtrip() {
+        with_tempdir(|dir| {
+            // Legacy file with NO maintenance key at all.
+            std::fs::write(
+                dir.join("settings.json"),
+                r#"{ "theme": "dark", "auto_update_check": false }"#,
+            )
+            .expect("write legacy settings");
+            let s = load();
+            assert!(s.maintenance.is_none(), "absent block → None");
+            // The agent's effective config is the safe default.
+            let eff = s.maintenance.unwrap_or_default();
+            assert!(eff.enabled);
+            assert!(eff.archive_messages);
+            assert!(!eff.auto_vacuum);
+            assert!(!eff.hard_delete_archived);
+            assert_eq!(eff.archive_age_days, 365);
+            assert_eq!(eff.active_window_secs, 86_400);
+            assert_eq!(eff.idle_interval_hours, 6);
+
+            // A PARTIAL block (only `enabled`) fills the rest from defaults.
+            std::fs::write(
+                dir.join("settings.json"),
+                r#"{ "maintenance": { "enabled": false } }"#,
+            )
+            .expect("write partial");
+            let p = load().maintenance.expect("partial block parses");
+            assert!(!p.enabled);
+            assert!(p.archive_messages, "missing field → default true");
+            assert_eq!(p.archive_age_days, 365);
+
+            // Explicit config survives save → load.
+            let mut s2 = Settings::default();
+            s2.maintenance = Some(MaintenanceConfig {
+                enabled: true,
+                archive_messages: true,
+                archive_age_days: 30,
+                active_window_secs: 3600,
+                hard_delete_archived: false,
+                auto_vacuum: false,
+                idle_interval_hours: 12,
+            });
+            save(&s2).expect("save");
+            let back = load().maintenance.expect("roundtrip");
+            assert_eq!(back.archive_age_days, 30);
+            assert_eq!(back.idle_interval_hours, 12);
         });
     }
 

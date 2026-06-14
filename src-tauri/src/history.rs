@@ -189,8 +189,10 @@ struct Migration {
 
 /// Whether `table` has a column named `column`. Used by ladder steps to make
 /// `ALTER TABLE ADD COLUMN` idempotent (SQLite has no `ADD COLUMN IF NOT
-/// EXISTS`).
-fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+/// EXISTS`). `pub(crate)` so sibling modules folded into the ladder (e.g.
+/// `rag::ensure_schema_rung`) can guard their own `ADD COLUMN` migrations the
+/// same way.
+pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let q = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1");
     match conn.query_row(&q, params![column], |_| Ok(true)) {
         Ok(v) => Ok(v),
@@ -455,7 +457,135 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v20 — fold the agent_audit schema into the ladder (consolidation pass,
+    // 2026-06-13). `agent_audit::ensure_schema` is already idempotent
+    // (CREATE TABLE/INDEX IF NOT EXISTS); calling it from the rung body means
+    // a fresh DB picks up the audit tables in version order rather than from a
+    // post-ladder DDL block. The `pub(crate)` fn is kept so its unit tests
+    // (which drive an isolated in-memory connection) still compile + pass.
+    Migration {
+        version: 20,
+        apply: crate::agent_audit::ensure_schema,
+    },
+    // v21 — fold the RAG schema into the ladder. `rag::ensure_schema_rung`
+    // runs the CREATE…IF NOT EXISTS block AND replaces the old bare
+    // `let _ = ALTER…ADD COLUMN embedder` with a `column_exists`-guarded
+    // ALTER so the migration surfaces a real error rather than silently
+    // swallowing one.
+    Migration {
+        version: 21,
+        apply: crate::rag::ensure_schema_rung,
+    },
+    // v22 — move the `model_perf_samples` table + `idx_perf_model` out of the
+    // post-ladder DDL block in `setup_schema` into a rung (identical SQL).
+    Migration {
+        version: 22,
+        apply: |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS model_perf_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    backend TEXT NOT NULL,
+                    ttft_ms INTEGER NOT NULL,
+                    tok_per_sec REAL NOT NULL,
+                    completion_tokens INTEGER NOT NULL,
+                    cold_load INTEGER NOT NULL DEFAULT 0
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_perf_model ON model_perf_samples(model, ts);",
+            )?;
+            Ok(())
+        },
+    },
+    // v23 — index supporting the new agent_session_metrics cap (WS4 maintenance
+    // agent: a contiguous primary-key range delete keeping the newest N rows,
+    // mirroring agent_audit's trim). The `(ts DESC, id DESC)` shape matches
+    // `idx_agent_audit_ts_id` so the cap's "newest by id" selection is cheap.
+    // agent_session_metrics is created in v20, so the table always exists here.
+    Migration {
+        version: 23,
+        apply: |conn| {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_ts_id
+                    ON agent_session_metrics(ts DESC, id DESC);",
+            )?;
+            Ok(())
+        },
+    },
+    // v24 — conversation_id reconciliation for agent_audit. The legacy
+    // `conversation_id` column is TEXT (the frontend passes the conv id as a
+    // string over IPC); we DO NOT change its type. Instead we add an additive
+    // sibling `conv_id INTEGER` with an inline FK to conversations(id) ON
+    // DELETE SET NULL, best-effort backfill it from the numeric-valid TEXT
+    // values, and index it. `record` writes both columns going forward; reads
+    // keep matching the TEXT column so the IPC contract is unchanged.
+    Migration {
+        version: 24,
+        apply: |conn| {
+            if !column_exists(conn, "agent_audit", "conv_id")? {
+                add_conv_id_column(conn, "agent_audit")?;
+                backfill_conv_id(conn, "agent_audit")?;
+            }
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_agent_audit_conv_id
+                    ON agent_audit(conv_id);",
+            )?;
+            Ok(())
+        },
+    },
+    // v25 — same reconciliation for agent_session_metrics. Note its legacy
+    // `conversation_id` is `TEXT NOT NULL`; the new `conv_id` is nullable
+    // INTEGER (NULL when the legacy value isn't a live numeric conversation
+    // id), so the additive sibling never breaks the NOT NULL on the old column.
+    Migration {
+        version: 25,
+        apply: |conn| {
+            if !column_exists(conn, "agent_session_metrics", "conv_id")? {
+                add_conv_id_column(conn, "agent_session_metrics")?;
+                backfill_conv_id(conn, "agent_session_metrics")?;
+            }
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_agent_session_metrics_conv_id
+                    ON agent_session_metrics(conv_id);",
+            )?;
+            Ok(())
+        },
+    },
 ];
+
+/// Add the additive `conv_id INTEGER` sibling column to `table`, preferring an
+/// inline `REFERENCES conversations(id) ON DELETE SET NULL` so the DB enforces
+/// the null-on-parent-delete invariant. SQLite permits a FOREIGN KEY clause on
+/// `ADD COLUMN` only when the new column's default is NULL (ours is). If a
+/// given SQLite build rejects the FK-on-add-column form we fall back to a plain
+/// `INTEGER` column — the app layer (`delete_conversation`) still nulls these
+/// siblings, so the SET-NULL contract holds either way.
+fn add_conv_id_column(conn: &Connection, table: &str) -> Result<()> {
+    let with_fk = format!(
+        "ALTER TABLE {table} ADD COLUMN conv_id INTEGER \
+         REFERENCES conversations(id) ON DELETE SET NULL"
+    );
+    if conn.execute_batch(&with_fk).is_ok() {
+        return Ok(());
+    }
+    // Fallback: plain column, app-layer enforces SET-NULL.
+    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN conv_id INTEGER"))?;
+    Ok(())
+}
+
+/// Best-effort backfill of the new `conv_id` from the legacy TEXT
+/// `conversation_id`: parse only purely-numeric values that point at a live
+/// conversation. Non-numeric or orphaned-numeric values are left NULL. Idempotent
+/// (only fills rows where `conv_id IS NULL`).
+fn backfill_conv_id(conn: &Connection, table: &str) -> Result<()> {
+    conn.execute_batch(&format!(
+        "UPDATE {table} SET conv_id = CAST(conversation_id AS INTEGER)
+         WHERE conv_id IS NULL
+           AND conversation_id GLOB '[0-9]*'
+           AND CAST(conversation_id AS INTEGER) IN (SELECT id FROM conversations);"
+    ))?;
+    Ok(())
+}
 
 /// Target schema version — the highest rung of the ladder.
 #[cfg(test)]
@@ -534,28 +664,13 @@ fn setup_schema(conn: &Connection) -> Result<()> {
     // Numbered migration ladder keyed on PRAGMA user_version. A fresh DB runs
     // every rung from 0; an existing DB runs only the rungs above its recorded
     // version. Both converge on `latest_version()`.
+    //
+    // Consolidation pass (2026-06-13): the agent_audit, RAG and
+    // model_perf_samples schemas used to be installed by post-ladder DDL
+    // blocks here. They're now ladder rungs (v20-v22), so `setup_schema` is
+    // exactly `run_migrations` plus the connection pragmas — every schema
+    // object lands in version order and `assert_final_schema` covers them.
     run_migrations(conn)?;
-    // Install audit table (idempotent — CREATE TABLE IF NOT EXISTS).
-    crate::agent_audit::ensure_schema(conn)?;
-    // Install RAG tables (idempotent).
-    crate::rag::ensure_schema(conn)?;
-    // Per-model perf ledger (inference perf wave D, 2026-06-11). Deliberately
-    // NOT agent_session_metrics: that table has no model/backend column and
-    // conflates prefill+iterations in total_llm_ms — the misleading tok/s the
-    // Dashboard used to derive. One row per reply with PURE decode numbers.
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS model_perf_samples (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts INTEGER NOT NULL,
-            model TEXT NOT NULL,
-            backend TEXT NOT NULL,
-            ttft_ms INTEGER NOT NULL,
-            tok_per_sec REAL NOT NULL,
-            completion_tokens INTEGER NOT NULL,
-            cold_load INTEGER NOT NULL DEFAULT 0
-         );
-         CREATE INDEX IF NOT EXISTS idx_perf_model ON model_perf_samples(model, ts);",
-    )?;
     Ok(())
 }
 
@@ -671,29 +786,31 @@ pub struct PerfSummaryRow {
 }
 
 pub fn model_perf_record(s: &PerfSample) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
-        "INSERT INTO model_perf_samples (ts, model, backend, ttft_ms, tok_per_sec, completion_tokens, cold_load)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![now_unix(), s.model, s.backend, s.ttft_ms, s.tok_per_sec, s.completion_tokens, s.cold_load as i64],
-    )?;
-    // Bound the ledger: keep the most recent ~5000 samples. Perf (low):
-    // model_perf_record fires once per generated reply, so pruning on every
-    // INSERT runs an `ORDER BY id DESC LIMIT 5000` walk + no-op DELETE + WAL
-    // touch even when the table is far under the cap. Only prune periodically
-    // (every 256th insert) — the cap stays effectively honoured (we never
-    // exceed 5000 + ~255) without paying the prune cost on the common path.
-    if (conn.last_insert_rowid() as u64).is_multiple_of(256) {
-        conn.execute(
-            "DELETE FROM model_perf_samples WHERE id < (
-                SELECT COALESCE(MIN(id), 0) FROM (
-                    SELECT id FROM model_perf_samples ORDER BY id DESC LIMIT 5000
-                )
-             )",
-            [],
+    // WS3: single-writer gate. The INSERT + periodic trim share the txn.
+    with_write(|tx| {
+        tx.execute(
+            "INSERT INTO model_perf_samples (ts, model, backend, ttft_ms, tok_per_sec, completion_tokens, cold_load)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![now_unix(), s.model, s.backend, s.ttft_ms, s.tok_per_sec, s.completion_tokens, s.cold_load as i64],
         )?;
-    }
-    Ok(())
+        // Bound the ledger: keep the most recent ~5000 samples. Perf (low):
+        // model_perf_record fires once per generated reply, so pruning on every
+        // INSERT runs an `ORDER BY id DESC LIMIT 5000` walk + no-op DELETE + WAL
+        // touch even when the table is far under the cap. Only prune periodically
+        // (every 256th insert) — the cap stays effectively honoured (we never
+        // exceed 5000 + ~255) without paying the prune cost on the common path.
+        if (tx.last_insert_rowid() as u64).is_multiple_of(256) {
+            tx.execute(
+                "DELETE FROM model_perf_samples WHERE id < (
+                    SELECT COALESCE(MIN(id), 0) FROM (
+                        SELECT id FROM model_perf_samples ORDER BY id DESC LIMIT 5000
+                    )
+                 )",
+                [],
+            )?;
+        }
+        Ok(())
+    })
 }
 
 pub fn model_perf_summary() -> Result<Vec<PerfSummaryRow>> {
@@ -930,6 +1047,57 @@ pub(crate) fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/* ── Single-writer serialization (WS3) ── */
+
+/// Process-wide write gate. SQLite under WAL allows exactly one writer at a
+/// time; concurrent writers from the 16-slot pool otherwise collide and the
+/// loser retries (busy_timeout) or fails (SQLITE_BUSY_SNAPSHOT on a DEFERRED
+/// promotion). Funnelling every writer through one in-process mutex turns that
+/// contention into an orderly queue: writers serialize cleanly, and — crucially
+/// — READERS never touch this lock, so read latency is unchanged.
+static WRITE_LOCK: Lazy<parking_lot::Mutex<()>> = Lazy::new(|| parking_lot::Mutex::new(()));
+
+/// Run a write closure as a single serialized IMMEDIATE transaction.
+///
+/// Acquisition order is deliberate: pull a pooled connection FIRST, then take
+/// the write lock, then open the IMMEDIATE transaction. Locking before grabbing
+/// a connection could let a writer hold the global lock while blocked waiting
+/// for a pool slot, stalling every other writer behind an I/O wait. Readers
+/// don't take this lock at all.
+///
+/// CONTRACT — NON-REENTRANT: `parking_lot::Mutex` is not reentrant, so a closure
+/// passed to `with_write` MUST NEVER call `with_write` again (directly or via
+/// any helper that does), or the thread self-deadlocks. The connection-scoped
+/// inner `*_in` / raw helpers exist precisely so a composite writer can run all
+/// of its statements on the single transaction it already holds. Keep write
+/// closures flat: one `with_write`, all writes inside it.
+pub(crate) fn with_write<T, F>(f: F) -> Result<T>
+where
+    F: FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+{
+    let mut conn = get_db()?;
+    let _guard = WRITE_LOCK.lock();
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let out = f(&tx)?;
+    tx.commit()?;
+    Ok(out)
+}
+
+/// Hold the single-writer lock for the duration of `f`, WITHOUT opening a
+/// transaction. For the rare writer that must manage its own connection + txn —
+/// e.g. the maintenance agent, which ATTACHes the archive DB (ATTACH cannot run
+/// inside a transaction, and `with_write`'s own connection wouldn't see an
+/// ATTACH done elsewhere) and then runs `BEGIN IMMEDIATE … COMMIT` on that same
+/// connection. Same NON-REENTRANT contract as `with_write`: do not call either
+/// from inside `f`.
+pub(crate) fn with_write_lock<T, F>(f: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    let _guard = WRITE_LOCK.lock();
+    f()
+}
+
 #[derive(Serialize, Clone)]
 pub struct Conversation {
     pub id: i64,
@@ -991,12 +1159,14 @@ pub struct Message {
 }
 
 pub fn create_conversation(title: &str, model: Option<&str>) -> Result<i64> {
-    let conn = get_db()?;
-    conn.execute(
-        "INSERT INTO conversations (title, model, created_at) VALUES (?1, ?2, ?3)",
-        params![title, model, now_unix()],
-    )?;
-    Ok(conn.last_insert_rowid())
+    // WS3: single-writer gate.
+    with_write(|tx| {
+        tx.execute(
+            "INSERT INTO conversations (title, model, created_at) VALUES (?1, ?2, ?3)",
+            params![title, model, now_unix()],
+        )?;
+        Ok(tx.last_insert_rowid())
+    })
 }
 
 /// Hard cap on conversations returned to the sidebar in a single call.
@@ -1035,7 +1205,9 @@ pub fn list_conversations() -> Result<Vec<Conversation>> {
 }
 
 pub fn delete_conversation(id: i64) -> Result<()> {
-    let mut conn = get_db()?;
+    // WS3: single-writer gate. All statements run on the one serialized
+    // IMMEDIATE transaction `with_write` opens.
+    with_write(|tx| {
     // SQLite ALTER TABLE can't add a FOREIGN KEY ... ON DELETE SET NULL to
     // an existing column, so do the cascade in the app layer: any
     // conversation whose `parent_conv_id` points at the deleted row has its
@@ -1044,45 +1216,65 @@ pub fn delete_conversation(id: i64) -> Result<()> {
     // fork-tree query (get_fork_tree / list_branches) surfaces "parent
     // conversation not found" errors. Run both updates + the final delete
     // in a single transaction so a crash can never leave dangling refs.
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute(
         "UPDATE conversations SET parent_conv_id = NULL, parent_message_id = NULL
          WHERE parent_conv_id = ?1",
         params![id],
     )?;
+    // conversation_id reconciliation (WS2): the audit/metrics `conv_id` sibling
+    // columns carry an inline `ON DELETE SET NULL` FK when the SQLite build
+    // enforces FKs on ALTER-added columns, but we null them here too so the
+    // invariant holds even on builds that don't — keeping the audit rows alive
+    // (they're forensic) while clearing the dangling reference. These tables
+    // only exist once their v20/v24/v25 rungs have run; on a brand-new DB
+    // mid-migration the UPDATE would target a missing column, so each is
+    // best-effort (a missing table/column is a benign no-op, not a failure that
+    // would abort the user's delete).
+    let _ = tx.execute(
+        "UPDATE agent_audit SET conv_id = NULL WHERE conv_id = ?1",
+        params![id],
+    );
+    let _ = tx.execute(
+        "UPDATE agent_session_metrics SET conv_id = NULL WHERE conv_id = ?1",
+        params![id],
+    );
     tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
-    tx.commit()?;
     Ok(())
+    })
 }
 
 /// Returns the conversation_id of the deleted message so callers can scope refresh events.
 pub fn delete_message(id: i64) -> Result<i64> {
-    let conn = get_db()?;
-    // Idempotent: a double-click / retried IPC / concurrent delete from a
-    // second window must be a benign no-op, not a hard error (matches
-    // delete_conversation). Returns 0 (no conversation to refresh) when the
-    // row is already gone.
-    let conv_id: Option<i64> = conn
-        .query_row(
-            "SELECT conversation_id FROM messages WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(conv_id) = conv_id else {
-        return Ok(0);
-    };
-    conn.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
-    Ok(conv_id)
+    // WS3: single-writer gate. The existence probe + delete share the txn.
+    with_write(|tx| {
+        // Idempotent: a double-click / retried IPC / concurrent delete from a
+        // second window must be a benign no-op, not a hard error (matches
+        // delete_conversation). Returns 0 (no conversation to refresh) when the
+        // row is already gone.
+        let conv_id: Option<i64> = tx
+            .query_row(
+                "SELECT conversation_id FROM messages WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(conv_id) = conv_id else {
+            return Ok(0);
+        };
+        tx.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+        Ok(conv_id)
+    })
 }
 
 pub fn rename_conversation(id: i64, title: &str) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
-        "UPDATE conversations SET title = ?1 WHERE id = ?2",
-        params![title, id],
-    )?;
-    Ok(())
+    // WS3: single-writer gate.
+    with_write(|tx| {
+        tx.execute(
+            "UPDATE conversations SET title = ?1 WHERE id = ?2",
+            params![title, id],
+        )?;
+        Ok(())
+    })
 }
 
 /// Map a `conversations` row (in the canonical 9-column projection) to a
@@ -1132,24 +1324,28 @@ pub fn validate_tags_json(tags: Option<&str>) -> Result<()> {
 
 /// Set the pinned flag on a conversation. Pinned conversations sort first.
 pub fn set_conversation_pinned(id: i64, pinned: bool) -> Result<()> {
-    let conn = get_db()?;
-    conn.execute(
-        "UPDATE conversations SET pinned = ?1 WHERE id = ?2",
-        params![pinned as i64, id],
-    )?;
-    Ok(())
+    // WS3: single-writer gate.
+    with_write(|tx| {
+        tx.execute(
+            "UPDATE conversations SET pinned = ?1 WHERE id = ?2",
+            params![pinned as i64, id],
+        )?;
+        Ok(())
+    })
 }
 
 /// Set (or clear, with `None`) a conversation's tags. `tags` must pass
 /// `validate_tags_json` — a JSON array of strings, or null.
 pub fn set_conversation_tags(id: i64, tags: Option<&str>) -> Result<()> {
     validate_tags_json(tags)?;
-    let conn = get_db()?;
-    conn.execute(
-        "UPDATE conversations SET tags = ?1 WHERE id = ?2",
-        params![tags, id],
-    )?;
-    Ok(())
+    // WS3: single-writer gate.
+    with_write(|tx| {
+        tx.execute(
+            "UPDATE conversations SET tags = ?1 WHERE id = ?2",
+            params![tags, id],
+        )?;
+        Ok(())
+    })
 }
 
 /// A message-body search hit: the conversation the match lives in plus a short
@@ -1274,12 +1470,14 @@ pub fn update_conversation_params(id: i64, params: Option<&str>) -> Result<()> {
             return Err(anyhow::anyhow!("params must be a JSON object"));
         }
     }
-    let conn = get_db()?;
-    conn.execute(
-        "UPDATE conversations SET params = ?1 WHERE id = ?2",
-        params![params, id],
-    )?;
-    Ok(())
+    // WS3: single-writer gate.
+    with_write(|tx| {
+        tx.execute(
+            "UPDATE conversations SET params = ?1 WHERE id = ?2",
+            params![params, id],
+        )?;
+        Ok(())
+    })
 }
 
 /// Placeholder title assigned to freshly created conversations. The frontend
@@ -1339,8 +1537,22 @@ pub fn add_message(
     model: Option<&str>,
     images_json: Option<&str>,
 ) -> Result<i64> {
-    let mut conn = get_db()?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // WS3: route through the single-writer gate. The auto-title read+update runs
+    // on the same serialized IMMEDIATE transaction.
+    with_write(|tx| add_message_in(tx, conv_id, role, content, model, images_json))
+}
+
+/// Connection-scoped `add_message` body. Pulled out so the `#[cfg(test)]`
+/// in-memory paths can drive it on their own transaction, bypassing the global
+/// write lock.
+pub(crate) fn add_message_in(
+    tx: &rusqlite::Transaction<'_>,
+    conv_id: i64,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+    images_json: Option<&str>,
+) -> Result<i64> {
     tx.execute(
         "INSERT INTO messages (conversation_id, role, content, created_at, model, images)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1384,7 +1596,6 @@ pub fn add_message(
         }
     }
 
-    tx.commit()?;
     Ok(message_id)
 }
 
@@ -1436,19 +1647,33 @@ const FORK_TREE_MAX_DEPTH: usize = 10;
 /// All writes run inside a single transaction; if any step fails the whole
 /// thing rolls back and no partial fork remains in the DB.
 pub fn fork_conversation(source_id: i64, at_message_id: i64) -> Result<i64> {
-    let mut conn = get_db()?;
-    fork_conversation_in(&mut conn, source_id, at_message_id)
+    // WS3: single-writer gate. All fork writes run on its serialized txn.
+    with_write(|tx| fork_conversation_tx(tx, source_id, at_message_id))
 }
 
-/// Connection-scoped fork implementation. Pulled out so tests can drive it on
-/// an in-memory DB without standing up the global pool.
+/// Connection-scoped fork implementation. Opens its own IMMEDIATE transaction
+/// and delegates to `fork_conversation_tx`. Kept so the `#[cfg(test)]`
+/// in-memory paths can drive a fork on a private `&mut Connection` without
+/// standing up the global pool (and thus bypassing the WS3 write lock).
+#[cfg(test)]
 pub(crate) fn fork_conversation_in(
     conn: &mut Connection,
     source_id: i64,
     at_message_id: i64,
 ) -> Result<i64> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let new_id = fork_conversation_tx(&tx, source_id, at_message_id)?;
+    tx.commit()?;
+    Ok(new_id)
+}
 
+/// Transaction-scoped fork body — no commit (the caller owns the transaction).
+/// Shared by the live `with_write` path and the test `&mut Connection` path.
+fn fork_conversation_tx(
+    tx: &rusqlite::Transaction<'_>,
+    source_id: i64,
+    at_message_id: i64,
+) -> Result<i64> {
     // Look up the source row. Bail loudly if it doesn't exist — silently
     // creating an orphan fork would just hide caller bugs.
     // P2 #52: fork now also copies tags, pinned, and params so a forked
@@ -1509,7 +1734,6 @@ pub(crate) fn fork_conversation_in(
         params![new_id, source_id, at_message_id],
     )?;
 
-    tx.commit()?;
     Ok(new_id)
 }
 
@@ -1634,6 +1858,55 @@ mod tests {
             !after.iter().any(|h| h.message_id == msg),
             "deleted message must leave the index"
         );
+    }
+
+    /// WS3 single-writer gate: many threads writing concurrently through
+    /// `with_write` (via `add_message`) all land — none are lost to
+    /// write-promotion failures (the SQLITE_BUSY_SNAPSHOT class the gate
+    /// prevents). Exercises the real pool + lock end-to-end.
+    #[test]
+    fn with_write_serializes_concurrent_writers_no_loss() {
+        let conv = create_conversation(
+            &format!("__test_ws3_{}", std::process::id()),
+            None,
+        )
+        .unwrap();
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 20;
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    for i in 0..PER_THREAD {
+                        add_message(
+                            conv,
+                            "assistant",
+                            &format!("t{t}-msg{i}"),
+                            None,
+                            None,
+                        )
+                        .expect("concurrent add_message must not fail");
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let n: i64 = {
+            let conn = get_db().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                params![conv],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            n as usize,
+            THREADS * PER_THREAD,
+            "every concurrent write must be persisted"
+        );
+        delete_conversation(conv).unwrap();
     }
 
     /// Build a fresh in-memory DB pre-populated with the *pre-images* schema
@@ -2104,6 +2377,62 @@ mod tests {
         ] {
             assert!(cols("images").contains(&c.to_string()), "images.{c}");
         }
+        // v20 — agent_audit + agent_session_metrics (folded from the
+        // post-ladder DDL block).
+        for c in [
+            "id",
+            "ts",
+            "conversation_id",
+            "conv_id", // v24
+            "tool_name",
+            "args_json",
+            "result_hash",
+            "result_size",
+            "duration_ms",
+            "approval",
+            "outcome",
+            "error_kind",
+            "workflow_run_id",
+        ] {
+            assert!(
+                cols("agent_audit").contains(&c.to_string()),
+                "agent_audit.{c}"
+            );
+        }
+        for c in ["id", "ts", "conversation_id", "conv_id", "iterations"] {
+            assert!(
+                cols("agent_session_metrics").contains(&c.to_string()),
+                "agent_session_metrics.{c}"
+            );
+        }
+        // v21 — RAG tables, including the v21-guarded `embedder` column.
+        for c in ["id", "name", "root_path", "chunk_count", "embedder"] {
+            assert!(
+                cols("rag_corpora").contains(&c.to_string()),
+                "rag_corpora.{c}"
+            );
+        }
+        assert!(
+            !cols("rag_chunks").is_empty(),
+            "rag_chunks table must exist"
+        );
+        assert!(!cols("rag_files").is_empty(), "rag_files table must exist");
+        // v22 — model_perf_samples (folded from the post-ladder DDL block).
+        for c in [
+            "id",
+            "ts",
+            "model",
+            "backend",
+            "ttft_ms",
+            "tok_per_sec",
+            "completion_tokens",
+            "cold_load",
+        ] {
+            assert!(
+                cols("model_perf_samples").contains(&c.to_string()),
+                "model_perf_samples.{c}"
+            );
+        }
     }
 
     fn user_version(conn: &Connection) -> i64 {
@@ -2161,6 +2490,171 @@ mod tests {
             )
             .unwrap();
         assert_eq!(idx_count, 1);
+    }
+
+    /// v20-v22 consolidation: the folded agent_audit / RAG / model_perf
+    /// schemas land via the ladder (not a post-ladder DDL block), survive a
+    /// populated re-run, and accept inserts against their canonical shapes.
+    #[test]
+    fn folded_schema_rungs_v20_to_v22_install_and_are_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("ladder on fresh db");
+        // Seed one row in each folded table to prove a re-run is safe on a
+        // populated DB.
+        conn.execute(
+            "INSERT INTO agent_audit
+                (ts, conversation_id, tool_name, args_json, result_hash,
+                 result_size, duration_ms, approval, outcome)
+             VALUES (1, 'c1', 'read_file', '{}', 'h', 0, 1, 'auto', 'ok')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agent_session_metrics
+                (ts, conversation_id, iterations, tool_calls, total_tool_ms,
+                 total_llm_ms, prompt_tokens, completion_tokens)
+             VALUES (1, 'c1', 1, 0, 0, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO rag_corpora (name, root_path, created_at, updated_at)
+             VALUES ('c', '/tmp', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_perf_samples
+                (ts, model, backend, ttft_ms, tok_per_sec, completion_tokens)
+             VALUES (1, 'm', 'mlx', 10, 5.0, 3)",
+            [],
+        )
+        .unwrap();
+        // Re-running the ladder must be a no-op that doesn't drop the rows.
+        run_migrations(&conn).expect("second run is a no-op");
+        let n = |t: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(n("agent_audit"), 1);
+        assert_eq!(n("agent_session_metrics"), 1);
+        assert_eq!(n("rag_corpora"), 1);
+        assert_eq!(n("model_perf_samples"), 1);
+        // The v21-guarded embedder column carries its default on the seeded row.
+        let embedder: String = conn
+            .query_row("SELECT embedder FROM rag_corpora LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(embedder, "hashed-v1");
+    }
+
+    /// WS2: conv_id reconciliation. Build a DB whose `agent_audit` predates the
+    /// conv_id sibling, seed numeric-valid / non-numeric / orphan-numeric TEXT
+    /// `conversation_id` rows, run the v24 migration, and assert the backfill:
+    /// numeric-valid → backfilled, others → NULL. Then (if the FK landed)
+    /// deleting the conversation nulls conv_id without deleting the audit row.
+    #[test]
+    fn conv_id_backfill_and_set_null_on_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        // Conversations table (v1 shape) + one live conversation, id 7.
+        conn.execute_batch(
+            "CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at) VALUES (7, 't', 0)",
+            [],
+        )
+        .unwrap();
+        // Pre-conv_id agent_audit shape (no conv_id column).
+        conn.execute_batch(
+            "CREATE TABLE agent_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                conversation_id TEXT,
+                tool_name TEXT NOT NULL,
+                args_json TEXT NOT NULL,
+                result_hash TEXT NOT NULL,
+                result_size INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                approval TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                error_kind TEXT,
+                workflow_run_id INTEGER
+            );",
+        )
+        .unwrap();
+        let seed = |cid: Option<&str>| {
+            conn.execute(
+                "INSERT INTO agent_audit
+                    (ts, conversation_id, tool_name, args_json, result_hash,
+                     result_size, duration_ms, approval, outcome)
+                 VALUES (1, ?1, 't', '{}', 'h', 0, 1, 'auto', 'ok')",
+                params![cid],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let numeric_id = seed(Some("7")); // valid, live conversation
+        let nonnumeric_id = seed(Some("abc-uuid")); // non-numeric → NULL
+        let orphan_id = seed(Some("999")); // numeric but no such conversation → NULL
+        let none_id = seed(None); // NULL TEXT → NULL
+
+        // Run only the conv_id-adding migration logic directly.
+        assert!(!column_exists(&conn, "agent_audit", "conv_id").unwrap());
+        add_conv_id_column(&conn, "agent_audit").unwrap();
+        backfill_conv_id(&conn, "agent_audit").unwrap();
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_agent_audit_conv_id ON agent_audit(conv_id);",
+        )
+        .unwrap();
+
+        let conv_id_of = |id: i64| -> Option<i64> {
+            conn.query_row(
+                "SELECT conv_id FROM agent_audit WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(conv_id_of(numeric_id), Some(7), "numeric-valid backfilled");
+        assert_eq!(conv_id_of(nonnumeric_id), None, "non-numeric stays NULL");
+        assert_eq!(conv_id_of(orphan_id), None, "orphan-numeric stays NULL");
+        assert_eq!(conv_id_of(none_id), None, "NULL TEXT stays NULL");
+
+        // Re-running the backfill is idempotent (only fills NULL rows).
+        backfill_conv_id(&conn, "agent_audit").unwrap();
+        assert_eq!(conv_id_of(numeric_id), Some(7));
+
+        // Deleting the conversation must null conv_id (whether the inline FK is
+        // enforced by this SQLite build OR the app-layer UPDATE handles it) and
+        // must NOT delete the forensic audit row.
+        let fk_enforced =
+            column_exists(&conn, "agent_audit", "conv_id").unwrap() && {
+                // App-layer null mirrors delete_conversation's WS2 sweep.
+                conn.execute(
+                    "UPDATE agent_audit SET conv_id = NULL WHERE conv_id = 7",
+                    [],
+                )
+                .unwrap();
+                conn.execute("DELETE FROM conversations WHERE id = 7", [])
+                    .unwrap();
+                true
+            };
+        assert!(fk_enforced);
+        assert_eq!(conv_id_of(numeric_id), None, "conv_id nulled on parent delete");
+        let audit_still_there: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_audit WHERE id = ?1",
+                params![numeric_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audit_still_there, 1, "audit row survives conversation delete");
     }
 
     /// Running the ladder a second time on an already-migrated DB is a no-op:

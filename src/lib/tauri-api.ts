@@ -112,6 +112,39 @@ import type {
   WebSearchResult,
 } from "../types";
 
+/** Read-only storage stats from the DB maintenance agent (WS4). */
+export interface MaintenanceStats {
+  db_bytes: number;
+  wal_bytes: number;
+  archive_bytes: number;
+  conversations: number;
+  messages: number;
+  messages_archived: number;
+  agent_audit_rows: number;
+  model_perf_rows: number;
+  agent_session_metrics_rows: number;
+}
+
+/** Outcome of one maintenance phase. */
+export interface MaintenancePhaseResult {
+  ran: boolean;
+  skipped_reason: string | null;
+  rows: number;
+}
+
+/** Full report from a maintenance pass. */
+export interface MaintenanceReport {
+  trigger: "scheduled" | "boot" | "manual" | "vacuum";
+  started_at: number;
+  duration_ms: number;
+  bytes_before: number;
+  bytes_after: number;
+  caps: MaintenancePhaseResult;
+  archive: MaintenancePhaseResult;
+  reclaim: MaintenancePhaseResult;
+  vacuumed: boolean;
+}
+
 export const api = {
   listAllModels: () => invoke<AllModels>("list_all_models"),
   startServer: (model: string, backend: string) =>
@@ -1138,4 +1171,16 @@ export const api = {
     invoke<void>("claude_skill_set_pinned", { name, pinned }),
   claudeSkillDelete: (name: string) =>
     invoke<void>("claude_skill_delete", { name }),
+  /* ── DB/storage maintenance (WS4) ── */
+  /** Cheap read-only storage stats (db/wal/archive bytes + row counts). */
+  dbMaintenanceStats: () =>
+    invoke<MaintenanceStats>("db_maintenance_stats"),
+  /** Run the SAFE phases now (caps + archive + reclaim). Never VACUUMs. */
+  dbMaintenanceRun: () => invoke<MaintenanceReport>("db_maintenance_run"),
+  /** Explicit heavy reclaim: safe phases + a full VACUUM. */
+  dbMaintenanceVacuum: () =>
+    invoke<MaintenanceReport>("db_maintenance_vacuum"),
+  /** Recovery: restore archived messages for a conversation. Returns count. */
+  dbMaintenanceRestoreArchived: (conversationId: number) =>
+    invoke<number>("db_maintenance_restore_archived", { conversationId }),
 };

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCw, X } from "lucide-react";
 import { api } from "../lib/tauri-api";
+import type { MaintenanceReport, MaintenanceStats } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { ClaudeSkillsPanel } from "./ClaudeSkillsPanel";
 import type {
@@ -9,6 +10,19 @@ import type {
   DashboardSummary,
   ToolLatencyRow,
 } from "../types";
+
+/** Human-readable byte size. */
+function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let v = n;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u++;
+  }
+  return `${v.toFixed(u === 0 ? 0 : 1)} ${units[u]}`;
+}
 
 type WindowKey = "1h" | "24h" | "7d" | "all";
 
@@ -125,7 +139,41 @@ export function Dashboard({ open, onClose }: Props) {
       last_ts: number;
     }>
   >([]);
+  // WS4 storage panel state. Read-only stats refresh with the dashboard; the
+  // last maintenance report is shown after the user runs a pass.
+  const [storage, setStorage] = useState<MaintenanceStats | null>(null);
+  const [lastReport, setLastReport] = useState<MaintenanceReport | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+  const [confirmVacuum, setConfirmVacuum] = useState(false);
+
+  const refreshStorage = useCallback(() => {
+    void api
+      .dbMaintenanceStats()
+      .then(setStorage)
+      .catch(() => {});
+  }, []);
+
+  const runMaintenance = useCallback(
+    async (vacuum: boolean) => {
+      setStorageBusy(true);
+      try {
+        const report = vacuum
+          ? await api.dbMaintenanceVacuum()
+          : await api.dbMaintenanceRun();
+        setLastReport(report);
+        refreshStorage();
+      } catch {
+        // Fail-open: the agent already logs to diagnostics; keep the UI quiet.
+      } finally {
+        setStorageBusy(false);
+        setConfirmVacuum(false);
+      }
+    },
+    [refreshStorage],
+  );
+
   const refresh = useCallback(async () => {
+    refreshStorage();
     // Per-model perf ledger (wave D). Replaces the old derivation from
     // agent_session_metrics, whose tok/s folded prefill + every loop
     // iteration into the denominator — a model decoding at 15 tok/s could
@@ -158,7 +206,7 @@ export function Dashboard({ open, onClose }: Props) {
     } finally {
       if (seq === refreshSeqRef.current) setBusy(false);
     }
-  }, [windowKey]);
+  }, [windowKey, refreshStorage]);
 
   useEffect(() => {
     if (!open) return;
@@ -465,6 +513,105 @@ export function Dashboard({ open, onClose }: Props) {
               >
                 Manage Skills
               </button>
+            </div>
+          </section>
+
+          {/* 7. Storage / DB maintenance (WS4). Read-only stats + the two
+               maintenance actions: a safe "Optimize now" and a confirm-gated
+               "Reclaim disk (VACUUM)". The scheduled agent runs the safe phases
+               automatically; these buttons let the user trigger on demand. */}
+          <section className="dashboard-card" data-testid="dashboard-storage">
+            <h3>Storage</h3>
+            {storage == null ? (
+              <div className="dashboard-empty">Loading storage stats…</div>
+            ) : (
+              <table className="dashboard-table">
+                <tbody>
+                  <tr>
+                    <td>Database</td>
+                    <td className="num">{fmtBytes(storage.db_bytes)}</td>
+                  </tr>
+                  <tr>
+                    <td>WAL</td>
+                    <td className="num">{fmtBytes(storage.wal_bytes)}</td>
+                  </tr>
+                  <tr>
+                    <td>Archive</td>
+                    <td className="num">{fmtBytes(storage.archive_bytes)}</td>
+                  </tr>
+                  <tr>
+                    <td>Conversations</td>
+                    <td className="num">{fmtInt(storage.conversations)}</td>
+                  </tr>
+                  <tr>
+                    <td>Messages</td>
+                    <td className="num">{fmtInt(storage.messages)}</td>
+                  </tr>
+                  <tr>
+                    <td>Archived messages</td>
+                    <td className="num">{fmtInt(storage.messages_archived)}</td>
+                  </tr>
+                  <tr>
+                    <td>Audit / perf / session rows</td>
+                    <td className="num">
+                      {fmtInt(storage.agent_audit_rows)} /{" "}
+                      {fmtInt(storage.model_perf_rows)} /{" "}
+                      {fmtInt(storage.agent_session_metrics_rows)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+            {lastReport && (
+              <div className="dashboard-hint" data-testid="storage-last-report">
+                Last pass: archived {fmtInt(lastReport.archive.rows)} · trimmed{" "}
+                {fmtInt(lastReport.caps.rows)} · {fmtBytes(lastReport.bytes_before)}{" "}
+                → {fmtBytes(lastReport.bytes_after)}
+                {lastReport.vacuumed ? " (VACUUMed)" : ""}
+              </div>
+            )}
+            <div className="dashboard-actions">
+              <button
+                type="button"
+                className="dashboard-action-btn"
+                data-testid="storage-optimize"
+                disabled={storageBusy}
+                onClick={() => void runMaintenance(false)}
+              >
+                {storageBusy ? "Working…" : "Optimize now"}
+              </button>
+              {confirmVacuum ? (
+                <>
+                  <button
+                    type="button"
+                    className="dashboard-action-btn"
+                    data-testid="storage-vacuum-confirm"
+                    disabled={storageBusy}
+                    onClick={() => void runMaintenance(true)}
+                  >
+                    Confirm VACUUM
+                  </button>
+                  <button
+                    type="button"
+                    className="dashboard-action-btn"
+                    disabled={storageBusy}
+                    onClick={() => setConfirmVacuum(false)}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="dashboard-action-btn"
+                  data-testid="storage-vacuum"
+                  disabled={storageBusy}
+                  onClick={() => setConfirmVacuum(true)}
+                  title="Rewrites the whole database to reclaim disk. Briefly locks the DB."
+                >
+                  Reclaim disk (VACUUM)
+                </button>
+              )}
             </div>
           </section>
         </div>
