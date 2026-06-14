@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { api } from "../lib/tauri-api";
+import {
+  useSettingsGetter,
+  useUpdateSettings,
+} from "../contexts/SettingsContext";
 import { logDiag } from "../lib/diagnostics";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { ErrorBar } from "./ErrorBar";
@@ -38,12 +41,13 @@ export function AboutYouModal({ onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const getSettings = useSettingsGetter();
+  const updateSettings = useUpdateSettings();
 
   // Load the saved profile once. A missing/legacy profile falls back to EMPTY.
   useEffect(() => {
     let cancelled = false;
-    api
-      .settingsGet()
+    getSettings()
       .then((s) => {
         if (!cancelled && s.user_profile)
           setProfile({ ...EMPTY, ...s.user_profile });
@@ -62,7 +66,7 @@ export function AboutYouModal({ onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [getSettings]);
 
   function set<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
     setProfile((p) => ({ ...p, [key]: value }));
@@ -94,7 +98,7 @@ export function AboutYouModal({ onClose }: Props) {
       // An entirely blank save leaves enabled at whatever it was so an
       // explicit disable still sticks.
       const effectiveEnabled = profile.enabled || hasAnyContent;
-      await api.settingsSet({
+      await updateSettings({
         user_profile: {
           enabled: effectiveEnabled,
           name,

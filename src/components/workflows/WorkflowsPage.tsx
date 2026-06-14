@@ -13,6 +13,7 @@ import {
 import { logDiag } from "../../lib/diagnostics";
 import { announce } from "../../lib/announce";
 import { useTauriEvent } from "../../hooks/useTauriEvent";
+import { useSettingsGetter } from "../../contexts/SettingsContext";
 import { BUILTIN_PRESETS } from "../../lib/agent-presets";
 import { EmptyState } from "../EmptyState";
 import {
@@ -114,6 +115,7 @@ export function WorkflowsPage({ status }: Props) {
   // Pre-formatted "About You" block, shared by every card's agent run so
   // workflow agents know who the user is. Refreshed on mount.
   const [userProfile, setUserProfile] = useState<string | null>(null);
+  const getSettings = useSettingsGetter();
   // Active agent write-workspace, surfaced in the RunPanel so the user always
   // knows where a flow's file-writing cards land. `undefined` = not yet loaded
   // (render nothing); `null` = unset (warn: files scatter under ~).
@@ -225,8 +227,7 @@ export function WorkflowsPage({ status }: Props) {
 
   // Load the "About You" profile once; a failed read just omits it.
   useEffect(() => {
-    api
-      .settingsGet()
+    getSettings()
       .then((s) => setUserProfile(formatUserProfile(s.user_profile)))
       .catch((e) =>
         logDiag({
@@ -236,7 +237,7 @@ export function WorkflowsPage({ status }: Props) {
           detail: e,
         }),
       );
-  }, []);
+  }, [getSettings]);
 
   // Resolve the active agent write-workspace for the RunPanel indicator.
   // Mirrors ChatWindow's mount fetch. A failed read must not block or error

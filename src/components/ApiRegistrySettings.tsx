@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
-import { api } from "../lib/tauri-api";
+import {
+  useSettingsGetter,
+  useUpdateSettings,
+} from "../contexts/SettingsContext";
 import type { SavedApi } from "../types";
 
 /*
@@ -30,20 +33,21 @@ export function ApiRegistrySettings() {
   const [apis, setApis] = useState<SavedApi[]>([]);
   const [draft, setDraft] = useState<SavedApi | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const getSettings = useSettingsGetter();
+  const updateSettings = useUpdateSettings();
 
   useEffect(() => {
-    void api
-      .settingsGet()
+    void getSettings()
       .then((s) => setApis(s.saved_apis ?? []))
       .catch(() => {});
-  }, []);
+  }, [getSettings]);
 
   async function persist(next: SavedApi[]) {
     setApis(next);
     try {
       // Outbound keeps real/typed keys for entries being saved; redacted
       // marker for untouched ones (settings.rs leaves Keychain as-is on it).
-      await api.settingsSet({ saved_apis: next });
+      await updateSettings({ saved_apis: next });
       setErr(null);
     } catch (e) {
       setErr(String(e));

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../lib/tauri-api";
+import {
+  useSettingsGetter,
+  useUpdateSettings,
+} from "../contexts/SettingsContext";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 import { ErrorBar } from "./ErrorBar";
 import { Cloud } from "lucide-react";
@@ -50,15 +53,20 @@ export function CustomBackendsSettings({ onChanged }: Props) {
   const [draftModel, setDraftModel] = useState("");
   const [draftKey, setDraftKey] = useState("");
   const removeConfirm = useTwoClickConfirm();
+  // Read/write through the central settings store. The editor keeps a local
+  // working copy (`backends`) so edits apply optimistically; the store is the
+  // canonical source it hydrates from on mount and re-reads on a failed save.
+  const getSettings = useSettingsGetter();
+  const updateSettings = useUpdateSettings();
 
   const refresh = useCallback(async () => {
     try {
-      const s = await api.settingsGet();
+      const s = await getSettings();
       setBackends(s.custom_backends ?? []);
     } catch (e) {
       setErr(String(e));
     }
-  }, []);
+  }, [getSettings]);
 
   useEffect(() => {
     void refresh();
@@ -67,7 +75,7 @@ export function CustomBackendsSettings({ onChanged }: Props) {
   async function persist(next: CustomBackend[]) {
     setBackends(next);
     try {
-      await api.settingsSet({ custom_backends: next });
+      await updateSettings({ custom_backends: next });
       onChanged?.();
     } catch (e) {
       setErr(`Failed to save: ${e}`);

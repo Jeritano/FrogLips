@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../lib/tauri-api";
-import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
+import {
+  readCachedConfigs,
+  reconcileConfigs,
+  persistConfigs,
+} from "../lib/mcp-servers";
+import {
+  useSettingsGetter,
+  useUpdateSettings,
+} from "../contexts/SettingsContext";
 import { Button, Input, Spinner, Badge } from "./ui";
 import { ClaudeSkillsPanel } from "./ClaudeSkillsPanel";
 import { EmptyState } from "./EmptyState";
@@ -17,41 +25,12 @@ import "../styles/mcp.css";
 /* ── MCP Tools hub ──────────────────────────────────────────────────────
  * One surface to browse MCP server registries, install/connect servers
  * (local stdio packages OR remote streamable-HTTP endpoints), and manage the
- * running set (status, tools, start/stop/remove). Shares the `mcp.servers`
- * localStorage + settings.json persistence with the legacy Agent-Settings
- * panel so both stay in sync. Remote tokens live in the Keychain (Rust side).
+ * running set (status, tools, start/stop/remove). settings.json is the source
+ * of truth for the configured set (see lib/mcp-servers); `localStorage` is a
+ * pre-paint cache only, shared with the legacy Agent-Settings panel so both
+ * surfaces paint the same list immediately. Remote tokens live in the
+ * Keychain (Rust side).
  */
-
-function loadConfigs(): McpServerConfig[] {
-  try {
-    const raw = localStorage.getItem("mcp.servers");
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (s) => s && typeof s === "object" && typeof s.name === "string",
-    );
-  } catch (err) {
-    logDiag({
-      level: "warn",
-      source: "mcp",
-      message: "loadConfigs malformed",
-      detail: err,
-    });
-    return [];
-  }
-}
-function saveConfigs(list: McpServerConfig[]) {
-  localStorage.setItem("mcp.servers", JSON.stringify(list));
-  api.settingsSet({ mcp_servers: list }).catch((e) =>
-    logDiag({
-      level: "warn",
-      source: "mcp",
-      message: "persist mcp_servers failed",
-      detail: e,
-    }),
-  );
-}
 
 /** Sanitize a registry id into a valid server name ([A-Za-z0-9_-]{1,64}). */
 function deriveName(id: string): string {
@@ -84,14 +63,39 @@ export function McpView() {
   // look. Tools view is where MCP servers (the other "things the agent can
   // do" surface) already live, so the modal opens from here too.
   const [skillsOpen, setSkillsOpen] = useState(false);
+  // First paint from the pre-paint cache so the Installed list isn't empty for
+  // the frame before settings_get resolves; the reconcile effect below then
+  // adopts settings.json (the source of truth) as the canonical set.
   const [configs, setConfigs] = useState<McpServerConfig[]>(() =>
-    loadConfigs(),
+    readCachedConfigs(),
   );
   const [servers, setServers] = useState<McpServerInfo[]>([]);
   const [tools, setTools] = useState<Record<string, string[]>>({});
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const removeConfirm = useTwoClickConfirm();
+  const getSettings = useSettingsGetter();
+  const updateSettings = useUpdateSettings();
+
+  // Reconcile against the authoritative settings.json once on mount. If
+  // settings has servers they win; if it's empty but the cache has a legacy
+  // set, adopt and persist it back so nothing is lost on the migration.
+  useEffect(() => {
+    let cancelled = false;
+    void getSettings()
+      .then((s) => {
+        if (cancelled) return;
+        const { configs: reconciled, migrated } = reconcileConfigs(s);
+        setConfigs(reconciled);
+        if (migrated) void persistConfigs(reconciled, updateSettings);
+      })
+      .catch(() => {
+        /* keep the cached list — settings_get unavailable this session */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [getSettings, updateSettings]);
 
   // Browse state
   const [source, setSource] = useState("official");
@@ -223,7 +227,7 @@ export function McpView() {
 
   function persist(next: McpServerConfig[]) {
     setConfigs(next);
-    saveConfigs(next);
+    void persistConfigs(next, updateSettings);
   }
 
   const startConfig = useCallback(

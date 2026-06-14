@@ -9,6 +9,7 @@ import {
 import { formatSizeParen as formatSize } from "../lib/format";
 import { api } from "../lib/tauri-api";
 import { useTauriEvent } from "../hooks/useTauriEvent";
+import { useSettingsField } from "../contexts/SettingsContext";
 import { useHardwareProfile } from "../hooks/useHardwareProfile";
 import type { HeadroomTier } from "../lib/hardware-profile";
 import { HardwareWarningBanner } from "./HardwareWarningBanner";
@@ -68,9 +69,11 @@ export function ModelPicker({
   // surfaces via Tauri events rather than the polled ServerStatus.
   const [nativeLoading, setNativeLoading] = useState<string | null>(null);
   // Configured custom OpenAI-compatible cloud backends (OpenRouter/Groq/…).
-  // Loaded from settings; selecting one synthesizes a status (no local
-  // process) and routes chat through `streamCustomChat`.
-  const [customBackends, setCustomBackends] = useState<CustomBackend[]>([]);
+  // Sourced from the central settings store; selecting one synthesizes a
+  // status (no local process) and routes chat through `streamCustomChat`. The
+  // store owns the single `settings-changed` listener that used to live here,
+  // so this slice refreshes automatically after any settings save.
+  const customBackends = useSettingsField((s) => s?.custom_backends ?? []);
   const [selectedCustom, setSelectedCustom] = useState<CustomBackend | null>(
     null,
   );
@@ -92,26 +95,6 @@ export function ModelPicker({
   useEffect(() => {
     void loadModels(true);
   }, []);
-
-  // Load configured custom backends + refresh when settings change (the
-  // settings panel emits `settings-changed` after a save).
-  const loadCustomBackends = useCallback(async () => {
-    try {
-      const s = await api.settingsGet();
-      setCustomBackends(s.custom_backends ?? []);
-    } catch {
-      setCustomBackends([]);
-    }
-  }, []);
-  useEffect(() => {
-    void loadCustomBackends();
-  }, [loadCustomBackends]);
-  useTauriEvent<unknown>(
-    "settings-changed",
-    useCallback(() => {
-      void loadCustomBackends();
-    }, [loadCustomBackends]),
-  );
 
   // Native models load in-process: progress only surfaces via Tauri events.
   useTauriEvent<string>(

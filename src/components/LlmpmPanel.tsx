@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { abbrev, paramPill, relTime } from "../lib/format";
 import { api } from "../lib/tauri-api";
+import {
+  useSettingsGetter,
+  useUpdateSettings,
+} from "../contexts/SettingsContext";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import type { CustomBackend, LlmpmServeStatus } from "../types";
 import { Button, Input, Spinner } from "./ui";
@@ -132,6 +136,11 @@ export function LlmpmPanel({
   const [busyRepo, setBusyRepo] = useState<string | null>(null);
   const [progress, setProgress] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  // Read the freshest custom_backends at action time (matches the prior
+  // `await api.settingsGet()` inside these handlers), and persist through the
+  // central store so the change propagates to every consumer.
+  const getSettings = useSettingsGetter();
+  const updateSettings = useUpdateSettings();
 
   const refreshInstalled = useCallback(async () => {
     try {
@@ -233,7 +242,7 @@ export function LlmpmPanel({
         const status = await api.llmpmServe(repo);
         setServeStatus(status);
         if (status.base_url) {
-          const settings = await api.settingsGet();
+          const settings = await getSettings();
           const existing: CustomBackend[] = settings.custom_backends ?? [];
           const cb: CustomBackend = {
             id: LLMPM_BACKEND_ID,
@@ -242,7 +251,7 @@ export function LlmpmPanel({
             model: repo,
             api_key: null,
           };
-          await api.settingsSet({
+          await updateSettings({
             custom_backends: [
               ...existing.filter((b) => b.id !== LLMPM_BACKEND_ID),
               cb,
@@ -257,25 +266,25 @@ export function LlmpmPanel({
         setBusyRepo(null);
       }
     },
-    [onBackendsChanged],
+    [onBackendsChanged, getSettings, updateSettings],
   );
 
   const stop = useCallback(async () => {
     setError(null);
     try {
       await api.llmpmStop();
-      const settings = await api.settingsGet();
+      const settings = await getSettings();
       const existing: CustomBackend[] = settings.custom_backends ?? [];
       const next = existing.filter((b) => b.id !== LLMPM_BACKEND_ID);
       if (next.length !== existing.length) {
-        await api.settingsSet({ custom_backends: next });
+        await updateSettings({ custom_backends: next });
         onBackendsChanged?.();
       }
       await refreshServe();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [onBackendsChanged, refreshServe]);
+  }, [onBackendsChanged, refreshServe, getSettings, updateSettings]);
 
   const installedRef = useRef(installed);
   installedRef.current = installed;

@@ -14,6 +14,7 @@ import { EmptyState } from "./EmptyState";
 import { api } from "../lib/tauri-api";
 import { Button, Input, Spinner, Badge } from "./ui";
 import { usePersistedState } from "../hooks/usePersistedState";
+import { useSettingsGetter } from "../contexts/SettingsContext";
 import { useRoundtableRun } from "../lib/roundtable/run-context";
 import {
   parsePrice,
@@ -503,6 +504,7 @@ function outcomeToMarkdown(
 
 export function RoundtableView() {
   const run = useRoundtableRun();
+  const getSettings = useSettingsGetter();
   const [options, setOptions] = useState<ModelOption[]>(
     () => cachedOptions ?? [],
   );
@@ -1113,7 +1115,7 @@ export function RoundtableView() {
       setLoadingModels(true);
       const opts: ModelOption[] = [];
       try {
-        const settings = await api.settingsGet().catch(() => null);
+        const settings = await getSettings().catch(() => null);
         for (const b of settings?.custom_backends ?? []) {
           opts.push({
             key: `custom::${b.id}`,
@@ -1173,7 +1175,7 @@ export function RoundtableView() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [getSettings]);
 
   const optionByKey = useMemo(() => {
     const m = new Map<string, ModelOption>();

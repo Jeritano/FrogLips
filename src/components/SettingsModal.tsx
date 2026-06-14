@@ -6,6 +6,10 @@ import { RoutesSettings } from "./RoutesSettings";
 import { ApiRegistrySettings } from "./ApiRegistrySettings";
 import { checkForUpdate } from "../lib/updater";
 import { api } from "../lib/tauri-api";
+import {
+  useSettingsGetter,
+  useUpdateSettings,
+} from "../contexts/SettingsContext";
 import pkg from "../../package.json";
 import type { ServerStatus } from "../types";
 
@@ -110,15 +114,16 @@ export function SettingsModal({
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [keepAliveInit, setKeepAliveInit] = useState("30m");
   const [maxIterInit, setMaxIterInit] = useState("80");
+  const getSettings = useSettingsGetter();
+  const updateSettings = useUpdateSettings();
   useEffect(() => {
-    void api
-      .settingsGet()
+    void getSettings()
       .then((s) => {
         setKeepAliveInit(s.ollama_keep_alive ?? "30m");
         setMaxIterInit(String(s.agent_max_iterations ?? 80));
       })
       .catch(() => {});
-  }, []);
+  }, [getSettings]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   useModalA11y({ open, onClose, containerRef });
 
@@ -221,9 +226,9 @@ export function SettingsModal({
                     data-testid="settings-keep-alive"
                     defaultValue={keepAliveInit}
                     onChange={(e) => {
-                      void api
-                        .settingsSet({ ollama_keep_alive: e.target.value })
-                        .catch(() => {});
+                      void updateSettings({
+                        ollama_keep_alive: e.target.value,
+                      }).catch(() => {});
                     }}
                   >
                     <option value="5m">Unload after 5 min idle</option>
@@ -248,9 +253,9 @@ export function SettingsModal({
                         400,
                         Math.max(5, Math.floor(Number(e.target.value) || 80)),
                       );
-                      void api
-                        .settingsSet({ agent_max_iterations: n })
-                        .catch(() => {});
+                      void updateSettings({ agent_max_iterations: n }).catch(
+                        () => {},
+                      );
                     }}
                   />
                   <span className="settings-hint">

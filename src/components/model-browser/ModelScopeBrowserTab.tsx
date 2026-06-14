@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { abbrev, relTimeEpoch as relTime } from "../../lib/format";
 import { api } from "../../lib/tauri-api";
+import {
+  useSettingsGetter,
+  useUpdateSettings,
+} from "../../contexts/SettingsContext";
 import type { CustomBackend } from "../../types";
 import { Button, Input, Spinner, Badge } from "../ui";
 import { Download, Heart, Check } from "lucide-react";
@@ -63,6 +67,8 @@ export function ModelScopeBrowserTab({
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [connected, setConnected] = useState<string | null>(null);
+  const getSettings = useSettingsGetter();
+  const updateSettings = useUpdateSettings();
 
   // Proxied through Rust (ModelScope's API sends no CORS headers).
   const load = useCallback(async (q: string) => {
@@ -95,7 +101,7 @@ export function ModelScopeBrowserTab({
       setBusy(repo);
       setErr(null);
       try {
-        const settings = await api.settingsGet();
+        const settings = await getSettings();
         const existing: CustomBackend[] = settings.custom_backends ?? [];
         const cb: CustomBackend = {
           id: `modelscope-${repo}`,
@@ -104,7 +110,7 @@ export function ModelScopeBrowserTab({
           model: repo,
           api_key: token.trim(),
         };
-        await api.settingsSet({
+        await updateSettings({
           custom_backends: [...existing.filter((b) => b.id !== cb.id), cb],
         });
         setConnected(repo);
@@ -115,7 +121,7 @@ export function ModelScopeBrowserTab({
         setBusy(null);
       }
     },
-    [token, onConnected],
+    [token, onConnected, getSettings, updateSettings],
   );
 
   return (

@@ -69,6 +69,7 @@ import {
   RoundtableRunProvider,
   useRoundtableRun,
 } from "./lib/roundtable/run-context";
+import { SettingsProvider } from "./contexts/SettingsContext";
 
 type ViewId = "chat" | "workflows" | "knowledge" | "mcp" | "roundtable";
 
@@ -1553,11 +1554,13 @@ function App() {
  */
 function AppWithProviders() {
   return (
-    <WorkflowRunProvider>
-      <RoundtableRunProvider>
-        <App />
-      </RoundtableRunProvider>
-    </WorkflowRunProvider>
+    <SettingsProvider>
+      <WorkflowRunProvider>
+        <RoundtableRunProvider>
+          <App />
+        </RoundtableRunProvider>
+      </WorkflowRunProvider>
+    </SettingsProvider>
   );
 }
 

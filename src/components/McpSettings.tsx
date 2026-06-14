@@ -2,6 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/tauri-api";
 import { logDiag } from "../lib/diagnostics";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
+import {
+  readCachedConfigs,
+  reconcileConfigs,
+  persistConfigs,
+} from "../lib/mcp-servers";
+import {
+  useSettingsGetter,
+  useUpdateSettings,
+} from "../contexts/SettingsContext";
 import { ErrorBar } from "./ErrorBar";
 import type { McpServerConfig, McpServerInfo } from "../types";
 
@@ -22,44 +31,15 @@ interface Props {
   onConfigsChanged?: () => void;
 }
 
-function loadConfigs(): McpServerConfig[] {
-  try {
-    const raw = localStorage.getItem("mcp.servers");
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (s) =>
-        s &&
-        typeof s === "object" &&
-        typeof s.name === "string" &&
-        typeof s.command === "string",
-    );
-  } catch (err) {
-    logDiag({
-      level: "warn",
-      source: "mcp",
-      message:
-        "loadConfigs: malformed localStorage 'mcp.servers' — defaulting to []",
-      detail: err,
-    });
-    return [];
-  }
-}
-
-function saveConfigs(list: McpServerConfig[]) {
-  localStorage.setItem("mcp.servers", JSON.stringify(list));
-  // Mirror to backend so auto-start works next launch. Failures here are
-  // non-fatal — the user can still operate the servers in this session.
-  api
-    .settingsSet({ mcp_servers: list })
-    .catch((e) => console.warn("[mcp] failed to persist servers", e));
-}
-
 export function McpSettings({ onConfigsChanged }: Props) {
+  // First paint from the pre-paint cache; reconcile against the authoritative
+  // settings.json on mount (see lib/mcp-servers). Writes go to settings.json
+  // first, mirroring the legacy Tools-hub behavior so both surfaces agree.
   const [configs, setConfigs] = useState<McpServerConfig[]>(() =>
-    loadConfigs(),
+    readCachedConfigs(),
   );
+  const getSettings = useSettingsGetter();
+  const updateSettings = useUpdateSettings();
   const [servers, setServers] = useState<McpServerInfo[]>([]);
   const [tools, setTools] = useState<Record<string, string[]>>({});
   const [err, setErr] = useState<string | null>(null);
@@ -120,9 +100,30 @@ export function McpSettings({ onConfigsChanged }: Props) {
     };
   }, [refresh]);
 
+  // Reconcile the configured set against the authoritative settings.json once
+  // on mount (cache → settings.json migration is lossless; see lib/mcp-servers).
+  useEffect(() => {
+    let cancelled = false;
+    void getSettings()
+      .then((s) => {
+        if (cancelled) return;
+        const { configs: reconciled, migrated } = reconcileConfigs(s);
+        setConfigs(reconciled);
+        if (migrated) void persistConfigs(reconciled, updateSettings);
+      })
+      .catch(() => {
+        /* keep the cached list — settings_get unavailable this session */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [getSettings, updateSettings]);
+
   function persist(next: McpServerConfig[]) {
     setConfigs(next);
-    saveConfigs(next);
+    // Mirror to backend so auto-start works next launch. Failures are
+    // non-fatal — the user can still operate the servers this session.
+    void persistConfigs(next, updateSettings);
     onConfigsChanged?.();
   }
 
