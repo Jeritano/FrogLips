@@ -15,18 +15,24 @@
 import { api } from "../tauri-api";
 import { makeUnifiedDiff } from "./diff";
 import { dryRunValidateUrl } from "./url-safety";
+import { TOOL_REGISTRY } from "./tool-registry";
+import { lazyDerivedSet } from "./lazy-set";
 
-export const DRY_RUN_TOOLS = new Set([
-  "write_file",
-  "edit_file",
-  "multi_edit",
-  "apply_patch",
-  "run_shell",
-  "applescript_run",
-  "browser_navigate",
-  "browser_click",
-  "browser_fill",
-]);
+// ── Dry-run disposition Sets — DERIVED from TOOL_REGISTRY ────────────────────
+//
+// Both Sets are derived from each descriptor's `dryRun` field
+// ("preview" | "run" | "suppress"), the single source of truth in
+// tool-registry.ts. The registry-consistency test pins them against the
+// original frozen literals so a wrong `dryRun` value fails CI.
+
+/**
+ * Tools with a rich dry-run PREVIEW (diff / would_run / would_navigate, …) —
+ * `dryRunExecute` returns a structured `{ok:true, dry_run:true, would_*}`
+ * payload instead of invoking the Tauri command.
+ */
+export const DRY_RUN_TOOLS = lazyDerivedSet(() =>
+  TOOL_REGISTRY.filter((d) => d.dryRun === "preview").map((d) => d.name),
+);
 
 /**
  * Tools that are safe to ACTUALLY EXECUTE under dry-run: read-only / no
@@ -39,49 +45,12 @@ export const DRY_RUN_TOOLS = new Set([
  * not a denylist of dangerous ones: when a new side-effectful tool is added
  * (e.g. format_code, screenshot, remember, workflow_set, task_cancel — all of
  * which mutate state yet are NOT in DANGEROUS_TOOLS), it is suppressed
- * automatically until someone consciously decides it is read-only and adds it
- * here. A denylist would silently execute it.
+ * automatically until someone consciously decides it is read-only (descriptor
+ * `dryRun: "run"`). A denylist would silently execute it.
  */
-export const DRY_RUN_READ_ONLY = new Set([
-  "read_file",
-  "read_files",
-  "list_dir",
-  "search_files",
-  "file_exists",
-  // update_plan only normalizes + echoes a checklist — no side effects, safe
-  // to actually run under dry-run.
-  "update_plan",
-  "hash_file",
-  "diff_files",
-  "git_status",
-  "git_diff",
-  "git_log",
-  "git_show",
-  "git_branches",
-  "web_fetch",
-  "web_search",
-  "read_pdf",
-  "clipboard_get",
-  "find_definition",
-  "find_references",
-  "calculate",
-  "recall_memory",
-  "search_project_knowledge",
-  "list_processes",
-  "list_undo",
-  "task_status",
-  "task_list",
-  "list_watches",
-  "poll_watch",
-  "ask_user",
-  "workflow_get",
-  "workflow_keys",
-  "workflow_get_prior_run",
-  "workflow_list_skills",
-  "workflow_get_skill",
-  "list_claude_skills",
-  "load_claude_skill",
-]);
+export const DRY_RUN_READ_ONLY = lazyDerivedSet(() =>
+  TOOL_REGISTRY.filter((d) => d.dryRun === "run").map((d) => d.name),
+);
 
 function truncForDryRun(s: string, max: number): string {
   if (s.length <= max) return s;
