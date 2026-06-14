@@ -629,8 +629,23 @@ impl ServerState {
                 // never blocks start()/stop().
                 if let Some((model, backend)) = alive {
                     if self.ready.load(Ordering::Acquire) && liveness_probe_enabled() {
+                        // A wedged backend makes probe_responsive() block up to
+                        // ~4s (2s TCP + 2s HTTP). Race it against the shutdown
+                        // signal so app exit isn't delayed by a stuck probe
+                        // (perf review 2026-06-14); the inter-tick sleep in the
+                        // watcher is already shutdown-raced, but this in-poll
+                        // await was not. The sticky-flag check covers the window
+                        // where shutdown was requested before we parked on
+                        // notified() (notify_waiters only wakes parked waiters).
+                        if crate::is_shutting_down() {
+                            return WatchOutcome::Idle;
+                        }
                         let my_generation = self.generation.load(Ordering::Acquire);
-                        let responsive = self.probe_responsive(&backend).await;
+                        let shutdown = crate::shutdown_signal();
+                        let responsive = tokio::select! {
+                            _ = shutdown.notified() => return WatchOutcome::Idle,
+                            r = self.probe_responsive(&backend) => r,
+                        };
                         // Discard the result if the backend was replaced/stopped
                         // while the probe was in flight — the streak belongs to
                         // whatever is running now, not the old generation.
@@ -702,29 +717,34 @@ impl ServerState {
         if !tcp_ok {
             return false;
         }
-        // Stage 2: HTTP GET. A fresh short-lived client per probe keeps this
-        // dependency-free of shared client lifetime concerns; the probe runs at
-        // most every ~2s so client setup cost is negligible.
+        // Stage 2: HTTP GET. Reuse a single long-lived client (perf review
+        // 2026-06-14) instead of rebuilding one every ~2s tick — the builder
+        // allocates a connection pool + TLS config each call. Cached in a
+        // OnceLock; the per-probe timeout is set on the request, not the client,
+        // so one shared client serves every backend.
         let url = format!("http://{host}:{port}{path}");
-        let client = match reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() {
-            Ok(c) => c,
-            // If we can't even build a client, fall back to the TCP result we
-            // already have (port is open) rather than false-flagging a wedge.
-            Err(_) => return true,
-        };
-        match client.get(&url).send().await {
+        match probe_client().get(&url).timeout(PROBE_TIMEOUT).send().await {
             Ok(resp) => resp.status().is_success(),
             Err(_) => false, // timeout / connection reset mid-request => wedged
         }
     }
 
     /// Emit a transient "unresponsive" status so the UI can surface a wedged
-    /// backend. Shaped like the dead/restarting emits but keeps the model so the
-    /// UI can name it. Used by the watcher's `Unresponsive` arm.
+    /// backend. Used by the watcher's `Unresponsive` arm.
+    ///
+    /// Correctness (review 2026-06-14): an unresponsive backend is NOT dead —
+    /// `poll()` only reaches the `Unresponsive` branch while the process is
+    /// alive and the port is still open (the probe is "TCP open but HTTP
+    /// wedged"). Building from `dead_status()` reported `running:false`,
+    /// `host:""`, `port:0`, which is factually wrong and, for the ollama path
+    /// (the watcher `continue`s with no follow-up emit), is the TERMINAL status
+    /// the UI sees — a running daemon shown as process-dead with no connection
+    /// info. Build from `live_status()` (keeps running:true + correct host/port)
+    /// and override `ready=false` + set `last_error` so the UI shows
+    /// "running but degraded" instead.
     pub fn emit_unresponsive(&self, model: &str, backend: &str, consecutive: u32) {
-        let mut s = self.dead_status();
-        s.model = Some(model.into());
-        s.backend = Some(backend.into());
+        let mut s = self.live_status(model, backend);
+        s.ready = false;
         s.last_error = Some(format!(
             "{backend} backend stopped responding ({consecutive} consecutive failed liveness probes) — \
              the port is open but the server is not answering"
@@ -897,8 +917,46 @@ async fn mlx_server_help(binary: &std::path::Path) -> String {
 
 /// Whether the backend liveness probe is enabled (item 5). Reads the
 /// `backend_liveness_probe` setting; absent/None => enabled (default on).
+///
+/// Perf (review 2026-06-14): the watcher calls this on EVERY ~2s poll tick
+/// while a backend is ready. `settings::load()` is uncached and — when the user
+/// has any `custom_backends`/`saved_apis` — resolves their secrets, which under
+/// the Keychain-default backend means N+M `get_generic_password` round-trips +
+/// secrets-file reads PER CALL. Hammering the Keychain every 2s for the entire
+/// time a model is loaded is a regression introduced with the probe. Cache the
+/// single boolean for a short TTL so the hot loop reads `settings::load()` (and
+/// thus the Keychain) at most once per `LIVENESS_FLAG_TTL` instead of per tick.
+/// The flag rarely changes; a stale-for-≤30s value is harmless and the next
+/// re-read picks up any toggle.
 fn liveness_probe_enabled() -> bool {
-    crate::settings::load().backend_liveness_probe.unwrap_or(true)
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    const LIVENESS_FLAG_TTL: Duration = Duration::from_secs(30);
+    // (last_read_instant, cached_value). PLMutex keeps this lock-cheap and
+    // poison-free; contention is nil (only the single watcher task calls it).
+    static CACHE: OnceLock<PLMutex<Option<(Instant, bool)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| PLMutex::new(None));
+
+    let mut guard = cache.lock();
+    if let Some((at, val)) = *guard {
+        if at.elapsed() < LIVENESS_FLAG_TTL {
+            return val;
+        }
+    }
+    let val = crate::settings::load().backend_liveness_probe.unwrap_or(true);
+    *guard = Some((Instant::now(), val));
+    val
+}
+
+/// Long-lived reqwest client for the liveness probe (perf review 2026-06-14).
+/// Rebuilding a client every ~2s tick reallocated a connection pool + TLS
+/// config each time; one shared client (per-request timeout) eliminates that
+/// churn. If the one-time build fails we fall back to a default client.
+fn probe_client() -> &'static reqwest::Client {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| reqwest::Client::builder().build().unwrap_or_default())
 }
 
 fn mlx_server_binary() -> Result<PathBuf> {
@@ -968,6 +1026,39 @@ mod tests {
         // At and above the threshold it trips.
         assert!(is_unresponsive(UNRESPONSIVE_THRESHOLD));
         assert!(is_unresponsive(UNRESPONSIVE_THRESHOLD + 10));
+    }
+
+    #[test]
+    fn unresponsive_status_is_running_not_dead() {
+        // Review 2026-06-14: an unresponsive (wedged-but-alive) backend must be
+        // reported as running with the correct host/port — NOT process-dead with
+        // an empty host and port 0. Mirror emit_unresponsive's status build
+        // (live_status + ready=false override) and assert the live shape.
+        let st = ServerState::default();
+        st.ready.store(true, Ordering::Release); // backend was ready before wedging
+
+        // ollama path: external daemon, port still open.
+        let mut s = st.live_status("llama3", "ollama");
+        s.ready = false;
+        assert!(s.running, "wedged backend is alive, must report running:true");
+        assert!(!s.ready, "wedged backend is not ready");
+        assert_eq!(s.host, OLLAMA_HOST, "host must be preserved, not empty");
+        assert_eq!(s.port, OLLAMA_PORT, "port must be preserved, not 0");
+        assert_eq!(s.model.as_deref(), Some("llama3"));
+        assert_eq!(s.backend.as_deref(), Some("ollama"));
+
+        // mlx path: our child, port still open.
+        let mut m = st.live_status("phi3", "mlx");
+        m.ready = false;
+        assert!(m.running);
+        assert_eq!(m.host, MLX_HOST);
+        assert_eq!(m.port, MLX_PORT);
+
+        // Contrast: dead_status IS the empty/zeroed shape — what we must NOT use.
+        let dead = st.dead_status();
+        assert!(!dead.running);
+        assert_eq!(dead.host, "");
+        assert_eq!(dead.port, 0);
     }
 
     #[test]

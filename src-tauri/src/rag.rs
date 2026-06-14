@@ -1095,7 +1095,19 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
         q_emb.len(),
     ) {
         match search_vec_rag(&conn, corpus_id, &q_emb, k) {
-            Ok(w) => w,
+            // Recall guard (review 2026-06-14): all corpora share ONE global
+            // vec0 table, so `search_vec_rag` resolves the KNN GLOBALLY first
+            // (bounded by the clamped 8x over-fetch) and only THEN filters to
+            // this corpus via the JOIN. When a larger sibling corpus owns the
+            // globally-nearest neighbours, a query against a small corpus can
+            // come back with FEWER than k hits even though the corpus holds
+            // good matches further down the global ranking — silent recall
+            // loss vs the linear path, which scans ONLY this corpus. So if the
+            // vec0 result is short, fall back to the corpus-scoped linear scan
+            // (its true top-k). A corpus genuinely smaller than k still returns
+            // the same set both ways, so the fallback is free in that case.
+            Ok(w) if w.len() >= k => w,
+            Ok(_) => search_linear(&conn, corpus_id, &q_emb, k)?,
             Err(e) => {
                 // vec0 errored at query time (corruption, transient) — never
                 // hard-fail: log once and fall back to the linear scan.
@@ -1518,6 +1530,91 @@ mod tests {
         }
         crate::history::ensure_vec_tables_present(&conn).unwrap();
         (conn, cid)
+    }
+
+    /// Insert `count` normalized `dim`-vectors for a fresh corpus named `name`
+    /// into an existing seeded DB, then refresh the vec0 index. Returns the new
+    /// corpus id. Used to build a multi-corpus table in ONE shared vec0 index.
+    fn add_rag_corpus(
+        conn: &rusqlite::Connection,
+        name: &str,
+        seed_base: u64,
+        count: usize,
+        dim: usize,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
+             VALUES (?1, '/tmp', 0, 0, 0)",
+            params![name],
+        )
+        .unwrap();
+        let cid = conn.last_insert_rowid();
+        for i in 0..count {
+            let blob = vec_to_blob(&norm_vec(seed_base + i as u64, dim));
+            conn.execute(
+                "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
+                 VALUES (?1, 'p', 0, 1, 't', ?2)",
+                params![cid, blob],
+            )
+            .unwrap();
+        }
+        crate::history::ensure_vec_tables_present(conn).unwrap();
+        cid
+    }
+
+    /// Recall guard (review 2026-06-14): in a SHARED global vec0 table, a small
+    /// corpus must still return its true top-k even when a much larger sibling
+    /// corpus dominates the global KNN candidate set. This reproduces the bug:
+    /// `search_vec_rag` against the small corpus can under-recall (fewer than k
+    /// of its own chunks survive the post-KNN corpus filter), while the
+    /// corpus-scoped `search_linear` always returns the small corpus's real
+    /// top-k. The `search`-side fallback (vec0 short → linear) closes the gap.
+    #[test]
+    fn vec0_rag_small_corpus_falls_back_to_linear() {
+        if !crate::history::vec0_available() {
+            return; // linear-only build already returns the true top-k
+        }
+        let dim = 16usize;
+        // Big corpus 'c' (from seed_rag_corpus) + a small sibling sharing the
+        // one global vec_rag_chunks index.
+        let (conn, _big) = seed_rag_corpus(800, dim);
+        let small = add_rag_corpus(&conn, "small", 10_000, 8, dim);
+        let k = 5usize;
+        // Query == the small corpus's first chunk vector, so it is guaranteed
+        // to score ~1.0 and appear in the small corpus's true top-k.
+        let q = norm_vec(10_000, dim);
+        // The corpus-scoped linear scan defines the small corpus's true top-k.
+        let lin = search_linear(&conn, small, &q, k).unwrap();
+        assert!(
+            !lin.is_empty(),
+            "linear must find the self-match in the small corpus"
+        );
+        // Whatever vec0 returns for the small corpus, the search-side guard
+        // (vec0 short → linear) must yield the full, correct top-k. Emulate
+        // that guard here against the in-memory conn.
+        let vec0 = search_vec_rag(&conn, small, &q, k).unwrap();
+        let winners = if vec0.len() >= k {
+            vec0
+        } else {
+            search_linear(&conn, small, &q, k).unwrap()
+        };
+        assert_eq!(
+            winners.len(),
+            lin.len(),
+            "guarded result must match the linear true top-k count"
+        );
+        // The self-match (top-1) must be present and rank first.
+        assert!(
+            (winners[0].0 - 1.0).abs() < 1e-3,
+            "guarded top-1 should be the ~1.0 self-match, got {}",
+            winners[0].0
+        );
+        // Ids must be the small corpus's real top-k (order-independent set check).
+        let mut got: Vec<i64> = winners.iter().map(|(_, id)| *id).collect();
+        let mut want: Vec<i64> = lin.iter().map(|(_, id)| *id).collect();
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want, "guarded ids must equal the linear top-k ids");
     }
 
     /// vec0 KNN top-k must equal the linear top-k (ids + scores within 1e-4),

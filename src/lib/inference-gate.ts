@@ -47,6 +47,12 @@ export function resolveSlots(): number {
 export class InferenceGate {
   private permits: number;
   private capacity: number;
+  /** Live count of granted-but-not-released permits. Tracked explicitly because
+   *  a shrink (`setPermits` down) floors `permits` at 0 without preempting
+   *  in-flight holders, so `capacity - permits` can UNDER-count true in-flight
+   *  while the gate is transiently over-subscribed. `release()` consults this to
+   *  avoid handing a permit to a waiter while still over capacity. */
+  private inFlight = 0;
   /** Pending waiters in arrival order. Each entry can be `settle`d (granted) or
    *  removed (aborted). */
   private queue: Array<{
@@ -103,6 +109,7 @@ export class InferenceGate {
     }
     if (this.permits > 0) {
       this.permits -= 1;
+      this.inFlight += 1;
       return Promise.resolve();
     }
     return new Promise<void>((resolve, reject) => {
@@ -128,20 +135,35 @@ export class InferenceGate {
   }
 
   /**
-   * Release one permit. If a waiter is queued, the permit is handed directly to
-   * the next FIFO waiter (no transient permit bump that a barging caller could
-   * steal). Otherwise the free count increments (capped at capacity).
+   * Release one permit. If a waiter is queued AND we're at/below capacity, the
+   * permit is handed directly to the next FIFO waiter (no transient permit bump
+   * that a barging caller could steal). Otherwise the free count increments
+   * (capped at capacity).
+   *
+   * The over-capacity guard matters after a shrink: `setPermits` down never
+   * preempts an in-flight holder, so the gate can be transiently over-subscribed
+   * (more in-flight than capacity) with a waiter queued. Handing the freed slot
+   * to that waiter would run it ALONGSIDE the still-in-flight over-capacity
+   * holder, momentarily exceeding capacity and violating the serialize-local-
+   * inference guarantee. Instead we drop the freed slot here (the over-capacity
+   * drains) and leave the waiter queued; once in-flight falls below capacity a
+   * later release hands off normally.
    */
   release(): void {
-    const next = this.queue.shift();
-    if (next) {
-      if (next.onAbort && next.signal) {
-        next.signal.removeEventListener("abort", next.onAbort);
+    if (this.inFlight > 0) this.inFlight -= 1;
+    // Only hand off while NOT over-subscribed; otherwise let the excess drain.
+    if (this.inFlight < this.capacity) {
+      const next = this.queue.shift();
+      if (next) {
+        if (next.onAbort && next.signal) {
+          next.signal.removeEventListener("abort", next.onAbort);
+        }
+        // Hand the permit straight over — do NOT bump `permits` first, so an
+        // un-queued `acquire()` racing this release can't jump the FIFO line.
+        this.inFlight += 1;
+        next.resolve();
+        return;
       }
-      // Hand the permit straight over — do NOT bump `permits` first, so an
-      // un-queued `acquire()` racing this release can't jump the FIFO line.
-      next.resolve();
-      return;
     }
     if (this.permits < this.capacity) this.permits += 1;
   }
@@ -154,6 +176,7 @@ export class InferenceGate {
         next.signal.removeEventListener("abort", next.onAbort);
       }
       this.permits -= 1;
+      this.inFlight += 1;
       next.resolve();
     }
   }
@@ -189,18 +212,106 @@ function abortReason(signal: AbortSignal): unknown {
 }
 
 /**
+ * Whether a host (from a custom backend's `base_url`) points at a LOCAL inference
+ * server — loopback, RFC1918 / CGNAT private space, link-local, or an mDNS
+ * `.local` name. Such endpoints run on the very local GPU/CPU the gate exists to
+ * protect (self-hosted vLLM / LM Studio / llama.cpp / a LAN box are a primary
+ * supported custom-backend config — see custom_backend.rs `reject_ssrf_base`,
+ * which deliberately ALLOWS these ranges), so they must be GATED, not bypassed.
+ *
+ * Mirrors the host classes Rust treats as private (the inverse of the genuinely-
+ * remote case). Unparseable / hostless inputs are treated as local (conservative
+ * — gate rather than risk thrashing the local device).
+ */
+function isLocalInferenceHost(baseUrl: string | undefined | null): boolean {
+  if (typeof baseUrl !== "string" || baseUrl.length === 0) return true;
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    return true; // can't classify → gate
+  }
+  // Normalize: drop a trailing FQDN dot and the surrounding brackets of an IPv6
+  // literal. (Despite the spec, this runtime's `URL.hostname` KEEPS the brackets
+  // for `http://[::1]…` → "[::1]", which made loopback IPv6 fall through to the
+  // IPv4 regex and classify as REMOTE — bypassing the gate for a localhost
+  // backend. Strip them so the `::1`/`fc`/`fd` checks below match.)
+  const h = host
+    .toLowerCase()
+    .replace(/\.$/, "")
+    .replace(/^\[/, "")
+    .replace(/\]$/, "");
+  if (h === "" || h === "localhost" || h.endsWith(".localhost")) return true;
+  if (h.endsWith(".local")) return true; // mDNS / Bonjour LAN names
+  // IPv6 loopback / link-local / unique-local.
+  if (h === "::1" || h === "::") return true;
+  if (h.startsWith("fe80:") || h.startsWith("fe80::")) return true; // link-local
+  if (h.startsWith("fc") || h.startsWith("fd")) return true; // fc00::/7 ULA
+  // IPv4 (incl. IPv4-mapped IPv6 like ::ffff:127.0.0.1).
+  const v4 = h.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const o = v4.slice(1).map((n) => Number(n));
+    if (o.some((n) => n > 255)) return false; // not a real IPv4 → treat as remote
+    const [a, b] = o;
+    if (a === 127) return true; // loopback 127/8
+    if (a === 10) return true; // RFC1918 10/8
+    if (a === 192 && b === 168) return true; // RFC1918 192.168/16
+    if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918 172.16/12
+    if (a === 169 && b === 254) return true; // link-local 169.254/16
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64/10
+    return false; // any other IPv4 literal is genuinely remote
+  }
+  return false; // a non-private hostname (resolves at the remote provider)
+}
+
+/**
  * Whether a given model/backend should BYPASS the inference gate (run un-gated).
- * Cloud routes run on the provider's infra — there's no local device to protect.
- * Covers: Ollama `:cloud` tags, the custom (user OpenAI-compatible endpoint)
- * backend, and the built-in OpenRouter backend.
+ * CLOUD routes run on the provider's infra — there's no local device to protect:
+ * Ollama `:cloud` tags and the built-in OpenRouter backend always bypass.
+ *
+ * The `custom` backend is a user-configured OpenAI-compatible endpoint whose
+ * `base_url` may legitimately point at a LOCAL model server (vLLM / LM Studio /
+ * llama.cpp / a second Ollama on a custom port / a LAN box). In that case the
+ * request hits the very local device the gate protects, so it MUST be gated.
+ * We therefore decide a custom backend's bypass from its resolved `base_url`
+ * host (when supplied): bypass only genuinely-remote hosts; gate local/private
+ * ones. With no `baseUrl` we gate conservatively (protect the local device).
  */
 export function shouldBypassInferenceGate(
   model: string | undefined | null,
   backend: string | undefined | null,
+  baseUrl?: string | null,
 ): boolean {
-  if (backend === "custom" || backend === "openrouter") return true;
+  if (backend === "openrouter") return true;
+  if (backend === "custom") {
+    // For a custom backend `model` carries the CustomBackend id; resolve its
+    // base_url from the registry (populated from settings) when the caller did
+    // not pass one, so a REMOTE custom endpoint bypasses the local-slot gate
+    // (parallel fan-out) while a LOCALHOST custom endpoint is gated like any
+    // other local backend. Unknown host → gate (the safe default).
+    const url = baseUrl ?? customBackendHosts.get(model ?? "") ?? null;
+    return !isLocalInferenceHost(url);
+  }
   if (typeof model === "string" && model.endsWith(":cloud")) return true;
   return false;
+}
+
+/**
+ * id → base_url for the user's configured custom backends, so the gate can
+ * classify a custom backend's host WITHOUT threading base_url through every
+ * call site. Populated from settings on load + on `settings-changed`.
+ */
+const customBackendHosts = new Map<string, string>();
+
+export function registerCustomBackendHosts(
+  backends: ReadonlyArray<{ id?: string; base_url?: string }> | null | undefined,
+): void {
+  customBackendHosts.clear();
+  for (const b of backends ?? []) {
+    if (b && typeof b.id === "string" && typeof b.base_url === "string") {
+      customBackendHosts.set(b.id, b.base_url);
+    }
+  }
 }
 
 /** The process-wide inference gate. Local routes share this single instance so

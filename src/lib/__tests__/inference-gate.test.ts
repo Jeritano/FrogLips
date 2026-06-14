@@ -152,17 +152,93 @@ describe("InferenceGate", () => {
     await q;
     expect(granted).toBe(true);
   });
+
+  it("shrink-with-queued-waiter does NOT over-grant past capacity on release", async () => {
+    // Repro of the over-grant bug: shrinking never preempts in-flight holders,
+    // so a release while over-subscribed must NOT hand a permit to a waiter
+    // alongside the still-in-flight over-capacity holder.
+    const gate = new InferenceGate(2);
+    await gate.acquire(); // holder A (inFlight=1)
+    await gate.acquire(); // holder B (inFlight=2)
+
+    let granted = false;
+    const c = gate.acquire().then(() => {
+      granted = true;
+    }); // queued waiter C
+    await tick();
+    expect(gate.waiting()).toBe(1);
+
+    gate.setPermits(1); // capacity→1, but A+B (=2) still in flight, C queued
+
+    // First release (say A finishes): in-flight drops 2→1, still AT capacity,
+    // so C must remain queued — granting it would mean 2 concurrent vs cap 1.
+    gate.release();
+    await tick();
+    expect(granted).toBe(false);
+    expect(gate.waiting()).toBe(1);
+
+    // Second release (B finishes): in-flight 1→0, now below capacity → hand to C.
+    gate.release();
+    await c;
+    expect(granted).toBe(true);
+    expect(gate.waiting()).toBe(0);
+
+    // C releases → back to one free permit at the shrunk capacity.
+    gate.release();
+    expect(gate.available()).toBe(1);
+  });
 });
 
 describe("shouldBypassInferenceGate", () => {
   it("bypasses cloud routes, gates local routes", () => {
     expect(shouldBypassInferenceGate("kimi-k2.6:cloud", "ollama")).toBe(true);
-    expect(shouldBypassInferenceGate("whatever", "custom")).toBe(true);
     expect(shouldBypassInferenceGate("whatever", "openrouter")).toBe(true);
     // Local routes are gated.
     expect(shouldBypassInferenceGate("llama3.1:8b", "ollama")).toBe(false);
     expect(shouldBypassInferenceGate("some-mlx-model", "mlx")).toBe(false);
     expect(shouldBypassInferenceGate("gguf-model", "native")).toBe(false);
     expect(shouldBypassInferenceGate(null, null)).toBe(false);
+  });
+
+  it("custom backend: bypasses genuinely-remote endpoints", () => {
+    expect(
+      shouldBypassInferenceGate("gpt-4o", "custom", "https://api.example.com/v1"),
+    ).toBe(true);
+    expect(
+      shouldBypassInferenceGate("m", "custom", "https://infer.together.ai/v1"),
+    ).toBe(true);
+  });
+
+  it("custom backend: GATES local/private endpoints (the local device)", () => {
+    // Loopback / localhost.
+    expect(
+      shouldBypassInferenceGate("m", "custom", "http://localhost:8000/v1"),
+    ).toBe(false);
+    expect(
+      shouldBypassInferenceGate("m", "custom", "http://127.0.0.1:11434/v1"),
+    ).toBe(false);
+    expect(shouldBypassInferenceGate("m", "custom", "http://[::1]:8000/v1")).toBe(
+      false,
+    );
+    // RFC1918 / CGNAT / link-local LAN boxes.
+    expect(
+      shouldBypassInferenceGate("m", "custom", "http://192.168.1.5:8000/v1"),
+    ).toBe(false);
+    expect(shouldBypassInferenceGate("m", "custom", "http://10.0.0.9:8000")).toBe(
+      false,
+    );
+    expect(
+      shouldBypassInferenceGate("m", "custom", "http://172.16.4.2:8000"),
+    ).toBe(false);
+    expect(
+      shouldBypassInferenceGate("m", "custom", "http://100.100.5.5:8000"),
+    ).toBe(false);
+    // mDNS .local name.
+    expect(
+      shouldBypassInferenceGate("m", "custom", "http://gpu-box.local:8000/v1"),
+    ).toBe(false);
+    // No base_url → gate conservatively (protect the local device).
+    expect(shouldBypassInferenceGate("m", "custom")).toBe(false);
+    expect(shouldBypassInferenceGate("m", "custom", "not a url")).toBe(false);
   });
 });

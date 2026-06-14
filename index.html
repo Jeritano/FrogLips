@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Froglips</title>
+    <!--
+      Perf review C8 follow-up (2026-06-14): the main App entry (main.tsx)
+      lazy-loads App (`lazy(() => import("./App"))`), so App.css — the base
+      design tokens + layout aggregator — would otherwise arrive only inside the
+      async App chunk, after first paint, producing a flash of unstyled content
+      on every cold launch. The aux windows avoid this because their entries
+      (main-quick.tsx / main-detached.tsx) static-import "./App.css", letting
+      Vite hoist a render-blocking link. Link it here so the primary window does
+      the same and paints styled on the first frame (matching the synchronous
+      data-theme application in main.tsx). Vite resolves this in dev and rewrites
+      it to the hashed, render-blocking bundle in the build. Heavier per-route
+      CSS stays lazy in its own chunk.
+    -->
+    <link rel="stylesheet" href="/src/App.css" />
   </head>
 
   <body>

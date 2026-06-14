@@ -23,19 +23,18 @@ import { DetachedChatView } from "./components/DetachedChatView";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./App.css";
 
-// The dedicated entry implies `detached=1`; only the conversation_id is read
-// from the query string. Fall back to parsing the full search (which also
-// requires `detached=1`) so an old-style `?detached=1&conversation_id=NN` URL
-// still resolves if it ever reaches this entry.
+// The dedicated entry IS the detached window, so it implies `detached=1` even
+// when the URL only carries `?conversation_id=NN`. Rather than re-implement the
+// id parse here (which previously diverged from the shared parser on the
+// detached flag), normalize the search to guarantee `detached=1` and delegate
+// to parseDetachedParams as the single source of truth. This keeps the relaxed
+// "bare conversation_id" acceptance while routing through the same validation
+// the legacy main.tsx fallback uses, so the two entries can no longer disagree
+// on what a valid detached URL is.
 function resolveConversationId(): number | null {
-  const direct = new URLSearchParams(window.location.search).get(
-    "conversation_id",
-  );
-  if (direct != null && /^-?\d+$/.test(direct)) {
-    const n = Number(direct);
-    if (Number.isSafeInteger(n)) return n;
-  }
-  return parseDetachedParams(window.location.search)?.conversationId ?? null;
+  const params = new URLSearchParams(window.location.search);
+  params.set("detached", "1");
+  return parseDetachedParams(params.toString())?.conversationId ?? null;
 }
 
 const conversationId = resolveConversationId();

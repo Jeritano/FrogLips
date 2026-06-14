@@ -33,7 +33,8 @@ vi.mock("../tauri-api", () => ({
   },
 }));
 
-import { streamCustomChat } from "../custom-client";
+import { streamCustomChat, streamCustomAgentChat } from "../custom-client";
+import { api } from "../tauri-api";
 
 afterEach(() => {
   handlers.clear();
@@ -103,5 +104,63 @@ describe("streamCustomChat", () => {
     // Partial output is preserved, and the error surfaces.
     expect(out.text).toBe("partial");
     expect(out.err).toContain("rate limited (429)");
+  });
+});
+
+describe("streamCustomAgentChat tool-less route", () => {
+  // Regression: the tool-less branch used to re-map history as
+  // `{role, content}`, dropping assistant `tool_calls` and the `role:"tool"`
+  // tool_call_id/name linkage — which makes strict OpenAI servers 400 on the
+  // resulting orphan tool message. It must now forward the full serialized
+  // history (the content-only Rust command serde-skips the optional fields when
+  // absent, so plain turns stay byte-identical).
+  it("forwards full OpenAI-shape history (preserves tool linkage)", async () => {
+    const history: Message[] = [
+      { conversation_id: 1, role: "user", content: "add 2 and 3" },
+      {
+        conversation_id: 1,
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: { name: "calc", arguments: '{"a":2,"b":3}' },
+          },
+        ],
+      },
+      {
+        conversation_id: 1,
+        role: "tool",
+        content: "5",
+        tool_call_id: "call_1",
+        tool_name: "calc",
+      },
+    ];
+
+    const controller = new AbortController();
+    // tools=[] → tool-less route → customChatStream.
+    const p = streamCustomAgentChat(
+      "backend-1",
+      history,
+      [],
+      controller.signal,
+      () => {},
+    );
+
+    for (let i = 0; i < 50 && handlers.size < 4; i++) await tick();
+    fire("custom-done", "custom-agent-", null);
+    resolveReq?.();
+    await p;
+
+    const calls = vi.mocked(api.customChatStream).mock.calls;
+    const sent = calls[calls.length - 1]?.[0];
+    const msgs = sent?.messages as Array<Record<string, unknown>>;
+    // The assistant tool_calls survive (not flattened to {role, content}).
+    const asst = msgs.find((m) => m.role === "assistant");
+    expect(asst?.tool_calls).toBeDefined();
+    // The tool result keeps its linkage id (would 400 as an orphan otherwise).
+    const toolMsg = msgs.find((m) => m.role === "tool");
+    expect(toolMsg?.tool_call_id).toBe("call_1");
   });
 });

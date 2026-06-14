@@ -1,11 +1,61 @@
 use anyhow::Result;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::history::{get_db, now_unix};
+
+/* ───────────────────────────────────────────────────────────────────────────
+Memoized `vec_memories` declared dimension. `vec0_usable_for` runs TWO
+sqlite_master metadata queries (table_exists + a CREATE-SQL fetch+parse) on
+every recall, but the vec table's dim is process-stable: it only changes when
+the table is dropped (embedder switch → `invalidate_cache`, which resets this
+memo) or first created (lazy `add_memory` / boot backfill, picked up by the
+re-probe on a still-unknown value). Caching the resolved dim turns the hot
+recall path into a single in-memory load + integer compare. Perf finding
+(2026-06).
+
+State: `UNKNOWN` (-1) = not yet learned → probe + cache on success; a positive
+value = the table's declared dim. We only ever cache a *positive* dim (a table
+that exists), so a not-yet-created table stays UNKNOWN and a later create is
+detected; a drop is handled by the explicit reset in `invalidate_cache`.
+─────────────────────────────────────────────────────────────────────── */
+const MEMO_UNKNOWN: i64 = -1;
+static VEC_MEM_DIM_MEMO: AtomicI64 = AtomicI64::new(MEMO_UNKNOWN);
+
+/// Reset the memoized vec_memories dim so the next recall re-probes the schema.
+/// Called whenever the vec0 table may have been dropped/recreated at a new dim.
+fn reset_vec_mem_dim_memo() {
+    VEC_MEM_DIM_MEMO.store(MEMO_UNKNOWN, Ordering::Relaxed);
+}
+
+/// Can vec0 KNN serve a query of `query_dim` against `vec_memories`, using the
+/// memoized declared dim to skip the per-recall sqlite_master probes once known?
+/// On a cache miss, falls back to the authoritative `vec0_usable_for` probe and
+/// caches the table's dim (when it resolves to a positive value).
+fn vec0_memories_usable(conn: &rusqlite::Connection, query_dim: usize) -> bool {
+    if query_dim == 0 || !crate::history::vec0_available() {
+        return false;
+    }
+    let cached = VEC_MEM_DIM_MEMO.load(Ordering::Relaxed);
+    if cached > 0 {
+        return cached as usize == query_dim;
+    }
+    // Unknown: read the table's declared dim once (this is the single schema
+    // probe the memo amortizes). `vec_table_dim` returns None when the table is
+    // absent → leave the memo UNKNOWN so a later lazy-create/backfill is picked
+    // up; otherwise cache the dim so subsequent recalls skip the probe entirely.
+    match crate::history::vec_table_dim(conn, crate::history::VEC_MEMORIES) {
+        Some(dim) => {
+            VEC_MEM_DIM_MEMO.store(dim as i64, Ordering::Relaxed);
+            dim == query_dim
+        }
+        None => false,
+    }
+}
 
 #[derive(Serialize, Clone)]
 pub struct Memory {
@@ -88,6 +138,10 @@ pub fn invalidate_cache() {
         crate::history::vec_drop_table(tx, crate::history::VEC_MEMORIES);
         Ok(())
     });
+    // The vec0 table was just dropped (and will be lazily recreated at the new
+    // model's dim). Drop the memoized dim so the next recall re-probes the
+    // schema instead of trusting the old model's dim.
+    reset_vec_mem_dim_memo();
 }
 
 /// Hard cap on cache entry count. At 768 dims × 4 bytes that's ~60 MB; at
@@ -570,9 +624,23 @@ pub fn search_vector(
     // share the by-id fetch + scope filter + touch-on-recall below.
     let scored: Vec<(i64, f32)> = {
         let conn = get_db()?;
-        if crate::history::vec0_usable_for(&conn, crate::history::VEC_MEMORIES, query_emb.len()) {
+        if vec0_memories_usable(&conn, query_emb.len()) {
             match search_vector_vec0(&conn, &query_emb, over_fetch, min_score) {
-                Ok(s) => s,
+                // CORRECTNESS (under-return fix): the vec0 index holds every
+                // non-null embedding (active + pending + inactive), and the
+                // active-status filter is applied POST-KNN via the JOIN. So when
+                // many soft-deleted/inactive rows crowd the global top-k, vec0
+                // can yield FEWER than `limit` active hits even though the
+                // active-only cache holds more matches further down. The linear
+                // scan is over the active-only cache and is the parity
+                // reference, so on a short vec0 result re-run it to recover the
+                // missing active candidates. (No-op cost in the common case
+                // where vec0 already returns a full set.)
+                Ok(s) if s.len() >= limit => s,
+                Ok(_) => {
+                    drop(conn);
+                    search_vector_linear(&query_emb, over_fetch, min_score)?
+                }
                 Err(e) => {
                     crate::diagnostics::warn_with(
                         "memory",
@@ -798,7 +866,7 @@ pub fn find_duplicate(query_emb: Vec<f32>, threshold: f32) -> Result<Option<i64>
     // cosine (1 - distance) to the threshold. Only taken when the dim matches.
     {
         let conn = get_db()?;
-        if crate::history::vec0_usable_for(&conn, crate::history::VEC_MEMORIES, query_emb.len()) {
+        if vec0_memories_usable(&conn, query_emb.len()) {
             match find_duplicate_vec0(&conn, &query_emb, threshold) {
                 Ok(hit) => return Ok(hit),
                 Err(e) => {
@@ -843,33 +911,49 @@ pub fn find_duplicate(query_emb: Vec<f32>, threshold: f32) -> Result<Option<i64>
     Ok(None)
 }
 
-/// k=1 vec0 KNN for `find_duplicate`. Returns the nearest memory id when its
-/// mapped cosine (`1 - distance`) meets `threshold`, else `None`. Indexes every
-/// non-null embedding, so this single query subsumes the linear path's
-/// active-cache + pending-scan split.
+/// vec0 KNN for `find_duplicate`. Returns the nearest ACTIVE-or-PENDING memory
+/// id when its mapped cosine (`1 - distance`) meets `threshold`, else `None`.
+///
+/// CORRECTNESS (status divergence fix): the vec0 index holds EVERY non-null
+/// embedding regardless of status — including inactive/soft-deleted rows that
+/// `update_memory_status` only evicts from the cache, never from vec0. The
+/// linear fallback only ever considers active (cache) + pending memories, so a
+/// status filter is required here to match its coverage; otherwise a new memory
+/// matching an INACTIVE row would be dropped under vec0 but inserted under the
+/// linear path. Mirror `search_vector_vec0`'s post-KNN JOIN filter, but since
+/// the status filter is applied AFTER vec0 truncates to the k nearest, over-
+/// fetch a small candidate set and pick the first surviving (nearest) hit
+/// instead of `k = 1` — a single inactive nearest neighbour must not mask a
+/// slightly-farther active/pending duplicate.
 fn find_duplicate_vec0(
     conn: &rusqlite::Connection,
     query_emb: &[f32],
     threshold: f32,
 ) -> Result<Option<i64>> {
+    // Small over-fetch so inactive neighbours occupying the top-k can't hide an
+    // active/pending duplicate just behind them. Bounded constant — dedup only
+    // needs the single nearest surviving row.
+    const DEDUP_K: i64 = 16;
     let q_blob = embedding_to_blob(query_emb);
-    // vec0: `k = 1` is the KNN limit; combining it with LIMIT is rejected.
-    let row: Option<(i64, f64)> = conn
-        .query_row(
-            &format!(
-                "SELECT memory_id, distance FROM {table}
-                 WHERE embedding MATCH ?1 AND k = 1
-                 ORDER BY distance",
-                table = crate::history::VEC_MEMORIES
-            ),
-            params![q_blob],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    Ok(match row {
-        Some((id, distance)) if (1.0f32 - distance as f32) >= threshold => Some(id),
-        _ => None,
-    })
+    let mut stmt = conn.prepare(&format!(
+        "SELECT v.memory_id, v.distance
+         FROM {table} v
+         JOIN memories m ON m.id = v.memory_id
+         WHERE v.embedding MATCH ?1 AND k = ?2 AND m.status IN ('active', 'pending')
+         ORDER BY v.distance",
+        table = crate::history::VEC_MEMORIES
+    ))?;
+    let mut rows = stmt.query(params![q_blob, DEDUP_K])?;
+    // Rows arrive nearest-first; the first survivor is the nearest active/
+    // pending neighbour, so its score is the max among survivors.
+    if let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let distance: f64 = row.get(1)?;
+        if (1.0f32 - distance as f32) >= threshold {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -1162,6 +1246,70 @@ mod tests {
         let q2 = norm_vec(99_999, dim);
         let none = find_duplicate_vec0(&conn, &q2, 0.999_999).unwrap();
         assert!(none.is_none(), "no near-duplicate should be found");
+    }
+
+    /// CORRECTNESS regression: `find_duplicate_vec0` must apply the same
+    /// active/pending status filter as the linear path. An INACTIVE memory whose
+    /// embedding is the nearest neighbour of the query must NOT be reported as a
+    /// duplicate (the vec0 index still holds soft-deleted rows). A pending row,
+    /// by contrast, IS a valid dedup target.
+    #[test]
+    fn vec0_memory_find_duplicate_skips_inactive() {
+        if !crate::history::vec0_available() {
+            return;
+        }
+        let dim = 16usize;
+        let conn = crate::history::test_open_in_memory_with_vec();
+        crate::history::__test_run_migrations(&conn).unwrap();
+        // Seed three rows with the SAME vector but different statuses so the
+        // nearest neighbour is unambiguous and the status filter is the only
+        // thing that distinguishes them.
+        let v = norm_vec(7, dim);
+        let blob = embedding_to_blob(&v);
+        for status in ["inactive", "pending", "active"] {
+            conn.execute(
+                "INSERT INTO memories (content, tags, status, created_at, embedding, scope)
+                 VALUES (?1, '', ?2, 0, ?3, 'global')",
+                params![format!("m-{status}"), status, blob],
+            )
+            .unwrap();
+        }
+        crate::history::ensure_vec_tables_present(&conn).unwrap();
+
+        // Query equal to the shared vector → exact match. The inactive row (id 1)
+        // is the closest by id-tiebreak, but must be skipped; a pending OR active
+        // survivor is acceptable.
+        let hit = find_duplicate_vec0(&conn, &v, 0.85).unwrap();
+        let surviving: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM memories WHERE status IN ('active','pending')")
+                .unwrap();
+            let ids = stmt
+                .query_map([], |r| r.get::<_, i64>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            ids
+        };
+        let id = hit.expect("a pending/active duplicate must be found");
+        assert!(
+            surviving.contains(&id),
+            "find_duplicate_vec0 returned id {id}, which is not active/pending"
+        );
+
+        // Now mark the only active+pending rows inactive too; the nearest
+        // neighbour is then exclusively inactive → must report NO duplicate even
+        // though the vec0 index still holds the (now inactive) rows.
+        conn.execute(
+            "UPDATE memories SET status = 'inactive' WHERE status IN ('active','pending')",
+            [],
+        )
+        .unwrap();
+        let none = find_duplicate_vec0(&conn, &v, 0.85).unwrap();
+        assert!(
+            none.is_none(),
+            "all-inactive neighbours must not be treated as a duplicate"
+        );
     }
 
     /// Migration/backfill on a populated DB with a MIXED-dim case: rows of two

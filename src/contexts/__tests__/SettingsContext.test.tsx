@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { AppSettings } from "../../types";
 
@@ -171,6 +171,38 @@ describe("SettingsProvider", () => {
     });
     await flush();
     expect(themeRenders).toBeGreaterThan(afterLoad);
+  });
+
+  it("useSettingsField re-runs a changed selector even if the blob is unchanged", async () => {
+    // Regression: the cache was keyed purely on the settings-blob input
+    // reference, so a re-render with a NEW selector closure (one that closes
+    // over changed state and selects a different slice) returned the PREVIOUS
+    // selector's value until the whole blob changed. Key the cache on selector
+    // identity and make getSnapshot's identity track the selector so
+    // useSyncExternalStore actually re-reads.
+    store = { custom_backends: ["a", "b", "c"] as unknown as never };
+    let setIndex: ((i: number) => void) | null = null;
+    let seen: unknown = "unset";
+    function Probe() {
+      const [index, setIndexState] = useState(0);
+      setIndex = setIndexState;
+      // Selector closes over `index`, so each render mints a different closure
+      // that selects a different slice — while the blob reference is stable.
+      seen = useSettingsField(
+        (s) => (s?.custom_backends as unknown as string[] | undefined)?.[index],
+      );
+      return null;
+    }
+    mount(<Probe />);
+    await flush();
+    expect(seen).toBe("a");
+
+    // Bump the index with NO settings change. The new selector must run.
+    await act(async () => {
+      setIndex!(2);
+    });
+    await flush();
+    expect(seen).toBe("c");
   });
 
   it("useSettingsField returns the caller's default while loading", async () => {

@@ -218,7 +218,10 @@ pub(crate) fn vec_insert_rag_chunk(
     emb: &[f32],
     blob: &[u8],
 ) {
-    vec_insert(tx, VEC_RAG_CHUNKS, "chunk_id", chunk_id, emb, blob);
+    // RAG ingest only ever inserts a freshly-allocated chunk rowid, so the
+    // pre-DELETE can never match — skip it (`allow_replace = false`) to avoid an
+    // always-no-op write per chunk across a large ingest.
+    vec_insert(tx, VEC_RAG_CHUNKS, "chunk_id", chunk_id, emb, blob, false);
 }
 
 /// Insert one memory's embedding into `vec_memories` in the same tx as the BLOB
@@ -230,9 +233,16 @@ pub(crate) fn vec_insert_memory(
     emb: &[f32],
     blob: &[u8],
 ) {
-    vec_insert(tx, VEC_MEMORIES, "memory_id", memory_id, emb, blob);
+    // Memory keeps `allow_replace = true` so the documented re-activation path
+    // (re-inserting a memory's vec row at an existing id) can't trip a UNIQUE
+    // constraint.
+    vec_insert(tx, VEC_MEMORIES, "memory_id", memory_id, emb, blob, true);
 }
 
+/// `allow_replace`: when true, delete any existing vec row for `id` before the
+/// INSERT (vec0 has no INSERT OR REPLACE) so a re-insert at an existing id is
+/// safe. Insert-only callers (RAG ingest, which always uses a fresh rowid) pass
+/// false to skip the always-no-op pre-DELETE on the hot ingest path.
 fn vec_insert(
     tx: &rusqlite::Transaction<'_>,
     name: &str,
@@ -240,6 +250,7 @@ fn vec_insert(
     id: i64,
     emb: &[f32],
     blob: &[u8],
+    allow_replace: bool,
 ) {
     if !vec0_available() || emb.is_empty() {
         return;
@@ -266,13 +277,16 @@ fn vec_insert(
         }
         Err(_) => return,
     }
-    // vec0 doesn't support `INSERT OR REPLACE`; delete any existing row for
-    // this id first (no-op when absent) so a re-insert (e.g. re-activating a
-    // memory) can't trip a UNIQUE constraint.
-    let _ = tx.execute(
-        &format!("DELETE FROM {name} WHERE {pk} = ?1"),
-        params![id],
-    );
+    // vec0 doesn't support `INSERT OR REPLACE`; on the replace path delete any
+    // existing row for this id first (no-op when absent) so a re-insert (e.g.
+    // re-activating a memory) can't trip a UNIQUE constraint. Insert-only
+    // callers skip this — the pre-DELETE would never match a fresh rowid.
+    if allow_replace {
+        let _ = tx.execute(
+            &format!("DELETE FROM {name} WHERE {pk} = ?1"),
+            params![id],
+        );
+    }
     if let Err(e) = tx.execute(
         &format!("INSERT INTO {name}({pk}, embedding) VALUES (?1, ?2)"),
         params![id, blob],
@@ -1040,6 +1054,24 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v29 — UNIQUE index on (conversation_id, run_id, turn_index) so
+    // `checkpoint_run` can switch from delete-all-then-reinsert (O(K²) row
+    // writes + FTS-trigger churn across a long agent run) to an incremental
+    // `INSERT … ON CONFLICT … DO UPDATE` keyed on this triple. Scoped by
+    // conversation_id so a run_id collision across conversations can't conflict
+    // (mirrors the old DELETE's (conv_id, run_id) scope). Normal messages have
+    // run_id IS NULL; SQLite treats NULLs as distinct in a UNIQUE index, so the
+    // unbounded set of (conv, NULL, NULL) visible rows is unconstrained.
+    Migration {
+        version: 29,
+        apply: |conn| {
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_conv_run_turn
+                    ON messages(conversation_id, run_id, turn_index);",
+            )?;
+            Ok(())
+        },
+    },
 ];
 
 /// Add the additive `conv_id INTEGER` sibling column to `table`, preferring an
@@ -1067,10 +1099,18 @@ fn add_conv_id_column(conn: &Connection, table: &str) -> Result<()> {
 /// conversation. Non-numeric or orphaned-numeric values are left NULL. Idempotent
 /// (only fills rows where `conv_id IS NULL`).
 fn backfill_conv_id(conn: &Connection, table: &str) -> Result<()> {
+    // `GLOB '[0-9]*'` only requires the string to START with a digit, and
+    // `CAST(... AS INTEGER)` truncates at the first non-digit, so '12abc' would
+    // map to conv_id=12 — a wrong FK to an unrelated conversation. Add a
+    // whole-string numeric guard (`NOT GLOB '*[^0-9]*'` = no non-digit anywhere)
+    // so only purely-numeric values are cast/matched, matching this function's
+    // documented contract AND the live-write path's strict `parse::<i64>()`
+    // (agent_audit::parse_conv_id).
     conn.execute_batch(&format!(
         "UPDATE {table} SET conv_id = CAST(conversation_id AS INTEGER)
          WHERE conv_id IS NULL
            AND conversation_id GLOB '[0-9]*'
+           AND conversation_id NOT GLOB '*[^0-9]*'
            AND CAST(conversation_id AS INTEGER) IN (SELECT id FROM conversations);"
     ))?;
     Ok(())
@@ -1175,7 +1215,16 @@ pub(crate) fn ensure_messages_fts(conn: &Connection) -> Result<()> {
             content_rowid='id',
             tokenize='porter unicode61'
          );
-         CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+         -- v28 agent checkpoint rows carry a non-null run_id (durable shadow of
+         -- in-flight agent state). They must NOT be indexed: list_messages hides
+         -- them, so surfacing them in message search would break the v28 'visible
+         -- conversation is unchanged' invariant and leak transient tool-result
+         -- text the user never sees. `WHEN new.run_id IS NULL` keeps shadows out
+         -- of the index. (Query-side run_id filters in search_messages_fts /
+         -- search_messages are the robust backstop, since `rebuild`/optimize
+         -- re-scan all rows regardless of this trigger guard.)
+         CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages
+         WHEN new.run_id IS NULL BEGIN
             INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
          END;
          CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
@@ -1232,6 +1281,7 @@ pub fn search_messages_fts(query: &str, limit: u32) -> Result<Vec<FtsMessageHit>
          JOIN messages m ON m.id = messages_fts.rowid
          JOIN conversations c ON c.id = m.conversation_id
          WHERE messages_fts MATCH ?1
+           AND m.run_id IS NULL
          ORDER BY bm25(messages_fts)
          LIMIT ?2",
     )?;
@@ -1959,12 +2009,20 @@ pub fn search_messages(query: &str) -> Result<Vec<MessageSearchHit>> {
     let pattern = format!("%{}%", escape_like(trimmed));
     let conn = get_db()?;
     let mut stmt = conn.prepare(
+        // `AND run_id IS NULL` on BOTH the inner MAX(id) subquery and the outer
+        // query excludes v28 agent checkpoint shadow rows (mirrors
+        // list_messages). The inner filter is load-bearing: checkpoint rows have
+        // the highest ids during a run, so without it MAX(id) would surface the
+        // hidden in-flight agent content per conversation. The outer filter is
+        // defense-in-depth.
         "SELECT m.conversation_id, c.title, m.content
          FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
-         WHERE m.id IN (
+         WHERE m.run_id IS NULL
+           AND m.id IN (
             SELECT MAX(id) FROM messages
             WHERE content LIKE ?1 ESCAPE '\\'
+              AND run_id IS NULL
             GROUP BY conversation_id
          )
          ORDER BY m.conversation_id DESC",
@@ -2150,12 +2208,14 @@ const MAX_CHECKPOINT_TURNS: usize = 4000;
 
 /// Durably checkpoint an in-flight agent run's turns (item 4A). All rows are
 /// written under ONE `with_write` IMMEDIATE transaction so a single iteration's
-/// state lands atomically. Idempotent on `(run_id, turn_index)`: the call first
-/// deletes every existing checkpoint row for this `run_id`, then re-inserts the
-/// supplied turns — so re-running a checkpoint (or extending it with later
-/// turns) never duplicates a row. Checkpoint rows carry a non-null `run_id` and
-/// are therefore excluded from `list_messages` (the normal conversation view is
-/// unchanged; recovery/auto-resume that reads these rows is deferred).
+/// state lands atomically. Idempotent on `(conversation_id, run_id, turn_index)`
+/// (the v29 UNIQUE index): each turn is upserted, so re-running a checkpoint (or
+/// extending it with later turns) never duplicates a row, and unchanged turns
+/// are no-op updates — the write cost is O(new + changed turns), not the whole
+/// cumulative set the runner re-supplies each iteration. Checkpoint rows carry a
+/// non-null `run_id` and are therefore excluded from `list_messages` and message
+/// search (the normal conversation view is unchanged; recovery/auto-resume that
+/// reads these rows is deferred).
 ///
 /// Returns the number of turn rows written.
 pub fn checkpoint_run(run_id: &str, conv_id: i64, turns: &[CheckpointTurn]) -> Result<usize> {
@@ -2169,21 +2229,36 @@ pub fn checkpoint_run(run_id: &str, conv_id: i64, turns: &[CheckpointTurn]) -> R
         );
     }
     with_write(|tx| {
-        // Idempotency: clear this run's prior checkpoint state, then re-insert.
-        // Scoped to (conv_id, run_id) so a run_id collision across conversations
-        // (shouldn't happen — run_ids are UUIDs — but defense in depth) can't
-        // wipe a sibling conversation's checkpoints.
-        tx.execute(
-            "DELETE FROM messages WHERE conversation_id = ?1 AND run_id = ?2",
-            params![conv_id, run_id],
-        )?;
+        // Incremental checkpoint (perf): the runner passes the CUMULATIVE turn
+        // list each iteration, so the old delete-all-then-reinsert wrote
+        // 1+2+…+K = O(K²) rows over a K-iteration run and tore down/rebuilt the
+        // FTS index every time. Instead upsert on the v29 UNIQUE
+        // (conversation_id, run_id, turn_index) index: settled turns are
+        // re-supplied unchanged and the `WHERE` guard turns their UPDATE into a
+        // no-op, so a checkpoint costs O(new + changed turns). (Checkpoint rows
+        // carry a non-null run_id, so the v28 messages_fts_ai trigger guard keeps
+        // them out of the FTS index entirely.)
+        //
+        // `created_at` is set only on first insert (DO UPDATE leaves it) so a
+        // turn keeps its original settle time across later checkpoints.
         let now = now_unix();
         for t in turns {
             tx.execute(
                 "INSERT INTO messages
                     (conversation_id, role, content, created_at, model,
                      run_id, turn_index, tool_call_id, tool_name)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(conversation_id, run_id, turn_index) DO UPDATE SET
+                    role = excluded.role,
+                    content = excluded.content,
+                    model = excluded.model,
+                    tool_call_id = excluded.tool_call_id,
+                    tool_name = excluded.tool_name
+                 WHERE role IS NOT excluded.role
+                    OR content IS NOT excluded.content
+                    OR model IS NOT excluded.model
+                    OR tool_call_id IS NOT excluded.tool_call_id
+                    OR tool_name IS NOT excluded.tool_name",
                 params![
                     conv_id,
                     t.role,
@@ -2197,6 +2272,16 @@ pub fn checkpoint_run(run_id: &str, conv_id: i64, turns: &[CheckpointTurn]) -> R
                 ],
             )?;
         }
+        // Rare shrink case: a later checkpoint with fewer turns must not leave
+        // stale rows behind (the old delete-all path implicitly handled this).
+        // turn_index is the contiguous 0-based position within a run (see
+        // CheckpointTurn), so any row at turn_index >= the new count is orphaned.
+        // Bounded delete of just those few rows — not the whole run.
+        tx.execute(
+            "DELETE FROM messages
+             WHERE conversation_id = ?1 AND run_id = ?2 AND turn_index >= ?3",
+            params![conv_id, run_id, turns.len() as i64],
+        )?;
         Ok(turns.len())
     })
 }
@@ -3082,6 +3167,16 @@ mod tests {
                 "model_perf_samples.{c}"
             );
         }
+        // v29 — UNIQUE checkpoint-upsert index.
+        let uniq: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name='idx_messages_conv_run_turn'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(uniq, 1, "v29 unique checkpoint index present");
     }
 
     /// v26/v27 vec0 tables only exist once a vector of known dim has been
@@ -3390,6 +3485,110 @@ mod tests {
         assert_eq!(list_messages(conv).unwrap().len(), 1, "still 1 visible");
 
         delete_conversation(conv).unwrap();
+    }
+
+    /// v28 invariant: agent checkpoint shadow rows (run_id IS NOT NULL) carry
+    /// transient in-flight tool-result text the user never sees. They must stay
+    /// out of BOTH global message searches — the FTS path
+    /// (`search_messages_fts`, blocked at the index trigger + JOIN filter) and
+    /// the sidebar LIKE path (`search_messages`, blocked at the MAX(id) subquery
+    /// filter) — just as they're excluded from `list_messages`.
+    #[test]
+    fn checkpoint_shadows_excluded_from_message_search() {
+        let tag = format!("zshadow{}", std::process::id());
+        let conv =
+            create_conversation(&format!("__test_shadow_{tag}"), None).unwrap();
+        // One visible user turn whose body shares the marker token.
+        add_message(conv, "user", &format!("please find {tag} now"), None, None).unwrap();
+        // A checkpoint shadow whose body ALSO contains the marker — and has the
+        // highest id in the conversation, so an unfiltered MAX(id) would pick it.
+        let run = format!("run:shadow:{tag}");
+        checkpoint_run(
+            &run,
+            conv,
+            &[CheckpointTurn {
+                turn_index: 0,
+                role: "tool".into(),
+                content: format!("secret transient {tag} tool-result blob"),
+                tool_call_id: Some("call_1".into()),
+                tool_name: Some("read_file".into()),
+                model: None,
+            }],
+        )
+        .unwrap();
+
+        // FTS search returns ONLY the visible user message, never the shadow.
+        let fts = search_messages_fts(tag.as_str(), 20).unwrap();
+        assert!(
+            fts.iter().any(|h| h.conversation_id == conv && h.role == "user"),
+            "visible user turn must be searchable: {fts:?}"
+        );
+        assert!(
+            !fts.iter().any(|h| h.role == "tool"),
+            "checkpoint shadow must NOT appear in FTS search: {fts:?}"
+        );
+
+        // Sidebar LIKE search: the one hit per conversation must be the visible
+        // user content, not the higher-id shadow blob.
+        let like = search_messages(tag.as_str()).unwrap();
+        let hit = like.iter().find(|h| h.conversation_id == conv);
+        assert!(hit.is_some(), "conversation must surface in LIKE search");
+        assert!(
+            !hit.unwrap().snippet.contains("secret transient"),
+            "LIKE search must not surface checkpoint shadow content: {:?}",
+            hit.unwrap().snippet
+        );
+
+        delete_conversation(conv).unwrap();
+    }
+
+    /// `backfill_conv_id` must map ONLY purely-numeric legacy conversation_id
+    /// values (matching the live-write path's strict `parse::<i64>()`). A value
+    /// that merely starts with a digit ('12abc') must NOT be truncated to 12 and
+    /// mis-mapped to an unrelated conversation.
+    #[test]
+    fn backfill_conv_id_is_whole_string_numeric_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("ladder on fresh db");
+        // Two real conversations: ids 1 and 2 (AUTOINCREMENT from empty table).
+        conn.execute("INSERT INTO conversations (title, created_at) VALUES ('a', 0)", [])
+            .unwrap();
+        let real = conn.last_insert_rowid();
+        // agent_audit rows: a clean numeric ref, plus a digit-prefixed junk ref
+        // that truncates to the real conv id. Both start with conv_id NULL.
+        for (cid_text, _label) in [(real.to_string(), "numeric"), (format!("{real}abc"), "junk")] {
+            conn.execute(
+                "INSERT INTO agent_audit
+                    (ts, conversation_id, tool_name, args_json, result_hash,
+                     result_size, duration_ms, approval, outcome)
+                 VALUES (1, ?1, 'read_file', '{}', 'h', 0, 1, 'auto', 'ok')",
+                params![cid_text],
+            )
+            .unwrap();
+        }
+        // Re-run the backfill (rows were inserted after the v24 rung ran).
+        backfill_conv_id(&conn, "agent_audit").unwrap();
+
+        let numeric_mapped: i64 = conn
+            .query_row(
+                "SELECT conv_id FROM agent_audit WHERE conversation_id = ?1",
+                params![real.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(numeric_mapped, real, "purely-numeric value maps correctly");
+
+        let junk_mapped: Option<i64> = conn
+            .query_row(
+                "SELECT conv_id FROM agent_audit WHERE conversation_id = ?1",
+                params![format!("{real}abc")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            junk_mapped, None,
+            "digit-prefixed non-numeric value must NOT be truncated/mis-mapped"
+        );
     }
 
     /// v20-v22 consolidation: the folded agent_audit / RAG / model_perf

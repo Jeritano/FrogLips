@@ -250,7 +250,9 @@ fn ensure_archive_schema(conn: &rusqlite::Connection) -> Result<()> {
             archived_at INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS arch.idx_messages_archive_conv
-            ON messages_archive(conversation_id);",
+            ON messages_archive(conversation_id);
+         CREATE INDEX IF NOT EXISTS arch.idx_messages_archive_archived_at
+            ON messages_archive(archived_at);",
     )
     .context("create messages_archive table")?;
     Ok(())
@@ -292,6 +294,16 @@ fn run_archive_phase(cfg: &MaintenanceConfig) -> PhaseResult {
                     // Move older-than-cutoff messages whose conversation's
                     // NEWEST message is itself older than the active floor (no
                     // recent activity in the whole conversation).
+                    // `m.run_id IS NULL` excludes agent per-iteration checkpoint
+                    // "shadow" rows (migration v28): they carry a non-null
+                    // run_id + tool_call_id/tool_name/turn_index, are hidden
+                    // from the conversation view by the same `run_id IS NULL`
+                    // filter in list_messages, and are NOT representable in
+                    // messages_archive (which omits those columns). Archiving
+                    // them would lose the durable checkpoint metadata AND make
+                    // them visible again on restore (run_id comes back NULL),
+                    // injecting raw tool-call turns into the transcript. Let
+                    // checkpoint_run own their lifecycle instead.
                     conn.execute(
                         "INSERT INTO arch.messages_archive
                             (id, conversation_id, conversation_title, role, content,
@@ -301,6 +313,7 @@ fn run_archive_phase(cfg: &MaintenanceConfig) -> PhaseResult {
                          FROM messages m
                          JOIN conversations c ON c.id = m.conversation_id
                          WHERE m.created_at < ?2
+                           AND m.run_id IS NULL
                            AND m.conversation_id IN (
                              SELECT conversation_id FROM messages
                              GROUP BY conversation_id
@@ -310,16 +323,28 @@ fn run_archive_phase(cfg: &MaintenanceConfig) -> PhaseResult {
                     )?;
                     // Delete exactly the ids we just archived (the FTS
                     // delete-trigger fires here, keeping messages_fts in sync).
+                    // Scope the archive-membership subquery to THIS pass's rows
+                    // via `archived_at = ?1` (= `now`) instead of `id IN (SELECT
+                    // id FROM arch.messages_archive)`, which would re-scan the
+                    // entire ever-growing archive every pass. This keeps the
+                    // never-lose-history guarantee (we only delete rows confirmed
+                    // present in the archive) while making the DELETE cost
+                    // proportional to the batch, not total archived history. The
+                    // `run_id IS NULL` guard mirrors the INSERT so shadow rows
+                    // are never deleted from the live table.
                     let deleted = conn.execute(
                         "DELETE FROM messages
-                         WHERE id IN (SELECT id FROM arch.messages_archive)
-                           AND created_at < ?1
+                         WHERE id IN (
+                             SELECT id FROM arch.messages_archive WHERE archived_at = ?1
+                           )
+                           AND created_at < ?2
+                           AND run_id IS NULL
                            AND conversation_id IN (
                              SELECT conversation_id FROM messages
                              GROUP BY conversation_id
-                             HAVING MAX(created_at) < ?2
+                             HAVING MAX(created_at) < ?3
                            )",
-                        params![cutoff, active_floor],
+                        params![now, cutoff, active_floor],
                     )?;
                     Ok(deleted as i64)
                 })();
@@ -371,7 +396,15 @@ fn run_reclaim_phase() -> PhaseResult {
         // archive churned row counts. FTS 'optimize' merges the index b-trees.
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .context("wal_checkpoint")?;
-        conn.execute_batch("ANALYZE;").context("analyze")?;
+        // ANALYZE writes the sqlite_stat tables, so it is a writer and MUST
+        // hold the single-writer gate (WS3) — otherwise it opens its own
+        // autocommit txn that can collide with a concurrent IMMEDIATE writer
+        // and block up to busy_timeout (5s) / fail SQLITE_BUSY. wal_checkpoint
+        // above is a checkpoint, not a txn-writer, so it stays outside.
+        let _ = history::with_write_lock(|| {
+            conn.execute_batch("ANALYZE;").context("analyze")?;
+            Ok(())
+        });
         // FTS optimize is a write — route through the gate.
         let _ = history::with_write(|tx| {
             tx.execute_batch("INSERT INTO messages_fts(messages_fts) VALUES ('optimize');")?;
@@ -546,11 +579,12 @@ pub fn start_maintenance_scheduler(
                 continue;
             }
             // Gate the (expensive) archive phase to once per day even though the
-            // safe phases may run more often.
+            // safe phases may run more often. Decide eligibility WITHOUT
+            // mutating last_archive_at up front — that timestamp only advances
+            // after the pass actually archives (below), so a failed/fail-open
+            // pass doesn't suppress archiving for the next 24h.
             if now - last_archive_at < ARCHIVE_EVAL_SECS {
                 cfg.archive_messages = false;
-            } else {
-                last_archive_at = now;
             }
             // Run off the async runtime's worker via spawn_blocking — the pass
             // does synchronous SQLite I/O.
@@ -558,8 +592,14 @@ pub fn start_maintenance_scheduler(
                 run_maintenance(&cfg, Trigger::Scheduled)
             })
             .await;
-            if report.is_ok() {
+            if let Ok(r) = &report {
                 last_pass_at = now;
+                // Only advance the archive gate when the archive phase actually
+                // ran (not skipped/failed-open), so archiving isn't suppressed
+                // for ~24h by a pass that moved zero rows.
+                if r.archive.ran {
+                    last_archive_at = now;
+                }
             }
         }
     });
@@ -680,7 +720,19 @@ mod tests {
         };
         let phase = run_archive_phase(&cfg);
         assert!(phase.ran, "archive phase should run: {phase:?}");
-        assert!(phase.rows >= 1, "at least the old message archived");
+        // Assert OUR message specifically moved (robust against a concurrent
+        // maintenance test archiving 0 of its own rows in the same shared DB) —
+        // phase.rows is a global count and is racy under parallel test threads.
+        let archived_here: i64 = {
+            let conn = get_db().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE id = ?1",
+                params![old_msg],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(archived_here, 0, "the old message must have been archived (moved out of messages)");
 
         let present = |id: i64| -> i64 {
             let conn = get_db().unwrap();
@@ -702,6 +754,88 @@ mod tests {
         // Cleanup.
         history::delete_conversation(quiet).unwrap();
         history::delete_conversation(active).unwrap();
+    }
+
+    /// Agent checkpoint "shadow" rows (non-null run_id, migration v28) are
+    /// NEVER archived: archiving them would lose their run_id/turn_index/tool_*
+    /// metadata and make them visible again on restore. An aged shadow row in an
+    /// otherwise-quiet conversation must stay in `messages` after a pass.
+    #[test]
+    fn archive_skips_agent_checkpoint_shadow_rows() {
+        let now = now_unix();
+        let conv = history::create_conversation(
+            &format!("__test_maint_shadow_{}", std::process::id()),
+            None,
+        )
+        .unwrap();
+        // A normal old message (should archive) + an old checkpoint shadow row
+        // (must NOT archive).
+        let normal = history::add_message(conv, "user", "old chatter", None, None).unwrap();
+        let run_id = format!("__test_run_{}", std::process::id());
+        history::checkpoint_run(
+            &run_id,
+            conv,
+            &[history::CheckpointTurn {
+                turn_index: 0,
+                role: "assistant".into(),
+                content: "internal checkpoint".into(),
+                tool_call_id: Some("tc-1".into()),
+                tool_name: Some("read_file".into()),
+                model: None,
+            }],
+        )
+        .unwrap();
+        // Backdate every row in the conversation past the cutoff so the whole
+        // conversation is "quiet" and eligible by age.
+        let two_years_ago = now - 2 * 365 * 86_400;
+        history::with_write(|tx| {
+            tx.execute(
+                "UPDATE messages SET created_at = ?1 WHERE conversation_id = ?2",
+                params![two_years_ago, conv],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let cfg = MaintenanceConfig {
+            enabled: true,
+            archive_messages: true,
+            archive_age_days: 365,
+            active_window_secs: 86_400,
+            hard_delete_archived: false,
+            auto_vacuum: false,
+            idle_interval_hours: 6,
+        };
+        let phase = run_archive_phase(&cfg);
+        assert!(phase.ran, "archive phase should run: {phase:?}");
+
+        let present = |id: i64| -> i64 {
+            let conn = get_db().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let shadow_count = || -> i64 {
+            let conn = get_db().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND run_id IS NOT NULL",
+                params![conv],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(present(normal), 0, "normal old message archived out");
+        assert_eq!(
+            shadow_count(),
+            1,
+            "checkpoint shadow row must remain in the live DB, not archived"
+        );
+
+        // Cleanup.
+        history::delete_conversation(conv).unwrap();
     }
 
     /// The caps trim keeps the newest `cap` rows and is a no-op below the cap.

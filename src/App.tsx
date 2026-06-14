@@ -498,6 +498,17 @@ function App() {
     };
   }, []);
 
+  // Recovery hook (review 2026-06): drain a leaked active-run counter from a
+  // previous page lifetime (a renderer reload / crash that skipped agent_run_end
+  // would otherwise pin ACTIVE_RUN_ROOT and reject every divergent
+  // agent_set_workspace until restart). Main window only — calling it from the
+  // quick/detached windows could drain a run still in flight here.
+  useEffect(() => {
+    void api.agentRunReset().catch(() => {
+      /* best-effort; the guard degrades gracefully if absent */
+    });
+  }, []);
+
   // Track the agent workspace root so MemoryPanel can bind newly-created
   // project-scoped memories without re-asking the user. Refetched on every
   // memoryTick (covers workspace changes from inside ChatWindow) and on

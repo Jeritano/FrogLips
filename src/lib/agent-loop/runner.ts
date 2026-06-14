@@ -465,6 +465,17 @@ const PARALLEL_READ_CAP = 6;
 // broken tool can't burn the whole iteration budget. A success resets it.
 const MAX_CONSECUTIVE_TOOL_ERRORS = 5;
 
+// Checkpoint coalescing (item 4A perf fix). The durable checkpoint
+// (`onCheckpoint`) re-serialises ALL accumulated turns and the Rust side does a
+// full DELETE+re-INSERT under the global write lock, so firing it once PER
+// iteration is O(N²) JSON.stringify + O(N²) row writes + O(N²) IPC bytes across
+// a long run. Coalesce instead: fire at most once every CHECKPOINT_MIN_TURNS new
+// turns OR once CHECKPOINT_MIN_INTERVAL_MS has elapsed since the last flush,
+// whichever comes first. The final state is always flushed when the loop exits
+// (completion, abort, exception, or iteration cap) so no settled work is lost.
+const CHECKPOINT_MIN_TURNS = 4;
+const CHECKPOINT_MIN_INTERVAL_MS = 4000;
+
 /* ── Main loop ── */
 
 /**
@@ -812,6 +823,45 @@ export async function runAgentLoop(
       if (oldest !== undefined) readOnlyCache.delete(oldest);
     }
     readOnlyCache.set(key, value);
+  };
+
+  // Checkpoint coalescing state (item 4A perf fix). `checkpointedTurns` is the
+  // turn count persisted at the last flush; `lastCheckpointAt` is its wall-clock
+  // time. `flushCheckpoint` fires `onCheckpoint` with the full current turn set
+  // (the Rust side still does a full rewrite — append-only is a deferred Rust
+  // change, see report) but only when enough new turns / time have accumulated,
+  // or when `force` is set (loop exit). This caps the per-iteration full-rewrite
+  // that made the path O(N²).
+  let checkpointedTurns = 0;
+  // Seed from run start so the interval throttle is measured from the run
+  // beginning, not the epoch — otherwise the first sub-CHECKPOINT_MIN_TURNS
+  // iteration would always read a huge `elapsed` and flush eagerly.
+  let lastCheckpointAt = performance.now();
+  // Cheap O(n) count of the agent turns the next checkpoint WOULD emit — used to
+  // evaluate the throttle WITHOUT paying the full `checkpointTurnsFrom`
+  // serialize (which JSON.stringify's every tool-call turn). We only serialize
+  // when we actually flush.
+  const countAgentTurns = (): number => {
+    let n = 0;
+    for (const m of msgs) if (m.role === "assistant" || m.role === "tool") n++;
+    return n;
+  };
+  const flushCheckpoint = (force: boolean): void => {
+    if (!onCheckpoint) return;
+    const turnCount = countAgentTurns();
+    // Nothing new since the last flush — skip the redundant full-rewrite IPC.
+    // Also skips the degenerate "never checkpointed, still zero turns" case so a
+    // run that produced no agent turns doesn't fire an empty checkpoint.
+    if (turnCount === checkpointedTurns) return;
+    if (!force) {
+      const newTurns = turnCount - checkpointedTurns;
+      const elapsed = performance.now() - lastCheckpointAt;
+      if (newTurns < CHECKPOINT_MIN_TURNS && elapsed < CHECKPOINT_MIN_INTERVAL_MS)
+        return;
+    }
+    onCheckpoint(checkpointTurnsFrom(msgs));
+    checkpointedTurns = turnCount;
+    lastCheckpointAt = performance.now();
   };
 
   onStatusChange("thinking");
@@ -1885,13 +1935,14 @@ export async function runAgentLoop(
         onUpdate([...msgs]);
       }
 
-      // Item 4A: durable per-iteration checkpoint. Fires once here — after this
-      // turn's assistant + tool-result messages have settled into `msgs`, and
-      // before the next "thinking" status. ABSENT callback = no-op (byte-
+      // Item 4A: durable checkpoint. Coalesced (see flushCheckpoint) so it does
+      // NOT re-serialise + full-rewrite every iteration — that was O(N²) over a
+      // long run. Fires here after this turn's assistant + tool-result messages
+      // have settled into `msgs`, gated by the new-turn / interval throttle. The
+      // loop-exit `flushCheckpoint(true)` in `finally` guarantees the final
+      // settled state is always persisted. ABSENT callback = no-op (byte-
       // identical to prior behaviour for subagents/flows/tests).
-      if (onCheckpoint) {
-        onCheckpoint(checkpointTurnsFrom(msgs));
-      }
+      flushCheckpoint(false);
 
       onStatusChange("thinking");
     }
@@ -1910,6 +1961,20 @@ export async function runAgentLoop(
     onStatusChange("done");
     return null;
   } finally {
+    // Item 4A: always flush the final settled checkpoint on any exit
+    // (completion, abort, exception, iteration cap) so the coalescing throttle
+    // can never drop the last few turns. `flushCheckpoint` is a no-op when there
+    // is nothing new since the last flush.
+    try {
+      flushCheckpoint(true);
+    } catch (e) {
+      logDiag({
+        level: "warn",
+        source: "agent-loop",
+        message: "final checkpoint flush failed",
+        detail: e,
+      });
+    }
     recordMetricsOnce();
   }
 }

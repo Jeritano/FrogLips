@@ -357,6 +357,17 @@ pub fn run() {
                     // long-lived server that crashes much later gets a fresh
                     // budget rather than inheriting an exhausted one.
                     let mut attempts: u32 = 0;
+                    // Per-episode guard for the "unresponsive → Degraded" warn.
+                    // An externally-managed (ollama) backend that wedges stays
+                    // Unresponsive on EVERY 2s poll forever (the streak only
+                    // resets on recovery/death), and that path neither restarts
+                    // nor resets the streak. Without this flag, the un-throttled
+                    // `diagnostics::warn_with` would spew a warn log line + an
+                    // `app-diagnostics` IPC re-render every 2s indefinitely.
+                    // Surface the degraded warn/health at most ONCE per episode;
+                    // cleared on the Idle (recovery) arm so it re-arms only after
+                    // the backend is seen healthy again.
+                    let mut backend_degraded_warned = false;
                     loop {
                         // Sticky flag check first — covers the race where the
                         // exit handler flipped the flag and called
@@ -385,6 +396,8 @@ pub fn run() {
                                     health::clear("backend");
                                 }
                                 attempts = 0;
+                                // Recovery re-arms the per-episode degraded warn.
+                                backend_degraded_warned = false;
                             }
                             WatchOutcome::Crashed { model, backend } => {
                                 // Ollama is externally managed — never relaunch
@@ -450,25 +463,36 @@ pub fn run() {
                             } => {
                                 // A ready backend stopped answering its liveness
                                 // probe. Observationally surface it as degraded;
-                                // emit a status the UI can show.
+                                // emit a status the UI can show. `emit_unresponsive`
+                                // is internally deduped (last_emitted), so it is
+                                // cheap to call every tick. The warn log line +
+                                // health::set are NOT deduped, so gate them behind
+                                // a per-episode flag — otherwise a wedged ollama
+                                // (which never restarts/resets and stays
+                                // Unresponsive every 2s poll) would spam the
+                                // rolling app.log and the diagnostics IPC channel
+                                // indefinitely.
                                 s.emit_unresponsive(&model, &backend, consecutive);
-                                diagnostics::warn_with(
-                                    "backend",
-                                    "backend unresponsive — liveness probe failed repeatedly",
-                                    serde_json::json!({
-                                        "model": model,
-                                        "backend": backend,
-                                        "consecutive": consecutive,
-                                    }),
-                                );
-                                health::set(
-                                    "backend",
-                                    health::HealthState::Degraded,
-                                    &format!(
-                                        "{backend} backend unresponsive (model '{model}') — \
-                                         {consecutive} consecutive failed liveness probes"
-                                    ),
-                                );
+                                if !backend_degraded_warned {
+                                    backend_degraded_warned = true;
+                                    diagnostics::warn_with(
+                                        "backend",
+                                        "backend unresponsive — liveness probe failed repeatedly",
+                                        serde_json::json!({
+                                            "model": model,
+                                            "backend": backend,
+                                            "consecutive": consecutive,
+                                        }),
+                                    );
+                                    health::set(
+                                        "backend",
+                                        health::HealthState::Degraded,
+                                        &format!(
+                                            "{backend} backend unresponsive (model '{model}') — \
+                                             {consecutive} consecutive failed liveness probes"
+                                        ),
+                                    );
+                                }
                                 // Ollama is externally managed — surface degraded
                                 // but NEVER kill it. MLX is ours: route the wedged
                                 // server through the SAME restart machinery a crash
@@ -642,6 +666,7 @@ pub fn run() {
             commands::agent::agent_get_workspace,
             commands::agent::agent_run_begin,
             commands::agent::agent_run_end,
+            commands::agent::agent_run_reset,
             commands::misc::open_conversation_window,
             commands::agent::agent_cancel_shell,
             commands::agent::agent_multi_edit,

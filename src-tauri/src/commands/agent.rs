@@ -1148,6 +1148,36 @@ pub fn agent_run_end() -> usize {
     agent::run_end()
 }
 
+/// Item 3 (robustness): force the in-flight run count back to zero, releasing the
+/// pinned workspace root.
+///
+/// The begin/end bracket is driven from the renderer (`agentRunBegin` /
+/// `agentRunEnd`). Those counters are process-global and survive a renderer
+/// reload or WKWebView crash, so any path where `run_begin` succeeded but the
+/// matching `run_end` never fired (hard reload, window crash, an exception that
+/// escaped the JS `finally`, an aborted send before the end call) leaks the
+/// count: `ACTIVE_RUNS` stays > 0 and `ACTIVE_RUN_ROOT` stays pinned for the rest
+/// of the process lifetime, making `agent_set_workspace` reject EVERY divergent
+/// root change (and pin the health pill to Degraded) until the app is restarted.
+///
+/// This command gives the renderer a recovery hook: it is safe to call on
+/// renderer startup (no genuine in-flight run can predate the page that is
+/// booting, since runs are bracketed from that same page) to reconcile a leaked
+/// count from the previous page lifetime. It drains the counter via the existing
+/// `run_end` transition so the 1 → 0 step still clears the pinned root, and
+/// returns the number of leaked runs it cleared (0 in the common, balanced case).
+#[tauri::command]
+pub fn agent_run_reset() -> usize {
+    let mut cleared = 0usize;
+    // Drain via run_end so the 1 → 0 transition releases ACTIVE_RUN_ROOT.
+    // Bounded by the live count; saturates at 0 so a concurrent end can't loop us.
+    while agent::active_run_count() > 0 {
+        agent::run_end();
+        cleared += 1;
+    }
+    cleared
+}
+
 /* ── RAG (project knowledge) ────────────────────────────────────────── */
 
 #[tauri::command]

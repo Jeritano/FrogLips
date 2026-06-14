@@ -267,24 +267,36 @@ export async function runSubagent(
   if (!tryAdmitSubagent()) {
     return budgetExceededResult();
   }
-  const presetId = args.preset ? String(args.preset) : null;
-
-  // Lazy-load presets to avoid a static cycle.
-  const { loadAllPresets } = await import("../agent-presets");
-  const presets = loadAllPresets();
-  const chosen = presetId ? presets.find((p) => p.id === presetId) : undefined;
-
-  const { controller: childAbort, release } = makeChildAbort(parent);
-  const subOpts = buildSubOpts(
-    parent,
-    prompt,
-    chosen?.systemPromptOverride,
-    chosen?.allowedTools,
-    chosen != null,
-    depth,
-    childAbort.signal,
-  );
+  // The releasing finally must cover the WHOLE post-admit region, not just the
+  // runAgentLoop call: the setup below (dynamic import of agent-presets,
+  // makeChildAbort, buildSubOpts) can throw, and if the release lived only
+  // around runAgentLoop a throw here would leak the global slot — leaks
+  // accumulate until the process-global cap is hit and every future subagent is
+  // permanently rejected with subagent_budget_exceeded. `release` (the
+  // parent-abort listener cleanup) is initialized to a no-op so the finally is
+  // safe even if makeChildAbort never runs.
+  let release: () => void = () => {};
   try {
+    const presetId = args.preset ? String(args.preset) : null;
+
+    // Lazy-load presets to avoid a static cycle.
+    const { loadAllPresets } = await import("../agent-presets");
+    const presets = loadAllPresets();
+    const chosen = presetId
+      ? presets.find((p) => p.id === presetId)
+      : undefined;
+
+    const childAbort = makeChildAbort(parent);
+    release = childAbort.release;
+    const subOpts = buildSubOpts(
+      parent,
+      prompt,
+      chosen?.systemPromptOverride,
+      chosen?.allowedTools,
+      chosen != null,
+      depth,
+      childAbort.controller.signal,
+    );
     const final = await runAgentLoop(subOpts);
     return JSON.stringify({
       ok: true,
@@ -294,7 +306,8 @@ export async function runSubagent(
     });
   } finally {
     release();
-    // Release the global slot once the run has settled (success/error/abort).
+    // Release the global slot once the run has settled (success/error/abort) OR
+    // if any of the setup above threw before the run even started.
     releaseSubagentSlot();
   }
 }
@@ -331,23 +344,48 @@ export async function spawnSubagentAsync(
   if (!tryAdmitSubagent()) {
     return budgetExceededResult();
   }
+  // The slot is normally released in the background promise's finally (below),
+  // but that promise isn't constructed until the synchronous setup here
+  // succeeds. If setup throws first (dynamic import of agent-presets,
+  // makeChildAbort, buildSubOpts), there is no finally to run, so we must
+  // release the slot in a catch — otherwise the leak accumulates until the
+  // process-global cap is hit and every future subagent is permanently
+  // rejected with subagent_budget_exceeded.
   const presetId = args.preset ? String(args.preset) : null;
+  let id: string;
+  let childAbort: AbortController;
+  let release: () => void;
+  let subOpts: AgentRunOptions;
+  try {
+    const { loadAllPresets } = await import("../agent-presets");
+    const presets = loadAllPresets();
+    const chosen = presetId
+      ? presets.find((p) => p.id === presetId)
+      : undefined;
 
-  const { loadAllPresets } = await import("../agent-presets");
-  const presets = loadAllPresets();
-  const chosen = presetId ? presets.find((p) => p.id === presetId) : undefined;
-
-  const id = makeId();
-  const { controller: childAbort, release } = makeChildAbort(parent);
-  const subOpts = buildSubOpts(
-    parent,
-    prompt,
-    chosen?.systemPromptOverride,
-    chosen?.allowedTools,
-    chosen != null,
-    depth,
-    childAbort.signal,
-  );
+    id = makeId();
+    const childAbortBundle = makeChildAbort(parent);
+    childAbort = childAbortBundle.controller;
+    release = childAbortBundle.release;
+    subOpts = buildSubOpts(
+      parent,
+      prompt,
+      chosen?.systemPromptOverride,
+      chosen?.allowedTools,
+      chosen != null,
+      depth,
+      childAbort.signal,
+    );
+  } catch (e) {
+    // Setup failed before the background run was created — release the slot we
+    // admitted and surface a structured error (no registry entry was made).
+    releaseSubagentSlot();
+    return JSON.stringify({
+      ok: false,
+      kind: "subagent_error",
+      message: String((e as { message?: string })?.message ?? e),
+    });
+  }
 
   const startedAt = Date.now();
   const promise = (async (): Promise<string> => {

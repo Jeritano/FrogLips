@@ -180,10 +180,24 @@ export async function runSub(ctx: NodeRunContext, o: SubOpts): Promise<string> {
           ...(o.temperature != null ? { temperature: o.temperature } : {}),
         }
       : ctx.base.params;
+  // Only honor an explicit sub-run model; otherwise inherit the card's.
+  const subModel = o.model && o.model.length > 0 ? o.model : null;
+  // A cloud backend (`custom`/`openrouter`) interprets the MODEL field as an
+  // identifier (custom-backend registry id / catalogue model), NOT as a model
+  // name. So a cloud `o.backend` with no paired sub-run model would pair itself
+  // with ctx.base.model — a plain Ollama model name the cloud path can't
+  // resolve. Before Phase 9 widened coerceBackend, an unsupported backend
+  // string coerced to undefined and fell back to the card's working backend;
+  // restore that safety net here by ignoring a cloud backend unless its own
+  // model was supplied. (Reachable only via hand-edited/migrated graph_json —
+  // the CardForm picker always sets model+backend together.)
+  const isCloudBackend = o.backend === "custom" || o.backend === "openrouter";
+  const subBackend =
+    isCloudBackend && subModel == null ? ctx.base.backend : o.backend;
   const opts: AgentRunOptions = {
     ...ctx.base,
-    model: o.model && o.model.length > 0 ? o.model : ctx.base.model,
-    backend: o.backend ?? ctx.base.backend,
+    model: subModel ?? ctx.base.model,
+    backend: subBackend ?? ctx.base.backend,
     messages,
     params,
     systemPromptOverride:

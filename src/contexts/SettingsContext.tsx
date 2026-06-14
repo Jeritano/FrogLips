@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "../lib/tauri-api";
+import { registerCustomBackendHosts } from "../lib/inference-gate";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import { logDiag } from "../lib/diagnostics";
 import type { AppSettings } from "../types";
@@ -94,6 +95,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     try {
       const s = await api.settingsGet();
       store.set(s);
+      // Keep the inference-gate's custom-backend host registry in sync so it can
+      // gate localhost custom endpoints (and bypass genuinely-remote ones)
+      // without threading base_url through every call site.
+      registerCustomBackendHosts(s.custom_backends);
       return s;
     } catch (err) {
       logDiag({
@@ -175,11 +180,6 @@ export function useSettingsField<T>(
   selector: (settings: AppSettings | null) => T,
 ): T {
   const { store } = useSettingsContext();
-  // Pin the selector in a ref so a fresh inline closure each render doesn't
-  // force `useSyncExternalStore` to re-evaluate getSnapshot identity. The
-  // store calls it through this ref, always seeing the latest selector.
-  const selectorRef = useRef(selector);
-  selectorRef.current = selector;
   // `useSyncExternalStore` requires getSnapshot to return a referentially
   // STABLE value between calls when nothing changed — otherwise it loops
   // forever. Selectors commonly mint a fresh default (e.g. `?? []`) on every
@@ -190,21 +190,40 @@ export function useSettingsField<T>(
   // the cached result. A second `Object.is` guard collapses selectors that DO
   // return a stable primitive/reference, so a slice that didn't change won't
   // trigger a re-render.
-  const cacheRef = useRef<{ input: AppSettings | null; value: T } | null>(null);
+  //
+  // The cache is also keyed on the SELECTOR identity: a re-render that passes a
+  // new selector closure (e.g. one that closes over changed props/state and so
+  // selects a different slice) must re-run that selector even if the settings
+  // blob reference is unchanged. Including `selector` in the getSnapshot deps
+  // gives getSnapshot a fresh identity on a selector change, which is what
+  // makes `useSyncExternalStore` re-invoke it (a pinned-ref selector would be
+  // read only on a store notification, never on a pure prop/state re-render).
+  const cacheRef = useRef<{
+    selector: (settings: AppSettings | null) => T;
+    input: AppSettings | null;
+    value: T;
+  } | null>(null);
   const getSnapshot = useCallback(() => {
     const input = store.get();
     const cached = cacheRef.current;
-    if (cached && Object.is(cached.input, input)) return cached.value;
-    const next = selectorRef.current(input);
-    if (cached && Object.is(cached.value, next)) {
-      // Value is unchanged even though the input reference moved — keep the
-      // old reference so dependent memos/effects don't see a phantom change.
-      cacheRef.current = { input, value: cached.value };
+    if (
+      cached &&
+      Object.is(cached.selector, selector) &&
+      Object.is(cached.input, input)
+    ) {
       return cached.value;
     }
-    cacheRef.current = { input, value: next };
+    const next = selector(input);
+    if (cached && Object.is(cached.value, next)) {
+      // Value is unchanged even though the input/selector reference moved —
+      // keep the old reference so dependent memos/effects don't see a phantom
+      // change.
+      cacheRef.current = { selector, input, value: cached.value };
+      return cached.value;
+    }
+    cacheRef.current = { selector, input, value: next };
     return next;
-  }, [store]);
+  }, [store, selector]);
   return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot);
 }
 

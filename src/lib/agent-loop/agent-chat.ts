@@ -190,7 +190,18 @@ export async function streamAgentChat(
       // genuine network/connection error. Everything else — 4xx, aborts,
       // parse errors, and generic thrown errors — propagates immediately so a
       // non-idempotent turn is never silently re-streamed.
-      const is5xx = /\b5\d\d:/.test(msg);
+      //
+      // Two 5xx shapes occur across backends and BOTH must match:
+      //   - Ollama / MLX format the status as "<code>:" e.g. "Ollama 503: ...".
+      //   - The custom / OpenRouter backend (Rust) formats reqwest's
+      //     StatusCode Display, which renders the reason phrase: e.g.
+      //     "custom backend 503 Service Unavailable: ...". Here the colon
+      //     follows the reason phrase, not the digits, so a digits-then-colon
+      //     pattern alone misses every cloud-backend 5xx (zero retries on the
+      //     entire cloud agent path). Accept a 5xx code followed by EITHER a
+      //     colon OR a space + capitalized reason word (reqwest Display), which
+      //     covers both without matching incidental 3-digit numbers in prose.
+      const is5xx = /\b5\d\d(?::| [A-Z])/.test(msg);
       const isAbort =
         (e instanceof Error && e.name === "AbortError") ||
         /\baborted\b/i.test(msg);

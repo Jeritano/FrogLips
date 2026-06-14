@@ -4,6 +4,47 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-06-14
+
+### v0.14.0 re-review remediation (35 findings)
+A focused re-review of the v0.14.0 architecture-remediation DELTA (the new code
+the prior reviews never saw) found 36 issues; the critical (DB upgrade lockout)
+shipped in 0.14.1. This release fixes the rest:
+
+- **Correctness — agent checkpoint "shadow rows":** the durable per-iteration
+  checkpoint rows (hidden from the chat view) no longer leak into the maintenance
+  archive, FTS message search, or the sidebar search (all now filter `run_id IS
+  NULL` like the conversation view).
+- **sqlite-vec recall:** memory dedup + recall now apply the active-status filter
+  the linear path used (vec0 indexed all statuses and filtered post-KNN); short
+  vec0 results fall back to the linear scan so a crowded global index can't drop
+  valid hits; RAG corpus scoping documented.
+- **Cloud/OpenRouter agent backend:** vision (image) messages now deserialize on
+  the tool-call path (`ChatMessage.content` accepts the OpenAI multi-content
+  array); 5xx errors from the custom backend are retried (status-format match);
+  the tool-call stream is byte-capped.
+- **Inference gate:** a leaked subagent concurrency slot on spawn failure is
+  released (try/finally); a custom backend pointed at localhost is now gated like
+  any local backend (remote custom still bypasses) — fixed a real IPv6-loopback
+  (`[::1]`) host-classification bug; the gate resolves the host from a settings
+  registry, no call-site plumbing.
+- **Resilience/ops:** the backend liveness probe no longer reloads settings
+  (Keychain + file) every 2s; a leaked active-run counter is reset on main-window
+  startup (was permanently blocking workspace changes after a renderer reload);
+  maintenance ANALYZE runs under the write lock; the archive DELETE no longer
+  re-scans the whole archive each pass.
+- **Build:** the bundle-budget gate now measures render-blocking CSS (was JS-only,
+  so the 151 KB App.css could leak unchecked); App.css preloaded on the main
+  window (no FOUC).
+- **Frontend:** `useSettingsField` keys its cache on selector identity; the
+  detached-window param parser reuses the shared parser; LazyDerivedSet defers the
+  ES2024 Set-combinator methods.
+
+Two low-impact perf residuals deferred (documented): per-row vec0 catalog probes
+during ingest (the safe cache needs cross-file invalidation hooks); a lean
+quick.css split for the popover. Gates: cargo 372 native/no-default · clippy clean
+both · tsc clean · vitest 920 · build + bundle-budget pass. Notarized + stapled.
+
 ## [0.14.1] — 2026-06-14
 
 ### Critical — fix DB lockout when upgrading from <= 0.13.x

@@ -8,9 +8,26 @@
  * actual lookup, by which point every module has finished initializing.
  *
  * The returned object is a real `ReadonlySet<string>` subclass that builds its
- * contents on first access to ANY Set member (has/size/iteration/…), so every
- * existing consumer (`SET.has(name)`, `[...SET]`, `SET.size`) works unchanged.
+ * contents on first access to any read/iteration member (has/size/iteration/…),
+ * so every existing consumer (`SET.has(name)`, `[...SET]`, `SET.size`) works
+ * unchanged. The ES2024 combinator methods (union/intersection/difference/…)
+ * are also force-materialized via runtime wrappers (see constructor) so they
+ * never run against the still-empty backing store — important because these
+ * Sets are the security classifier gates (DANGEROUS_TOOLS, …).
  */
+
+// ES2024 Set combinator methods. They are not in this project's ES2020 type lib,
+// so we cannot `override` them by name (tsc TS2339); instead we install runtime
+// wrappers for whichever ones the runtime exposes, each forcing #ensure() first.
+const COMBINATOR_METHODS = [
+  "union",
+  "intersection",
+  "difference",
+  "symmetricDifference",
+  "isSubsetOf",
+  "isSupersetOf",
+  "isDisjointFrom",
+] as const;
 
 class LazyDerivedSet extends Set<string> {
   #built = false;
@@ -19,6 +36,23 @@ class LazyDerivedSet extends Set<string> {
   constructor(build: () => Iterable<string>) {
     super();
     this.#build = build;
+
+    // Force materialization before any ES2024 combinator runs, so it never
+    // operates on the empty backing store (these gates are security-relevant).
+    for (const name of COMBINATOR_METHODS) {
+      const proto = Set.prototype as unknown as Record<string, unknown>;
+      const original = proto[name];
+      if (typeof original !== "function") continue;
+      Object.defineProperty(this, name, {
+        configurable: true,
+        enumerable: false,
+        writable: true,
+        value: (...args: unknown[]): unknown => {
+          this.#ensure();
+          return (original as (...a: unknown[]) => unknown).apply(this, args);
+        },
+      });
+    }
   }
 
   #ensure(): void {

@@ -855,6 +855,10 @@ export const api = {
    *  should `.catch()` and proceed (the guard degrades gracefully if absent). */
   agentRunBegin: () => invoke<number>("agent_run_begin"),
   agentRunEnd: () => invoke<number>("agent_run_end"),
+  /** Recovery hook: drain a leaked active-run counter from a previous page
+   *  lifetime (renderer reload / crash). Safe to call once on startup; returns
+   *  the number of leaked runs cleared (0 in the balanced case). */
+  agentRunReset: () => invoke<number>("agent_run_reset"),
 
   // Multi-window: detached per-conversation windows
   openConversationWindow: (conversationId: number, title?: string | null) =>

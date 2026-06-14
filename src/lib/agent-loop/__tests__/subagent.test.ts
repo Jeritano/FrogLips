@@ -7,9 +7,12 @@ vi.mock("../runner", () => ({
   runAgentLoop: (...args: unknown[]) => runAgentLoopMock(...args),
 }));
 
-// agent-presets is lazy-imported inside subagent.ts — return an empty list.
+// agent-presets is lazy-imported inside subagent.ts — return an empty list by
+// default. A vi.fn() so individual tests can make setup throw (to exercise the
+// slot-release-on-setup-throw path).
+const loadAllPresetsMock = vi.fn<() => unknown[]>(() => []);
 vi.mock("../../agent-presets", () => ({
-  loadAllPresets: () => [],
+  loadAllPresets: () => loadAllPresetsMock(),
 }));
 
 import {
@@ -39,6 +42,8 @@ function makeParent(signal?: AbortSignal): AgentRunOptions {
 describe("async subagent spawn", () => {
   beforeEach(() => {
     runAgentLoopMock.mockReset();
+    loadAllPresetsMock.mockReset();
+    loadAllPresetsMock.mockImplementation(() => []);
     __resetSubagentRegistryForTests();
   });
   afterEach(() => {
@@ -250,6 +255,58 @@ describe("async subagent spawn", () => {
     runAgentLoopMock.mockImplementationOnce(async () => "again");
     const raw2 = await runSubagent({ prompt: "solo2" }, makeParent());
     expect(JSON.parse(raw2).ok).toBe(true);
+  });
+
+  it("releases the slot when runSubagent setup throws (no budget leak)", async () => {
+    // A throw during post-admit setup (here: preset loading) must NOT leak the
+    // admitted slot — otherwise leaks accumulate to the cap and permanently
+    // reject every future subagent. Squeeze budget to 1 so a single leak would
+    // be observable on the very next call.
+    setMaxConcurrentSubagents(1);
+    loadAllPresetsMock.mockImplementationOnce(() => {
+      throw new Error("boom: stale presets chunk");
+    });
+
+    await expect(
+      runSubagent({ prompt: "will fail in setup" }, makeParent()),
+    ).rejects.toThrow("boom: stale presets chunk");
+    // runAgentLoop never ran (setup failed first).
+    expect(runAgentLoopMock).not.toHaveBeenCalled();
+
+    // The slot must be free again: a normal sync run still succeeds.
+    runAgentLoopMock.mockImplementationOnce(async () => "recovered");
+    const recovered = JSON.parse(
+      await runSubagent({ prompt: "after failure" }, makeParent()),
+    );
+    expect(recovered.ok).toBe(true);
+    expect(recovered.answer).toContain("recovered");
+  });
+
+  it("releases the slot when spawnSubagentAsync setup throws (no budget leak)", async () => {
+    setMaxConcurrentSubagents(1);
+    loadAllPresetsMock.mockImplementationOnce(() => {
+      throw new Error("boom: setup failed");
+    });
+
+    // Async path surfaces a structured error rather than rejecting, and makes
+    // no registry entry.
+    const failed = JSON.parse(
+      await spawnSubagentAsync({ prompt: "will fail in setup" }, makeParent()),
+    );
+    expect(failed.ok).toBe(false);
+    expect(failed.kind).toBe("subagent_error");
+    expect(failed.message).toContain("boom: setup failed");
+    expect(runAgentLoopMock).not.toHaveBeenCalled();
+    expect(JSON.parse(listSubagents()).subagents.length).toBe(0);
+
+    // Slot freed: a normal async spawn still admits.
+    runAgentLoopMock.mockImplementationOnce(async () => "ok");
+    const ok = JSON.parse(
+      await spawnSubagentAsync({ prompt: "after failure" }, makeParent()),
+    );
+    expect(ok.ok).toBe(true);
+    expect(ok.status).toBe("running");
+    await new Promise((r) => setTimeout(r, 0));
   });
 
   it("aborting the parent signal cancels child subagents", async () => {

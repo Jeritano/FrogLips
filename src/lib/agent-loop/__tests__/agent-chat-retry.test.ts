@@ -3,6 +3,15 @@ import type { Message } from "../../../types";
 import { streamAgentChat } from "../agent-chat";
 import { RETRY_MAX } from "../ollama-client";
 import type { AgentRunOptions } from "../types";
+import { streamCustomAgentChat } from "../../custom-client";
+
+// The custom / OpenRouter agent path is routed through Rust, not `fetch`, so the
+// retry tests above (which stub `fetch`) never exercise it. Mock the client so
+// we can feed the EXACT Rust-formatted 5xx string and assert the retry fires.
+vi.mock("../../custom-client", () => ({
+  streamCustomAgentChat: vi.fn(),
+}));
+const customMock = vi.mocked(streamCustomAgentChat);
 
 /** NDJSON Response carrying a single Ollama final-message line. */
 function ndjsonResponse(text: string): Response {
@@ -315,5 +324,84 @@ describe("streamAgentChat — keep_alive gating (local vs cloud)", () => {
     const body = await bodyFor("deepseek-v4-pro:cloud");
     expect(body.keep_alive).toBeUndefined();
     expect(body.options).toBeUndefined();
+  });
+});
+
+// Regression: the custom / OpenRouter backend formats its 5xx in Rust via
+// reqwest's StatusCode Display ("custom backend 503 Service Unavailable: ..."),
+// where the colon follows the reason phrase. The old digits-then-colon classifier
+// (/\b5\d\d:/) never matched it, so transient cloud 5xx propagated with ZERO
+// retries — the whole cloud agent path was un-retried and untested.
+describe("streamAgentChat — custom/OpenRouter 5xx retry (Rust StatusCode Display)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    customMock.mockReset();
+  });
+
+  function runWithTimers<T>(p: Promise<T>): Promise<T> {
+    const settled = p.then(
+      (v) => ({ ok: true as const, v }),
+      (e) => ({ ok: false as const, e }),
+    );
+    return vi
+      .runAllTimersAsync()
+      .then(() => settled.then((r) => (r.ok ? r.v : Promise.reject(r.e))));
+  }
+
+  it("retries a reqwest-Display 5xx ('503 Service Unavailable') and recovers", async () => {
+    let call = 0;
+    customMock.mockImplementation(async () => {
+      call++;
+      if (call === 1) {
+        // Exact shape from custom_backend.rs: `custom backend {st}: {snippet}`.
+        throw new Error(
+          "custom backend 503 Service Unavailable: upstream busy",
+        );
+      }
+      return { content: "recovered", tool_calls: [] };
+    });
+
+    let retries = 0;
+    const result = await runWithTimers(
+      streamAgentChat(
+        { ...baseOpts(), backend: "openrouter" },
+        MSGS,
+        [],
+        new AbortController().signal,
+        () => {},
+        () => {
+          retries++;
+        },
+      ),
+    );
+
+    expect(result.content).toBe("recovered");
+    expect(retries).toBe(1);
+    expect(customMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT retry a custom-backend 4xx (e.g. '400 Bad Request')", async () => {
+    customMock.mockImplementation(async () => {
+      throw new Error("custom backend 400 Bad Request: nope");
+    });
+
+    let retries = 0;
+    await expect(
+      runWithTimers(
+        streamAgentChat(
+          { ...baseOpts(), backend: "openrouter" },
+          MSGS,
+          [],
+          new AbortController().signal,
+          () => {},
+          () => {
+            retries++;
+          },
+        ),
+      ),
+    ).rejects.toThrow(/400 Bad Request/);
+    expect(retries).toBe(0);
+    expect(customMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -247,10 +247,22 @@ export async function streamCustomAgentChat(
     : api.customChatStream({
         op_id: opId,
         backend_id: backendId,
-        // The content-only command maps {role, content}; serialized messages
-        // include only those for plain turns. For the tool-less agent path the
-        // history is content-only anyway (no tool turns issued).
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        // Reuse the SAME serialized history as the tool path. The previous
+        // `{role, content}` re-map silently dropped vision image parts and the
+        // OpenAI tool-linkage fields (assistant `tool_calls`, `role:"tool"`
+        // tool_call_id/name) — so a tool-less node fed prior tool turns would
+        // emit an orphan `role:"tool"` message that strict OpenAI servers 400.
+        // The content-only Rust command's ChatMessage serde-skips the optional
+        // tool fields when absent, so a plain content-only turn stays
+        // byte-identical; the extra fields only ride along when they exist.
+        // (Vision arrays additionally need the Rust `content` widening — see
+        // the customChatStreamTools path.) The binding types `messages` as
+        // content-only; the extra OpenAI fields are forwarded verbatim by the
+        // Rust ChatMessage struct, hence the cast.
+        messages: serialized as unknown as {
+          role: string;
+          content: string;
+        }[],
         model: modelOverride,
         temperature: cfg.temperature,
         top_p: cfg.top_p,
