@@ -5,6 +5,411 @@ use r2d2::{ManageConnection, Pool, PooledConnection};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/* ── sqlite-vec (vec0) auto-extension registration ── */
+
+/// Set once `SELECT vec_version()` succeeds on the schema connection. When
+/// false (registration failed, old SQLite, etc.) every vector query falls
+/// through to the preserved linear-scan path — the BLOB columns are the source
+/// of truth, so nothing is lost. Read by `rag` + `memory` via
+/// `vec0_available()`.
+pub(crate) static VEC0_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Register the sqlite-vec `vec0` virtual table as an SQLite auto-extension
+/// exactly once, process-wide, BEFORE any `Connection` is opened. Auto-
+/// extensions run their init on every subsequent connection (pool slots,
+/// in-memory test conns), so vec0 is available everywhere without a per-conn
+/// load call. Uses `rusqlite::ffi` which is exposed by the `bundled` feature —
+/// no `loadable_extension` feature, so no dylib ships (notarization unaffected).
+pub(crate) fn register_vec0_once() {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| {
+        // SAFETY: `sqlite3_vec_init` is the canonical sqlite-vec entrypoint with
+        // the SQLite extension-init ABI. We transmute its fn pointer to the
+        // `sqlite3_auto_extension` callback type (the SQLite extension-init
+        // `unsafe extern "C" fn(...) -> c_int`), exactly as the sqlite-vec
+        // README prescribes. Called once before any connection opens, so there
+        // is no concurrent FFI registration. The explicit annotation satisfies
+        // clippy::missing_transmute_annotations.
+        type SqliteEntrypoint = unsafe extern "C" fn(
+            *mut rusqlite::ffi::sqlite3,
+            *mut *mut std::os::raw::c_char,
+            *const rusqlite::ffi::sqlite3_api_routines,
+        ) -> std::os::raw::c_int;
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                SqliteEntrypoint,
+            >(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+    });
+}
+
+/// Whether vec0 KNN is usable this process (set after the boot probe).
+pub(crate) fn vec0_available() -> bool {
+    VEC0_AVAILABLE.load(Ordering::Relaxed)
+}
+
+/* ── vec0 derived-index helpers (shared by rag + memory) ── */
+
+/// Name of the vec0 table mirroring `rag_chunks` embeddings (keyed on chunk id).
+pub(crate) const VEC_RAG_CHUNKS: &str = "vec_rag_chunks";
+/// Name of the vec0 table mirroring `memories` embeddings (keyed on memory id).
+pub(crate) const VEC_MEMORIES: &str = "vec_memories";
+
+/// Whether a regular/virtual table named `name` exists.
+pub(crate) fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+        params![name],
+        |r| r.get(0),
+    )?;
+    Ok(n == 1)
+}
+
+/// Inspect a vec0 table's declared embedding dimension by parsing its
+/// `CREATE VIRTUAL TABLE … vec0(… float[DIM] …)` SQL out of `sqlite_master`.
+/// Returns `None` when the table is absent or the dim can't be parsed.
+pub(crate) fn vec_table_dim(conn: &Connection, name: &str) -> Option<usize> {
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?1",
+            params![name],
+            |r| r.get(0),
+        )
+        .ok()?;
+    // Find `float[<n>]` and parse <n>.
+    let lower = sql.to_ascii_lowercase();
+    let idx = lower.find("float[")?;
+    let rest = &sql[idx + "float[".len()..];
+    let end = rest.find(']')?;
+    rest[..end].trim().parse::<usize>().ok()
+}
+
+/// Create the vec0 virtual table `name` at dimension `dim` if missing. The
+/// primary key is the source table's row id; cosine distance is declared so a
+/// score is `1 - distance` over the L2-normalized vectors we store. No-op when
+/// vec0 is unavailable (caller keeps the linear fallback).
+pub(crate) fn ensure_vec_table(conn: &Connection, name: &str, dim: usize) -> Result<()> {
+    if !vec0_available() || dim == 0 {
+        return Ok(());
+    }
+    let pk = match name {
+        VEC_RAG_CHUNKS => "chunk_id",
+        VEC_MEMORIES => "memory_id",
+        _ => "rowid",
+    };
+    // `name`, `pk` and `dim` are all crate constants / parsed integers — never
+    // user input — so the format is safe. vec0 has no IF-NOT-EXISTS column
+    // semantics issue; `CREATE VIRTUAL TABLE IF NOT EXISTS` is supported.
+    conn.execute_batch(&format!(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS {name} USING vec0(
+            {pk} INTEGER PRIMARY KEY,
+            embedding float[{dim}] distance_metric=cosine
+         );"
+    ))?;
+    Ok(())
+}
+
+/// Infer the embedding dimension from the source table's existing BLOBs
+/// (`length(embedding)/4`). Returns the first non-null embedding's dim, or
+/// `None` when the source has no usable vectors yet (table created lazily on
+/// first write). `where_clause` narrows to indexable rows (e.g. non-null
+/// embedding).
+fn infer_dim(conn: &Connection, table: &str, where_clause: &str) -> Option<usize> {
+    let sql = format!(
+        "SELECT length(embedding)/4 FROM {table} WHERE {where_clause} \
+         AND embedding IS NOT NULL AND length(embedding) >= 4 LIMIT 1"
+    );
+    conn.query_row(&sql, [], |r| r.get::<_, i64>(0))
+        .ok()
+        .filter(|d| *d > 0)
+        .map(|d| d as usize)
+}
+
+/// Idempotently create + backfill the vec0 tables from the BLOB source tables.
+/// Called once after `setup_schema` on the schema connection (and exercised by
+/// the vec0 migration rungs). Best-effort + guarded: a vec0-less build returns
+/// `Ok(())` without touching anything, so the app keeps working on the linear
+/// fallback. The vec table is created at the source data's dim; rows whose
+/// embedding length matches that dim are backfilled with `INSERT OR IGNORE`
+/// (vec0 accepts the raw little-endian f32 BLOB directly).
+pub(crate) fn ensure_vec_tables_present(conn: &Connection) -> Result<()> {
+    if !vec0_available() {
+        return Ok(());
+    }
+    // RAG chunks (every row has a NOT NULL embedding).
+    if table_exists(conn, "rag_chunks")? {
+        if let Some(dim) = infer_dim(conn, "rag_chunks", "1=1") {
+            ensure_vec_table(conn, VEC_RAG_CHUNKS, dim)?;
+            backfill_vec_rag(conn, dim)?;
+        }
+    }
+    // Memories (only rows with a non-null embedding are indexable).
+    if table_exists(conn, "memories")? {
+        if let Some(dim) = infer_dim(conn, "memories", "embedding IS NOT NULL") {
+            ensure_vec_table(conn, VEC_MEMORIES, dim)?;
+            backfill_vec_memories(conn, dim)?;
+        }
+    }
+    Ok(())
+}
+
+/// Pure-SQL backfill of `vec_rag_chunks` from `rag_chunks` for rows whose
+/// embedding matches `dim`. Idempotent via a `NOT IN (already-indexed)` guard —
+/// vec0 does NOT honor `INSERT OR IGNORE` on a PK conflict (it raises a UNIQUE
+/// constraint error regardless), so we exclude rows already present.
+pub(crate) fn backfill_vec_rag(conn: &Connection, dim: usize) -> Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO {VEC_RAG_CHUNKS}(chunk_id, embedding)
+             SELECT id, embedding FROM rag_chunks
+             WHERE length(embedding) = ?1
+               AND id NOT IN (SELECT chunk_id FROM {VEC_RAG_CHUNKS})"
+        ),
+        params![(dim * 4) as i64],
+    )?;
+    Ok(())
+}
+
+/// Pure-SQL backfill of `vec_memories` from `memories` (any non-null embedding
+/// of matching dim, regardless of status — status is filtered at read time).
+/// Idempotent via the same `NOT IN (already-indexed)` guard as `backfill_vec_rag`.
+pub(crate) fn backfill_vec_memories(conn: &Connection, dim: usize) -> Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO {VEC_MEMORIES}(memory_id, embedding)
+             SELECT id, embedding FROM memories
+             WHERE embedding IS NOT NULL AND length(embedding) = ?1
+               AND id NOT IN (SELECT memory_id FROM {VEC_MEMORIES})"
+        ),
+        params![(dim * 4) as i64],
+    )?;
+    Ok(())
+}
+
+/// Per-query fallback decision: can vec0 KNN serve a query of dimension
+/// `query_dim` against `table`? True only when vec0 linked this process, the
+/// table exists, and its declared dim equals the query dim (a 512-corpus query
+/// against a 768-dim table must NOT use vec0 — fall to linear). Any error
+/// reading the schema is treated as "not usable".
+pub(crate) fn vec0_usable_for(conn: &Connection, table: &str, query_dim: usize) -> bool {
+    if !vec0_available() || query_dim == 0 {
+        return false;
+    }
+    match table_exists(conn, table) {
+        Ok(true) => vec_table_dim(conn, table) == Some(query_dim),
+        _ => false,
+    }
+}
+
+/// Insert one RAG chunk's embedding into `vec_rag_chunks` in the SAME tx as the
+/// BLOB write. Lazily creates the table at the vector's dim on the first write,
+/// and skips (logging once) if the table already exists at a different dim — the
+/// BLOB stays authoritative and search uses the linear fallback for that corpus.
+/// Best-effort: any vec0 error is logged, never propagated, so the chunk write
+/// itself can't be lost.
+pub(crate) fn vec_insert_rag_chunk(
+    tx: &rusqlite::Transaction<'_>,
+    chunk_id: i64,
+    emb: &[f32],
+    blob: &[u8],
+) {
+    vec_insert(tx, VEC_RAG_CHUNKS, "chunk_id", chunk_id, emb, blob);
+}
+
+/// Insert one memory's embedding into `vec_memories` in the same tx as the BLOB
+/// write. Same lazy-create + dim-guard + best-effort semantics as
+/// `vec_insert_rag_chunk`.
+pub(crate) fn vec_insert_memory(
+    tx: &rusqlite::Transaction<'_>,
+    memory_id: i64,
+    emb: &[f32],
+    blob: &[u8],
+) {
+    vec_insert(tx, VEC_MEMORIES, "memory_id", memory_id, emb, blob);
+}
+
+fn vec_insert(
+    tx: &rusqlite::Transaction<'_>,
+    name: &str,
+    pk: &str,
+    id: i64,
+    emb: &[f32],
+    blob: &[u8],
+) {
+    if !vec0_available() || emb.is_empty() {
+        return;
+    }
+    let dim = emb.len();
+    // Create lazily at this vector's dim if absent.
+    match table_exists(tx, name) {
+        Ok(false) => {
+            if let Err(e) = ensure_vec_table(tx, name, dim) {
+                crate::diagnostics::warn_with(
+                    "vec0",
+                    "lazy vec table create failed",
+                    serde_json::json!({ "table": name, "dim": dim, "error": e.to_string() }),
+                );
+                return;
+            }
+        }
+        Ok(true) => {
+            // Dim mismatch → the BLOB stays the source of truth; don't poison
+            // the vec index with a row vec0 would reject anyway.
+            if vec_table_dim(tx, name) != Some(dim) {
+                return;
+            }
+        }
+        Err(_) => return,
+    }
+    // vec0 doesn't support `INSERT OR REPLACE`; delete any existing row for
+    // this id first (no-op when absent) so a re-insert (e.g. re-activating a
+    // memory) can't trip a UNIQUE constraint.
+    let _ = tx.execute(
+        &format!("DELETE FROM {name} WHERE {pk} = ?1"),
+        params![id],
+    );
+    if let Err(e) = tx.execute(
+        &format!("INSERT INTO {name}({pk}, embedding) VALUES (?1, ?2)"),
+        params![id, blob],
+    ) {
+        crate::diagnostics::warn_with(
+            "vec0",
+            "vec row insert failed (blob source intact; linear fallback)",
+            serde_json::json!({ "table": name, "id": id, "error": e.to_string() }),
+        );
+    }
+}
+
+/// Delete a vec0 row by primary key inside `tx`. Best-effort; vec0 has no FK so
+/// the source table's cascade does not reach it. No-op if vec0 unavailable or
+/// the table is absent.
+pub(crate) fn vec_delete(tx: &rusqlite::Transaction<'_>, name: &str, pk: &str, id: i64) {
+    if !vec0_available() {
+        return;
+    }
+    if matches!(table_exists(tx, name), Ok(true)) {
+        let _ = tx.execute(
+            &format!("DELETE FROM {name} WHERE {pk} = ?1"),
+            params![id],
+        );
+    }
+}
+
+/// Drop a vec0 table inside `tx` (used on embedder switch). Best-effort.
+pub(crate) fn vec_drop_table(tx: &rusqlite::Transaction<'_>, name: &str) {
+    if !vec0_available() {
+        return;
+    }
+    let _ = tx.execute_batch(&format!("DROP TABLE IF EXISTS {name};"));
+}
+
+/// Backfill `vec_rag_chunks` rows for a corpus+path's chunks ABOVE the
+/// watermark (the copy-forward path's newly-inserted rows). Best-effort +
+/// dim-guarded: only chunks whose BLOB matches the vec table's dim are added
+/// (vec0 would reject a mismatch). No-op if vec0 unavailable.
+pub(crate) fn vec_backfill_rag_above(
+    tx: &rusqlite::Transaction<'_>,
+    corpus_id: i64,
+    path: &str,
+    watermark: i64,
+) {
+    if !vec0_available() || !matches!(table_exists(tx, VEC_RAG_CHUNKS), Ok(true)) {
+        return;
+    }
+    let Some(dim) = vec_table_dim(tx, VEC_RAG_CHUNKS) else {
+        return;
+    };
+    let _ = tx.execute(
+        &format!(
+            "INSERT INTO {VEC_RAG_CHUNKS}(chunk_id, embedding)
+             SELECT id, embedding FROM rag_chunks
+             WHERE corpus_id = ?1 AND path = ?2 AND id > ?3 AND length(embedding) = ?4
+               AND id NOT IN (SELECT chunk_id FROM {VEC_RAG_CHUNKS})"
+        ),
+        params![corpus_id, path, watermark, (dim * 4) as i64],
+    );
+}
+
+/// Delete the vec0 rows for a corpus's OLD generation (chunks at/below the
+/// watermark) — mirrors the atomic-swap delete. Best-effort. Must run BEFORE
+/// the rag_chunks delete so the ids still resolve via the join subquery.
+pub(crate) fn vec_delete_rag_old_generation(
+    tx: &rusqlite::Transaction<'_>,
+    corpus_id: i64,
+    watermark: i64,
+) {
+    if !vec0_available() || !matches!(table_exists(tx, VEC_RAG_CHUNKS), Ok(true)) {
+        return;
+    }
+    let _ = tx.execute(
+        &format!(
+            "DELETE FROM {VEC_RAG_CHUNKS} WHERE chunk_id IN (
+                SELECT id FROM rag_chunks WHERE corpus_id = ?1 AND id <= ?2
+             )"
+        ),
+        params![corpus_id, watermark],
+    );
+}
+
+/// Delete all vec0 rows belonging to a corpus (used by delete_corpus before the
+/// FK cascade drops the rag_chunks rows). Best-effort.
+pub(crate) fn vec_delete_rag_corpus(tx: &rusqlite::Transaction<'_>, corpus_id: i64) {
+    if !vec0_available() || !matches!(table_exists(tx, VEC_RAG_CHUNKS), Ok(true)) {
+        return;
+    }
+    let _ = tx.execute(
+        &format!(
+            "DELETE FROM {VEC_RAG_CHUNKS} WHERE chunk_id IN (
+                SELECT id FROM rag_chunks WHERE corpus_id = ?1
+             )"
+        ),
+        params![corpus_id],
+    );
+}
+
+/// After an embedder switch rebuilt `vec_rag_chunks` at a new dim, re-add every
+/// chunk whose BLOB matches the (new) table dim — recovers other corpora that
+/// already live in the new space. Best-effort + idempotent (`INSERT OR IGNORE`).
+pub(crate) fn vec_backfill_rag_all_matching_dim(tx: &rusqlite::Transaction<'_>) {
+    if !vec0_available() || !matches!(table_exists(tx, VEC_RAG_CHUNKS), Ok(true)) {
+        return;
+    }
+    if let Some(dim) = vec_table_dim(tx, VEC_RAG_CHUNKS) {
+        let _ = tx.execute(
+            &format!(
+                "INSERT INTO {VEC_RAG_CHUNKS}(chunk_id, embedding)
+                 SELECT id, embedding FROM rag_chunks
+                 WHERE length(embedding) = ?1
+                   AND id NOT IN (SELECT chunk_id FROM {VEC_RAG_CHUNKS})"
+            ),
+            params![(dim * 4) as i64],
+        );
+    }
+}
+
+/// Test-only: register vec0 + open a fresh in-memory connection that has the
+/// extension available, and flip `VEC0_AVAILABLE` based on a live probe. Every
+/// `#[cfg(test)]` that opens an in-memory `Connection` and exercises vec tables
+/// must go through this so the auto-extension is registered first.
+#[cfg(test)]
+pub(crate) fn test_open_in_memory_with_vec() -> Connection {
+    register_vec0_once();
+    let conn = Connection::open_in_memory().expect("open in-memory db");
+    // Probe so VEC0_AVAILABLE reflects reality for the fallback-decision code
+    // under test. Best-effort: a build without vec leaves it false.
+    let ok = conn
+        .query_row("SELECT vec_version()", [], |r| r.get::<_, String>(0))
+        .is_ok();
+    if ok {
+        VEC0_AVAILABLE.store(true, Ordering::Relaxed);
+    }
+    conn
+}
 
 /* ── Connection pool ── */
 
@@ -551,6 +956,59 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v26 — sqlite-vec ANN index for RAG. Creates the `vec_rag_chunks` vec0
+    // virtual table at the dim inferred from existing `rag_chunks` BLOBs
+    // (length/4) and backfills it. Best-effort + GUARDED: if vec0 isn't linked
+    // (`vec_version()` fails) this rung logs a diag and returns Ok WITHOUT
+    // creating the table — the app still works via the linear fallback, and the
+    // runtime `ensure_vec_tables_present()` (run after setup_schema on every
+    // boot) idempotently creates + backfills it once vec0 becomes available.
+    // user_version advances regardless, which is why the runtime backfill
+    // exists. BLOB columns stay the source of truth; vec0 is a rebuildable
+    // derived index.
+    Migration {
+        version: 26,
+        apply: |conn| {
+            if !vec0_available() {
+                crate::diagnostics::info(
+                    "migration",
+                    "v26: vec0 unavailable — skipping vec_rag_chunks (linear fallback in use; \
+                     runtime backfill will create it if vec0 appears)",
+                );
+                return Ok(());
+            }
+            if table_exists(conn, "rag_chunks")? {
+                if let Some(dim) = infer_dim(conn, "rag_chunks", "1=1") {
+                    ensure_vec_table(conn, VEC_RAG_CHUNKS, dim)?;
+                    backfill_vec_rag(conn, dim)?;
+                }
+            }
+            Ok(())
+        },
+    },
+    // v27 — sqlite-vec ANN index for memory. Same shape as v26 for the
+    // `memories` table (only rows with a non-null embedding are indexable;
+    // status is filtered at read time, so all non-null embeddings are indexed).
+    Migration {
+        version: 27,
+        apply: |conn| {
+            if !vec0_available() {
+                crate::diagnostics::info(
+                    "migration",
+                    "v27: vec0 unavailable — skipping vec_memories (linear fallback in use; \
+                     runtime backfill will create it if vec0 appears)",
+                );
+                return Ok(());
+            }
+            if table_exists(conn, "memories")? {
+                if let Some(dim) = infer_dim(conn, "memories", "embedding IS NOT NULL") {
+                    ensure_vec_table(conn, VEC_MEMORIES, dim)?;
+                    backfill_vec_memories(conn, dim)?;
+                }
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// Add the additive `conv_id INTEGER` sibling column to `table`, preferring an
@@ -1001,6 +1459,10 @@ pub(crate) fn ensure_images_table(conn: &Connection) -> Result<()> {
 }
 
 fn build_pool() -> Result<Pool<SqliteManager>> {
+    // CRITICAL: register the vec0 auto-extension BEFORE any connection opens —
+    // including the integrity probe + schema connection below — so every
+    // connection in the process can use vec0 virtual tables.
+    register_vec0_once();
     let path = db_path()?;
     // Corruption recovery: probe the existing DB before any pooled connection
     // touches it. A failed integrity check quarantines the file so schema
@@ -1011,6 +1473,33 @@ fn build_pool() -> Result<Pool<SqliteManager>> {
     {
         let conn = Connection::open(&path).context("schema setup connection")?;
         setup_schema(&conn)?;
+        // Probe vec0 availability on the schema connection and record it. A
+        // build/link without vec0 (or an SQLite too old) leaves VEC0_AVAILABLE
+        // false → every vector query uses the preserved linear fallback.
+        match conn.query_row("SELECT vec_version()", [], |r| r.get::<_, String>(0)) {
+            Ok(ver) => {
+                VEC0_AVAILABLE.store(true, Ordering::Relaxed);
+                crate::diagnostics::info("db", &format!("sqlite-vec available: {ver}"));
+            }
+            Err(e) => {
+                VEC0_AVAILABLE.store(false, Ordering::Relaxed);
+                crate::diagnostics::warn_with(
+                    "db",
+                    "sqlite-vec (vec0) unavailable — vector search uses linear fallback",
+                    serde_json::json!({ "error": e.to_string() }),
+                );
+            }
+        }
+        // Runtime backfill: user_version advances even when the vec0 rungs were
+        // skipped (guarded best-effort), so idempotently create + backfill any
+        // missing vec tables here on every boot.
+        if let Err(e) = ensure_vec_tables_present(&conn) {
+            crate::diagnostics::warn_with(
+                "db",
+                "ensure_vec_tables_present failed (non-fatal; linear fallback active)",
+                serde_json::json!({ "error": e.to_string() }),
+            );
+        }
     }
     let manager = SqliteManager { path };
     // Pool sized for concurrent IPC handlers + background workers (scheduler,
@@ -1038,6 +1527,14 @@ pub(crate) fn get_db() -> Result<PooledConnection<SqliteManager>> {
 #[cfg(test)]
 pub fn __test_get_db() -> Result<PooledConnection<SqliteManager>> {
     get_db()
+}
+
+/// Test-only: run the full migration ladder against an isolated connection so
+/// sibling modules (rag/memory vec0 tests) can build a real-schema in-memory DB
+/// without touching the global pool.
+#[cfg(test)]
+pub(crate) fn __test_run_migrations(conn: &Connection) -> Result<()> {
+    run_migrations(conn)
 }
 
 pub(crate) fn now_unix() -> i64 {
@@ -1817,6 +2314,40 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
 
+    /// Smoke test: the sqlite-vec auto-extension links + registers, so
+    /// `vec_version()` returns and a vec0 virtual table accepts a row. Proves
+    /// the FFI symbol is reachable under `bundled` rusqlite (no
+    /// `loadable_extension` feature / no shipped dylib).
+    #[test]
+    fn vec0_extension_links_and_registers() {
+        let conn = test_open_in_memory_with_vec();
+        let ver: String = conn
+            .query_row("SELECT vec_version()", [], |r| r.get(0))
+            .expect("vec_version() must resolve once auto-extension is registered");
+        assert!(!ver.is_empty(), "vec_version returned empty");
+        assert!(vec0_available(), "VEC0_AVAILABLE must be set after probe");
+
+        ensure_vec_table(&conn, VEC_RAG_CHUNKS, 4).unwrap();
+        assert!(table_exists(&conn, VEC_RAG_CHUNKS).unwrap());
+        assert_eq!(vec_table_dim(&conn, VEC_RAG_CHUNKS), Some(4));
+
+        // vec0 accepts a raw little-endian f32 BLOB directly.
+        let v = vec![0.5f32, 0.5, 0.5, 0.5];
+        conn.execute(
+            &format!("INSERT INTO {VEC_RAG_CHUNKS}(chunk_id, embedding) VALUES (1, ?1)"),
+            params![crate::util::vec_to_blob(&v)],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {VEC_RAG_CHUNKS}"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
     /// v18 FTS5: triggers keep the index live, BM25 search returns the
     /// MESSAGE with a snippet, and the per-token quoting neutralizes FTS
     /// operator injection ("NEAR(", unbalanced quotes, column filters).
@@ -2435,20 +2966,79 @@ mod tests {
         }
     }
 
+    /// v26/v27 vec0 tables only exist once a vector of known dim has been
+    /// observed (they're created lazily at the source data's dim). Seed one RAG
+    /// chunk + one memory embedding, run the runtime backfill, then assert the
+    /// vec tables exist at the seeded dim. Skips gracefully if vec0 isn't linked
+    /// (the linear fallback is the contract in that case).
+    fn assert_vec_tables_after_seed(conn: &Connection) {
+        if !vec0_available() {
+            return;
+        }
+        let dim = 4usize;
+        let v = crate::util::vec_to_blob(&vec![0.5f32; dim]);
+        // Need a corpus row for the FK; minimal valid row.
+        conn.execute(
+            "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
+             VALUES ('__vec_seed', '/tmp', 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        let cid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
+             VALUES (?1, 'p', 0, 1, 't', ?2)",
+            params![cid, v],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (content, tags, status, created_at, embedding, scope)
+             VALUES ('m', '', 'active', 0, ?1, 'global')",
+            params![v],
+        )
+        .unwrap();
+        ensure_vec_tables_present(conn).expect("runtime vec backfill");
+        assert!(
+            table_exists(conn, VEC_RAG_CHUNKS).unwrap(),
+            "vec_rag_chunks must exist after seed+backfill"
+        );
+        assert!(
+            table_exists(conn, VEC_MEMORIES).unwrap(),
+            "vec_memories must exist after seed+backfill"
+        );
+        assert_eq!(vec_table_dim(conn, VEC_RAG_CHUNKS), Some(dim));
+        assert_eq!(vec_table_dim(conn, VEC_MEMORIES), Some(dim));
+        // Backfill carried the seeded rows into the vec index.
+        let rag_n: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {VEC_RAG_CHUNKS}"), [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let mem_n: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {VEC_MEMORIES}"), [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(rag_n, 1, "vec_rag_chunks backfilled");
+        assert_eq!(mem_n, 1, "vec_memories backfilled");
+    }
+
     fn user_version(conn: &Connection) -> i64 {
         conn.query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap()
     }
 
     /// A fresh DB run through the ladder lands on the final user_version with
-    /// the complete current schema.
+    /// the complete current schema, and (when vec0 is linked) the vec0 tables
+    /// materialize via the runtime backfill once data exists.
     #[test]
     fn migration_ladder_fresh_db_reaches_latest() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = test_open_in_memory_with_vec();
         assert_eq!(user_version(&conn), 0, "fresh DB starts at version 0");
         run_migrations(&conn).expect("ladder on fresh db");
         assert_eq!(user_version(&conn), latest_version());
         assert_final_schema(&conn);
+        assert_vec_tables_after_seed(&conn);
     }
 
     /// Migration v10 (`images`) is safe to apply twice in a row and against a
@@ -2661,20 +3251,26 @@ mod tests {
     /// no error, version unchanged, schema unchanged.
     #[test]
     fn migration_ladder_is_idempotent() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = test_open_in_memory_with_vec();
         run_migrations(&conn).expect("first run");
         let v1 = user_version(&conn);
         run_migrations(&conn).expect("second run must be a no-op");
         run_migrations(&conn).expect("third run must be a no-op");
         assert_eq!(user_version(&conn), v1);
         assert_final_schema(&conn);
+        // Seed + backfill twice — the vec backfill (INSERT OR IGNORE) is
+        // idempotent, so a second runtime ensure is a clean no-op.
+        assert_vec_tables_after_seed(&conn);
+        if vec0_available() {
+            ensure_vec_tables_present(&conn).expect("second runtime backfill is a no-op");
+        }
     }
 
     /// An old-shape DB — base tables only, user_version 0, pre-images/params —
     /// upgrades cleanly through the ladder with no data loss.
     #[test]
     fn migration_ladder_upgrades_old_db() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = test_open_in_memory_with_vec();
         // Pre-ladder shape: v1 base tables, never version-stamped.
         conn.execute_batch(
             "CREATE TABLE conversations (

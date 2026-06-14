@@ -1,7 +1,7 @@
 use anyhow::Result;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -79,6 +79,15 @@ static EMB_CACHE: Lazy<RwLock<Option<EmbeddingMap>>> = Lazy::new(|| RwLock::new(
 /// read a stale cache until restart).
 pub fn invalidate_cache() {
     *EMB_CACHE.write() = None;
+    // Embedder switch: the cached vectors AND the vec0 derived index belong to
+    // the old model's dim/space. Drop the vec0 table so the next add_memory
+    // lazily recreates it at the new dim (and the next boot's
+    // ensure_vec_tables_present rebuilds it from the BLOB source). Best-effort —
+    // a DB error here must not mask the cache drop, and the BLOBs are untouched.
+    let _ = crate::history::with_write(|tx| {
+        crate::history::vec_drop_table(tx, crate::history::VEC_MEMORIES);
+        Ok(())
+    });
 }
 
 /// Hard cap on cache entry count. At 768 dims × 4 bytes that's ~60 MB; at
@@ -321,7 +330,16 @@ pub fn add_memory(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![content, conversation_id, source_msg_id, tags, blob, status, now_unix(), scope, pr_for_insert],
         )?;
-        Ok(tx.last_insert_rowid())
+        let new_id = tx.last_insert_rowid();
+        // Keep the vec0 derived index in lockstep with the BLOB source in the
+        // SAME tx. All non-null embeddings are indexed (status is filtered at
+        // read time); best-effort + dim-guarded so a vec0-less build / dim
+        // mismatch leaves the BLOB authoritative and recall uses the linear
+        // fallback.
+        if let (Some(emb), Some(b)) = (&embedding, &blob) {
+            crate::history::vec_insert_memory(tx, new_id, emb, b);
+        }
+        Ok(new_id)
     })?;
     if let Some(emb) = embedding {
         if status == "active" {
@@ -390,6 +408,8 @@ pub fn delete_memory(id: i64) -> Result<()> {
     // WS3: single-writer gate. The cache lock is still taken after the DB
     // write so a recall reader is never blocked behind the DELETE.
     crate::history::with_write(|tx| {
+        // vec0 has no FK, so its derived row must be dropped in the same tx.
+        crate::history::vec_delete(tx, crate::history::VEC_MEMORIES, "memory_id", id);
         tx.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
         Ok(())
     })?;
@@ -540,22 +560,39 @@ pub fn search_vector(
     if query_emb.is_empty() {
         return Ok(vec![]);
     }
-    let mut scored: Vec<(i64, f32)> = with_cache(|map| {
-        map.iter()
-            .map(|(id, emb)| (*id, cosine(&query_emb, emb)))
-            .filter(|(_, s)| *s >= min_score)
-            .collect()
-    })?;
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    // Over-fetch from the cache so post-filter trimming still yields `limit`
-    // results when most candidates belong to a scope the caller can't see.
+    // Over-fetch so post-filter (scope + min_score) trimming still yields
+    // `limit` when most candidates belong to a scope the caller can't see.
     let over_fetch = limit.saturating_mul(4).clamp(limit, 200);
-    scored.truncate(over_fetch);
+
+    // Prefer the vec0 ANN index when usable for this query's dim; else fall
+    // through to the preserved cache-backed linear scan. Either way we end up
+    // with `scored: Vec<(id, score)>` (score DESC, already >= min_score), then
+    // share the by-id fetch + scope filter + touch-on-recall below.
+    let scored: Vec<(i64, f32)> = {
+        let conn = get_db()?;
+        if crate::history::vec0_usable_for(&conn, crate::history::VEC_MEMORIES, query_emb.len()) {
+            match search_vector_vec0(&conn, &query_emb, over_fetch, min_score) {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::diagnostics::warn_with(
+                        "memory",
+                        "vec0 KNN query failed — falling back to linear scan",
+                        serde_json::json!({ "error": e.to_string() }),
+                    );
+                    drop(conn);
+                    search_vector_linear(&query_emb, over_fetch, min_score)?
+                }
+            }
+        } else {
+            drop(conn);
+            search_vector_linear(&query_emb, over_fetch, min_score)?
+        }
+    };
+
     let ids: Vec<i64> = scored.iter().map(|(id, _)| *id).collect();
     let mut by_id = fetch_by_ids(&ids)?;
     // `scored` is already sorted by score DESC, so walk it in order and pull
     // each Memory out of the by-id map — building the result already ordered.
-    // Avoids the old HashMap-of-scores rebuild + second sort over `mems`.
     let mut mems: Vec<Memory> = Vec::with_capacity(scored.len().min(limit));
     for (id, score) in scored {
         if let Some(mut m) = by_id.remove(&id) {
@@ -574,6 +611,64 @@ pub fn search_vector(
         let _ = touch_memories(&touch_ids);
     }
     Ok(mems)
+}
+
+/// Cache-backed linear cosine scan over active memories — the verbatim pre-vec0
+/// ranking, preserved as the fallback (and the parity reference). Returns up to
+/// `over_fetch` `(id, score)` pairs (score DESC) with `score >= min_score`.
+fn search_vector_linear(
+    query_emb: &[f32],
+    over_fetch: usize,
+    min_score: f32,
+) -> Result<Vec<(i64, f32)>> {
+    let mut scored: Vec<(i64, f32)> = with_cache(|map| {
+        map.iter()
+            .map(|(id, emb)| (*id, cosine(query_emb, emb)))
+            .filter(|(_, s)| *s >= min_score)
+            .collect()
+    })?;
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(over_fetch);
+    Ok(scored)
+}
+
+/// vec0 ANN KNN over `vec_memories`, restricted to ACTIVE memories (status is
+/// filtered at read time — the index holds every non-null embedding). Maps
+/// cosine distance to score (`1 - distance`), keeps `score >= min_score`, and
+/// returns up to `over_fetch` `(id, score)` pairs, score DESC. Caller only
+/// invokes this when `vec0_usable_for` confirmed the dim matches.
+fn search_vector_vec0(
+    conn: &rusqlite::Connection,
+    query_emb: &[f32],
+    over_fetch: usize,
+    min_score: f32,
+) -> Result<Vec<(i64, f32)>> {
+    // vec0 forbids combining `k = ?` with `LIMIT`, so `k` IS the candidate
+    // count; the active-status filter is applied post-KNN via the JOIN.
+    let k = over_fetch.max(1) as i64;
+    let q_blob = embedding_to_blob(query_emb);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT v.memory_id, v.distance
+         FROM {table} v
+         JOIN memories m ON m.id = v.memory_id
+         WHERE v.embedding MATCH ?1 AND k = ?2 AND m.status = 'active'
+         ORDER BY v.distance",
+        table = crate::history::VEC_MEMORIES
+    ))?;
+    let rows = stmt.query_map(params![q_blob, k], |r| {
+        let id: i64 = r.get(0)?;
+        let distance: f64 = r.get(1)?;
+        Ok((id, distance))
+    })?;
+    let mut out: Vec<(i64, f32)> = Vec::with_capacity(over_fetch);
+    for row in rows {
+        let (id, distance) = row?;
+        let score = 1.0f32 - distance as f32;
+        if score >= min_score {
+            out.push((id, score));
+        }
+    }
+    Ok(out)
 }
 
 /// Snapshot of the scope-related columns for a single memory.
@@ -697,6 +792,26 @@ pub fn find_duplicate(query_emb: Vec<f32>, threshold: f32) -> Result<Option<i64>
     if query_emb.is_empty() {
         return Ok(None);
     }
+    // vec0 fast path: the index holds EVERY non-null embedding (active +
+    // pending + inactive), so a single k=1 KNN covers what the linear path
+    // splits across the cache (active) + a pending scan. Compare the mapped
+    // cosine (1 - distance) to the threshold. Only taken when the dim matches.
+    {
+        let conn = get_db()?;
+        if crate::history::vec0_usable_for(&conn, crate::history::VEC_MEMORIES, query_emb.len()) {
+            match find_duplicate_vec0(&conn, &query_emb, threshold) {
+                Ok(hit) => return Ok(hit),
+                Err(e) => {
+                    crate::diagnostics::warn_with(
+                        "memory",
+                        "vec0 find_duplicate failed — falling back to linear scan",
+                        serde_json::json!({ "error": e.to_string() }),
+                    );
+                    // fall through to linear below
+                }
+            }
+        }
+    }
     // Check active (cache) first
     if let Some(hit) = with_cache(|map| {
         for (id, emb) in map.iter() {
@@ -726,6 +841,35 @@ pub fn find_duplicate(query_emb: Vec<f32>, threshold: f32) -> Result<Option<i64>
         }
     }
     Ok(None)
+}
+
+/// k=1 vec0 KNN for `find_duplicate`. Returns the nearest memory id when its
+/// mapped cosine (`1 - distance`) meets `threshold`, else `None`. Indexes every
+/// non-null embedding, so this single query subsumes the linear path's
+/// active-cache + pending-scan split.
+fn find_duplicate_vec0(
+    conn: &rusqlite::Connection,
+    query_emb: &[f32],
+    threshold: f32,
+) -> Result<Option<i64>> {
+    let q_blob = embedding_to_blob(query_emb);
+    // vec0: `k = 1` is the KNN limit; combining it with LIMIT is rejected.
+    let row: Option<(i64, f64)> = conn
+        .query_row(
+            &format!(
+                "SELECT memory_id, distance FROM {table}
+                 WHERE embedding MATCH ?1 AND k = 1
+                 ORDER BY distance",
+                table = crate::history::VEC_MEMORIES
+            ),
+            params![q_blob],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        Some((id, distance)) if (1.0f32 - distance as f32) >= threshold => Some(id),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -916,5 +1060,147 @@ mod tests {
         let before = map.len();
         evict_if_over_cap(&mut map);
         assert_eq!(map.len(), before);
+    }
+
+    /* ── vec0 ANN parity + fallback (memory) ── */
+
+    /// Deterministic L2-normalized vector of dim `dim` from a seed.
+    fn norm_vec(seed: u64, dim: usize) -> Vec<f32> {
+        let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+        let mut v: Vec<f32> = Vec::with_capacity(dim);
+        for _ in 0..dim {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            v.push(((s >> 11) as f32 / (1u64 << 53) as f32) * 2.0 - 1.0);
+        }
+        let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if n > 0.0 {
+            for x in v.iter_mut() {
+                *x /= n;
+            }
+        }
+        v
+    }
+
+    /// Build an in-memory DB with the full schema, `count` ACTIVE memories each
+    /// holding a normalized `dim`-vector, and the vec0 index created+backfilled.
+    fn seed_memories(count: usize, dim: usize) -> rusqlite::Connection {
+        let conn = crate::history::test_open_in_memory_with_vec();
+        // Full ladder so the `memories` table + columns exist exactly as prod.
+        crate::history::__test_run_migrations(&conn).unwrap();
+        for i in 0..count {
+            let blob = embedding_to_blob(&norm_vec(i as u64 + 1, dim));
+            conn.execute(
+                "INSERT INTO memories (content, tags, status, created_at, embedding, scope)
+                 VALUES (?1, '', 'active', 0, ?2, 'global')",
+                params![format!("m{i}"), blob],
+            )
+            .unwrap();
+        }
+        crate::history::ensure_vec_tables_present(&conn).unwrap();
+        conn
+    }
+
+    /// vec0 KNN ranking must match a brute-force cosine ranking over the same
+    /// seeded set (ids + scores within 1e-4; exact top-1).
+    #[test]
+    fn vec0_memory_parity_with_linear() {
+        if !crate::history::vec0_available() {
+            return;
+        }
+        let dim = 16usize;
+        let n = 50usize;
+        let conn = seed_memories(n, dim);
+        for q_seed in [11u64, 22, 33, 44, 55] {
+            let q = norm_vec(q_seed, dim);
+            // Brute-force reference over the same vectors (all normalized →
+            // cosine = dot).
+            let mut reference: Vec<(i64, f32)> = (0..n)
+                .map(|i| {
+                    let v = norm_vec(i as u64 + 1, dim);
+                    let dot: f32 = q.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+                    ((i + 1) as i64, dot)
+                })
+                .collect();
+            reference.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            let over_fetch = 20usize;
+            let vec0 = search_vector_vec0(&conn, &q, over_fetch, -1.0).unwrap();
+            assert!(!vec0.is_empty(), "expected hits for seed {q_seed}");
+            // Exact top-1.
+            assert_eq!(
+                vec0[0].0, reference[0].0,
+                "top-1 id mismatch for seed {q_seed}"
+            );
+            // Each returned id/score matches the reference at the same rank.
+            for (rank, (id, score)) in vec0.iter().enumerate() {
+                assert_eq!(*id, reference[rank].0, "rank {rank} id mismatch");
+                assert!(
+                    (*score - reference[rank].1).abs() < 1e-4,
+                    "rank {rank} score mismatch: vec0 {score} vs ref {}",
+                    reference[rank].1
+                );
+            }
+        }
+    }
+
+    /// `find_duplicate_vec0` returns the exact-match id above threshold and
+    /// `None` for a far query — matching the linear dedupe semantics.
+    #[test]
+    fn vec0_memory_find_duplicate() {
+        if !crate::history::vec0_available() {
+            return;
+        }
+        let dim = 16usize;
+        let conn = seed_memories(20, dim);
+        // Query equal to memory #1's vector → exact match (cosine ~1) ≥ 0.85.
+        let q = norm_vec(1, dim);
+        let hit = find_duplicate_vec0(&conn, &q, 0.85).unwrap();
+        assert_eq!(hit, Some(1), "exact match must be found");
+        // An absurdly high threshold no real pair meets → None.
+        let q2 = norm_vec(99_999, dim);
+        let none = find_duplicate_vec0(&conn, &q2, 0.999_999).unwrap();
+        assert!(none.is_none(), "no near-duplicate should be found");
+    }
+
+    /// Migration/backfill on a populated DB with a MIXED-dim case: rows of two
+    /// dims (512 + 768) must not panic; the vec table is created at the
+    /// majority/first-seen dim and the dim guard makes vec0 unusable for the
+    /// other dim (→ linear fallback), never a hard fail.
+    #[test]
+    fn vec0_memory_mixed_dim_no_panic_falls_back() {
+        if !crate::history::vec0_available() {
+            return;
+        }
+        let conn = crate::history::test_open_in_memory_with_vec();
+        crate::history::__test_run_migrations(&conn).unwrap();
+        // Seed a 512-dim row first, then a 768-dim row.
+        for (i, dim) in [(1u64, 512usize), (2, 768)] {
+            let blob = embedding_to_blob(&norm_vec(i, dim));
+            conn.execute(
+                "INSERT INTO memories (content, tags, status, created_at, embedding, scope)
+                 VALUES (?1, '', 'active', 0, ?2, 'global')",
+                params![format!("m{i}"), blob],
+            )
+            .unwrap();
+        }
+        // Must not panic.
+        crate::history::ensure_vec_tables_present(&conn).expect("mixed-dim backfill no panic");
+        let table_dim = crate::history::vec_table_dim(&conn, crate::history::VEC_MEMORIES);
+        assert!(table_dim.is_some(), "vec table created at the first-seen dim");
+        let td = table_dim.unwrap();
+        // vec0 is usable only for the table's own dim; the other dim falls back.
+        assert!(crate::history::vec0_usable_for(
+            &conn,
+            crate::history::VEC_MEMORIES,
+            td
+        ));
+        let other = if td == 512 { 768 } else { 512 };
+        assert!(!crate::history::vec0_usable_for(
+            &conn,
+            crate::history::VEC_MEMORIES,
+            other
+        ));
     }
 }

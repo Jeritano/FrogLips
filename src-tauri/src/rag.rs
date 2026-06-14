@@ -531,14 +531,21 @@ fn flush_pending(
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 )?;
                 for (start, end, chunk) in &f.chunks {
+                    let blob = vec_to_blob(&embs[ei]);
                     stmt.execute(params![
                         corpus_id,
                         f.rel,
                         *start as i64,
                         *end as i64,
                         chunk,
-                        vec_to_blob(&embs[ei]),
+                        &blob,
                     ])?;
+                    // Keep the vec0 derived index in lockstep with the BLOB
+                    // source in the SAME tx so they never diverge. Best-effort:
+                    // a vec0-less build (or a transient dim hiccup) leaves the
+                    // BLOB intact and search falls back to the linear path.
+                    let chunk_id = tx.last_insert_rowid();
+                    crate::history::vec_insert_rag_chunk(tx, chunk_id, &embs[ei], &blob);
                     ei += 1;
                     count += 1;
                 }
@@ -657,6 +664,11 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
             // Stale fingerprints would let the copy-forward resurrect vectors
             // from the old embedding space.
             tx.execute("DELETE FROM rag_files WHERE corpus_id = ?1", params![id])?;
+            // The new embedder produces a different-dim vector space. Drop the
+            // shared vec0 index so the lazy-create in flush_pending rebuilds it
+            // at the new dim; a post-swap backfill recovers any other corpora
+            // whose BLOBs already match the new dim (BLOB = source of truth).
+            crate::history::vec_drop_table(tx, crate::history::VEC_RAG_CHUNKS);
             crate::diagnostics::info(
                 "rag-ingest",
                 &format!(
@@ -735,14 +747,19 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
                 let remaining = (MAX_CHUNKS_PER_INGEST - chunks_created) as i64;
                 // WS3: single-writer gate for the copy-forward insert.
                 let copied = crate::history::with_write(|tx| {
-                    Ok(tx.execute(
+                    let n = tx.execute(
                         "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
                          SELECT corpus_id, path, start_byte, end_byte, text, embedding
                          FROM rag_chunks
                          WHERE corpus_id = ?1 AND path = ?2 AND id <= ?3
                          ORDER BY id LIMIT ?4",
                         params![corpus_id, rel, watermark, remaining],
-                    )?)
+                    )?;
+                    // Mirror the copied (above-watermark) chunks into the vec0
+                    // index in the SAME tx so the derived index carries forward
+                    // with the BLOB source. Best-effort + dim-guarded inside.
+                    crate::history::vec_backfill_rag_above(tx, corpus_id, &rel, watermark);
+                    Ok(n)
                 })?;
                 if copied > 0 {
                     chunks_created += copied;
@@ -869,6 +886,10 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     // chunks. An interruption before this point leaves the old corpus whole.
     // WS3: single-writer gate.
     crate::history::with_write(|tx| {
+        // vec0 has no FK, so the derived index rows for the old generation must
+        // be deleted in the SAME tx as the BLOB rows they mirror — before the
+        // rag_chunks delete, while the ids are still resolvable by join.
+        crate::history::vec_delete_rag_old_generation(tx, corpus_id, watermark);
         tx.execute(
             "DELETE FROM rag_chunks WHERE corpus_id = ?1 AND id <= ?2",
             params![corpus_id, watermark],
@@ -886,6 +907,13 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
              )",
             params![corpus_id],
         )?;
+        // On an embedder switch the vec0 table was dropped + lazily rebuilt at
+        // the new dim by this generation's writes. Re-backfill ALL chunks whose
+        // BLOB matches the (now new) table dim so other corpora already in the
+        // new space rejoin the index (BLOB stays the source of truth either way).
+        if force_reembed {
+            crate::history::vec_backfill_rag_all_matching_dim(tx);
+        }
         Ok(())
     })?;
 
@@ -897,6 +925,131 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         total_bytes,
         duration_ms: started.elapsed().as_millis(),
     })
+}
+
+/// Linear top-k cosine scan over a corpus's chunk BLOBs — the verbatim
+/// pre-vec0 ranking, preserved as the fallback (and the parity reference).
+///
+/// Maturity review H1 (2026-05-27): BinaryHeap<Reverse<...>> of capacity k
+/// gives O(N log k) instead of a full sort. Perf review M23 (2026-06-09): the
+/// scan scores straight off the borrowed BLOB bytes inside the row callback
+/// (zero per-row heap allocation). Returns `(score, id)` pairs, score DESC,
+/// with `score > 0` only — matching the vec0 path's filter.
+fn search_linear(
+    conn: &rusqlite::Connection,
+    corpus_id: i64,
+    q_emb: &[f32],
+    k: usize,
+) -> Result<Vec<(f32, i64)>> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    // OrderedF32 wrapper — f32 isn't Ord because of NaN, but cosine over
+    // finite inputs never produces NaN (caller already enforces non-empty
+    // query string, and `embed` returns finite values).
+    #[derive(Clone)]
+    struct OrderedF32(f32);
+    impl PartialEq for OrderedF32 {
+        fn eq(&self, other: &Self) -> bool {
+            self.0.to_bits() == other.0.to_bits()
+        }
+    }
+    impl Eq for OrderedF32 {}
+    impl PartialOrd for OrderedF32 {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl Ord for OrderedF32 {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.0
+                .partial_cmp(&other.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }
+    }
+    let mut stmt = conn.prepare("SELECT id, embedding FROM rag_chunks WHERE corpus_id = ?1")?;
+    let mut heap: BinaryHeap<Reverse<(OrderedF32, i64)>> = BinaryHeap::with_capacity(k + 1);
+    let rows = stmt.query_map(params![corpus_id], |r| {
+        let id: i64 = r.get(0)?;
+        // Borrow the BLOB in place — no Vec<u8>/Vec<f32> per row.
+        let score = match r.get_ref(1)?.as_blob() {
+            Ok(b) => score_blob(q_emb, b),
+            Err(_) => 0.0,
+        };
+        Ok((id, score))
+    })?;
+    for row in rows {
+        let (id, score) = row?;
+        if score <= 0.0 {
+            continue;
+        }
+        heap.push(Reverse((OrderedF32(score), id)));
+        // Trim back to k by dropping the smallest. `pop` on a min-heap
+        // is O(log k).
+        if heap.len() > k {
+            heap.pop();
+        }
+    }
+    drop(stmt);
+    // `into_sorted_vec()` on this min-heap of `Reverse((score,id))` yields
+    // elements ascending by the heap order = DESCENDING by score (highest
+    // first), which is exactly the order we want — no extra reverse. (The
+    // pre-vec0 code reversed here, which actually produced worst-first; the
+    // returned RagHit set was unaffected since downstream sorts by score, but
+    // this also brings the linear path into exact rank parity with the vec0
+    // KNN path, which orders by ascending distance = descending score.)
+    let winners: Vec<(f32, i64)> = heap
+        .into_sorted_vec()
+        .into_iter()
+        .map(|Reverse((s, id))| (s.0, id))
+        .collect();
+    Ok(winners)
+}
+
+/// vec0 ANN top-k for a corpus. The corpus filter is POST-KNN (vec0 KNN is
+/// global over the shared table), so we over-fetch `k * 8` (clamped) neighbours,
+/// JOIN to `rag_chunks` to keep only this corpus's rows, map cosine distance to
+/// score (`1 - distance`, since the table is `distance_metric=cosine` over
+/// L2-normalized vectors), drop non-positive scores, and keep the top k. Caller
+/// only invokes this when `vec0_usable_for` confirmed the dim matches.
+fn search_vec_rag(
+    conn: &rusqlite::Connection,
+    corpus_id: i64,
+    q_emb: &[f32],
+    k: usize,
+) -> Result<Vec<(f32, i64)>> {
+    // Over-fetch because the corpus filter prunes the GLOBAL KNN result (vec0
+    // ranks across the shared table, then the JOIN keeps only this corpus).
+    // Clamp so a huge k can't blow the candidate set up unboundedly. vec0
+    // forbids combining `k = ?` with `LIMIT`, so `k` IS the candidate count and
+    // the final top-k trim happens in Rust below.
+    let overfetch = (k.saturating_mul(8)).clamp(k, 512) as i64;
+    let q_blob = vec_to_blob(q_emb);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT v.chunk_id, v.distance
+         FROM {table} v
+         JOIN rag_chunks c ON c.id = v.chunk_id
+         WHERE v.embedding MATCH ?1 AND k = ?2 AND c.corpus_id = ?3
+         ORDER BY v.distance",
+        table = crate::history::VEC_RAG_CHUNKS
+    ))?;
+    let rows = stmt.query_map(params![q_blob, overfetch, corpus_id], |r| {
+        let id: i64 = r.get(0)?;
+        let distance: f64 = r.get(1)?;
+        Ok((id, distance))
+    })?;
+    let mut winners: Vec<(f32, i64)> = Vec::with_capacity(k);
+    for row in rows {
+        let (id, distance) = row?;
+        let score = 1.0f32 - distance as f32;
+        if score <= 0.0 {
+            continue;
+        }
+        winners.push((score, id));
+        if winners.len() >= k {
+            break;
+        }
+    }
+    Ok(winners)
 }
 
 pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>> {
@@ -932,72 +1085,31 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
             )
         })?;
 
-    // Maturity review H1 (2026-05-27): BinaryHeap<Reverse<...>> of capacity
-    // k gives O(N log k) instead of a full sort.
-    //
-    // Perf review M23 (2026-06-09): two-pass scan. The previous single query
-    // decoded EVERY chunk's text + path Strings and converted every 2KB
-    // embedding BLOB into a fresh Vec<f32> per query — ~90-100MB of
-    // allocation churn and 30-100ms at a 20k-chunk corpus, just to keep the
-    // top k. Pass 1 scores straight off the borrowed BLOB bytes inside the
-    // row callback (zero per-row heap allocation) and keeps only (score,
-    // id); pass 2 fetches path/text for the ≤50 winners by id.
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
-    // OrderedF32 wrapper — f32 isn't Ord because of NaN, but cosine over
-    // finite inputs never produces NaN (caller already enforces non-empty
-    // query string, and `embed` returns finite values).
-    #[derive(Clone)]
-    struct OrderedF32(f32);
-    impl PartialEq for OrderedF32 {
-        fn eq(&self, other: &Self) -> bool {
-            self.0.to_bits() == other.0.to_bits()
+    // Pass 1: rank chunks → top-k `winners: Vec<(score, id)>` (score DESC).
+    // Prefer the vec0 ANN index when it's usable for this query's dim; else
+    // fall through to the preserved linear scan. Both produce identical winner
+    // shapes so the pass-2 payload fetch + scan_and_wrap below is shared.
+    let winners: Vec<(f32, i64)> = if crate::history::vec0_usable_for(
+        &conn,
+        crate::history::VEC_RAG_CHUNKS,
+        q_emb.len(),
+    ) {
+        match search_vec_rag(&conn, corpus_id, &q_emb, k) {
+            Ok(w) => w,
+            Err(e) => {
+                // vec0 errored at query time (corruption, transient) — never
+                // hard-fail: log once and fall back to the linear scan.
+                crate::diagnostics::warn_with(
+                    "rag",
+                    "vec0 KNN query failed — falling back to linear scan",
+                    serde_json::json!({ "error": e.to_string() }),
+                );
+                search_linear(&conn, corpus_id, &q_emb, k)?
+            }
         }
-    }
-    impl Eq for OrderedF32 {}
-    impl PartialOrd for OrderedF32 {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-    impl Ord for OrderedF32 {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            self.0
-                .partial_cmp(&other.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }
-    }
-    let mut stmt = conn.prepare("SELECT id, embedding FROM rag_chunks WHERE corpus_id = ?1")?;
-    let mut heap: BinaryHeap<Reverse<(OrderedF32, i64)>> = BinaryHeap::with_capacity(k + 1);
-    let rows = stmt.query_map(params![corpus_id], |r| {
-        let id: i64 = r.get(0)?;
-        // Borrow the BLOB in place — no Vec<u8>/Vec<f32> per row.
-        let score = match r.get_ref(1)?.as_blob() {
-            Ok(b) => score_blob(&q_emb, b),
-            Err(_) => 0.0,
-        };
-        Ok((id, score))
-    })?;
-    for row in rows {
-        let (id, score) = row?;
-        if score <= 0.0 {
-            continue;
-        }
-        heap.push(Reverse((OrderedF32(score), id)));
-        // Trim back to k by dropping the smallest. `pop` on a min-heap
-        // is O(log k).
-        if heap.len() > k {
-            heap.pop();
-        }
-    }
-    drop(stmt);
-    // Descending by score. into_sorted_vec yields ascending; reverse it.
-    let mut winners: Vec<(f32, i64)> = heap
-        .into_sorted_vec()
-        .into_iter()
-        .map(|Reverse((s, id))| (s.0, id))
-        .collect();
-    winners.reverse();
+    } else {
+        search_linear(&conn, corpus_id, &q_emb, k)?
+    };
 
     // Pass 2: fetch the winners' payloads (k ≤ 50, so the IN list is tiny).
     let mut scored: Vec<(f32, String, i64, i64, String)> = Vec::with_capacity(winners.len());
@@ -1088,6 +1200,18 @@ pub fn delete_corpus(name: &str) -> Result<()> {
     validate_name(name)?;
     // WS3: single-writer gate.
     crate::history::with_write(|tx| {
+        // Resolve the corpus id so we can drop its vec0 rows in the same tx —
+        // the FK cascade reaches rag_chunks but NOT the FK-less vec0 index.
+        let corpus_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM rag_corpora WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(cid) = corpus_id {
+            crate::history::vec_delete_rag_corpus(tx, cid);
+        }
         tx.execute("DELETE FROM rag_corpora WHERE name = ?1", params![name])?;
         Ok(())
     })
@@ -1346,5 +1470,112 @@ mod tests {
 
         let _ = delete_corpus(&name);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ── vec0 ANN parity + fallback ── */
+
+    /// Deterministic pseudo-random L2-normalized vector of dim `dim` from a seed.
+    fn norm_vec(seed: u64, dim: usize) -> Vec<f32> {
+        let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+        let mut v: Vec<f32> = Vec::with_capacity(dim);
+        for _ in 0..dim {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            // Map to [-1, 1).
+            v.push(((s >> 11) as f32 / (1u64 << 53) as f32) * 2.0 - 1.0);
+        }
+        let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if n > 0.0 {
+            for x in v.iter_mut() {
+                *x /= n;
+            }
+        }
+        v
+    }
+
+    /// Build an in-memory DB with the RAG schema + a populated corpus of `count`
+    /// normalized `dim`-vectors, the vec0 index created + backfilled. Returns
+    /// (conn, corpus_id).
+    fn seed_rag_corpus(count: usize, dim: usize) -> (rusqlite::Connection, i64) {
+        let conn = crate::history::test_open_in_memory_with_vec();
+        ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
+             VALUES ('c', '/tmp', 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        let cid = conn.last_insert_rowid();
+        for i in 0..count {
+            let blob = vec_to_blob(&norm_vec(i as u64 + 1, dim));
+            conn.execute(
+                "INSERT INTO rag_chunks (corpus_id, path, start_byte, end_byte, text, embedding)
+                 VALUES (?1, 'p', 0, 1, 't', ?2)",
+                params![cid, blob],
+            )
+            .unwrap();
+        }
+        crate::history::ensure_vec_tables_present(&conn).unwrap();
+        (conn, cid)
+    }
+
+    /// vec0 KNN top-k must equal the linear top-k (ids + scores within 1e-4),
+    /// and the top-1 must match exactly, over a battery of normalized vectors.
+    #[test]
+    fn vec0_rag_parity_with_linear() {
+        if !crate::history::vec0_available() {
+            return; // contract is the linear fallback on a vec0-less build
+        }
+        let dim = 16usize;
+        let (conn, cid) = seed_rag_corpus(50, dim);
+        for q_seed in [101u64, 202, 303, 404, 505] {
+            let q = norm_vec(q_seed, dim);
+            let k = 10;
+            let vec0 = search_vec_rag(&conn, cid, &q, k).unwrap();
+            let lin = search_linear(&conn, cid, &q, k).unwrap();
+            assert_eq!(
+                vec0.len(),
+                lin.len(),
+                "result count mismatch for seed {q_seed}"
+            );
+            assert!(!vec0.is_empty(), "expected hits for seed {q_seed}");
+            // Exact top-1 id.
+            assert_eq!(
+                vec0[0].1, lin[0].1,
+                "top-1 id mismatch for seed {q_seed}: vec0 {vec0:?} vs lin {lin:?}"
+            );
+            for (a, b) in vec0.iter().zip(lin.iter()) {
+                assert_eq!(a.1, b.1, "id order mismatch for seed {q_seed}");
+                assert!(
+                    (a.0 - b.0).abs() < 1e-4,
+                    "score mismatch for seed {q_seed}: vec0 {} vs lin {}",
+                    a.0,
+                    b.0
+                );
+            }
+        }
+    }
+
+    /// Fallback: with vec0 unusable for the query dim, `vec0_usable_for` is
+    /// false → `search` uses the linear path, which still returns correct
+    /// top-k. Exercised directly via search_linear against a seeded corpus.
+    #[test]
+    fn vec0_rag_fallback_linear_correct() {
+        let dim = 16usize;
+        let (conn, cid) = seed_rag_corpus(30, dim);
+        // A mismatched query dim makes vec0 unusable → linear is the path.
+        assert!(!crate::history::vec0_usable_for(
+            &conn,
+            crate::history::VEC_RAG_CHUNKS,
+            dim + 1
+        ));
+        // The linear path returns the self-vector (chunk seeded with seed=1) as
+        // the exact top-1 when queried with that same vector.
+        let q = norm_vec(1, dim);
+        let lin = search_linear(&conn, cid, &q, 5).unwrap();
+        assert!(!lin.is_empty());
+        // The exact match scores ~1.0 and ranks first.
+        assert!((lin[0].0 - 1.0).abs() < 1e-3, "self-match should score ~1");
     }
 }
