@@ -35,6 +35,7 @@ import { useCitationOpener } from "../hooks/useCitationOpener";
 import { useAskUserModal } from "../hooks/useAskUserModal";
 import { useQuickPromptToast } from "../hooks/useQuickPromptToast";
 import { useChatSend } from "../hooks/useChatSend";
+import { useMessageActions } from "../hooks/useMessageActions";
 import type { RouteDecision } from "../lib/chat-router";
 import { RoutesSettings } from "./RoutesSettings";
 import { useEvent } from "../hooks/useEvent";
@@ -144,11 +145,6 @@ export function ChatWindow({
   const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(
     null,
   );
-  // Edit-and-retry: holds the user message being edited plus its draft text.
-  const [editState, setEditState] = useState<{
-    msg: Message;
-    text: string;
-  } | null>(null);
   // Per-conversation model parameters (temperature / top-p / max tokens /
   // system prompt). Decoded from `conversation.params`; all-null = defaults.
   const [convParams, setConvParams] = useState<ConversationParams>(emptyParams);
@@ -501,106 +497,24 @@ export function ChatWindow({
     }
   }, [status?.running, isWorking, abortWithConfirm]);
 
-  // Stable handler identity for MessageRow's React.memo — `useEvent` keeps the
-  // reference fixed while the body always sees the latest state.
-  const onRegenerate = useEvent(async () => {
-    if (isWorking || !conversation) return;
-    let lastUserIdx = -1;
-    let lastAsstIdx = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (
-        lastAsstIdx === -1 &&
-        m.role === "assistant" &&
-        !m.tool_calls?.length
-      ) {
-        lastAsstIdx = i;
-      } else if (
-        lastAsstIdx !== -1 &&
-        lastUserIdx === -1 &&
-        m.role === "user"
-      ) {
-        lastUserIdx = i;
-        break;
-      }
-    }
-    if (lastUserIdx === -1 || lastAsstIdx === -1) return;
-    const userText = messages[lastUserIdx].content;
-    for (let i = lastUserIdx; i <= lastAsstIdx; i++) {
-      const id = messages[i]?.id;
-      if (id != null) {
-        try {
-          await api.deleteMessage(id);
-        } catch (err) {
-          logDiag({
-            level: "warn",
-            source: "chat-window",
-            message: `regenerate: deleteMessage(${id}) failed — proceeding anyway`,
-            detail: err,
-          });
-        }
-      }
-    }
-    const truncated = messages
-      .slice(0, lastUserIdx)
-      .concat(messages.slice(lastAsstIdx + 1));
-    setMessages(truncated);
-    await resend(userText, truncated);
-  });
-
-  // Edit-and-retry. Opens a small editor seeded with the user message's
-  // current text; on submit we truncate everything from that message onward
-  // (mirroring regenerate) and resend with the edited text.
-  const onEditUser = useEvent((msg: Message) => {
-    if (isWorking) return;
-    setEditState({ msg, text: msg.content });
-  });
-
-  async function submitEdit() {
-    if (!editState || isWorking || !conversation) return;
-    const { msg, text } = editState;
-    const newText = text.trim();
-    setEditState(null);
-    if (!newText) return;
-    const editIdx = messages.findIndex(
-      (m) =>
-        (msg.id != null && m.id === msg.id) ||
-        (msg._tmpKey && m._tmpKey === msg._tmpKey),
-    );
-    if (editIdx === -1) return;
-    // Delete the edited user message and everything after it from the DB.
-    for (let i = editIdx; i < messages.length; i++) {
-      const id = messages[i]?.id;
-      if (id != null) {
-        try {
-          await api.deleteMessage(id);
-        } catch (err) {
-          logDiag({
-            level: "warn",
-            source: "chat-window",
-            message: `edit: deleteMessage(${id}) failed — proceeding anyway`,
-            detail: err,
-          });
-        }
-      }
-    }
-    const truncated = messages.slice(0, editIdx);
-    setMessages(truncated);
-    await resend(newText, truncated);
-  }
-
-  // Stable handler for MessageList → MessageRow (React.memo). An inline arrow
-  // here would bust the row memo on every parent render (one per streaming
-  // rAF frame) and undo the windowing perf work. `useEvent` keeps the
-  // reference fixed while the body always observes the latest props.
-  const onForkMsg = useEvent(async (msg: Message) => {
-    if (!conversation?.id || msg.id == null) return;
-    try {
-      const newId = await api.conversationFork(conversation.id, msg.id);
-      onForked?.(newId);
-    } catch (e) {
-      setErr(`Fork failed: ${e}`);
-    }
+  // Per-message action handlers (regenerate / edit-and-retry / fork-at-message)
+  // plus the edit-modal draft state. Extracted into a hook; identical behavior
+  // (each handler stays `useEvent`-stable for MessageRow's React.memo).
+  const {
+    editState,
+    setEditState,
+    onRegenerate,
+    onEditUser,
+    submitEdit,
+    onForkMsg,
+  } = useMessageActions({
+    messages,
+    conversation,
+    isWorking,
+    resend,
+    setMessages,
+    setErr,
+    onForked,
   });
 
   // Show the landing whenever there's nothing to display — INCLUDING the cold

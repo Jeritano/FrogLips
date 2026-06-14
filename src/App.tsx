@@ -39,7 +39,7 @@ import {
   type PaletteAction,
 } from "./components/CommandPalette";
 import { api } from "./lib/tauri-api";
-import { applyAllAppearance, applyCodeTheme } from "./lib/appearance";
+import { applyAllAppearance } from "./lib/appearance";
 import { applyBubbleColor } from "./lib/bubble-color";
 import { configureMemory } from "./lib/memory-client";
 import { logDiag } from "./lib/diagnostics";
@@ -47,9 +47,11 @@ import pkg from "../package.json";
 import { useModalA11y } from "./lib/use-modal-a11y";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
-import { useCommitOnUnmount } from "./hooks/useCommitOnUnmount";
 import { usePlatformChrome } from "./hooks/usePlatformChrome";
 import { useWindowGeometry } from "./hooks/useWindowGeometry";
+import { useRamPressure } from "./hooks/useRamPressure";
+import { useAppearance } from "./hooks/useAppearance";
+import { useConversations } from "./hooks/useConversations";
 import type { Conversation, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
@@ -141,7 +143,7 @@ function ViewNav({
   );
 }
 import { announce } from "./lib/announce";
-import { parseTags, encodeTags, tagsFromInput } from "./lib/conversation-tags";
+import { parseTags } from "./lib/conversation-tags";
 import "./App.css";
 
 // Heavy panels that aren't needed for first paint: lazy-load so they ship in
@@ -213,36 +215,43 @@ function App() {
   // current selection" handle here so ChatWindow can warm the model on
   // first send instead of gating the composer behind the Start button.
   const ensureStartRef = useRef<(() => Promise<boolean>) | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  // Ref mirror for window-event handlers registered with [] deps
-  // (froglips:open-conversation) — they need the LATEST list without
-  // re-subscribing per refresh.
-  const conversationsRef = useRef<Conversation[]>([]);
-  useEffect(() => {
-    conversationsRef.current = conversations;
-  }, [conversations]);
+  // The active conversation is shared across the conversation list, the model
+  // picker, the chat window, and the fork tree, so it stays owned here and is
+  // injected into `useConversations` rather than living inside it.
   const [current, setCurrent] = useState<Conversation | null>(null);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editingTitle, setEditingTitle] = useState("");
-  // Conversation-id whose tag editor is open, plus its draft text.
-  const [tagEditingId, setTagEditingId] = useState<number | null>(null);
-  const [tagDraft, setTagDraft] = useState("");
-  // Content-search results: conversation ids whose messages match `convSearch`.
-  // null = no content search performed (title-only filtering).
-  const [contentMatchIds, setContentMatchIds] = useState<Set<number> | null>(
-    null,
-  );
-  // Pending soft-delete. We delay the destructive IPC call by 5s so the undo
-  // toast can cancel it — this preserves the conversation AND its messages.
-  const [pendingDelete, setPendingDelete] = useState<{
-    conv: Conversation;
-    timer: ReturnType<typeof setTimeout>;
-  } | null>(null);
   const [memoryTick, setMemoryTick] = useState(0);
   const [panelWorkspace, setPanelWorkspace] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [convSearch, setConvSearch] = useState("");
+  // Conversation-list subsystem: list load/search/filter/forest, inline
+  // rename + tag editing, pin toggle, and the soft-delete-with-undo machinery.
+  const {
+    conversations,
+    conversationsRef,
+    refreshConversations,
+    editingId,
+    editingTitle,
+    setEditingTitle,
+    tagEditingId,
+    tagDraft,
+    setTagDraft,
+    convSearch,
+    setConvSearch,
+    pendingDelete,
+    setPendingDelete,
+    editInputRef,
+    orderedConversations,
+    deleteConv,
+    commitDelete,
+    undoDelete,
+    togglePin,
+    startTagEdit,
+    commitTagEdit,
+    cancelTagEdit,
+    startEdit,
+    commitEdit,
+    cancelEdit,
+  } = useConversations({ current, setCurrent, setErr });
+  const { theme, toggleTheme, applyPersistedTheme } = useAppearance();
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
@@ -250,25 +259,7 @@ function App() {
   // RAM-pressure chip (inference wave D): macOS memorystatus level, polled
   // every 5s while visible. Renders ONLY at warn/critical — the early
   // warning before swap turns decode speed to sludge, invisible otherwise.
-  const [ramPressure, setRamPressure] = useState<number>(1);
-  useEffect(() => {
-    let alive = true;
-    const tick = () => {
-      if (document.visibilityState !== "visible") return;
-      void api
-        .ramPressure()
-        .then(([level]) => {
-          if (alive) setRamPressure(level);
-        })
-        .catch(() => {});
-    };
-    tick();
-    const t = setInterval(tick, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
+  const ramPressure = useRamPressure();
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Silent background update check → a tasteful, dismissable toast.
   const availableUpdate = useUpdateCheck();
@@ -291,7 +282,6 @@ function App() {
   // avoids a flash of the wizard on returning users whose setup is already
   // complete. Once we know, `true` mounts the wizard.
   const [wizardOpen, setWizardOpen] = useState<boolean | undefined>(undefined);
-  const editInputRef = useRef<HTMLInputElement>(null);
   const memoriesModalRef = useRef<HTMLDivElement>(null);
   // Tauri 2 webview disables window.confirm — use an inline two-click pattern
   // for conversation deletion so accidental clicks don't nuke a thread.
@@ -399,15 +389,7 @@ function App() {
           recallThreshold: s.recall_threshold,
         });
         if (s.theme === "light" || s.theme === "dark") {
-          setTheme(s.theme);
-          document.documentElement.dataset.theme = s.theme;
-          // Mirror for main.tsx's synchronous pre-render read (perf C8) —
-          // keeps the first frame on the right theme next launch.
-          try {
-            localStorage.setItem("froglips-theme", s.theme);
-          } catch {
-            /* best-effort */
-          }
+          applyPersistedTheme(s.theme);
         }
         // Apply all device-local appearance prefs (per-theme code palettes,
         // code/interface fonts, transcript size, high-contrast) now that the
@@ -560,10 +542,6 @@ function App() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  useEffect(() => {
-    if (editingId !== null) editInputRef.current?.select();
-  }, [editingId]);
-
   // View navigation requests from components that don't own view state
   // (launchpad cards in EmptyChatLanding). Validated against ViewId so a
   // stray event can't put the app into a nonsense view.
@@ -602,51 +580,6 @@ function App() {
       window.removeEventListener("froglips:open-conversation", handler);
   }, []);
 
-  // Debounced message-content search. Merges conversation ids whose message
-  // bodies match into the title-only filter. Falls back gracefully if the
-  // backend command is missing (older builds) — title search still works.
-  useEffect(() => {
-    const q = convSearch.trim();
-    if (q.length < 2) {
-      setContentMatchIds(null);
-      return;
-    }
-    let cancelled = false;
-    const t = setTimeout(() => {
-      api
-        .searchMessages(q)
-        .then((hits) => {
-          if (cancelled) return;
-          setContentMatchIds(new Set(hits.map((h) => h.conversation_id)));
-        })
-        .catch((err) => {
-          if (cancelled) return;
-          setContentMatchIds(null);
-          logDiag({
-            level: "info",
-            source: "app",
-            message:
-              "searchMessages failed — falling back to title-only search",
-            detail: err,
-          });
-        });
-    }, 220);
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [convSearch]);
-
-  // On unmount ONLY, commit any pending soft-delete (deleting then quitting
-  // within the 5s undo window should honor the delete). The unmount-only
-  // semantics live in `useCommitOnUnmount` — a naive `[pendingDelete]` dep
-  // array would run the cleanup on every change and make Undo delete the row
-  // it just restored (regression-tested in the hook). Round 12 (2026-05-30).
-  useCommitOnUnmount(pendingDelete, (pd) => {
-    clearTimeout(pd.timer);
-    void api.deleteConversation(pd.conv.id).catch(() => {});
-  });
-
   async function refreshStatus() {
     try {
       setStatus(await api.serverStatus());
@@ -660,227 +593,9 @@ function App() {
     }
   }
 
-  async function refreshConversations() {
-    try {
-      setConversations(await api.listConversations());
-    } catch (err) {
-      logDiag({
-        level: "warn",
-        source: "app",
-        message: "refreshConversations: listConversations() failed",
-        detail: err,
-      });
-    }
-  }
-
   function newChat() {
     setCurrent(null);
     setView("chat");
-  }
-
-  function toggleTheme() {
-    const next: "dark" | "light" = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-    document.documentElement.dataset.theme = next;
-    // Mirror for main.tsx's synchronous pre-render read (perf C8).
-    try {
-      localStorage.setItem("froglips-theme", next);
-    } catch {
-      /* best-effort */
-    }
-    // Re-apply the code palette chosen for the NEW app theme (light/dark each
-    // carry their own syntax-palette pick).
-    applyCodeTheme(next);
-    api.settingsSet({ theme: next }).catch((err) =>
-      logDiag({
-        level: "warn",
-        source: "app",
-        message: "settingsSet(theme) failed — UI updated but not persisted",
-        detail: err,
-      }),
-    );
-  }
-
-  // Memoized so the downstream forest builder (orderedConversations) doesn't
-  // rebuild on every unrelated state change. Recomputes only when the inputs
-  // — the conversation list, the soft-delete target, the search query, or the
-  // resolved content-match ids — actually change.
-  const filteredConversations = useMemo(
-    () =>
-      conversations.filter((c) => {
-        // Hide a conversation that is mid soft-delete so the row vanishes
-        // while the undo toast is up; undo re-inserts it.
-        if (pendingDelete && pendingDelete.conv.id === c.id) return false;
-        const q = convSearch.trim().toLowerCase();
-        if (!q) return true;
-        // Title match OR message-content match (when content search resolved).
-        return (
-          c.title.toLowerCase().includes(q) ||
-          (contentMatchIds !== null && contentMatchIds.has(c.id))
-        );
-      }),
-    [conversations, pendingDelete, convSearch, contentMatchIds],
-  );
-
-  /**
-   * Order conversations as a forest: each root is followed immediately by its
-   * descendants (BFS-ordered) so the sidebar reads top-down as "root → branches".
-   * Returns rows annotated with a depth count so the renderer can indent and
-   * prefix children with `↳`. Cycle-safe via a visited set (paranoid — a
-   * conversation cannot legally fork itself but bad data shouldn't lock the UI).
-   */
-  // Memoized — the forest walk is O(n) but was running on every render. Now
-  // it only rebuilds when the filtered list actually changes.
-  const orderedConversations = useMemo(() => {
-    const byParent = new Map<number | null, Conversation[]>();
-    for (const c of filteredConversations) {
-      const parent = c.parent_conv_id ?? null;
-      const arr = byParent.get(parent) ?? [];
-      arr.push(c);
-      byParent.set(parent, arr);
-    }
-    const knownIds = new Set(filteredConversations.map((c) => c.id));
-    // A conv is a "root" for sidebar purposes if its parent isn't in the
-    // currently-visible (search-filtered) list — that way filtered children
-    // still appear at depth 0 rather than vanishing.
-    const roots = filteredConversations.filter(
-      (c) => c.parent_conv_id == null || !knownIds.has(c.parent_conv_id),
-    );
-    const out: { conv: Conversation; depth: number }[] = [];
-    const visited = new Set<number>();
-    const walk = (c: Conversation, depth: number) => {
-      if (visited.has(c.id)) return;
-      visited.add(c.id);
-      out.push({ conv: c, depth });
-      const kids = byParent.get(c.id) ?? [];
-      for (const k of kids) walk(k, depth + 1);
-    };
-    for (const r of roots) walk(r, 0);
-    // Any orphan that didn't get walked (shouldn't happen, but…) — append.
-    for (const c of filteredConversations) {
-      if (!visited.has(c.id)) out.push({ conv: c, depth: 0 });
-    }
-    return out;
-  }, [filteredConversations]);
-
-  // Soft-delete: hide the row immediately and schedule the destructive IPC
-  // call 5s out. The undo toast cancels the timer, which restores the
-  // conversation AND its messages intact (nothing was actually deleted yet).
-  function deleteConv(id: number) {
-    const conv = conversations.find((c) => c.id === id);
-    if (!conv) return;
-    // Commit any prior pending delete before starting a new one.
-    if (pendingDelete) {
-      clearTimeout(pendingDelete.timer);
-      void commitDelete(pendingDelete.conv.id);
-    }
-    if (current?.id === id) setCurrent(null);
-    const timer = setTimeout(() => {
-      void commitDelete(id);
-      setPendingDelete(null);
-    }, 5000);
-    setPendingDelete({ conv, timer });
-    announce(`Conversation "${conv.title}" deleted. Undo available.`);
-  }
-
-  async function commitDelete(id: number) {
-    try {
-      await api.deleteConversation(id);
-      await refreshConversations();
-    } catch (e) {
-      setErr(`Failed to delete conversation: ${e}`);
-      await refreshConversations();
-    }
-  }
-
-  function undoDelete() {
-    if (!pendingDelete) return;
-    clearTimeout(pendingDelete.timer);
-    const restored = pendingDelete.conv;
-    setPendingDelete(null);
-    announce(`Conversation "${restored.title}" restored.`);
-  }
-
-  async function togglePin(c: Conversation, e: React.MouseEvent) {
-    e.stopPropagation();
-    const next = !c.pinned;
-    // Optimistic update so the row reorders immediately.
-    setConversations((prev) =>
-      prev.map((x) => (x.id === c.id ? { ...x, pinned: next } : x)),
-    );
-    try {
-      await api.setConversationPinned(c.id, next);
-      announce(next ? `Pinned "${c.title}"` : `Unpinned "${c.title}"`);
-      await refreshConversations();
-    } catch (err) {
-      setErr(`Failed to ${next ? "pin" : "unpin"} conversation: ${err}`);
-      await refreshConversations();
-    }
-  }
-
-  function startTagEdit(c: Conversation, e: React.MouseEvent) {
-    e.stopPropagation();
-    setTagEditingId(c.id);
-    setTagDraft(parseTags(c.tags).join(", "));
-  }
-
-  async function commitTagEdit() {
-    if (tagEditingId === null) return;
-    const id = tagEditingId;
-    const encoded = encodeTags(tagsFromInput(tagDraft));
-    setTagEditingId(null);
-    setTagDraft("");
-    setConversations((prev) =>
-      prev.map((x) => (x.id === id ? { ...x, tags: encoded } : x)),
-    );
-    try {
-      await api.setConversationTags(id, encoded);
-      await refreshConversations();
-    } catch (err) {
-      setErr(`Failed to update tags: ${err}`);
-      await refreshConversations();
-    }
-  }
-
-  function cancelTagEdit() {
-    setTagEditingId(null);
-    setTagDraft("");
-  }
-
-  function startEdit(c: Conversation, e: React.MouseEvent) {
-    e.stopPropagation();
-    setEditingId(c.id);
-    setEditingTitle(c.title);
-  }
-
-  async function commitEdit() {
-    if (editingId === null) return;
-    const id = editingId;
-    const title = editingTitle.trim();
-    setEditingId(null);
-    if (!title) return;
-    const original = conversations.find((c) => c.id === id);
-    if (original && original.title === title) return;
-    try {
-      await api.renameConversation(id, title);
-      // C8: functional update keyed on the CURRENT selection, not the `current`
-      // captured when commitEdit was invoked. Between the await above and here
-      // the user may have switched conversations; writing back the stale
-      // `current` would clobber the new selection. Only rewrite the title if
-      // `prev` is still the conversation we renamed.
-      setCurrent((prev) =>
-        prev && prev.id === id ? { ...prev, title } : prev,
-      );
-      await refreshConversations();
-    } catch (e) {
-      setErr(`Rename failed: ${e}`);
-      await refreshConversations();
-    }
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditingTitle("");
   }
 
   // Command-palette action registry (Cmd+K). Flat list, fuzzy-filtered in
