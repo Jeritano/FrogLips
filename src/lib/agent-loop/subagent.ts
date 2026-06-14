@@ -19,6 +19,70 @@ function fenceSubagentAnswer(answer: string | null | undefined): string {
 
 export const MAX_SUBAGENT_DEPTH = 3;
 
+/**
+ * Default global cap on subagents running concurrently across the WHOLE process
+ * (all parents + all depths). The depth check bounds recursion DEPTH; this
+ * bounds total BREADTH so a wide fan-out (a parent spawning many async
+ * subagents, each of which fans out again) can't launch an unbounded number of
+ * concurrent inference loops. Configurable via {@link setMaxConcurrentSubagents}
+ * (wired from settings). Inference admission control (item 1) further serializes
+ * the actual network calls, but this gate stops the loops from even starting.
+ */
+export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 4;
+
+/** Current global concurrency budget. Mutable so settings can override it. */
+let maxConcurrentSubagents = DEFAULT_MAX_CONCURRENT_SUBAGENTS;
+
+/** Live count of subagents currently admitted (incremented at spawn, decremented
+ *  when the run settles). Process-global on purpose — the budget is global. */
+let runningSubagents = 0;
+
+/**
+ * Set the global concurrent-subagent budget (wired from the
+ * `maxConcurrentSubagents` setting). Values < 1 are clamped to 1 so a
+ * misconfiguration can never deadlock every subagent. No-op for non-finite.
+ */
+export function setMaxConcurrentSubagents(n: number): void {
+  if (!Number.isFinite(n)) return;
+  maxConcurrentSubagents = Math.max(1, Math.floor(n));
+}
+
+/** Current budget — exposed for tests / diagnostics. */
+export function getMaxConcurrentSubagents(): number {
+  return maxConcurrentSubagents;
+}
+
+/**
+ * Try to admit one subagent against the global budget. Returns true (and
+ * increments the running count) when there's room; false when at/over budget.
+ * Each successful admit MUST be paired with exactly one {@link releaseSubagentSlot}.
+ *
+ * TODO (RAM-aware gate, out of scope here): additionally refuse admission when
+ * free system RAM is below a model-sized threshold so a fan-out can't OOM the
+ * machine. Hook point is here — check available memory before returning true.
+ */
+function tryAdmitSubagent(): boolean {
+  if (runningSubagents >= maxConcurrentSubagents) return false;
+  runningSubagents += 1;
+  return true;
+}
+
+/** Release one admitted slot. Floored at 0 so a double-release can't drive the
+ *  count negative and permanently inflate available capacity. */
+function releaseSubagentSlot(): void {
+  if (runningSubagents > 0) runningSubagents -= 1;
+}
+
+/** Structured over-budget rejection — mirrors the depth_exceeded shape so the
+ *  runner's existing {ok:false} handling needs no new branch. */
+function budgetExceededResult(): string {
+  return JSON.stringify({
+    ok: false,
+    kind: "subagent_budget_exceeded",
+    message: `concurrent subagent cap (${maxConcurrentSubagents}) reached — too many subagents are already running`,
+  });
+}
+
 /** How long a finished/errored subagent stays visible to `list_subagents`. */
 const COMPLETED_TTL_MS = 60_000;
 /** Hard cap: any handle older than this is evicted regardless of status —
@@ -197,6 +261,12 @@ export async function runSubagent(
       message: "prompt is empty",
     });
   }
+  // Global concurrency budget (item 2). Gate AFTER the cheap depth/arg checks so
+  // an invalid call never squats a slot. Over budget → structured rejection
+  // mirroring depth_exceeded (the runner already handles {ok:false}).
+  if (!tryAdmitSubagent()) {
+    return budgetExceededResult();
+  }
   const presetId = args.preset ? String(args.preset) : null;
 
   // Lazy-load presets to avoid a static cycle.
@@ -224,6 +294,8 @@ export async function runSubagent(
     });
   } finally {
     release();
+    // Release the global slot once the run has settled (success/error/abort).
+    releaseSubagentSlot();
   }
 }
 
@@ -251,6 +323,13 @@ export async function spawnSubagentAsync(
       kind: "invalid_argument",
       message: "prompt is empty",
     });
+  }
+  // Global concurrency budget (item 2). Admit before registering the handle so
+  // an over-budget async spawn returns the structured rejection without
+  // creating a registry entry. The slot is released when the background run
+  // settles (the promise's finally, below).
+  if (!tryAdmitSubagent()) {
+    return budgetExceededResult();
   }
   const presetId = args.preset ? String(args.preset) : null;
 
@@ -306,6 +385,8 @@ export async function spawnSubagentAsync(
     } finally {
       // Remove the parent-abort listener now that this subagent is settled.
       release();
+      // Release the global concurrency slot admitted above.
+      releaseSubagentSlot();
     }
   })();
 
@@ -440,7 +521,8 @@ export function listSubagents(): string {
   return JSON.stringify({ ok: true, subagents: items });
 }
 
-/** Test-only: drop all registered subagents. */
+/** Test-only: drop all registered subagents AND reset the concurrency budget +
+ *  running count so each test starts from a clean global state. */
 export function __resetSubagentRegistryForTests(): void {
   for (const h of registry.values()) {
     try {
@@ -455,4 +537,6 @@ export function __resetSubagentRegistryForTests(): void {
     }
   }
   registry.clear();
+  runningSubagents = 0;
+  maxConcurrentSubagents = DEFAULT_MAX_CONCURRENT_SUBAGENTS;
 }

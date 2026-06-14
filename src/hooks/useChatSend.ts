@@ -8,6 +8,10 @@ import {
 } from "../lib/model-context-lookup";
 import { streamNativeChat } from "../lib/native-client";
 import { streamCustomChat } from "../lib/custom-client";
+import {
+  inferenceGate,
+  shouldBypassInferenceGate,
+} from "../lib/inference-gate";
 // Perf review M29 (2026-06-09): the agent-loop package (runner + dispatch +
 // tools, ~55 KB minified) is the largest first-party block that used to ride
 // the boot chunk. Load it on first agent-mode send instead; `import()`
@@ -546,6 +550,18 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         (await getCachedSettings().catch(() => null))?.ollama_keep_alive ??
         "30m";
 
+      // Item 1: apply the configured local-inference permit count before either
+      // path acquires a slot. Best-effort — a missing/invalid setting leaves the
+      // module default (1) in place. Module singleton, so one set per send is
+      // enough for both agent + plain-chat paths.
+      {
+        const permits = (await getCachedSettings().catch(() => null))
+          ?.inference_permits;
+        if (typeof permits === "number" && Number.isFinite(permits)) {
+          inferenceGate.setPermits(permits);
+        }
+      }
+
       /* ── Agent mode ── */
       if (agentMode && agentAvailable) {
         if (isStreamConvActive()) setAgentStatus("thinking");
@@ -567,6 +583,22 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           if (ctrl.signal.aborted) return;
           if (isStreamConvActive()) setStreaming(agentAcc);
         };
+        // Item 3: bracket this interactive run so a divergent workspace change
+        // mid-run is rejected (WORKSPACE_ROOT is process-global). Best-effort —
+        // a begin failure must not block the run; we just skip the end too.
+        let runBracketed = false;
+        try {
+          await api.agentRunBegin();
+          runBracketed = true;
+        } catch (err) {
+          logDiag({
+            level: "warn",
+            source: "agent-loop",
+            message:
+              "agentRunBegin failed — workspace divergence guard inactive for this run",
+            detail: err,
+          });
+        }
         try {
           setAgentMetrics(null);
           // Preset's allowedTools wins when non-empty; otherwise fall back to manual allowlist
@@ -603,7 +635,22 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
               }
             }
           };
-          const { runAgentLoop } = await loadAgentLoop();
+          // Item 4A: a stable run id for this interactive agent send. The
+          // runner's onCheckpoint fires per iteration with this id so an
+          // interrupted long run leaves a durable (invisible) shadow record.
+          const runId = `run:${crypto.randomUUID()}`;
+          const agentLoop = await loadAgentLoop();
+          const { runAgentLoop } = agentLoop;
+          // Item 2: apply the configured global subagent concurrency budget
+          // before the run starts. Best-effort — a missing/invalid setting
+          // leaves the module default in place.
+          {
+            const cfg = await getCachedSettings().catch(() => null);
+            const cap = cfg?.max_concurrent_subagents;
+            if (typeof cap === "number" && Number.isFinite(cap)) {
+              agentLoop.setMaxConcurrentSubagents(cap);
+            }
+          }
           const finalText = await runAgentLoop({
             model: status.model,
             messages: historyForApi,
@@ -659,6 +706,21 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             },
             onMetrics: (m) => {
               if (isStreamConvActive()) setAgentMetrics(m);
+            },
+            onCheckpoint: (turns) => {
+              // Durable shadow record (item 4A). Best-effort + fire-and-forget:
+              // a checkpoint IPC failure must never interrupt the live run.
+              // Capture conv.id (not the live ref) so a mid-run conversation
+              // switch still checkpoints under the originating conversation.
+              api.agentRunCheckpoint(runId, conv.id, turns).catch((err) =>
+                logDiag({
+                  level: "warn",
+                  source: "agent-loop",
+                  message:
+                    "agentRunCheckpoint failed — run state not durably saved this iteration",
+                  detail: err,
+                }),
+              );
             },
             requestConfirmation,
             signal: ctrl.signal,
@@ -748,6 +810,19 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             );
           }
         } finally {
+          // Item 3: end the run bracket on every exit path so the active-run
+          // count + pinned root are released. Best-effort + idempotent-guarded.
+          if (runBracketed) {
+            runBracketed = false;
+            void api.agentRunEnd().catch((err) =>
+              logDiag({
+                level: "warn",
+                source: "agent-loop",
+                message: "agentRunEnd failed — active-run count may be stale",
+                detail: err,
+              }),
+            );
+          }
           // Tear down the in-flight bubble on every exit path (done / error /
           // abort) — same gating as the plain-stream path's cleanup.
           if (accRaf) {
@@ -839,7 +914,29 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         }
         plainHistory = budgeted.messages;
       }
+      // Item 1: gate local plain-chat inference through the global semaphore so
+      // it shares the budget with agent-mode + subagent inference. Cloud routes
+      // (openrouter / custom / :cloud) bypass. The permit spans the WHOLE stream
+      // (acquire here, release in the finally below) — releasing only once the
+      // stream is fully consumed or aborted, so a slow local decode holds the
+      // device exclusively for its duration.
+      const bypassPlainGate = shouldBypassInferenceGate(effModel, effBackend);
+      let plainPermitHeld = false;
+      if (!bypassPlainGate) {
+        try {
+          await inferenceGate.acquire(ctrl.signal);
+          plainPermitHeld = true;
+        } catch {
+          // Aborted while queued — treat as a normal user abort and skip the
+          // stream entirely (no permit was acquired, nothing to release).
+          aborted = true;
+        }
+      }
       try {
+        if (!bypassPlainGate && !plainPermitHeld) {
+          // Acquisition was aborted above — don't open a stream.
+          throw new DOMException("aborted", "AbortError");
+        }
         // Backend dispatch. `custom` routes to a user-configured
         // OpenAI-compatible cloud endpoint; `status.model` carries the
         // CustomBackend id (the picker encodes it there for custom
@@ -947,6 +1044,13 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           setErr(`The model stopped responding: ${e}. Send again to retry.`);
         }
       } finally {
+        // Item 1: release the inference permit once the stream is fully
+        // consumed/aborted (every exit path lands here). Guarded so a bypassed
+        // (cloud) route or an aborted-while-queued acquire never over-releases.
+        if (plainPermitHeld) {
+          inferenceGate.release();
+          plainPermitHeld = false;
+        }
         // Drain any tokens that arrived since the last frame flush so `acc` is
         // the complete reply for persistence below (the loop can break on `done`
         // with pending tokens unflushed).

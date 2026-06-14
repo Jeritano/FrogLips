@@ -39,8 +39,45 @@ import {
   rejectionBody,
   runWithConcurrency,
 } from "./runner-helpers";
-import { api } from "../tauri-api";
+import { api, type CheckpointTurn } from "../tauri-api";
 import { logDiag } from "../diagnostics";
+
+/**
+ * Map the runner's in-memory message array to durable checkpoint turns (item
+ * 4A). System and user turns are excluded — only the agent's own assistant +
+ * tool-result turns form the run's recoverable state. `turn_index` is the
+ * position within the EMITTED turn sequence (stable across re-checkpoints of the
+ * same run, since the runner only ever appends to `msgs`). Assistant turns that
+ * carried tool_calls preserve them by JSON-encoding the structured calls into
+ * `content` so a future recovery pass can reconstruct the turn; their
+ * human-readable prelude is kept too.
+ */
+function checkpointTurnsFrom(msgs: Message[]): CheckpointTurn[] {
+  const turns: CheckpointTurn[] = [];
+  let turnIndex = 0;
+  for (const m of msgs) {
+    if (m.role !== "assistant" && m.role !== "tool") continue;
+    let content = m.content ?? "";
+    if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+      // Encode the structured calls alongside the prelude so the shadow record
+      // is lossless. Recovery (deferred) parses this back; the normal view never
+      // sees checkpoint rows (run_id IS NOT NULL filtered out in list_messages).
+      content = JSON.stringify({
+        content: m.content ?? "",
+        tool_calls: m.tool_calls,
+      });
+    }
+    turns.push({
+      turn_index: turnIndex++,
+      role: m.role,
+      content,
+      tool_call_id: m.tool_call_id ?? null,
+      tool_name: m.tool_name ?? null,
+      model: m.model ?? null,
+    });
+  }
+  return turns;
+}
 
 /**
  * Stub-prompt header inserted into the system context when at least one
@@ -625,6 +662,7 @@ export async function runAgentLoop(
     onUpdate,
     onStatusChange,
     onMetrics,
+    onCheckpoint,
     onAssistantDelta,
     onStreamReset,
     requestConfirmation,
@@ -725,7 +763,8 @@ export async function runAgentLoop(
   const prevTurnSigsHistory: string[][] = [];
   const pushTurnSigs = (sigs: string[]): void => {
     prevTurnSigsHistory.push(sigs);
-    if (prevTurnSigsHistory.length > DEDUPE_HISTORY) prevTurnSigsHistory.shift();
+    if (prevTurnSigsHistory.length > DEDUPE_HISTORY)
+      prevTurnSigsHistory.shift();
   };
   // Per-path read counter — guards against agents chunking the same file
   // into dozens of tiny reads and blowing the iteration budget.
@@ -1844,6 +1883,14 @@ export async function runAgentLoop(
             `Remaining turn budget: ${MAX_ITERATIONS - (i + 1)}.`,
         });
         onUpdate([...msgs]);
+      }
+
+      // Item 4A: durable per-iteration checkpoint. Fires once here — after this
+      // turn's assistant + tool-result messages have settled into `msgs`, and
+      // before the next "thinking" status. ABSENT callback = no-op (byte-
+      // identical to prior behaviour for subagents/flows/tests).
+      if (onCheckpoint) {
+        onCheckpoint(checkpointTurnsFrom(msgs));
       }
 
       onStatusChange("thinking");

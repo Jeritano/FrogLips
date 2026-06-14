@@ -35,22 +35,125 @@ pub(super) const MAX_GREP_LINE_BYTES: usize = 1024;
 
 /* ── Workspace root (optional sandbox) ────────────────────────────────────── */
 
+// CONCURRENCY CONTRACT (item 3): `WORKSPACE_ROOT` is PROCESS-GLOBAL. Every
+// agent filesystem command (read_file/write_file/run_shell/… ~40 commands)
+// resolves user paths against this single shared root. Per-run threading of the
+// root through each command is DEFERRED; until then, all concurrent agent runs
+// (interactive chat + flows + subagents) MUST share ONE workspace root. Changing
+// the root while a run is in flight would silently retarget that run's sandbox
+// to a DIFFERENT directory mid-execution — a sibling run could then read/write
+// the wrong project tree. The active-run guard below rejects such a divergent
+// mid-run change instead of corrupting a sibling sandbox; callers that want a
+// different root must finish (or never start) conflicting runs first.
+//
+// `AgentRunOptions.workspaceRoot` (frontend) carries the SAME global root for
+// observability; it is NOT a per-run override today (see the deferred note).
 static WORKSPACE_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
 
-pub fn set_workspace_root(path: Option<String>) -> Result<Option<String>, String> {
-    let normalized = match path {
-        None => None,
-        Some(p) if p.trim().is_empty() => None,
+/// Number of agent runs currently in flight (item 3). Bracketed by
+/// [`run_begin`] / [`run_end`] from the frontend runner. Used only by the
+/// divergent-root guard; never gates execution otherwise.
+static ACTIVE_RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The workspace root the FIRST in-flight run pinned (item 3). Set when the
+/// active-run count goes 0 → 1, cleared when it returns to 0. A `set_workspace`
+/// to a DIFFERENT root while runs are active is rejected against this.
+static ACTIVE_RUN_ROOT: RwLock<Option<Option<PathBuf>>> = RwLock::new(None);
+
+/// Mark an agent run as started, pinning the current workspace root as the
+/// shared root for the duration of any concurrent runs. The first run (0 → 1)
+/// records the root; later concurrent runs just bump the count. Returns the
+/// number of runs now active.
+pub fn run_begin() -> usize {
+    use std::sync::atomic::Ordering;
+    let prev = ACTIVE_RUNS.fetch_add(1, Ordering::AcqRel);
+    if prev == 0 {
+        *ACTIVE_RUN_ROOT.write() = Some(WORKSPACE_ROOT.read().clone());
+    }
+    prev + 1
+}
+
+/// Mark an agent run as finished. When the last run ends (1 → 0) the pinned root
+/// is cleared so a subsequent `set_workspace` is unrestricted again. Floored at
+/// 0 so an unbalanced `run_end` can't underflow.
+pub fn run_end() -> usize {
+    use std::sync::atomic::Ordering;
+    let prev = ACTIVE_RUNS
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            Some(n.saturating_sub(1))
+        })
+        .unwrap_or(0);
+    let now = prev.saturating_sub(1);
+    if now == 0 {
+        *ACTIVE_RUN_ROOT.write() = None;
+    }
+    now
+}
+
+/// Number of agent runs currently in flight.
+pub fn active_run_count() -> usize {
+    ACTIVE_RUNS.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Guard for a workspace-root change (item 3). Returns `Err` with an actionable
+/// message when a run is in flight AND the requested root differs from the root
+/// that in-flight runs pinned — changing it would retarget a sibling run's
+/// sandbox. Returns `Ok(())` when there is no active run, or when the requested
+/// root matches the pinned one (idempotent re-set is always allowed). The
+/// `requested` path is normalized the same way `set_workspace_root` normalizes
+/// so the comparison is apples-to-apples.
+pub fn check_workspace_change_allowed(requested: Option<&str>) -> Result<(), String> {
+    if active_run_count() == 0 {
+        return Ok(());
+    }
+    let pinned = ACTIVE_RUN_ROOT.read().clone();
+    let Some(pinned_root) = pinned else {
+        // No pinned root recorded (race: count > 0 but root not yet set) — be
+        // permissive; the begin path sets it before any tool runs.
+        return Ok(());
+    };
+    let requested_norm = normalize_workspace_arg(requested)?;
+    if requested_norm == pinned_root {
+        return Ok(()); // same root — idempotent, always fine
+    }
+    Err(format!(
+        "cannot change the workspace root while {} agent run(s) are in flight — \
+         the requested root ({}) differs from the root those runs are using ({}). \
+         Concurrent runs share one process-global workspace; finish the in-flight \
+         run(s) first.",
+        active_run_count(),
+        requested_norm
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "(home default)".into()),
+        pinned_root
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "(home default)".into()),
+    ))
+}
+
+/// Normalize a workspace-root argument to the canonical `Option<PathBuf>` the
+/// store keeps — shared by `set_workspace_root` and the guard so both compare
+/// the same canonical form. `None`/empty → `None` (home default).
+fn normalize_workspace_arg(path: Option<&str>) -> Result<Option<PathBuf>, String> {
+    match path {
+        None => Ok(None),
+        Some(p) if p.trim().is_empty() => Ok(None),
         Some(p) => {
-            let expanded = expand_home(&p).map_err(|e| e.to_string())?;
+            let expanded = expand_home(p).map_err(|e| e.to_string())?;
             let canon = std::fs::canonicalize(&expanded)
                 .map_err(|e| format!("workspace root invalid: {e}"))?;
             if !canon.is_dir() {
                 return Err("workspace root must be a directory".into());
             }
-            Some(canon)
+            Ok(Some(canon))
         }
-    };
+    }
+}
+
+pub fn set_workspace_root(path: Option<String>) -> Result<Option<String>, String> {
+    let normalized = normalize_workspace_arg(path.as_deref())?;
     let display = normalized
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned());
@@ -1807,9 +1910,81 @@ pub async fn apply_patch(diff: String) -> Result<serde_json::Value, String> {
 
 /* ── Tests ───────────────────────────────────────────────────────────────── */
 
+// WORKSPACE_ROOT + the active-run registry are process-global; serialize the
+// tests that mutate them so a parallel runner can't interleave their state.
+// Module-level + `pub(crate)` so sibling test modules (e.g. `fs_watcher`, whose
+// `watch_path` reads `within_workspace`) can take the SAME lock and not race
+// this file's workspace-mutating tests across module boundaries.
+#[cfg(test)]
+pub(crate) static WS_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_change_rejected_when_run_in_flight_with_divergent_root() {
+        let _g = WS_TEST_LOCK.lock();
+        // Two real, canonicalizable directories.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = dir_a.path().to_string_lossy().into_owned();
+        let b = dir_b.path().to_string_lossy().into_owned();
+
+        // Clean slate: no runs, root = A.
+        while active_run_count() > 0 {
+            run_end();
+        }
+        set_workspace_root(Some(a.clone())).unwrap();
+
+        // A run begins — pins root A.
+        assert_eq!(run_begin(), 1);
+
+        // Same-root re-set is allowed (idempotent).
+        assert!(check_workspace_change_allowed(Some(&a)).is_ok());
+        // Divergent root B is REJECTED while the run is in flight.
+        let err = check_workspace_change_allowed(Some(&b))
+            .expect_err("divergent mid-run change must be rejected");
+        assert!(
+            err.contains("agent run") && err.contains("in flight"),
+            "actionable message: {err}"
+        );
+
+        // After the run ends, the change is allowed again.
+        assert_eq!(run_end(), 0);
+        assert!(check_workspace_change_allowed(Some(&b)).is_ok());
+
+        // Restore default for other tests.
+        let _ = set_workspace_root(None);
+    }
+
+    #[test]
+    fn workspace_change_unrestricted_when_no_run_active() {
+        let _g = WS_TEST_LOCK.lock();
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_string_lossy().into_owned();
+        while active_run_count() > 0 {
+            run_end();
+        }
+        // No active run → any change is fine.
+        assert!(check_workspace_change_allowed(Some(&p)).is_ok());
+        assert!(check_workspace_change_allowed(None).is_ok());
+    }
+
+    #[test]
+    fn run_begin_end_count_is_balanced_and_floored() {
+        let _g = WS_TEST_LOCK.lock();
+        while active_run_count() > 0 {
+            run_end();
+        }
+        assert_eq!(run_begin(), 1);
+        assert_eq!(run_begin(), 2);
+        assert_eq!(run_end(), 1);
+        assert_eq!(run_end(), 0);
+        // Over-end can't underflow.
+        assert_eq!(run_end(), 0);
+        assert_eq!(active_run_count(), 0);
+    }
 
     #[test]
     fn apply_patch_modifies_middle_line() {

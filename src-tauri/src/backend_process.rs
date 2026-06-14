@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, BufReader};
@@ -46,12 +46,37 @@ pub fn should_attempt_restart(attempts_done: u32) -> bool {
     attempts_done < MAX_RESTART_ATTEMPTS
 }
 
+/// Consecutive liveness-probe failures required before the watcher declares a
+/// READY backend unresponsive. At the watcher's ~2s tick this is ~6s of no
+/// answer, which tolerates a transient GC / weight-page pause without a
+/// false-positive restart.
+pub const UNRESPONSIVE_THRESHOLD: u32 = 3;
+
+/// Should the watcher declare the backend unresponsive given the consecutive
+/// failed-probe count so far? Pure helper so the threshold logic is unit-
+/// testable in isolation from any socket. `consecutive` is the number of
+/// liveness probes that have failed back-to-back (resets to 0 on any success).
+pub fn is_unresponsive(consecutive: u32) -> bool {
+    consecutive >= UNRESPONSIVE_THRESHOLD
+}
+
 /// Outcome of polling the server: what the watcher should do next.
 pub enum WatchOutcome {
     /// Nothing changed, or the server is intentionally stopped.
     Idle,
     /// The running MLX child died unexpectedly — try to restart this model.
     Crashed { model: String, backend: String },
+    /// A READY backend stopped answering its liveness probe for
+    /// `UNRESPONSIVE_THRESHOLD` consecutive ticks (TCP open but HTTP wedged, or
+    /// the port itself stopped accepting). `consecutive` is the streak length at
+    /// the moment the threshold tripped. MLX is restartable via the existing
+    /// backoff machinery; ollama (externally managed) is surfaced as degraded
+    /// but never killed.
+    Unresponsive {
+        model: String,
+        backend: String,
+        consecutive: u32,
+    },
 }
 
 #[derive(Default)]
@@ -59,6 +84,13 @@ pub struct ServerState {
     inner: Mutex<Option<RunningServer>>,
     app: PLMutex<Option<AppHandle>>,
     stderr_ring: Arc<PLMutex<VecDeque<String>>>,
+    /// Which backend the lines currently in `stderr_ring` belong to (e.g.
+    /// "mlx"). Set on every start() so `last_error()` / `dead_status()` can
+    /// attribute the captured stderr to its source rather than reporting an
+    /// orphaned blob. `None` when the ring is empty / no backend has run.
+    /// Only the MLX child has piped stderr; ollama is externally managed and
+    /// runs detached, so its label is set but the ring stays empty.
+    ring_backend: PLMutex<Option<String>>,
     /// True once the MLX/Ollama backend has accepted a TCP connection on its
     /// port. Used so the UI can distinguish "process running" from
     /// "ready to serve requests" (MLX takes 10-60s to load a model).
@@ -72,6 +104,13 @@ pub struct ServerState {
     /// intentional shutdown apart from an unexpected crash so a user-initiated
     /// stop never triggers auto-restart.
     intentional_stop: Arc<AtomicBool>,
+    /// Consecutive failed liveness probes for the CURRENT ready backend (item
+    /// 5). Reset to 0 on every successful probe, on start(), and on stop(). The
+    /// watcher reads this via `poll()` and trips `WatchOutcome::Unresponsive`
+    /// once it reaches `UNRESPONSIVE_THRESHOLD`. Only ever incremented while the
+    /// backend is ready=true (a not-yet-ready backend is "still warming up", not
+    /// unresponsive).
+    unresponsive_streak: Arc<AtomicU32>,
     /// Last `server-status` payload actually emitted. The 2s watcher tick
     /// used to re-emit an unchanged status forever — every tick crossed the
     /// IPC bridge and re-rendered the React shell at idle (perf review
@@ -137,18 +176,26 @@ impl ServerState {
         if errors.is_empty() {
             None
         } else {
-            Some(
-                errors
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
+            // Attribute the captured stderr to the backend it came from so a UI
+            // surfacing this last_error knows which process logged it (only the
+            // MLX child pipes stderr today; the label future-proofs the readers).
+            let label = self
+                .ring_backend
+                .lock()
+                .clone()
+                .unwrap_or_else(|| "backend".to_string());
+            let joined = errors
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            Some(format!("[{label}] {joined}"))
         }
     }
 
     fn clear_stderr(&self) {
         self.stderr_ring.lock().clear();
+        *self.ring_backend.lock() = None;
     }
 
     pub async fn start(&self, model: String, backend: String) -> Result<ServerStatus> {
@@ -162,7 +209,12 @@ impl ServerState {
             }
         }
         self.clear_stderr();
+        // Label the (about-to-be-populated) stderr ring with the backend being
+        // started so last_error()/dead_status() can attribute it.
+        *self.ring_backend.lock() = Some(backend.clone());
         self.ready.store(false, Ordering::Release);
+        // Fresh backend → fresh liveness streak.
+        self.unresponsive_streak.store(0, Ordering::Release);
         // A fresh start clears any pending intentional-stop flag — the watcher
         // should treat a future death of this new server as a crash.
         self.intentional_stop.store(false, Ordering::Release);
@@ -230,6 +282,11 @@ impl ServerState {
                             "ollama daemon spawn fallback failed",
                             serde_json::json!({ "error": e.to_string() }),
                         );
+                        crate::health::set(
+                            "backend",
+                            crate::health::HealthState::Degraded,
+                            &format!("ollama daemon spawn fallback failed: {e}"),
+                        );
                     }
                 }
             }
@@ -247,6 +304,9 @@ impl ServerState {
                 backend: backend.clone(),
             });
             self.ready.store(true, Ordering::Release);
+            // Recovery: the backend is reachable again — clear any degraded
+            // health recorded by an earlier spawn-fallback failure.
+            crate::health::clear("backend");
             return Ok(self.live_status(&model, &backend));
         }
 
@@ -441,6 +501,9 @@ impl ServerState {
                         return;
                     }
                     ready.store(true, Ordering::Release);
+                    // Recovery: MLX port opened — clear any degraded health from
+                    // a prior readiness timeout / crash on this subsystem.
+                    crate::health::clear("backend");
                     // (2) Post-store, pre-emit re-check.
                     if generation.load(Ordering::Acquire) != my_generation {
                         return;
@@ -477,6 +540,13 @@ impl ServerState {
                     iterations, addr, model_for_probe, backend_for_probe
                 ),
                 serde_json::Value::Null,
+            );
+            crate::health::set(
+                "backend",
+                crate::health::HealthState::Degraded,
+                &format!(
+                    "readiness probe timed out after 90s (model={model_for_probe}) — backend started but the HTTP port never opened"
+                ),
             );
             if let Some(app) = app {
                 let _ = app.emit(
@@ -515,6 +585,7 @@ impl ServerState {
         }
         drop(guard);
         self.ready.store(false, Ordering::Release);
+        self.unresponsive_streak.store(0, Ordering::Release);
         // Invalidate any in-flight probe so it can't emit ready=true after stop
         self.generation.fetch_add(1, Ordering::AcqRel);
         let s = self.dead_status();
@@ -540,18 +611,57 @@ impl ServerState {
         match dead {
             None => {
                 // Mirror status()'s emit for the no-death path.
+                let alive = guard
+                    .as_ref()
+                    .map(|s| (s.model.clone(), s.backend.clone()));
                 let s = match guard.as_ref() {
                     Some(s) => self.live_status(&s.model, &s.backend),
                     None => self.dead_status(),
                 };
                 drop(guard);
                 self.emit(&s);
+
+                // Liveness probe (item 5). Only meaningful for a backend that is
+                // alive AND has reported ready — a not-yet-ready backend is
+                // "still warming up", not unresponsive. Gated behind the
+                // `backend_liveness_probe` setting (default on). The probe runs
+                // OUTSIDE the inner lock (already dropped) so a slow HTTP GET
+                // never blocks start()/stop().
+                if let Some((model, backend)) = alive {
+                    if self.ready.load(Ordering::Acquire) && liveness_probe_enabled() {
+                        let my_generation = self.generation.load(Ordering::Acquire);
+                        let responsive = self.probe_responsive(&backend).await;
+                        // Discard the result if the backend was replaced/stopped
+                        // while the probe was in flight — the streak belongs to
+                        // whatever is running now, not the old generation.
+                        if self.generation.load(Ordering::Acquire) != my_generation {
+                            return WatchOutcome::Idle;
+                        }
+                        if responsive {
+                            // Recovery: clear streak + any degraded health.
+                            if self.unresponsive_streak.swap(0, Ordering::AcqRel) > 0 {
+                                crate::health::clear("backend");
+                            }
+                        } else {
+                            let consecutive =
+                                self.unresponsive_streak.fetch_add(1, Ordering::AcqRel) + 1;
+                            if is_unresponsive(consecutive) {
+                                return WatchOutcome::Unresponsive {
+                                    model,
+                                    backend,
+                                    consecutive,
+                                };
+                            }
+                        }
+                    }
+                }
                 WatchOutcome::Idle
             }
             Some((model, backend)) => {
                 *guard = None;
                 drop(guard);
                 self.ready.store(false, Ordering::Release);
+                self.unresponsive_streak.store(0, Ordering::Release);
                 // Bump generation so stale probes from the dead process bail.
                 self.generation.fetch_add(1, Ordering::AcqRel);
                 if self.intentional_stop.load(Ordering::Acquire) {
@@ -563,6 +673,63 @@ impl ServerState {
                 }
             }
         }
+    }
+
+    /// Lightweight liveness probe for the CURRENTLY-running backend (item 5).
+    ///
+    /// Stage 1 TCP-connects to the backend's port (~2s timeout); a closed port
+    /// is not responsive. Stage 2 issues a cheap HTTP GET to a well-known
+    /// endpoint (ollama `/api/version`, mlx `/v1/models`) with the same budget —
+    /// TCP-open but HTTP-timeout means WEDGED, the key case the bare TCP check
+    /// missed (the daemon accepts connections but its request loop is stuck).
+    ///
+    /// Returns `true` only when both stages succeed within the budget. Any
+    /// non-2xx-or-timeout (incl. 5xx) counts as a failure for streak purposes: a
+    /// backend returning 500 to its own health endpoint is not serving.
+    pub async fn probe_responsive(&self, backend: &str) -> bool {
+        const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+        let (host, port, path) = if backend == "ollama" {
+            (OLLAMA_HOST, OLLAMA_PORT, "/api/version")
+        } else {
+            (MLX_HOST, MLX_PORT, "/v1/models")
+        };
+        // Stage 1: TCP connect.
+        let addr = format!("{host}:{port}");
+        let tcp_ok = matches!(
+            tokio::time::timeout(PROBE_TIMEOUT, tokio::net::TcpStream::connect(&addr)).await,
+            Ok(Ok(_))
+        );
+        if !tcp_ok {
+            return false;
+        }
+        // Stage 2: HTTP GET. A fresh short-lived client per probe keeps this
+        // dependency-free of shared client lifetime concerns; the probe runs at
+        // most every ~2s so client setup cost is negligible.
+        let url = format!("http://{host}:{port}{path}");
+        let client = match reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() {
+            Ok(c) => c,
+            // If we can't even build a client, fall back to the TCP result we
+            // already have (port is open) rather than false-flagging a wedge.
+            Err(_) => return true,
+        };
+        match client.get(&url).send().await {
+            Ok(resp) => resp.status().is_success(),
+            Err(_) => false, // timeout / connection reset mid-request => wedged
+        }
+    }
+
+    /// Emit a transient "unresponsive" status so the UI can surface a wedged
+    /// backend. Shaped like the dead/restarting emits but keeps the model so the
+    /// UI can name it. Used by the watcher's `Unresponsive` arm.
+    pub fn emit_unresponsive(&self, model: &str, backend: &str, consecutive: u32) {
+        let mut s = self.dead_status();
+        s.model = Some(model.into());
+        s.backend = Some(backend.into());
+        s.last_error = Some(format!(
+            "{backend} backend stopped responding ({consecutive} consecutive failed liveness probes) — \
+             the port is open but the server is not answering"
+        ));
+        self.emit(&s);
     }
 
     /// Emit a transient "restarting" status so the UI can show progress while
@@ -728,6 +895,12 @@ async fn mlx_server_help(binary: &std::path::Path) -> String {
     .unwrap_or_default()
 }
 
+/// Whether the backend liveness probe is enabled (item 5). Reads the
+/// `backend_liveness_probe` setting; absent/None => enabled (default on).
+fn liveness_probe_enabled() -> bool {
+    crate::settings::load().backend_liveness_probe.unwrap_or(true)
+}
+
 fn mlx_server_binary() -> Result<PathBuf> {
     if let Some(home) = dirs::home_dir() {
         let candidate = home.join(".venvs/mlx/bin/mlx_lm.server");
@@ -781,5 +954,46 @@ mod tests {
         assert_eq!(restart_backoff_secs(2), 4);
         assert_eq!(restart_backoff_secs(3), 6);
         assert!(restart_backoff_secs(2) > restart_backoff_secs(1));
+    }
+
+    #[test]
+    fn unresponsive_requires_n_consecutive_failures() {
+        // Below the threshold (a single GC-pause-sized blip) must NOT trip.
+        for streak in 0..UNRESPONSIVE_THRESHOLD {
+            assert!(
+                !is_unresponsive(streak),
+                "streak {streak} should be tolerated"
+            );
+        }
+        // At and above the threshold it trips.
+        assert!(is_unresponsive(UNRESPONSIVE_THRESHOLD));
+        assert!(is_unresponsive(UNRESPONSIVE_THRESHOLD + 10));
+    }
+
+    #[test]
+    fn unresponsive_streak_simulation() {
+        // Pure simulation of the watcher's streak accounting: a success resets
+        // the streak, so two failures then a success then two more failures
+        // never trips the 3-consecutive threshold.
+        let mut streak = 0u32;
+        let observe = |streak: &mut u32, responsive: bool| -> bool {
+            if responsive {
+                *streak = 0;
+            } else {
+                *streak += 1;
+            }
+            is_unresponsive(*streak)
+        };
+        assert!(!observe(&mut streak, false)); // 1
+        assert!(!observe(&mut streak, false)); // 2
+        assert!(!observe(&mut streak, true)); // reset → 0
+        assert!(!observe(&mut streak, false)); // 1
+        assert!(!observe(&mut streak, false)); // 2
+        assert!(observe(&mut streak, false)); // 3 → trips
+        // Three back-to-back from a clean slate trips exactly at the 3rd.
+        let mut s2 = 0u32;
+        assert!(!observe(&mut s2, false));
+        assert!(!observe(&mut s2, false));
+        assert!(observe(&mut s2, false));
     }
 }

@@ -460,6 +460,13 @@ mod tests {
 
     #[tokio::test]
     async fn watcher_detects_file_create() {
+        // watch_path enforces within_workspace against the process-global
+        // WORKSPACE_ROOT. Serialize against fs.rs's workspace-mutating tests via
+        // the shared lock and pin the root to None (→ default $HOME, which
+        // contains tempdir_in_target) so a parallel test can't make this dir fall
+        // "outside the workspace" mid-run.
+        let _ws = crate::agent::fs::WS_TEST_LOCK.lock();
+        let _ = crate::agent::fs::set_workspace_root(None);
         let tmp = tempdir_in_target("fs_watcher_create");
         let handle = watch_path(tmp.to_string_lossy().into_owned(), None, None)
             .await
@@ -492,6 +499,10 @@ mod tests {
 
     #[tokio::test]
     async fn debounce_collapses_burst() {
+        // See watcher_detects_file_create: take the shared workspace lock + pin
+        // root to None so a parallel WORKSPACE_ROOT mutation can't fail watch_path.
+        let _ws = crate::agent::fs::WS_TEST_LOCK.lock();
+        let _ = crate::agent::fs::set_workspace_root(None);
         let tmp = tempdir_in_target("fs_watcher_debounce");
         let handle = watch_path(
             tmp.to_string_lossy().into_owned(),

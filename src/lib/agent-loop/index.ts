@@ -3,6 +3,7 @@
 
 export { runAgentLoop } from "./runner";
 export { cancelActiveShell } from "./dispatch";
+export { setMaxConcurrentSubagents } from "./subagent";
 export type {
   AgentStatus,
   AgentMetrics,

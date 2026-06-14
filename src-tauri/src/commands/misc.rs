@@ -182,6 +182,15 @@ pub async fn append_diag_log(line: String) -> Result<(), String> {
     .await
 }
 
+/// Snapshot of the subsystem health/degradation registry. Observational only —
+/// the UI renders a "Degraded" pill from any non-Ok entry and opens the
+/// Diagnostics panel. Empty list = all recorded subsystems healthy / none
+/// degraded.
+#[tauri::command]
+pub fn health_snapshot() -> Vec<crate::health::Subsystem> {
+    crate::health::snapshot()
+}
+
 /// If the SQLite DB was found corrupt on startup and quarantined, returns the
 /// path of the renamed corrupt file so the UI can surface it. `None` otherwise.
 #[tauri::command]

@@ -31,6 +31,7 @@ import {
   ExternalLink,
   Sun,
   Moon,
+  AlertTriangle,
 } from "lucide-react";
 import { Kbd } from "./components/ui";
 import {
@@ -255,6 +256,14 @@ function App() {
   const { theme, toggleTheme, applyPersistedTheme } = useAppearance();
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  // Subsystem degradation pill (item 6): non-empty when any backend/mcp/
+  // workspace subsystem is degraded or failed. Refreshed from the Rust health
+  // registry on mount and whenever an `app-diagnostics` event fires (the same
+  // events that record a degradation). Observational only — clicking opens the
+  // existing Diagnostics panel.
+  const [degradedHealth, setDegradedHealth] = useState<
+    import("./lib/tauri-api").HealthSubsystem[]
+  >([]);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   // RAM-pressure chip (inference wave D): macOS memorystatus level, polled
@@ -460,8 +469,34 @@ function App() {
         message: typeof p.message === "string" ? p.message : "",
         detail: p.detail,
       });
+      // A degradation is always recorded alongside an app-diagnostics emit, so
+      // re-poll the health registry here to keep the pill current. A recovery
+      // clear() also rides one of these events.
+      api
+        .healthSnapshot()
+        .then((rows) => setDegradedHealth(rows.filter((r) => r.state !== "ok")))
+        .catch(() => {
+          /* observational — leave the pill as-is on a transient IPC failure */
+        });
     }, []),
   );
+
+  // Initial health-registry poll on mount (degradations recorded during boot,
+  // before the listener above attached, are surfaced on first render).
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .healthSnapshot()
+      .then((rows) => {
+        if (!cancelled) setDegradedHealth(rows.filter((r) => r.state !== "ok"));
+      })
+      .catch(() => {
+        /* observational — pill simply stays hidden */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Track the agent workspace root so MemoryPanel can bind newly-created
   // project-scoped memories without re-asking the user. Refetched on every
@@ -967,6 +1002,27 @@ function App() {
           </button>
         </div>
         <div className="sidebar-spacer-top" aria-hidden="true" />
+        {/* Subsystem-degradation pill (item 6). Renders ONLY when a subsystem
+            is degraded/failed; clicking opens the existing Diagnostics panel.
+            Additive + observational — does not affect the locked top-row
+            controls (hamburger / new-chat / search). */}
+        {degradedHealth.length > 0 && (
+          <button
+            type="button"
+            className="health-degraded-pill"
+            data-testid="health-degraded-pill"
+            title={degradedHealth
+              .map((d) => `${d.name}: ${d.state} — ${d.reason}`)
+              .join("\n")}
+            aria-label={`${degradedHealth.length} subsystem${
+              degradedHealth.length === 1 ? "" : "s"
+            } degraded — open Diagnostics`}
+            onClick={() => setDiagnosticsOpen(true)}
+          >
+            <AlertTriangle size={13} aria-hidden="true" /> Degraded
+            {degradedHealth.length > 1 ? ` (${degradedHealth.length})` : ""}
+          </button>
+        )}
         {/* Stacked view-nav buttons (one per view). Knowledge stays in the
             hamburger menu (less-frequent editorial surface). */}
         <ViewNav view={view} setView={setView} />

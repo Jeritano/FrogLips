@@ -46,12 +46,27 @@ pub struct Settings {
     /// Opt-in automatic update checks (default off pending updater
     /// investigation 2026-06-11; manual check in Settings always works).
     pub auto_update_check: Option<bool>,
+    /// Backend liveness probe (item 5, 2026-06-13). When enabled (DEFAULT true),
+    /// the restart-watcher additionally checks that a ready backend still
+    /// answers a lightweight HTTP GET each tick; after N consecutive failures it
+    /// declares the backend unresponsive (MLX → eligible for the existing
+    /// auto-restart; ollama → surfaced as degraded, never killed). `None` on
+    /// legacy files → treated as enabled. Set `Some(false)` to disable.
+    pub backend_liveness_probe: Option<bool>,
     /// User-registered APIs the agent can call by name via `call_api`. Keys
     /// live in the Keychain (account "api:{id}"); never in chat.
     pub saved_apis: Option<Vec<SavedApi>>,
     /// Max agent tool-turns per run. `None` → the runner default (80). The
     /// frontend clamps to [5, 400]. Raise for long multi-file builds.
     pub agent_max_iterations: Option<i64>,
+    /// Global cap on subagents running concurrently across the whole process
+    /// (item 2). `None` → the frontend default (4). Bounds fan-out BREADTH so a
+    /// wide subagent tree can't launch unbounded concurrent inference loops.
+    pub max_concurrent_subagents: Option<i64>,
+    /// Local-inference admission permits (item 1). `None` → 1 (serialize local
+    /// inference so a fan-out doesn't thrash a single GPU/CPU). Cloud routes
+    /// bypass the gate. Frontend clamps to >= 1.
+    pub inference_permits: Option<i64>,
     /// Cached machine profile (RAM / cores / CPU) detected once on first launch
     /// and refreshed weekly, so the model picker and onboarding can size models
     /// to the hardware without re-probing sysctl every render. Absent on legacy

@@ -25,11 +25,11 @@ pub mod web;
 // lib.rs keep working without churn.
 
 pub use fs::{
-    apply_patch, confine_ingest_root, edit_file, file_exists, get_workspace_root,
-    is_protected_read_path, list_dir, multi_edit, read_file, read_files, search_files,
-    set_workspace_root, write_file, write_files, ApplyPatchFileResult, DirEntry, DirListing, EditOp,
-    EditResult, ExistsResult, MultiEditResult, MultiReadEntry, ReadResult, SearchHit, SearchResult,
-    WriteFileSpec,
+    active_run_count, apply_patch, check_workspace_change_allowed, confine_ingest_root, edit_file,
+    file_exists, get_workspace_root, is_protected_read_path, list_dir, multi_edit, read_file,
+    read_files, run_begin, run_end, search_files, set_workspace_root, write_file, write_files,
+    ApplyPatchFileResult, DirEntry, DirListing, EditOp, EditResult, ExistsResult, MultiEditResult,
+    MultiReadEntry, ReadResult, SearchHit, SearchResult, WriteFileSpec,
 };
 
 pub use shell::{cancel_shell, classify_shell_risk, run_code, run_shell, ShellOpts, ShellResult};

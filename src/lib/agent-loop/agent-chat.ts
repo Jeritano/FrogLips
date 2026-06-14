@@ -25,6 +25,10 @@ import {
 import type { StreamChatResult } from "./stream-types";
 import { streamMlxAgentChat } from "../mlx-client";
 import { streamNativeAgentChat } from "../native-client";
+import {
+  shouldBypassInferenceGate,
+  withInferenceSlot,
+} from "../inference-gate";
 
 /**
  * One streaming, tool-calling chat turn against the active backend, with
@@ -42,91 +46,109 @@ export async function streamAgentChat(
   const backend: AgentBackend = opts.backend ?? "ollama";
   const params = opts.params ?? null;
 
+  // Item 1: gate LOCAL inference through the global admission semaphore so a
+  // fan-out (subagents / flows) doesn't thrash one GPU/CPU. Cloud routes
+  // (:cloud, custom, openrouter) bypass and run un-gated. The permit is held
+  // ONLY around the per-attempt dispatch below — NOT around the retry loop (so
+  // backoff never squats a permit) and NOT across a full runAgentLoop (so a
+  // parent never holds a permit while awaiting a child subagent's turns).
+  const bypassGate = shouldBypassInferenceGate(opts.model, backend);
+  // The per-attempt dispatch: one streaming, tool-calling turn against the
+  // active backend. Wrapped in a thunk so it can run gated or un-gated.
+  const dispatch = async (): Promise<StreamChatResult> => {
+    if (backend === "mlx") {
+      if (!opts.serverStatus) {
+        throw new Error(
+          "MLX backend selected but no server status was provided",
+        );
+      }
+      return await streamMlxAgentChat(
+        opts.serverStatus,
+        msgs,
+        tools,
+        signal,
+        onContentChunk,
+        params,
+      );
+    }
+    if (backend === "native") {
+      return await streamNativeAgentChat(
+        msgs,
+        tools,
+        signal,
+        onContentChunk,
+        params,
+      );
+    }
+    // Default: Ollama. Base AgentChatConfig resolved once; per-conversation
+    // params override individual fields (resolveAgentChatConfig handles the
+    // null-fallthrough). Applied uniformly with the mlx/native paths.
+    const cfg = resolveAgentChatConfig(params);
+    // Cloud-routing models (kimi-k2.6:cloud, deepseek-v4-pro:cloud, …) run
+    // on the provider's own infra with server-side defaults. The cloud
+    // passthrough re-validates each request strictly and has been observed
+    // to reject Ollama's `options` payload outright with the cryptic
+    // "Value looks like object, but can't find closing '}' symbol" 400 —
+    // even when every value is well-formed. Skip per-request tuning on
+    // those routes; local-only Ollama models still honour it.
+    const isCloud =
+      typeof opts.model === "string" && opts.model.endsWith(":cloud");
+    const ollamaOptions: Record<string, unknown> = {};
+    if (!isCloud) {
+      if (cfg.temperature != null) ollamaOptions.temperature = cfg.temperature;
+      if (cfg.top_p != null) ollamaOptions.top_p = cfg.top_p;
+      if (cfg.max_tokens != null) ollamaOptions.num_predict = cfg.max_tokens;
+      // Inference perf O1 (2026-06-11): the resolved per-model context
+      // (opts.contextTokens — the SAME number the runner budgets prompts
+      // to) wins over the static config default. Mismatch here was the
+      // silent-truncation bug: budgeting to a 128k window while telling
+      // the daemon num_ctx=8192 head-truncated the system prompt + tool
+      // schemas on long runs. Keep the value stable per model — Ollama
+      // reloads the model whenever num_ctx changes between requests.
+      const numCtx = opts.contextTokens ?? cfg.context_size;
+      if (numCtx != null) ollamaOptions.num_ctx = numCtx;
+    }
+    // Same trick on the top-level body: a cloud passthrough that sees
+    // `tools: []` for a model that doesn't support tools also barfs
+    // on the schema check. Only include `tools` when we have any.
+    const body: Record<string, unknown> = {
+      model: opts.model,
+      messages: toOllamaMessages(msgs),
+    };
+    if (Object.keys(ollamaOptions).length > 0) {
+      body.options = ollamaOptions;
+    }
+    // keep_alive keeps the local model resident between turns (no cold
+    // reload). LOCAL ONLY — the cloud passthrough rejects extra top-level
+    // fields the same way it rejects `options` (cryptic 400). Gated here, not
+    // in streamOllamaChat, so cloud routes never carry it.
+    if (!isCloud) {
+      // Settings-driven (default "30m" — the daemon's own 5m default made
+      // idle reloads of 20-60GB models routine).
+      body.keep_alive = opts.keepAlive ?? "30m";
+    }
+    if (Array.isArray(tools) && tools.length > 0) {
+      body.tools = tools;
+    }
+    return await streamOllamaChat(
+      `${OLLAMA_BASE}/api/chat`,
+      body,
+      signal,
+      onContentChunk,
+    );
+  };
+
   let lastErr: unknown = null;
   for (let attempt = 0; attempt <= RETRY_MAX; attempt++) {
     if (signal.aborted) throw new Error("aborted");
     try {
-      if (backend === "mlx") {
-        if (!opts.serverStatus) {
-          throw new Error(
-            "MLX backend selected but no server status was provided",
-          );
-        }
-        return await streamMlxAgentChat(
-          opts.serverStatus,
-          msgs,
-          tools,
-          signal,
-          onContentChunk,
-          params,
-        );
-      }
-      if (backend === "native") {
-        return await streamNativeAgentChat(
-          msgs,
-          tools,
-          signal,
-          onContentChunk,
-          params,
-        );
-      }
-      // Default: Ollama. Base AgentChatConfig resolved once; per-conversation
-      // params override individual fields (resolveAgentChatConfig handles the
-      // null-fallthrough). Applied uniformly with the mlx/native paths.
-      const cfg = resolveAgentChatConfig(params);
-      // Cloud-routing models (kimi-k2.6:cloud, deepseek-v4-pro:cloud, …) run
-      // on the provider's own infra with server-side defaults. The cloud
-      // passthrough re-validates each request strictly and has been observed
-      // to reject Ollama's `options` payload outright with the cryptic
-      // "Value looks like object, but can't find closing '}' symbol" 400 —
-      // even when every value is well-formed. Skip per-request tuning on
-      // those routes; local-only Ollama models still honour it.
-      const isCloud =
-        typeof opts.model === "string" && opts.model.endsWith(":cloud");
-      const ollamaOptions: Record<string, unknown> = {};
-      if (!isCloud) {
-        if (cfg.temperature != null)
-          ollamaOptions.temperature = cfg.temperature;
-        if (cfg.top_p != null) ollamaOptions.top_p = cfg.top_p;
-        if (cfg.max_tokens != null) ollamaOptions.num_predict = cfg.max_tokens;
-        // Inference perf O1 (2026-06-11): the resolved per-model context
-        // (opts.contextTokens — the SAME number the runner budgets prompts
-        // to) wins over the static config default. Mismatch here was the
-        // silent-truncation bug: budgeting to a 128k window while telling
-        // the daemon num_ctx=8192 head-truncated the system prompt + tool
-        // schemas on long runs. Keep the value stable per model — Ollama
-        // reloads the model whenever num_ctx changes between requests.
-        const numCtx = opts.contextTokens ?? cfg.context_size;
-        if (numCtx != null) ollamaOptions.num_ctx = numCtx;
-      }
-      // Same trick on the top-level body: a cloud passthrough that sees
-      // `tools: []` for a model that doesn't support tools also barfs
-      // on the schema check. Only include `tools` when we have any.
-      const body: Record<string, unknown> = {
-        model: opts.model,
-        messages: toOllamaMessages(msgs),
-      };
-      if (Object.keys(ollamaOptions).length > 0) {
-        body.options = ollamaOptions;
-      }
-      // keep_alive keeps the local model resident between turns (no cold
-      // reload). LOCAL ONLY — the cloud passthrough rejects extra top-level
-      // fields the same way it rejects `options` (cryptic 400). Gated here, not
-      // in streamOllamaChat, so cloud routes never carry it.
-      if (!isCloud) {
-        // Settings-driven (default "30m" — the daemon's own 5m default made
-        // idle reloads of 20-60GB models routine).
-        body.keep_alive = opts.keepAlive ?? "30m";
-      }
-      if (Array.isArray(tools) && tools.length > 0) {
-        body.tools = tools;
-      }
-      return await streamOllamaChat(
-        `${OLLAMA_BASE}/api/chat`,
-        body,
-        signal,
-        onContentChunk,
-      );
+      // Gate the dispatch on the local-inference semaphore; cloud routes run
+      // un-gated. The permit is acquired INSIDE the loop body around a single
+      // attempt only, so retry backoff (handled below, outside the slot) never
+      // holds a permit while sleeping.
+      return bypassGate
+        ? await dispatch()
+        : await withInferenceSlot(signal, dispatch);
     } catch (e) {
       lastErr = e;
       if (signal.aborted) throw e;

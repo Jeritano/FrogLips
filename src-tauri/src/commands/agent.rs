@@ -1096,8 +1096,19 @@ pub fn policy_evaluate_write(cwd: String, path: String) -> policy::Decision {
 
 #[tauri::command]
 pub fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, String> {
+    // Item 3 (interim): reject a divergent workspace change while an agent run is
+    // in flight. WORKSPACE_ROOT is process-global, so retargeting it mid-run
+    // would silently move a sibling run's sandbox to a different directory.
+    // Route the rejection through the health registry so the item-6 "Degraded"
+    // pill surfaces it, then return the error (the caller's UI shows it too).
+    if let Err(e) = agent::check_workspace_change_allowed(path.as_deref()) {
+        crate::health::set("workspace", crate::health::HealthState::Degraded, &e);
+        return Err(e);
+    }
     let previous = agent::get_workspace_root();
     let result = agent::set_workspace_root(path)?;
+    // A successful, allowed change clears any prior workspace degradation.
+    crate::health::clear("workspace");
     let _guard = crate::settings::lock_for_update();
     let mut s = crate::settings::load();
     s.workspace_root = result.clone();
@@ -1119,6 +1130,22 @@ pub fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, Strin
 #[tauri::command]
 pub fn agent_get_workspace() -> Option<String> {
     agent::get_workspace_root()
+}
+
+/// Item 3: mark an agent run as started. Pins the current workspace root as the
+/// shared root for all concurrent runs so `agent_set_workspace` can reject a
+/// divergent mid-run change. Returns the number of runs now in flight. The
+/// frontend runner brackets each run with begin/end.
+#[tauri::command]
+pub fn agent_run_begin() -> usize {
+    agent::run_begin()
+}
+
+/// Item 3: mark an agent run as finished. When the last run ends the pinned root
+/// is released. Returns the number of runs still in flight.
+#[tauri::command]
+pub fn agent_run_end() -> usize {
+    agent::run_end()
 }
 
 /* ── RAG (project knowledge) ────────────────────────────────────────── */

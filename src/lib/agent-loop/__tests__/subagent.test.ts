@@ -15,7 +15,10 @@ vi.mock("../../agent-presets", () => ({
 import {
   __resetSubagentRegistryForTests,
   awaitSubagents,
+  getMaxConcurrentSubagents,
   listSubagents,
+  runSubagent,
+  setMaxConcurrentSubagents,
   spawnSubagentAsync,
 } from "../subagent";
 import type { AgentRunOptions } from "../types";
@@ -165,6 +168,88 @@ describe("async subagent spawn", () => {
     expect(parsed.kind).toBe("depth_exceeded");
     // runAgentLoop must NOT have been invoked.
     expect(runAgentLoopMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects with subagent_budget_exceeded when over the global concurrency cap", async () => {
+    // Squeeze the budget to 1 and hang the first admitted subagent so the
+    // slot stays occupied while the second spawn is attempted.
+    setMaxConcurrentSubagents(1);
+    let release: (v: string) => void = () => {};
+    runAgentLoopMock.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    const first = JSON.parse(
+      await spawnSubagentAsync({ prompt: "task A" }, makeParent()),
+    );
+    expect(first.ok).toBe(true);
+    expect(first.status).toBe("running");
+
+    // Second admission is over budget → structured rejection, no new run.
+    const second = JSON.parse(
+      await spawnSubagentAsync({ prompt: "task B" }, makeParent()),
+    );
+    expect(second.ok).toBe(false);
+    expect(second.kind).toBe("subagent_budget_exceeded");
+    // Only ONE runAgentLoop ever started (the over-budget call short-circuits).
+    expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+    // Registry only tracks the admitted one.
+    expect(JSON.parse(listSubagents()).subagents.length).toBe(1);
+
+    // The synchronous runSubagent path is gated the same way.
+    const syncOverBudget = JSON.parse(
+      await runSubagent({ prompt: "task C" }, makeParent()),
+    );
+    expect(syncOverBudget.ok).toBe(false);
+    expect(syncOverBudget.kind).toBe("subagent_budget_exceeded");
+
+    // Release the held slot; the freed capacity now admits a fresh spawn.
+    release("done-A");
+    await new Promise((r) => setTimeout(r, 0));
+    runAgentLoopMock.mockImplementationOnce(async () => "answer-D");
+    const third = JSON.parse(
+      await spawnSubagentAsync({ prompt: "task D" }, makeParent()),
+    );
+    expect(third.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it("small fan-out within budget is unaffected (all admitted)", async () => {
+    // Default budget (>=4) admits a 3-wide fan-out without rejection.
+    expect(getMaxConcurrentSubagents()).toBeGreaterThanOrEqual(3);
+    runAgentLoopMock.mockImplementation(async () => "ok");
+
+    const results = await Promise.all([
+      spawnSubagentAsync({ prompt: "p1" }, makeParent()),
+      spawnSubagentAsync({ prompt: "p2" }, makeParent()),
+      spawnSubagentAsync({ prompt: "p3" }, makeParent()),
+    ]);
+    for (const raw of results) {
+      const parsed = JSON.parse(raw);
+      expect(parsed.ok).toBe(true);
+    }
+    // Let them settle and confirm slots are released (a later spawn still ok).
+    await new Promise((r) => setTimeout(r, 0));
+    const after = JSON.parse(
+      await spawnSubagentAsync({ prompt: "p4" }, makeParent()),
+    );
+    expect(after.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it("a single synchronous runSubagent runs unaffected", async () => {
+    runAgentLoopMock.mockImplementationOnce(async () => "the-answer");
+    const raw = await runSubagent({ prompt: "solo" }, makeParent());
+    const parsed = JSON.parse(raw);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.answer).toContain("the-answer");
+    // Slot was released — a follow-up sync run still works.
+    runAgentLoopMock.mockImplementationOnce(async () => "again");
+    const raw2 = await runSubagent({ prompt: "solo2" }, makeParent());
+    expect(JSON.parse(raw2).ok).toBe(true);
   });
 
   it("aborting the parent signal cancels child subagents", async () => {

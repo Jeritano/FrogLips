@@ -31,6 +31,32 @@ export interface ApprovalPayload {
 }
 
 /**
+ * One subsystem's recorded health — mirrors `Subsystem` in
+ * `src-tauri/src/health.rs`. `state` is the coarse classification; `since` is
+ * unix-seconds when the current state began.
+ */
+export interface HealthSubsystem {
+  name: string;
+  state: "ok" | "degraded" | "failed";
+  reason: string;
+  since: number;
+}
+
+/**
+ * One agent-run checkpoint turn (item 4A) — mirrors `CheckpointTurn` in
+ * `src-tauri/src/history.rs`. `turnIndex` is the position within the run; the
+ * optional `tool*` fields are set for tool-result / tool-call turns.
+ */
+export interface CheckpointTurn {
+  turn_index: number;
+  role: string;
+  content: string;
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  model?: string | null;
+}
+
+/**
  * Internal helper: mint a binding-aware approval token. Pre-mints into a
  * local before any further `await`, so a fast burst of dangerous calls
  * can't interleave their mint/consume across the renderer event loop.
@@ -215,6 +241,11 @@ export const api = {
   // or an empty string when no crashes have been recorded.
   readCrashLog: () => invoke<string>("read_crash_log"),
 
+  // Subsystem health/degradation registry snapshot. Observational only — the
+  // UI renders a "Degraded" pill from any non-`ok` entry and opens the
+  // Diagnostics panel. Empty array = nothing degraded.
+  healthSnapshot: () => invoke<HealthSubsystem[]>("health_snapshot"),
+
   // Data backup / export / import. `backupDatabase` writes a single-file copy
   // of the SQLite DB; `exportData` serialises conversations + messages +
   // memory to JSON; `importData` additively merges such a JSON export back in
@@ -324,6 +355,15 @@ export const api = {
       // when there are no attachments keeps the column NULL for the common case.
       imagesJson: images && images.length > 0 ? JSON.stringify(images) : null,
     }),
+  /** Durable per-iteration agent checkpoint (item 4A). Writes the run's turns
+   *  atomically; idempotent on (runId, turnIndex). Checkpoint rows are invisible
+   *  to listMessages — this persists a shadow record for a future recovery
+   *  feature. Returns the number of turn rows written. */
+  agentRunCheckpoint: (
+    runId: string,
+    convId: number,
+    turns: CheckpointTurn[],
+  ) => invoke<number>("agent_run_checkpoint", { runId, convId, turns }),
   deleteMessage: (id: number) => invoke<void>("delete_message", { id }),
 
   // Conversation branching — `conversationFork` deep-copies messages from
@@ -810,6 +850,11 @@ export const api = {
   agentSetWorkspace: (path: string | null) =>
     invoke<string | null>("agent_set_workspace", { path }),
   agentGetWorkspace: () => invoke<string | null>("agent_get_workspace"),
+  /** Item 3: bracket an interactive agent run so a divergent workspace change
+   *  mid-run is rejected. Returns the active-run count. Best-effort — callers
+   *  should `.catch()` and proceed (the guard degrades gracefully if absent). */
+  agentRunBegin: () => invoke<number>("agent_run_begin"),
+  agentRunEnd: () => invoke<number>("agent_run_end"),
 
   // Multi-window: detached per-conversation windows
   openConversationWindow: (conversationId: number, title?: string | null) =>
@@ -1173,13 +1218,11 @@ export const api = {
     invoke<void>("claude_skill_delete", { name }),
   /* ── DB/storage maintenance (WS4) ── */
   /** Cheap read-only storage stats (db/wal/archive bytes + row counts). */
-  dbMaintenanceStats: () =>
-    invoke<MaintenanceStats>("db_maintenance_stats"),
+  dbMaintenanceStats: () => invoke<MaintenanceStats>("db_maintenance_stats"),
   /** Run the SAFE phases now (caps + archive + reclaim). Never VACUUMs. */
   dbMaintenanceRun: () => invoke<MaintenanceReport>("db_maintenance_run"),
   /** Explicit heavy reclaim: safe phases + a full VACUUM. */
-  dbMaintenanceVacuum: () =>
-    invoke<MaintenanceReport>("db_maintenance_vacuum"),
+  dbMaintenanceVacuum: () => invoke<MaintenanceReport>("db_maintenance_vacuum"),
   /** Recovery: restore archived messages for a conversation. Returns count. */
   dbMaintenanceRestoreArchived: (conversationId: number) =>
     invoke<number>("db_maintenance_restore_archived", { conversationId }),

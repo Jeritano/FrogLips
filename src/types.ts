@@ -406,11 +406,21 @@ export interface AppSettings {
   mlx_draft_model?: string | null;
   /** Opt-in automatic update checks (default off — see useUpdateCheck). */
   auto_update_check?: boolean | null;
+  /** Backend liveness probe (item 5). When enabled (default true), the
+   *  restart-watcher checks a ready backend still answers a lightweight HTTP
+   *  GET each tick and restarts/surfaces a wedged one. Absent = enabled. */
+  backend_liveness_probe?: boolean | null;
   /** User-registered APIs the agent can call by name. Keys live in Keychain. */
   saved_apis?: SavedApi[] | null;
   /** Max agent tool-turns per run (default 80, clamped [5,400]). Raise for
    *  long multi-file builds that need more steps to finish. */
   agent_max_iterations?: number | null;
+  /** Global cap on concurrently-running subagents (item 2). Default 4. Bounds
+   *  fan-out breadth so a wide subagent tree can't launch unbounded loops. */
+  max_concurrent_subagents?: number | null;
+  /** Local-inference admission permits (item 1). Default 1 — serialize local
+   *  inference so a fan-out doesn't thrash one GPU/CPU. Cloud routes bypass. */
+  inference_permits?: number | null;
 }
 
 /**

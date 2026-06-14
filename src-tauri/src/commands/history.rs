@@ -86,6 +86,28 @@ pub async fn add_message(
     Ok(id)
 }
 
+/// Durably checkpoint an in-flight agent run's turns (item 4A). Writes all
+/// turns atomically under one transaction; idempotent on `(run_id, turn_index)`.
+/// Checkpoint rows are excluded from `list_messages`, so this never changes the
+/// visible conversation — it persists a shadow record for a future recovery
+/// feature (recovery itself is deferred). Best-effort from the caller's POV:
+/// the interactive send fires it once per iteration and ignores failures.
+#[tauri::command]
+pub async fn agent_run_checkpoint(
+    run_id: String,
+    conv_id: i64,
+    turns: Vec<history::CheckpointTurn>,
+) -> Result<usize, String> {
+    // Guard each turn's content against the same per-message ceiling addMessage
+    // enforces so a runaway turn can't bloat the DB via the checkpoint path.
+    for t in &turns {
+        if t.content.len() > MAX_MESSAGE_BYTES {
+            return Err(format!("checkpoint turn exceeds {MAX_MESSAGE_BYTES} bytes"));
+        }
+    }
+    blocking(move || history::checkpoint_run(&run_id, conv_id, &turns)).await
+}
+
 #[tauri::command]
 pub async fn delete_message(id: i64, app: tauri::AppHandle) -> Result<(), String> {
     let conversation_id = blocking(move || history::delete_message(id)).await?;

@@ -1009,6 +1009,37 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v28 — durable per-iteration agent checkpointing (item 4 half A). Adds four
+    // nullable, additive columns to `messages` so an interactive agent run can
+    // persist each iteration's assistant/tool turns AS they settle (rather than
+    // only the final answer), plus an index on (run_id, turn_index) so the
+    // checkpoint command's idempotent upserts and any future resume read are
+    // cheap. All columns are nullable and column_exists-guarded — old rows and
+    // every non-agent message keep them NULL, so the schema change is fully
+    // additive and backward-compatible. (Recovery/auto-resume on reload is
+    // intentionally DEFERRED; only the durable write half lands here.)
+    Migration {
+        version: 28,
+        apply: |conn| {
+            if !column_exists(conn, "messages", "tool_call_id")? {
+                conn.execute("ALTER TABLE messages ADD COLUMN tool_call_id TEXT", [])?;
+            }
+            if !column_exists(conn, "messages", "tool_name")? {
+                conn.execute("ALTER TABLE messages ADD COLUMN tool_name TEXT", [])?;
+            }
+            if !column_exists(conn, "messages", "run_id")? {
+                conn.execute("ALTER TABLE messages ADD COLUMN run_id TEXT", [])?;
+            }
+            if !column_exists(conn, "messages", "turn_index")? {
+                conn.execute("ALTER TABLE messages ADD COLUMN turn_index INTEGER", [])?;
+            }
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_messages_run_turn
+                    ON messages(run_id, turn_index);",
+            )?;
+            Ok(())
+        },
+    },
 ];
 
 /// Add the additive `conv_id INTEGER` sibling column to `table`, preferring an
@@ -2096,6 +2127,80 @@ pub(crate) fn add_message_in(
     Ok(message_id)
 }
 
+/// One turn handed to [`checkpoint_run`] (item 4A). Mirrors the TS
+/// `CheckpointTurn` shape the runner emits per iteration. `turn_index` is the
+/// monotonically-increasing position within the run; the optional `tool_*`
+/// fields are populated for tool-result / assistant-with-tool-call turns.
+#[derive(serde::Deserialize, Clone)]
+pub struct CheckpointTurn {
+    pub turn_index: i64,
+    pub role: String,
+    pub content: String,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Maximum turns accepted in a single checkpoint call. A pathological run can't
+/// be allowed to write an unbounded batch in one transaction.
+const MAX_CHECKPOINT_TURNS: usize = 4000;
+
+/// Durably checkpoint an in-flight agent run's turns (item 4A). All rows are
+/// written under ONE `with_write` IMMEDIATE transaction so a single iteration's
+/// state lands atomically. Idempotent on `(run_id, turn_index)`: the call first
+/// deletes every existing checkpoint row for this `run_id`, then re-inserts the
+/// supplied turns — so re-running a checkpoint (or extending it with later
+/// turns) never duplicates a row. Checkpoint rows carry a non-null `run_id` and
+/// are therefore excluded from `list_messages` (the normal conversation view is
+/// unchanged; recovery/auto-resume that reads these rows is deferred).
+///
+/// Returns the number of turn rows written.
+pub fn checkpoint_run(run_id: &str, conv_id: i64, turns: &[CheckpointTurn]) -> Result<usize> {
+    if run_id.trim().is_empty() {
+        anyhow::bail!("run_id must not be empty");
+    }
+    if turns.len() > MAX_CHECKPOINT_TURNS {
+        anyhow::bail!(
+            "checkpoint exceeds {MAX_CHECKPOINT_TURNS} turns ({} given)",
+            turns.len()
+        );
+    }
+    with_write(|tx| {
+        // Idempotency: clear this run's prior checkpoint state, then re-insert.
+        // Scoped to (conv_id, run_id) so a run_id collision across conversations
+        // (shouldn't happen — run_ids are UUIDs — but defense in depth) can't
+        // wipe a sibling conversation's checkpoints.
+        tx.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1 AND run_id = ?2",
+            params![conv_id, run_id],
+        )?;
+        let now = now_unix();
+        for t in turns {
+            tx.execute(
+                "INSERT INTO messages
+                    (conversation_id, role, content, created_at, model,
+                     run_id, turn_index, tool_call_id, tool_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    conv_id,
+                    t.role,
+                    t.content,
+                    now,
+                    t.model,
+                    run_id,
+                    t.turn_index,
+                    t.tool_call_id,
+                    t.tool_name,
+                ],
+            )?;
+        }
+        Ok(turns.len())
+    })
+}
+
 /// Hard ceiling on how many messages one `list_messages` call returns. A
 /// pathologically long single conversation would otherwise serialize every
 /// message into one IPC payload. We keep the MOST RECENT `MESSAGES_LIST_MAX`
@@ -2106,10 +2211,18 @@ const MESSAGES_LIST_MAX: i64 = 10_000;
 
 pub fn list_messages(conv_id: i64) -> Result<Vec<Message>> {
     let conn = get_db()?;
+    // Item 4A: agent per-iteration checkpoint rows carry a non-null `run_id`
+    // (they're a durable shadow of in-flight agent state for a FUTURE recovery
+    // feature, which is deferred). They must NOT surface in the normal
+    // conversation view — today only the user turn and the final assistant turn
+    // are displayed/persisted-as-visible, and that stays byte-identical. The
+    // `run_id IS NULL` filter excludes the shadow rows. (Pre-v28 DBs have no
+    // run_id column, but setup_schema runs the v28 migration on every boot
+    // before any read, so the column is always present here.)
     let mut stmt = conn.prepare(
         "SELECT id, conversation_id, role, content, created_at, model, images FROM (
             SELECT id, conversation_id, role, content, created_at, model, images
-            FROM messages WHERE conversation_id = ?1
+            FROM messages WHERE conversation_id = ?1 AND run_id IS NULL
             ORDER BY id DESC LIMIT ?2
          ) ORDER BY id ASC",
     )?;
@@ -2888,6 +3001,11 @@ mod tests {
             "created_at",
             "model",
             "images",
+            // v28 — agent checkpoint columns.
+            "tool_call_id",
+            "tool_name",
+            "run_id",
+            "turn_index",
         ] {
             assert!(cols("messages").contains(&c.to_string()), "messages.{c}");
         }
@@ -3080,6 +3198,149 @@ mod tests {
             )
             .unwrap();
         assert_eq!(idx_count, 1);
+    }
+
+    /// v28 (item 4A): the four checkpoint columns + (run_id, turn_index) index
+    /// land via the ladder, and re-running the rung against a populated DB is a
+    /// no-op (idempotent — the column_exists guards skip the ALTERs, the index
+    /// is IF NOT EXISTS).
+    #[test]
+    fn checkpoint_columns_v28_install_and_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("ladder on fresh db");
+
+        // All four columns present.
+        for c in ["tool_call_id", "tool_name", "run_id", "turn_index"] {
+            assert!(
+                column_exists(&conn, "messages", c).unwrap(),
+                "messages.{c} must exist after v28"
+            );
+        }
+        // The (run_id, turn_index) index exists exactly once.
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_messages_run_turn'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1, "checkpoint index present exactly once");
+
+        // Seed a conversation + a normal message to prove a re-run is safe on a
+        // populated DB, then drive the v28 apply body directly twice.
+        conn.execute(
+            "INSERT INTO conversations (title, created_at) VALUES ('t', 0)",
+            [],
+        )
+        .unwrap();
+        let cid: i64 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at)
+             VALUES (?1, 'user', 'hi', 0)",
+            params![cid],
+        )
+        .unwrap();
+        let v28 = MIGRATIONS
+            .iter()
+            .find(|m| m.version == 28)
+            .expect("v28 rung exists");
+        (v28.apply)(&conn).expect("v28 re-run 1 must not error");
+        (v28.apply)(&conn).expect("v28 re-run 2 must not error");
+        // Still exactly one index, and the seeded row survived.
+        let idx2: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_messages_run_turn'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx2, 1);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    /// `checkpoint_run` writes turns atomically, is idempotent on
+    /// (run_id, turn_index) — a re-run with the same run_id never duplicates —
+    /// and checkpoint rows (run_id IS NOT NULL) are excluded from
+    /// `list_messages`, so the visible conversation is unchanged (the no-double-
+    /// write invariant). Uses the global DB (same as the other end-to-end tests).
+    #[test]
+    fn checkpoint_run_is_idempotent_and_invisible_to_list_messages() {
+        let conv =
+            create_conversation(&format!("__test_ckpt_{}", std::process::id()), None).unwrap();
+        // One visible user turn (the normal addMessage path).
+        add_message(conv, "user", "build me a thing", None, None).unwrap();
+        let run = format!("run:test:{}", std::process::id());
+
+        let turns = vec![
+            CheckpointTurn {
+                turn_index: 0,
+                role: "assistant".into(),
+                content: "{\"content\":\"working\",\"tool_calls\":[]}".into(),
+                tool_call_id: None,
+                tool_name: None,
+                model: Some("m".into()),
+            },
+            CheckpointTurn {
+                turn_index: 1,
+                role: "tool".into(),
+                content: "{\"ok\":true}".into(),
+                tool_call_id: Some("call_1".into()),
+                tool_name: Some("read_file".into()),
+                model: None,
+            },
+        ];
+        let n1 = checkpoint_run(&run, conv, &turns).unwrap();
+        assert_eq!(n1, 2);
+
+        // Re-run the SAME checkpoint (idempotent) — no duplication.
+        let n2 = checkpoint_run(&run, conv, &turns).unwrap();
+        assert_eq!(n2, 2);
+
+        // The raw messages table holds: 1 visible user + 2 checkpoint rows.
+        let total: i64 = get_db()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                params![conv],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 3, "user turn + 2 checkpoint rows, no dup after re-run");
+
+        // list_messages excludes checkpoint rows: only the visible user turn.
+        let visible = list_messages(conv).unwrap();
+        assert_eq!(visible.len(), 1, "checkpoint rows must be invisible");
+        assert_eq!(visible[0].role, "user");
+
+        // Extending the run (a later iteration) replaces the prior shadow.
+        let mut more = turns.clone();
+        more.push(CheckpointTurn {
+            turn_index: 2,
+            role: "assistant".into(),
+            content: "done".into(),
+            tool_call_id: None,
+            tool_name: None,
+            model: Some("m".into()),
+        });
+        let n3 = checkpoint_run(&run, conv, &more).unwrap();
+        assert_eq!(n3, 3);
+        let total2: i64 = get_db()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                params![conv],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total2, 4, "1 user + 3 checkpoint rows after extend");
+        assert_eq!(list_messages(conv).unwrap().len(), 1, "still 1 visible");
+
+        delete_conversation(conv).unwrap();
     }
 
     /// v20-v22 consolidation: the folded agent_audit / RAG / model_perf

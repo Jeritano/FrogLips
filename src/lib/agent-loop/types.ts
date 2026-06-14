@@ -1,4 +1,5 @@
 import type { Message, ProjectPolicy, ServerStatus } from "../../types";
+import type { CheckpointTurn } from "../tauri-api";
 
 export type AgentStatus = "idle" | "thinking" | "tool" | "done" | "error";
 
@@ -125,6 +126,17 @@ export interface AgentRunOptions {
   onUpdate: (msgs: Message[]) => void;
   onStatusChange: (status: AgentStatus) => void;
   onMetrics?: (m: AgentMetrics) => void;
+  /**
+   * Optional durable per-iteration checkpoint hook (item 4A). Fires ONCE per
+   * agent iteration, after that turn's tool-results have settled and before the
+   * next "thinking" status, with the run's agent turns so far (system/user
+   * turns excluded). Interactive sends wire this to `api.agentRunCheckpoint`
+   * so an interrupted long run leaves a durable shadow record.
+   *
+   * ABSENT (the default — subagents, flows, and tests set nothing) makes the
+   * runner byte-identical to its prior behaviour: no checkpoint IPC fires.
+   */
+  onCheckpoint?: (turns: CheckpointTurn[]) => void;
   /**
    * Optional: fires for each raw content delta from the streaming LLM
    * response. The ONLY channel carrying in-flight assistant text — render

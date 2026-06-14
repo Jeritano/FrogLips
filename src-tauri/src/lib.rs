@@ -13,6 +13,7 @@ mod diagnostics;
 mod dictation;
 mod embedder;
 mod gguf;
+mod health;
 mod history;
 mod logging;
 mod maintenance;
@@ -130,6 +131,8 @@ pub fn run() {
                     "Restored agent workspace root: {}",
                     resolved.as_deref().unwrap_or("(none)")
                 );
+                // Recovery: a valid root took — clear any prior degraded state.
+                health::clear("workspace");
             }
             Err(e) => {
                 tracing::warn!(
@@ -137,6 +140,13 @@ pub fn run() {
                     "Failed to restore persisted workspace root {ws:?}: {e} — \
                      falling back to home-dir default; file-writing cards may \
                      scatter under ~ until a valid project folder is set"
+                );
+                health::set(
+                    "workspace",
+                    health::HealthState::Degraded,
+                    &format!(
+                        "failed to restore workspace root {ws:?}: {e} — falling back to home-dir default"
+                    ),
                 );
             }
         }
@@ -208,16 +218,30 @@ pub fn run() {
                         };
                         match start_res {
                             Ok(Ok(_)) => {}
-                            Ok(Err(e)) => diagnostics::warn_with(
-                                "mcp",
-                                &format!("auto-start '{}' failed: {}", name, e),
-                                serde_json::json!({ "server": name, "error": e.to_string() }),
-                            ),
-                            Err(_) => diagnostics::warn_with(
-                                "mcp",
-                                &format!("auto-start '{}' timed out after 15s", name),
-                                serde_json::json!({ "server": name, "error": "timeout" }),
-                            ),
+                            Ok(Err(e)) => {
+                                diagnostics::warn_with(
+                                    "mcp",
+                                    &format!("auto-start '{}' failed: {}", name, e),
+                                    serde_json::json!({ "server": name, "error": e.to_string() }),
+                                );
+                                health::set(
+                                    "mcp",
+                                    health::HealthState::Degraded,
+                                    &format!("auto-start '{name}' failed: {e}"),
+                                );
+                            }
+                            Err(_) => {
+                                diagnostics::warn_with(
+                                    "mcp",
+                                    &format!("auto-start '{}' timed out after 15s", name),
+                                    serde_json::json!({ "server": name, "error": "timeout" }),
+                                );
+                                health::set(
+                                    "mcp",
+                                    health::HealthState::Degraded,
+                                    &format!("auto-start '{name}' timed out after 15s"),
+                                );
+                            }
                         }
                     })
                 })
@@ -354,6 +378,12 @@ pub fn run() {
                         }
                         match s.poll().await {
                             WatchOutcome::Idle => {
+                                // Server seen healthy (or intentionally stopped):
+                                // a fresh crash budget AND clear any degraded /
+                                // gave-up health recorded earlier.
+                                if attempts != 0 {
+                                    health::clear("backend");
+                                }
                                 attempts = 0;
                             }
                             WatchOutcome::Crashed { model, backend } => {
@@ -372,6 +402,13 @@ pub fn run() {
                                             "model": model,
                                             "attempts": attempts,
                                         }),
+                                    );
+                                    health::set(
+                                        "backend",
+                                        health::HealthState::Failed,
+                                        &format!(
+                                            "model server '{model}' crashed {attempts} times — auto-restart gave up"
+                                        ),
                                     );
                                     attempts = 0;
                                     continue;
@@ -399,6 +436,85 @@ pub fn run() {
                                     diagnostics::error_with(
                                         "backend",
                                         "auto-restart launch failed",
+                                        serde_json::json!({
+                                            "model": model,
+                                            "error": e.to_string(),
+                                        }),
+                                    );
+                                }
+                            }
+                            WatchOutcome::Unresponsive {
+                                model,
+                                backend,
+                                consecutive,
+                            } => {
+                                // A ready backend stopped answering its liveness
+                                // probe. Observationally surface it as degraded;
+                                // emit a status the UI can show.
+                                s.emit_unresponsive(&model, &backend, consecutive);
+                                diagnostics::warn_with(
+                                    "backend",
+                                    "backend unresponsive — liveness probe failed repeatedly",
+                                    serde_json::json!({
+                                        "model": model,
+                                        "backend": backend,
+                                        "consecutive": consecutive,
+                                    }),
+                                );
+                                health::set(
+                                    "backend",
+                                    health::HealthState::Degraded,
+                                    &format!(
+                                        "{backend} backend unresponsive (model '{model}') — \
+                                         {consecutive} consecutive failed liveness probes"
+                                    ),
+                                );
+                                // Ollama is externally managed — surface degraded
+                                // but NEVER kill it. MLX is ours: route the wedged
+                                // server through the SAME restart machinery a crash
+                                // uses (stop first so the new spawn gets the port).
+                                if backend != "mlx" {
+                                    continue;
+                                }
+                                if !should_attempt_restart(attempts) {
+                                    s.emit_gave_up(attempts);
+                                    diagnostics::error_with(
+                                        "backend",
+                                        "model server unresponsive repeatedly — auto-restart gave up",
+                                        serde_json::json!({
+                                            "model": model,
+                                            "attempts": attempts,
+                                        }),
+                                    );
+                                    health::set(
+                                        "backend",
+                                        health::HealthState::Failed,
+                                        &format!(
+                                            "model server '{model}' unresponsive — auto-restart gave up after {attempts} attempts"
+                                        ),
+                                    );
+                                    attempts = 0;
+                                    continue;
+                                }
+                                attempts += 1;
+                                s.emit_restarting(&model, &backend, attempts);
+                                let backoff = restart_backoff_secs(attempts);
+                                // Stop the wedged child before relaunch so the new
+                                // spawn can bind the port. stop() sets the
+                                // intentional-stop flag, so the kill is not
+                                // re-classified as a crash by the next poll.
+                                s.stop().await;
+                                tokio::select! {
+                                    _ = shutdown.notified() => break,
+                                    _ = tokio::time::sleep(std::time::Duration::from_secs(backoff)) => {}
+                                }
+                                if is_shutting_down() {
+                                    break;
+                                }
+                                if let Err(e) = s.start(model.clone(), backend.clone()).await {
+                                    diagnostics::error_with(
+                                        "backend",
+                                        "auto-restart launch failed (unresponsive)",
                                         serde_json::json!({
                                             "model": model,
                                             "error": e.to_string(),
@@ -478,6 +594,7 @@ pub fn run() {
             commands::history::rename_conversation,
             commands::history::list_messages,
             commands::history::add_message,
+            commands::history::agent_run_checkpoint,
             commands::history::delete_message,
             commands::history::conversation_fork,
             commands::history::conversation_list_branches,
@@ -523,6 +640,8 @@ pub fn run() {
             commands::agent::agent_classify_http,
             commands::agent::agent_set_workspace,
             commands::agent::agent_get_workspace,
+            commands::agent::agent_run_begin,
+            commands::agent::agent_run_end,
             commands::misc::open_conversation_window,
             commands::agent::agent_cancel_shell,
             commands::agent::agent_multi_edit,
@@ -630,6 +749,7 @@ pub fn run() {
             commands::misc::system_info,
             commands::misc::read_crash_log,
             commands::misc::append_diag_log,
+            commands::misc::health_snapshot,
             commands::misc::db_recovery_notice,
             commands::misc::db_unavailable_notice,
             commands::misc::export_diagnostics_bundle,

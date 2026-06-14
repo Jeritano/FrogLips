@@ -798,6 +798,36 @@ body {
   background: var(--surface-hover);
 }
 
+/* Subsystem-degradation pill (item 6). Small amber affordance that appears
+   only when a backend/mcp/workspace subsystem is degraded; opens Diagnostics. */
+.health-degraded-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 5px 10px;
+  font-size: var(--fs-sm, 12px);
+  font-weight: 500;
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.health-degraded-pill:hover {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
 .conv-list {
   list-style: none;
   display: flex;
