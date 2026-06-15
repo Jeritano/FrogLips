@@ -4,6 +4,21 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.3] — 2026-06-15
+
+### Fixed
+
+- **Chat messages no longer double-space after a reply finishes streaming.**
+  While streaming, the assistant bubble renders plain text under
+  `white-space: pre-wrap` (tight, correct). On completion it re-renders as
+  marked-generated HTML — but the bubble still had `white-space: pre-wrap`, so
+  the literal `\n` that marked leaves between block tags was rendered a *second*
+  time on top of the `<br>` it already emits for soft breaks (`breaks: true`).
+  Result: every line gained an extra blank line the moment thinking ended. The
+  completed `.markdown` content now uses `white-space: normal`; the streaming
+  bubble keeps `pre-wrap` via the more-specific `.streaming-plain` rule, so the
+  live stream is unchanged. (`src/styles/chat.css`)
+
 ## [0.14.2] — 2026-06-14
 
 ### v0.14.0 re-review remediation (35 findings)

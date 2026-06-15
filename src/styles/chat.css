@@ -313,7 +313,13 @@
 
 .message.assistant .content {
   color: var(--text);
-  white-space: pre-wrap;
+  /* Completed markdown is real HTML: marked (breaks:true) already emits <br>
+     for soft newlines and <p> for paragraphs, but it also leaves literal "\n"
+     between block tags. `pre-wrap` here rendered those leftover newlines a
+     SECOND time → <br> + \n = double-spaced lines after a message finished.
+     Default (normal) lets marked's tags control spacing; the streaming bubble
+     keeps pre-wrap via the more-specific .streaming-plain rule below. */
+  white-space: normal;
   word-wrap: break-word;
   max-width: 76ch;
 }
