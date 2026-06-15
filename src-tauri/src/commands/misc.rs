@@ -131,6 +131,78 @@ pub fn reveal_log_dir(app: tauri::AppHandle) -> Result<(), String> {
     app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(map_err)
 }
 
+/// Open a RAG search hit's source file in the user's default app via the
+/// opener plugin's LaunchServices path (no shell) — same trust boundary as
+/// `open_external` / `reveal_log_dir`.
+///
+/// The webview supplies only the corpus *name* and the *relative* path RAG
+/// itself stored (`RagHit.path`, which is `file.strip_prefix(root)` at ingest
+/// time). The absolute path is reconstructed BACKEND-SIDE from the corpus's
+/// own recorded `root_path` — never from caller input — so a hostile/buggy
+/// caller can't coax this into opening an arbitrary file:
+///   * the corpus root comes from `rag::list_corpora()` (the DB), not the call;
+///   * the joined path is canonicalized and must stay UNDER the canonical
+///     corpus root (defeats `..` traversal and symlink escape); and
+///   * a path that canonicalizes into a protected/credential location
+///     (`~/.ssh`, the Keychain dir, …) is refused via `is_protected_read_path`,
+///     matching the ingest-time confinement so an indexed-then-moved symlink
+///     can't be reopened into a protected file.
+///
+/// Byte-range jump (`RagHit.start_byte`) is NOT honored: LaunchServices opens
+/// with the file's default handler, which has no portable "goto offset" — so
+/// this opens the file, not the exact chunk. (The agent's
+/// `open_path_in_editor` does line-jumping, but it takes an absolute path and a
+/// separate gate; reusing it here would widen the input surface.)
+#[tauri::command]
+pub async fn rag_open_hit(
+    corpus_name: String,
+    rel_path: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if corpus_name.trim().is_empty() || corpus_name.len() > 256 {
+        return Err("invalid corpus name".into());
+    }
+    if rel_path.is_empty() || rel_path.len() > 4096 {
+        return Err("invalid path".into());
+    }
+    // Resolve the corpus root + validate containment off the UI thread (DB read
+    // + canonicalize + stat all touch the filesystem).
+    let resolved = crate::commands::blocking(move || -> anyhow::Result<std::path::PathBuf> {
+        // Corpus root comes from RAG's own records, not from the caller.
+        let root_path = crate::rag::list_corpora()?
+            .into_iter()
+            .find(|c| c.name == corpus_name)
+            .map(|c| c.root_path)
+            .ok_or_else(|| anyhow::anyhow!("corpus '{corpus_name}' not found"))?;
+
+        let root_canon = std::fs::canonicalize(&root_path)
+            .map_err(|e| anyhow::anyhow!("corpus root '{root_path}' not accessible: {e}"))?;
+
+        // Join the RAG-stored relative path, then canonicalize the result so
+        // any `..` segment or intermediate symlink is collapsed before the
+        // containment check.
+        let joined = root_canon.join(&rel_path);
+        let target = std::fs::canonicalize(&joined)
+            .map_err(|e| anyhow::anyhow!("file '{rel_path}' not accessible: {e}"))?;
+
+        // Must stay strictly inside the corpus root (defeats `..`/symlink escape).
+        if !target.starts_with(&root_canon) {
+            anyhow::bail!("resolved path escapes the corpus root");
+        }
+        // Never reopen into a protected/credential location even if a
+        // workspace-internal symlink canonicalized there.
+        if crate::agent::is_protected_read_path(&target) {
+            anyhow::bail!("path is in a protected location");
+        }
+        Ok(target)
+    })
+    .await?;
+
+    app.opener()
+        .open_path(resolved.to_string_lossy(), None::<&str>)
+        .map_err(map_err)
+}
+
 /// Append a diagnostic line to `~/.local-llm-app/diag.log`. Best-effort —
 /// errors are swallowed and `()` is returned regardless. Each call timestamps
 /// the entry and appends a newline.

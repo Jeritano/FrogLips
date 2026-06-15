@@ -775,6 +775,7 @@ pub fn run() {
             commands::misc::system_info,
             commands::misc::read_crash_log,
             commands::misc::reveal_log_dir,
+            commands::misc::rag_open_hit,
             commands::misc::append_diag_log,
             commands::misc::health_snapshot,
             commands::misc::db_recovery_notice,

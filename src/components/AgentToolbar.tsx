@@ -314,9 +314,14 @@ export function AgentToolbar(props: Props) {
     }
   }, [agentMode, coachSeen]);
 
+  // Default scope when no workspace is set is the user's HOME folder (minus the
+  // protected credential/system denylist) — NOT the full filesystem. The Rust
+  // gate (`agent/fs.rs::default_workspace_root`) confines reads/writes to $HOME
+  // on a fresh install, so the chip must say so rather than implying the agent
+  // can roam the whole disk. Setting a workspace narrows it further.
   const workspaceLabel = workspaceRoot
     ? (workspaceRoot.split(/[\\/]/).filter(Boolean).pop() ?? workspaceRoot)
-    : "full filesystem";
+    : "home folder";
 
   return (
     <div className="agent-toolbar">
@@ -419,7 +424,7 @@ export function AgentToolbar(props: Props) {
           data-testid="agent-workspace-chip"
           title={
             workspaceRoot ??
-            "Agent can reach the full filesystem — set a workspace to confine it"
+            "No workspace set — the agent is confined to your home folder (system & credential paths are always blocked). Set a workspace to narrow it to one project."
           }
         >
           Workspace: {workspaceLabel}

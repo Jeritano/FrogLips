@@ -21,6 +21,13 @@ export interface UseMessageActionsResult {
   submitEdit: () => Promise<void>;
   /** Fork the conversation at the given message. */
   onForkMsg: (msg: Message) => Promise<void>;
+  /**
+   * One-click retry after a send failure (item 3). Finds the last user turn,
+   * drops anything after it (a failed/partial assistant reply or an abort
+   * tombstone), and resends the same text. Returns true if a retry was
+   * dispatched, false when there was no user turn to retry.
+   */
+  retryLast: () => Promise<boolean>;
 }
 
 /**
@@ -142,6 +149,45 @@ export function useMessageActions(deps: {
     await resend(newText, truncated);
   });
 
+  // One-click retry after a send failure (item 3). Re-runs the LAST user turn:
+  // drops anything after it (a partial/failed assistant reply or an abort
+  // tombstone, in DB + state), then resends the same text. Reuses the exact
+  // truncate+resend plumbing the edit/regenerate paths use, so the error bar's
+  // "send again to retry" hint becomes a single button instead of retyping.
+  const retryLast = useEvent(async (): Promise<boolean> => {
+    if (isWorking || !conversation) return false;
+    let lastUserIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx === -1) return false;
+    const userText = messages[lastUserIdx].content;
+    // Delete the user turn and everything after it from the DB (the resend
+    // re-persists the user turn). Mirrors submitEdit's deletion loop.
+    for (let i = lastUserIdx; i < messages.length; i++) {
+      const id = messages[i]?.id;
+      if (id != null) {
+        try {
+          await api.deleteMessage(id);
+        } catch (err) {
+          logDiag({
+            level: "warn",
+            source: "chat-window",
+            message: `retry: deleteMessage(${id}) failed — proceeding anyway`,
+            detail: err,
+          });
+        }
+      }
+    }
+    const truncated = messages.slice(0, lastUserIdx);
+    setMessages(truncated);
+    await resend(userText, truncated);
+    return true;
+  });
+
   // Stable handler for MessageList → MessageRow (React.memo). An inline arrow
   // here would bust the row memo on every parent render (one per streaming
   // rAF frame) and undo the windowing perf work. `useEvent` keeps the
@@ -163,5 +209,6 @@ export function useMessageActions(deps: {
     onEditUser,
     submitEdit,
     onForkMsg,
+    retryLast,
   };
 }

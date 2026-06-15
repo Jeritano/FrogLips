@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fmtBytesBinary as fmtBytes } from "../lib/format";
-import { FileText, RefreshCw, X } from "lucide-react";
+import { ExternalLink, FileText, RefreshCw, X } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { EmptyState } from "./EmptyState";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
@@ -52,6 +52,11 @@ export function RagPanel({ onCorporaChanged }: Props) {
   const [searchCorpus, setSearchCorpus] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<RagHit[]>([]);
+  // The corpus the currently-shown hits came from. Captured at search time so a
+  // later edit to `searchCorpus` can't make an "open" click target the wrong
+  // corpus root (the backend joins the hit's relative path onto this corpus's
+  // recorded root).
+  const [hitsCorpus, setHitsCorpus] = useState("");
   const [searching, setSearching] = useState(false);
   // Tauri 2 webview disables window.confirm — use an inline two-click pattern
   // for corpus deletion so the destructive flow can't short-circuit silently.
@@ -156,13 +161,31 @@ export function RagPanel({ onCorporaChanged }: Props) {
     try {
       const hits = await api.ragSearch(c, q, 5);
       setSearchHits(hits);
+      setHitsCorpus(c);
     } catch (e) {
       setErr(`Search failed: ${e}`);
       setSearchHits([]);
+      setHitsCorpus("");
     } finally {
       setSearching(false);
     }
   }, [searchCorpus, searchQuery]);
+
+  // Open a hit's source file in the user's default app. The backend joins this
+  // hit's stored relative path onto the corpus's own recorded root and refuses
+  // anything escaping it — the webview supplies no absolute path.
+  const handleOpenHit = useCallback(
+    async (relPath: string) => {
+      if (!hitsCorpus) return;
+      setErr(null);
+      try {
+        await api.ragOpenHit(hitsCorpus, relPath);
+      } catch (e) {
+        setErr(`Open failed: ${e}`);
+      }
+    },
+    [hitsCorpus],
+  );
 
   return (
     <div className="rag-panel" data-testid="rag-panel">
@@ -351,7 +374,33 @@ export function RagPanel({ onCorporaChanged }: Props) {
               {searchHits.map((h, i) => (
                 <li key={i}>
                   <div className="rag-hit-path">
-                    {h.path}{" "}
+                    <button
+                      type="button"
+                      className="rag-hit-open"
+                      onClick={() => void handleOpenHit(h.path)}
+                      title={`Open ${h.path} in your default app`}
+                      aria-label={`Open ${h.path}`}
+                      data-testid={`rag-hit-open-${i}`}
+                      // Inline reset keeps the path looking like a clickable
+                      // file link without owning components.css this wave; a
+                      // `.rag-hit-open` class is still exposed for later
+                      // theming / e2e selection.
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        padding: 0,
+                        border: "none",
+                        background: "none",
+                        font: "inherit",
+                        color: "inherit",
+                        cursor: "pointer",
+                        textAlign: "left",
+                      }}
+                    >
+                      <ExternalLink size={12} />
+                      <span className="rag-hit-path-text">{h.path}</span>
+                    </button>{" "}
                     <span className="rag-hit-score">
                       ({h.score.toFixed(3)})
                     </span>

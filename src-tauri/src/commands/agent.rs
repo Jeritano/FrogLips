@@ -1094,6 +1094,25 @@ pub fn policy_evaluate_write(cwd: String, path: String) -> policy::Decision {
 
 /* ── Workspace root ──────────────────────────────────────────────────────── */
 
+// Item 6 (default-reach confinement) — migration decision, recorded here next to
+// the workspace command so it can't drift from the enforcement:
+//
+//   * `path = None` (no workspace set) does NOT mean "full filesystem". The
+//     authoritative gate `agent::fs::within_workspace` falls back to
+//     `default_workspace_root()` = the user's $HOME and confines every read /
+//     write / shell cwd to it (Sec review H2). The protected credential/system
+//     denylist (~/.ssh, ~/.aws, /etc, …) is ALSO enforced inside $HOME. So the
+//     agent's DEFAULT reach is already confined to the home folder; there is no
+//     unconfined / whole-disk mode to opt out of, and never was on this build.
+//   * Because the safe default is already in force in Rust, no migration is
+//     needed: EXISTING users keep the exact same effective reach (home folder,
+//     minus the denylist) and FRESH installs get it too. Setting a workspace
+//     simply NARROWS the reach to a single project — it is always a tightening,
+//     never a loosening, so it can't break an existing user.
+//   * The misleading "(full filesystem)" UI copy (which implied a whole-disk
+//     default) was corrected to "home folder" in the agent toolbar / settings
+//     panel so the surfaced scope matches what this gate actually enforces.
+
 #[tauri::command]
 pub fn agent_set_workspace(path: Option<String>) -> Result<Option<String>, String> {
     // Item 3 (interim): reject a divergent workspace change while an agent run is

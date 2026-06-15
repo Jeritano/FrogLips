@@ -62,6 +62,110 @@ export const IRREVERSIBLE_TOOLS = lazyDerivedSet(() =>
   TOOL_REGISTRY.filter((d) => d.irreversible).map((d) => d.name),
 );
 
+/* ── Human-readable confirmation summary ── */
+
+/** Clamp a free-form string for a one-line summary so a giant command /
+ *  URL / content blob can't blow out the modal title row. */
+function clampSummary(s: string, max = 140): string {
+  const oneLine = s.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= max) return oneLine;
+  return `${oneLine.slice(0, max - 1)}…`;
+}
+
+/**
+ * One-line, plain-English description of what a tool call will do, keyed on the
+ * tool name. Replaces the raw `JSON.stringify(args)` preview in the confirmation
+ * modal (item 2): the user sees "Run shell: npm test" / "Delete file: src/x.ts"
+ * / "Fetch https://…" instead of having to read a JSON blob. The full args stay
+ * available in the collapsible raw view beneath the summary.
+ *
+ * Centralised here (the dispatch layer) so the modal, audit tooling and any
+ * future surface share ONE source of truth keyed on the dispatch tool name —
+ * there is no behavior change, this is presentation only.
+ */
+export function summarizeToolCall(
+  name: string,
+  args: Record<string, unknown>,
+): string {
+  const str = (k: string): string =>
+    typeof args[k] === "string" ? (args[k] as string) : "";
+  switch (name) {
+    case "run_shell":
+      return `Run shell: ${clampSummary(str("command")) || "(empty command)"}`;
+    case "run_code": {
+      const lang = str("language") || "code";
+      return `Run ${lang}: ${clampSummary(str("code")) || "(empty)"}`;
+    }
+    case "applescript_run":
+      return `Run AppleScript: ${clampSummary(str("script")) || "(empty)"}`;
+    case "write_file":
+      return `Write file: ${str("path") || "(no path)"}`;
+    case "write_files": {
+      const files = Array.isArray(args.files) ? args.files.length : 0;
+      return `Write ${files} file${files === 1 ? "" : "s"}`;
+    }
+    case "edit_file":
+      return `Edit file: ${str("path") || "(no path)"}`;
+    case "multi_edit": {
+      const n = Array.isArray(args.edits) ? args.edits.length : 0;
+      return `Edit file: ${str("path") || "(no path)"} (${n} change${n === 1 ? "" : "s"})`;
+    }
+    case "apply_patch":
+      return "Apply patch (multi-file unified diff)";
+    case "make_dir":
+      return `Create directory: ${str("path") || "(no path)"}`;
+    case "move_path":
+      return `Move: ${str("from") || "?"} → ${str("to") || "?"}`;
+    case "copy_path":
+      return `Copy: ${str("from") || "?"} → ${str("to") || "?"}`;
+    case "delete_path":
+      return `${args.recursive === true ? "Recursively delete" : "Delete"}: ${str("path") || "(no path)"}`;
+    case "format_code":
+      return `Format file: ${str("path") || "(no path)"}`;
+    case "kill_process": {
+      const sig =
+        typeof args.signal === "string" ? args.signal.toUpperCase() : "TERM";
+      const pid = typeof args.pid === "number" ? args.pid : "?";
+      return `Kill process: SIG${sig} → pid ${pid}`;
+    }
+    case "agent_undo":
+      return "Revert the most recent agent file write";
+    case "git_commit":
+      return `Git commit: ${clampSummary(str("message")) || "(no message)"}`;
+    case "http_request":
+      return `${str("method") || "GET"} ${clampSummary(str("url")) || "(no url)"}`;
+    case "web_fetch":
+      return `Fetch: ${clampSummary(str("url")) || "(no url)"}`;
+    case "browser_navigate":
+      return `Open in browser: ${clampSummary(str("url")) || "(no url)"}`;
+    case "browser_click":
+      return `Browser click: ${clampSummary(str("selector")) || "(no selector)"}`;
+    case "browser_fill":
+      return `Browser fill: ${clampSummary(str("selector")) || "(no selector)"}`;
+    case "clipboard_set":
+      return "Set clipboard contents";
+    case "open_app":
+      return `Open app: ${str("name") || str("app") || "(unnamed)"}`;
+    case "show_notification":
+      return `Show notification: ${clampSummary(str("title") || str("body"))}`;
+    case "screenshot":
+      return "Take a screenshot";
+    case "task_create":
+      return `Create background task: ${clampSummary(str("prompt") || str("title"))}`;
+    case "task_cancel":
+      return `Cancel background task: ${str("task_id") || "(no id)"}`;
+    default: {
+      // MCP + any unlisted tool: name + best-effort target hint. The raw args
+      // collapsible below the summary still carries the full payload.
+      const hint = str("path") || str("url") || str("command") || str("target");
+      const pretty = isMcpToolName(name)
+        ? `MCP tool ${name}`
+        : `Tool ${name}`;
+      return hint ? `${pretty}: ${clampSummary(hint)}` : pretty;
+    }
+  }
+}
+
 /* ── Tool execution helpers ── */
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

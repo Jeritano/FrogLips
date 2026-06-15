@@ -1048,6 +1048,15 @@ export const api = {
   ragListCorpora: () => invoke<RagCorpusInfo[]>("rag_list_corpora"),
   ragDeleteCorpus: (name: string) =>
     invoke<void>("rag_delete_corpus", { name }),
+  /**
+   * Open a RAG hit's source file in the user's default app (LaunchServices,
+   * no shell). Pass the corpus name plus the hit's stored relative `path`
+   * (`RagHit.path`); the backend reconstructs the absolute path from the
+   * corpus's own recorded root and refuses anything escaping it. Byte-range
+   * jump is not honored — this opens the file, not the exact chunk.
+   */
+  ragOpenHit: (corpusName: string, relPath: string) =>
+    invoke<void>("rag_open_hit", { corpusName, relPath }),
 
   // Agent audit log
   agentAuditRecord: (entry: AgentAuditEntry) =>

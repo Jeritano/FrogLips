@@ -1595,7 +1595,7 @@
   background: var(--surface);
   overflow: hidden;
 }
-.wf-run-history-item[data-state="error"] {
+.wf-run-history-item[data-state="failed"] {
   border-color: color-mix(in oklab, var(--red, #e5484d) 40%, var(--border));
 }
 .wf-run-history-head {
@@ -1628,7 +1628,7 @@
 .wf-run-history-status-ok {
   color: var(--green, #30a46c);
 }
-.wf-run-history-status-error {
+.wf-run-history-status-failed {
   color: var(--red, #e5484d);
 }
 .wf-run-history-when {

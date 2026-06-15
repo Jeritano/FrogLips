@@ -909,6 +909,15 @@ export async function runAgentLoop(
 
   onStatusChange("thinking");
 
+  // Tool-calling fitness for this model (item 7). Computed once: feeds the
+  // system-prompt nudge AND the runtime narrate-without-acting recovery below.
+  // A "weak" model (small / abliterated / a known-narrating family) frequently
+  // DESCRIBES a tool call instead of emitting it, so for those models we widen
+  // the recovery to fire even after some real tool calls have run — a good
+  // model that's genuinely done is never touched.
+  const modelFitness = opts.modelFitness ?? classifyToolFitness(opts.model);
+  const isWeakToolCaller = modelFitness === "weak";
+
   // Discover MCP-provided tools once per run. Failures are swallowed inside
   // fetchMcpTools so the loop never blocks on a broken server.
   const mcpTools = await fetchMcpTools();
@@ -923,7 +932,7 @@ export async function runAgentLoop(
       toolAllowlist,
       systemPromptOverride,
       mcpTools,
-      opts.modelFitness ?? classifyToolFitness(opts.model),
+      modelFitness,
       opts.savedApiNames ?? [],
     ),
   };
@@ -1009,6 +1018,15 @@ export async function runAgentLoop(
   // Bounded counter for the narrate-without-acting guard (see the
   // toolCalls.length === 0 branch).
   let narrationNudges = 0;
+  // Item 5: per-run "trust this task" approval. Flipped on when a confirmation
+  // decision returns `trustRun: true` (the user ticked "Allow all remaining
+  // actions for this task" at a modal). Once set, this run auto-approves its
+  // REMAINING normal-risk, non-irreversible tool calls without re-prompting.
+  // RUN-SCOPED ONLY — this `let` dies with the function, so it never leaks
+  // across runs. The session-blanket exclusions (irreversible tools, non-normal
+  // risk) still apply below, so delete_path / kill_process / agent_undo and any
+  // sensitive-path-escalated write always re-confirm.
+  let trustRun = false;
 
   // Per-run turn budget: the setting (opts.maxIterations) overrides the
   // default, clamped so a bad value can't spin forever or stall instantly.
@@ -1136,11 +1154,25 @@ export async function runAgentLoop(
         // nothing ever changes.) Don't accept that as the final answer — keep
         // the text, inject one strong "ACT, don't narrate" nudge, and continue.
         // Bounded by MAX_NARRATION_NUDGES so a model that truly can't act still
-        // exits. Only fires when the card CAN write and no tool has run yet, so
-        // a genuine completion summary after real work is never interrupted.
+        // exits.
+        //
+        // Item 7 — weak tool-caller runtime recovery: a "weak" model
+        // (classifyToolFitness === "weak": small / abliterated / known-narrating
+        // families) routinely narrates a tool call instead of EMITTING it even
+        // AFTER it has made some real calls, so for those models we recover
+        // whenever an action-preamble arrives with no call this turn — not only
+        // when zero tools have EVER run. Good / untested models keep the
+        // conservative "zero tools the whole run" gate so a genuine completion
+        // summary after real work is never interrupted. Still bounded by
+        // MAX_NARRATION_NUDGES (the Wave-1 circuit breaker), and the
+        // non-progress / hard-stop guards remain in force on later turns, so a
+        // weak model that keeps narrating still exits rather than looping.
+        const narrationRecoveryEligible = isWeakToolCaller
+          ? true
+          : metrics.toolCalls === 0;
         if (
           canWriteFile &&
-          metrics.toolCalls === 0 &&
+          narrationRecoveryEligible &&
           narrationNudges < MAX_NARRATION_NUDGES &&
           looksLikeActionPreamble(preludeText)
         ) {
@@ -1529,7 +1561,15 @@ export async function runAgentLoop(
               // http_request, etc.) always needs explicit confirmation.
               (APPROVE_ALL_WRITE_FS.has(fnName) &&
                 approveAllWrite &&
-                risk === "normal"));
+                risk === "normal") ||
+              // Item 5: per-run "trust this task". Covers any normal-risk,
+              // non-irreversible tool (the `!isIrreversible` guard above already
+              // excludes delete/kill/undo; the allowlist gate earlier in the
+              // loop already rejected non-allowlisted calls). A non-normal risk
+              // (destructive shell, sensitive-path write, http with body, every
+              // MCP tool) still re-confirms — `trustRun` deliberately does NOT
+              // waive those.
+              (trustRun && risk === "normal"));
           if (sessionApproved) {
             auditApproval = "session_allowed";
           }
@@ -1574,6 +1614,10 @@ export async function runAgentLoop(
               continue;
             }
             auditApproval = "user_allowed";
+            // Item 5: the user ticked "Allow all remaining actions for this
+            // task" — arm per-run trust so the rest of this run's normal-risk,
+            // non-irreversible calls skip the modal. Run-scoped; never persisted.
+            if (decision.trustRun) trustRun = true;
             if (
               decision.remember &&
               fnName === SHELL_TOOL &&

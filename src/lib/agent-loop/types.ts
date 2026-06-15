@@ -74,6 +74,16 @@ export interface ConfirmDecision {
   approve: boolean;
   remember?: boolean;
   /**
+   * Per-run "trust this task" (item 5). When the user ticks "Allow all
+   * remaining actions for this task" at a confirmation modal and approves, the
+   * runner auto-approves this run's REMAINING allowlisted, normal-risk tool
+   * calls without re-prompting — killing confirm-fatigue on a multi-step task.
+   * It is RUN-SCOPED only (never persisted across runs) and NEVER covers
+   * irreversible tools (delete_path / kill_process / agent_undo) or non-normal
+   * risk, which always re-confirm. Ignored unless `approve` is also true.
+   */
+  trustRun?: boolean;
+  /**
    * Optional reason tag — distinguishes an explicit user click from an
    * abort-driven synthetic deny or a deny-all default. Recorded in the
    * agent audit log so a reviewer can tell the difference between "the

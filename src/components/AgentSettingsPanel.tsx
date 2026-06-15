@@ -103,12 +103,21 @@ export function AgentSettingsPanel({
       <div className="agent-settings-row">
         <span className="agent-settings-label">Workspace:</span>
         <code className="agent-settings-value">
-          {workspaceRoot ?? "(full filesystem)"}
+          {workspaceRoot ?? "(home folder — default)"}
         </code>
         <button className="agent-settings-btn" onClick={onChooseWorkspace}>
           Set…
         </button>
       </div>
+      {!workspaceRoot && (
+        <div className="agent-settings-row">
+          <span className="agent-settings-hint">
+            No workspace set: the agent is confined to your home folder
+            (system and credential paths like ~/.ssh and ~/.aws are always
+            blocked). Set a workspace to narrow it to a single project.
+          </span>
+        </div>
+      )}
       <ErrorBar
         message={workspaceErr}
         onDismiss={onDismissWorkspaceErr ?? (() => undefined)}

@@ -22,6 +22,7 @@ import { applyContextBudget } from "../lib/agent-loop/context-manager";
 import type {
   AgentBackend,
   AgentMetrics,
+  AgentRunOptions,
   AgentStatus,
   ConfirmDecision,
 } from "../lib/agent-loop";
@@ -664,7 +665,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
               agentLoop.setMaxConcurrentSubagents(cap);
             }
           }
-          const finalText = await runAgentLoop({
+          const runOptions: AgentRunOptions = {
             model: status.model,
             messages: historyForApi,
             conversationId: conv.id,
@@ -742,7 +743,59 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             },
             requestConfirmation,
             signal: ctrl.signal,
-          });
+          };
+          // Item 4: cold-model stall self-heal. A brand-new user's FIRST send
+          // against a not-yet-loaded model often stalls during the cold load —
+          // the runner's idle watchdog throws an AbortError (WKWebView masks the
+          // reason) even though the USER never pressed Stop. Instead of
+          // dead-ending on the cryptic stall error, auto-retry ONCE: show a
+          // "warming up the model…" inline state, then re-run. The second
+          // attempt usually succeeds because the model has finished loading by
+          // then. Bounded to a single auto-retry so a genuinely-dead backend
+          // still surfaces the error rather than looping. A user Stop
+          // (ctrl.signal.aborted) is never retried.
+          const isColdStartStall = (e: unknown): boolean => {
+            if (ctrl.signal.aborted) return false;
+            return (
+              (e instanceof Error && e.name === "AbortError") ||
+              /\baborted\b/i.test(String(e))
+            );
+          };
+          let finalText: string | null;
+          let coldRetryUsed = false;
+          for (;;) {
+            try {
+              finalText = await runAgentLoop(runOptions);
+              break;
+            } catch (runErr) {
+              if (coldRetryUsed || !isColdStartStall(runErr)) throw runErr;
+              coldRetryUsed = true;
+              // Surface a transient "warming up" state instead of the error,
+              // discard any half-streamed text from the stalled attempt, then
+              // loop once more.
+              agentAcc = "";
+              if (accRaf) {
+                cancelAnimationFrame(accRaf);
+                accRaf = 0;
+              }
+              if (isStreamConvActive()) {
+                setStreaming(undefined);
+                setAgentStatus("thinking");
+                setErr(
+                  "Warming up the model… (first response can take a moment on a cold start) — retrying automatically.",
+                );
+              }
+              logDiag({
+                level: "info",
+                source: "agent-loop",
+                message:
+                  "cold-start stall detected — auto-retrying the agent run once",
+              });
+            }
+          }
+          // The warming-up notice (if shown) is transient — clear it once the
+          // retry produces a result so it doesn't linger as a stale banner.
+          if (coldRetryUsed && isStreamConvActive()) setErr(null);
           // Flush any pending rAF snapshot so the final state lands before we
           // persist the assistant turn below.
           if (rafHandle) {

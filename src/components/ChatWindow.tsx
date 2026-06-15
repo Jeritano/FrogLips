@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Zap, Clock, ShieldCheck, Shuffle } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import type { ConfirmDecision } from "../lib/agent-loop";
+import { summarizeToolCall } from "../lib/agent-loop/dispatch";
+import { buildConfirmDiff } from "../lib/agent-loop/diff";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
@@ -91,6 +93,78 @@ const StreamingMessageList = memo(function StreamingMessageList({
   return <MessageList {...listProps} streaming={streaming} />;
 });
 
+/**
+ * Render a unified-diff string with minimal +/− line coloring so the user can
+ * scan a write/edit at a glance instead of reading raw JSON (item 1). Plain
+ * presentational; the colors are inline so no CSS ownership is needed.
+ */
+const ConfirmDiff = memo(function ConfirmDiff({ diff }: { diff: string }) {
+  return (
+    <pre
+      className="agent-confirm-args"
+      data-testid="agent-confirm-diff"
+      style={{ whiteSpace: "pre", overflowX: "auto", wordBreak: "normal" }}
+    >
+      {diff.split("\n").map((line, i) => {
+        const color =
+          line.startsWith("+") && !line.startsWith("+++")
+            ? "var(--success-fg, #4ade80)"
+            : line.startsWith("-") && !line.startsWith("---")
+              ? "var(--danger-fg, #fca5a5)"
+              : line.startsWith("@@")
+                ? "var(--text-muted)"
+                : undefined;
+        return (
+          <div key={i} style={color ? { color } : undefined}>
+            {line || " "}
+          </div>
+        );
+      })}
+    </pre>
+  );
+});
+
+/**
+ * Body of the tool-confirmation modal: a one-line plain-English action summary
+ * (item 2), a readable unified DIFF for write/edit tools (item 1), and the raw
+ * JSON args tucked into a collapsible `<details>` so the full payload is still
+ * available without dominating the modal.
+ */
+const ConfirmBody = memo(function ConfirmBody({
+  toolName,
+  args,
+}: {
+  toolName: string;
+  args: Record<string, unknown>;
+}) {
+  const summary = summarizeToolCall(toolName, args);
+  const diff = buildConfirmDiff(toolName, args);
+  return (
+    <>
+      <div className="agent-confirm-summary" data-testid="agent-confirm-summary">
+        {summary}
+      </div>
+      {diff != null && <ConfirmDiff diff={diff} />}
+      <details className="agent-confirm-raw">
+        <summary
+          data-testid="agent-confirm-raw-toggle"
+          style={{
+            cursor: "pointer",
+            fontSize: 12,
+            color: "var(--text-muted)",
+            marginBottom: 6,
+          }}
+        >
+          Raw arguments
+        </summary>
+        <pre className="agent-confirm-args" data-testid="agent-confirm-args">
+          {JSON.stringify(args, null, 2)}
+        </pre>
+      </details>
+    </>
+  );
+});
+
 export function ChatWindow({
   status,
   conversation,
@@ -139,6 +213,10 @@ export function ChatWindow({
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [rememberPrefix, setRememberPrefix] = useState(false);
   const [destructiveAck, setDestructiveAck] = useState(false);
+  // Item 5: "Allow all remaining actions for this task" — per-run trust ticked
+  // at a confirmation modal. Reset at each new confirmation request; the runner
+  // keeps the armed state for the rest of the run once it's sent.
+  const [trustRun, setTrustRun] = useState(false);
   const [showToolHistory, setShowToolHistory] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
@@ -275,6 +353,7 @@ export function ChatWindow({
     ): Promise<ConfirmDecision> => {
       setRememberPrefix(false);
       setDestructiveAck(false);
+      setTrustRun(false);
       return new Promise((resolve) => {
         confirmResolveRef.current = resolve;
         setConfirmState({ toolName, args, risk });
@@ -361,10 +440,19 @@ export function ChatWindow({
       return;
     }
     const remember = approved && rememberPrefix;
+    // Item 5: only arm per-run trust on an APPROVE. A destructive call never
+    // arms it (the trust checkbox is hidden for non-normal risk below), so this
+    // can only carry through for a normal-risk approval.
+    const trust = approved && trustRun;
     setConfirmState(null);
     setRememberPrefix(false);
     setDestructiveAck(false);
-    confirmResolveRef.current?.({ approve: approved, remember });
+    setTrustRun(false);
+    confirmResolveRef.current?.({
+      approve: approved,
+      remember,
+      trustRun: trust,
+    });
     confirmResolveRef.current = null;
   }
 
@@ -382,6 +470,7 @@ export function ChatWindow({
     setConfirmState(null);
     setRememberPrefix(false);
     setDestructiveAck(false);
+    setTrustRun(false);
     abort();
   });
 
@@ -549,6 +638,7 @@ export function ChatWindow({
     onEditUser,
     submitEdit,
     onForkMsg,
+    retryLast,
   } = useMessageActions({
     messages,
     conversation,
@@ -602,7 +692,24 @@ export function ChatWindow({
             {recalled.length === 1 ? "y" : "ies"} for this turn
           </div>
         )}
-        <ErrorBar message={err} onDismiss={() => setErr(null)} />
+        <ErrorBar
+          message={err}
+          onDismiss={() => setErr(null)}
+          // Item 3: a send/stream failure surfaces a one-click Retry that
+          // re-runs the last user turn. Gated on the error copy useChatSend
+          // sets for recoverable send failures ("…send again to retry"), so
+          // non-retryable errors (Start a model first / failed to save) don't
+          // grow a misleading button. Disabled while a run is in flight.
+          onRetry={
+            err && /retry/i.test(err) && !isWorking
+              ? () => {
+                  setErr(null);
+                  void retryLast();
+                }
+              : undefined
+          }
+          retryLabel="Retry"
+        />
 
         <div className="chat-routing-bar">
           <button
@@ -1050,9 +1157,10 @@ export function ChatWindow({
                 </div>
               );
             })()}
-          <pre className="agent-confirm-args" data-testid="agent-confirm-args">
-            {JSON.stringify(confirmState.args, null, 2)}
-          </pre>
+          <ConfirmBody
+            toolName={confirmState.toolName}
+            args={confirmState.args}
+          />
           {confirmState.toolName === "run_shell" &&
             confirmState.risk === "normal" &&
             (() => {
@@ -1070,6 +1178,25 @@ export function ChatWindow({
                 </label>
               );
             })()}
+          {/* Item 5: per-run "trust this task". Shown only for normal-risk
+              calls — destructive / irreversible tools always re-confirm and a
+              trust tick must never imply otherwise. Auto-approves this run's
+              remaining normal-risk, non-irreversible tool calls. Does NOT
+              persist past this run. */}
+          {confirmState.risk === "normal" && (
+            <label
+              className="agent-confirm-remember"
+              data-testid="agent-confirm-trust-run"
+            >
+              <input
+                type="checkbox"
+                checked={trustRun}
+                onChange={(e) => setTrustRun(e.target.checked)}
+              />
+              Allow all remaining actions for this task (this run only;
+              irreversible actions still ask)
+            </label>
+          )}
         </ConfirmDialog>
       )}
 
