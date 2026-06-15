@@ -45,7 +45,10 @@ const KB = 1024;
 //   measured 2026-06-14 (raw bytes):
 //     index.html (main App)    ~199 KB  → cap 260 KB
 //     quick.html (Quick Prompt)~198 KB  → cap 240 KB   ← must stay chat/markdown-free
-//     detached.html (1 convo)  ~793 KB  → cap 900 KB   (legitimately loads chat+markdown+katex)
+//     detached.html (1 convo)  ~914 KB  → cap 940 KB   (legitimately loads chat+markdown+katex;
+//        +~14 KB in v0.14.4 from new MessageList chat features it renders on first paint:
+//        reasoning "Thinking" disclosure, progressive-streaming prefix render, jump-to-latest
+//        pill, update_plan checklist, code-block download/soft-wrap toolbar)
 //
 // cssMaxBytes — render-blocking stylesheet weight (every `<link rel="stylesheet">`
 // the HTML emits). Previously the gate was JS-only and blind to CSS, so the full
@@ -58,7 +61,7 @@ const KB = 1024;
 const WINDOW_BUDGETS = [
   { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 160 * KB },
   { html: "quick.html", label: "Quick Prompt popover", maxBytes: 240 * KB, cssMaxBytes: 170 * KB },
-  { html: "detached.html", label: "detached conversation", maxBytes: 900 * KB, cssMaxBytes: 210 * KB },
+  { html: "detached.html", label: "detached conversation", maxBytes: 940 * KB, cssMaxBytes: 210 * KB },
 ];
 
 // Boot-graph sanity floor: every window must boot at least its entry script.

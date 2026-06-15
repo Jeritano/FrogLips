@@ -4,6 +4,84 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.4] — 2026-06-15
+
+Improvement-roadmap remediation (3 waves, multi-agent verify-then-fix).
+
+### First-run & onboarding
+
+- **Fixed a first-run ship-blocker on the headline native backend.** The setup
+  wizard's native-backend download called a CLI-only HuggingFace pull
+  (`pull_hf_model` shells to `hf`/`huggingface-cli`), which a zero-install Mac
+  doesn't have — so the recommended "install nothing" path hard-failed on step
+  2. It now downloads + loads in-process via `nativeLoadModel`, and the native
+  starter is `Qwen/Qwen2.5-1.5B-Instruct` (a checkpoint the mistralrs/candle
+  loader can actually load) instead of an MLX-format quant that risked a load
+  panic.
+- Wizard leads with the zero-install native backend ("Start here — no install"),
+  sets honest cold-load expectations (first load downloads + warms the model),
+  shows an in-wizard hardware-fit warning, and offers an "I already have a model
+  → chat" fast path.
+
+### Chat
+
+- **Reasoning models** (DeepSeek-R1 / Qwen3 / gpt-oss): chain-of-thought now
+  renders in a collapsible "Thinking" disclosure above the answer instead of
+  being dropped or dumped inline.
+- **Progressive markdown while streaming** — the completed portion of a reply
+  renders as formatted markdown (code blocks highlight live) as it streams; only
+  the in-flight tail stays plain.
+- Jump-to-latest pill when you've scrolled up mid-stream; code blocks gain
+  Download + soft-wrap buttons; `update_plan` renders as a live pinned checklist.
+
+### Agent
+
+- Tool-confirmation modal now shows a **real unified diff** for file writes/edits
+  and a **plain-English action summary** for every tool, with raw args demoted to
+  a collapsible block.
+- **"Trust this task"** per-run approval mode auto-approves the run's remaining
+  normal-risk, allowlisted tools (irreversible tools always re-confirm; never
+  persists across runs).
+- One-click **Retry** on recoverable send failures; cold-model stalls
+  **self-retry once** ("Warming up the model…") before erroring.
+- The non-progress guard is now a real **circuit breaker** — a wedged run stops
+  with a clear message instead of looping to the iteration cap (and burning
+  cloud credits).
+- Clarified that the agent's default file reach is the home folder (it always
+  was — the UI mislabeled it "full filesystem").
+
+### Models, RAG, Flows
+
+- Capability badges (context / vision / tool-fitness / RAM headroom) in the model
+  picker; MLX speculative-decode (draft model) and max-tokens exposed in Settings.
+- Agent system prompt now lists available knowledge corpora (the search tool was
+  uncallable without exact names); structure-aware chunking for new ingests; RAG
+  search hits are click-to-open.
+- Workflows **Run History** panel over persisted runs; scheduled-run completion
+  notifications + an "app must be open" warning; per-card "Test this card" dry-run.
+
+### Updates, reliability, a11y, perf
+
+- **Auto-update is on by default** again (the gate that silently disabled it for
+  every install is fixed) with a Settings toggle; failed checks are now surfaced
+  instead of reported as "up to date".
+- DB recovery/unavailable startup banner; health pill polls so it clears on
+  recovery; "Open log folder" in Diagnostics; the diagnostics export is now a
+  real `.zip` (secrets redacted); agent tool-failure rate feeds the health
+  registry.
+- WCAG-AA text contrast; ARIA names on Send/Stop and the command palette;
+  `prefers-reduced-transparency` fallback; boot skeleton (no white flash);
+  top-level error boundary persists to `diag.log`.
+- Optimized `[profile.release]` (LTO + single codegen-unit + strip; panic=unwind
+  kept so tool panics stay recoverable); `minimumSystemVersion` 13.0; a release
+  preflight that fails on three-file version drift.
+
+### Notes
+
+Deferred big bets (tracked, not in this release): hybrid keyword+vector RAG with
+re-chunk migration, resume-an-interrupted-run from checkpoint, global UI text
+scaling, daemon-less embeddings, model-catalog browser, side-by-side compare.
+
 ## [0.14.3] — 2026-06-15
 
 ### Fixed
