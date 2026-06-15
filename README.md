@@ -68,6 +68,7 @@ See [User Guide](docs/USER_GUIDE.md) for full walkthrough.
 
 ### Runtime (end user)
 - Apple Silicon Mac (M1+)
+- macOS 13 (Ventura) or later
 - **Zero install.** Froglips's native backend loads models directly via embedded mistralrs + Metal kernels. HuggingFace model weights download on demand into `~/.cache/huggingface/hub`.
 
 ### Build (developer)

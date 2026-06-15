@@ -404,7 +404,9 @@ export interface AppSettings {
   ollama_keep_alive?: string | null;
   /** Optional MLX speculative-decoding draft model (same tokenizer family). */
   mlx_draft_model?: string | null;
-  /** Opt-in automatic update checks (default off — see useUpdateCheck). */
+  /** Automatic background update checks. Default ON: absent/`null` (legacy
+   *  installs) and `true` both enable it; only an explicit `false` opts out
+   *  (the Settings → General toggle). See useUpdateCheck. */
   auto_update_check?: boolean | null;
   /** Backend liveness probe (item 5). When enabled (default true), the
    *  restart-watcher checks a ready backend still answers a lightweight HTTP

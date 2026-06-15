@@ -241,10 +241,24 @@ export const api = {
   // or an empty string when no crashes have been recorded.
   readCrashLog: () => invoke<string>("read_crash_log"),
 
+  // Reveal the log/data directory (`~/.local-llm-app`, home of app.log /
+  // crash.log / diag.log / the DB) in Finder. Backend-driven LaunchServices
+  // open — no path crosses from the caller.
+  revealLogDir: () => invoke<void>("reveal_log_dir"),
+
   // Subsystem health/degradation registry snapshot. Observational only — the
   // UI renders a "Degraded" pill from any non-`ok` entry and opens the
   // Diagnostics panel. Empty array = nothing degraded.
   healthSnapshot: () => invoke<HealthSubsystem[]>("health_snapshot"),
+
+  // DB recovery / availability notices for the startup banner. `dbRecoveryNotice`
+  // returns the quarantine path of a corrupt DB found + moved aside on boot (a
+  // fresh DB was recreated in its place); `dbUnavailableNotice` returns the
+  // pool-build failure string (disk full, permission denied, …) so the UI can
+  // surface the cause instead of a cascade of generic IPC errors. Both `null`
+  // when the DB is healthy.
+  dbRecoveryNotice: () => invoke<string | null>("db_recovery_notice"),
+  dbUnavailableNotice: () => invoke<string | null>("db_unavailable_notice"),
 
   // Data backup / export / import. `backupDatabase` writes a single-file copy
   // of the SQLite DB; `exportData` serialises conversations + messages +

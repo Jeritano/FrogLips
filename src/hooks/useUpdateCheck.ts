@@ -19,15 +19,17 @@ export function useUpdateCheck(): UpdateInfo | null {
   useEffect(() => {
     let alive = true;
     const run = async () => {
-      // 2026-06-11: auto-check is OPT-IN (settings.auto_update_check) while
-      // we investigate repeated /Applications bundle corruption+deletion
-      // that correlates exactly with this check's 90s post-launch window on
-      // freshly-installed builds. Manual "Check for updates" in Settings is
-      // unaffected. Re-enable by default once the updater is exonerated.
+      // Auto-check is ON BY DEFAULT (settings.auto_update_check). It was briefly
+      // gated OFF in 2026-06 during the "vanishing app" investigation, but the
+      // real cause was a release-script `ln -sf` Desktop alias that broke the
+      // codesign seal (since fixed) — never the updater. Default-on means an
+      // absent/`null` field (legacy installs) and an explicit `true` both enable
+      // it; only an explicit `false` (the Settings toggle) opts out. Manual
+      // "Check for updates" in Settings is unaffected either way.
       try {
         const { api } = await import("../lib/tauri-api");
         const settings = await api.settingsGet();
-        if (settings.auto_update_check !== true) return;
+        if (settings.auto_update_check === false) return;
       } catch {
         return; // can't read settings — stay safe, skip auto-check
       }
@@ -38,8 +40,16 @@ export function useUpdateCheck(): UpdateInfo | null {
       } catch {
         /* localStorage unavailable — just check anyway */
       }
-      const u = await checkForUpdate();
-      if (alive && u) setUpdate(u);
+      // checkForUpdate() now THROWS on a failed check (offline / endpoint
+      // unreachable) so the manual button can surface it. The background poll
+      // is best-effort: diagnostics already logged it inside checkForUpdate, so
+      // swallow here and try again next interval.
+      try {
+        const u = await checkForUpdate();
+        if (alive && u) setUpdate(u);
+      } catch {
+        /* check failed — already logged to diagnostics; stay silent */
+      }
     };
     const t = setTimeout(() => void run(), INITIAL_DELAY_MS);
     const iv = setInterval(() => void run(), POLL_MS);

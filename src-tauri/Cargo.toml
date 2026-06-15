@@ -120,3 +120,17 @@ default = []
 native-inference = []
 native-mistralrs = ["native-inference", "dep:mistralrs-core", "dep:indexmap", "dep:either"]
 browser-automation = ["dep:chromiumoxide", "dep:futures-util"]
+
+# Optimized release profile for the shipped desktop bundle. opt-level=3 (not
+# "z") — this is a latency-sensitive GUI + in-process inference path, so we
+# prefer speed over the marginal size win. lto + single codegen-unit maximize
+# cross-crate inlining; strip drops debug symbols from the binary.
+# NOTE: panic = "unwind" (the default) is kept deliberately — the agent runs
+# arbitrary tool/shell/code paths and a panic in a tokio task must stay
+# isolated/recoverable (surface as an error) rather than aborting the whole
+# process. The size win from panic=abort is not worth that regression.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

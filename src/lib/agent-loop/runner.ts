@@ -793,6 +793,26 @@ export async function runAgentLoop(
   let nonProgressTurns = 0;
   const MAX_NONPROGRESS_TURNS = 4;
   let stopAndReportHintPending = false;
+  // Circuit breaker (credit-spend guard): the stop-and-report hint above only
+  // *asks* the model to stop and report — a model wedged on a permission wall or
+  // a broken tool can ignore it and keep issuing zero-progress turns all the way
+  // to MAX_ITERATIONS (up to MAX_MAX_ITERATIONS=400 billed turns on a cloud
+  // route). That directly burns credits on an unattended run. So: count how many
+  // times the hint has fired, and once it has fired this many times AND the run
+  // is STILL making no progress, HARD-STOP with a final assistant message
+  // instead of looping to the cap. The first firing is the polite nudge; the
+  // threshold-th is the breaker.
+  const MAX_STOP_AND_REPORT_HINTS = 2;
+  let stopAndReportHintsFired = 0;
+  // Human-readable description of what the run was stuck on, for the breaker's
+  // final message. Set whenever a stop-and-report condition trips.
+  let stuckReason = "repeated tool failures";
+  // Once the stop-and-report hint has fired, the breaker is armed: the very next
+  // iteration that ALSO makes no progress (a repeated/duplicate-call turn caught
+  // by the dedupe guard, a narration-only turn, or another zero-success tool
+  // turn) hard-stops instead of looping on toward MAX_ITERATIONS. Disarmed the
+  // moment a turn makes real progress.
+  let breakerArmed = false;
   // Per-run cache for read-only tool results. Keyed by
   // `${name}::${stableArgsHash}`. Invalidated whenever any mutating tool
   // (anything NOT in READ_ONLY_TOOLS from dispatch.ts) succeeds — at that
@@ -862,6 +882,29 @@ export async function runAgentLoop(
     onCheckpoint(checkpointTurnsFrom(msgs));
     checkpointedTurns = turnCount;
     lastCheckpointAt = performance.now();
+  };
+
+  // Circuit breaker terminus: push a single final assistant message explaining
+  // the run was halted for lack of progress, fan it out, mark the run done, and
+  // signal the loop to stop. Returning here lands in the shared `finally`, so the
+  // checkpoint flush + metrics recording (the existing abort/cleanup semantics)
+  // still run exactly once. Returns `null` so callers see the same shape as an
+  // aborted / turn-limit exit (no successful final-text payload).
+  const fireCircuitBreaker = (): null => {
+    msgs.push({
+      _tmpKey: makeTmpKey(),
+      conversation_id: opts.conversationId,
+      role: "assistant",
+      content:
+        `[Stopped: no progress after ${stopAndReportHintsFired} attempts ` +
+        `(was stuck on ${stuckReason}). The run was halted to avoid spending ` +
+        `more on a loop that wasn't advancing. Its work so far is saved — ` +
+        `review the errors above, then reply "continue" to resume or adjust ` +
+        `the request.]`,
+    });
+    onUpdate([...msgs]);
+    onStatusChange("done");
+    return null;
   };
 
   onStatusChange("thinking");
@@ -1193,6 +1236,16 @@ export async function runAgentLoop(
         onUpdate([...msgs]);
         // Record the dup turn too so an oscillation keeps matching history.
         pushTurnSigs(sigs);
+        // Breaker: a duplicate turn is zero-progress by definition. If the
+        // stop-and-report hint has already fired, the model is now wedged
+        // re-issuing the same rejected call — hard-stop rather than burning the
+        // rest of the budget on dedupe `continue`s. (This branch skips the
+        // non-progress guard below, so it must check the breaker itself.)
+        if (breakerArmed) {
+          stopAndReportHintsFired++;
+          stuckReason = "repeating the same rejected tool call";
+          return fireCircuitBreaker();
+        }
         continue;
       }
       // Snapshot this turn's tool-call signatures for next iterations' compare.
@@ -1820,6 +1873,7 @@ export async function runAgentLoop(
           consecutiveToolErrors++;
           if (consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
             stopAndReportHintPending = true;
+            stuckReason = `${MAX_CONSECUTIVE_TOOL_ERRORS} consecutive tool failures`;
           }
         } else {
           consecutiveToolErrors = 0;
@@ -1851,9 +1905,13 @@ export async function runAgentLoop(
         nonProgressTurns++;
         if (nonProgressTurns >= MAX_NONPROGRESS_TURNS) {
           stopAndReportHintPending = true;
+          stuckReason = `${nonProgressTurns} turns with no successful tool execution`;
         }
       } else if (anyToolProgressThisTurn) {
         nonProgressTurns = 0;
+        // Real progress — disarm the breaker so a later, unrelated stall starts
+        // its own count from scratch instead of tripping on the first stumble.
+        breakerArmed = false;
       }
 
       // Surface dropped parallel tool_calls (cloud-route truncation) as a
@@ -1880,23 +1938,43 @@ export async function runAgentLoop(
         // to 0 each turn.
       }
 
-      // After a run of consecutive tool failures, inject a system hint so the
-      // model stops retrying and reports the blocker to the user. This is an
-      // additional guard layered on top of the dedupe / stall / MAX_ITERATIONS
-      // logic — the dedupe window only catches IDENTICAL repeated calls.
+      // After a run of consecutive tool failures (or zero-progress turns), inject
+      // a system hint so the model stops retrying and reports the blocker to the
+      // user. This is an additional guard layered on top of the dedupe / stall /
+      // MAX_ITERATIONS logic — the dedupe window only catches IDENTICAL repeated
+      // calls.
+      //
+      // Circuit breaker: the hint is only a request. A wedged model can ignore it
+      // and keep spinning, billing every turn up to MAX_ITERATIONS. So once the
+      // hint has fired MAX_STOP_AND_REPORT_HINTS times and the run is STILL
+      // tripping the no-progress condition, HARD-STOP here with a final assistant
+      // message instead of re-nudging to the cap. The shared `finally` below
+      // still flushes the checkpoint and records metrics, so abort/cleanup
+      // semantics are unchanged.
       let stopAndReportInjectedThisIter = false;
       if (stopAndReportHintPending) {
         stopAndReportHintPending = false;
         consecutiveToolErrors = 0;
+        stopAndReportHintsFired++;
+        // Breaker: the hint has now fired the threshold number of times and the
+        // run is STILL tripping the no-progress condition — stop billing turns.
+        if (stopAndReportHintsFired >= MAX_STOP_AND_REPORT_HINTS) {
+          return fireCircuitBreaker();
+        }
+        // First firing(s): inject the polite hint and arm the breaker so the next
+        // zero-progress iteration (including a dedupe / narration `continue` that
+        // never reaches this guard) hard-stops.
+        breakerArmed = true;
         stopAndReportInjectedThisIter = true;
         msgs.push({
           _tmpKey: makeTmpKey(),
           conversation_id: opts.conversationId,
           role: "system",
           content:
-            `[agent-loop] ${MAX_CONSECUTIVE_TOOL_ERRORS} tool calls in a row failed. ` +
+            `[agent-loop] Stuck: ${stuckReason}. ` +
             "Stop retrying tools. Report to the user what you were trying to do, " +
-            "what failed, and the error messages — then ask how to proceed.",
+            "what failed, and the error messages — then ask how to proceed. " +
+            "If you keep making no progress the run will be halted.",
         });
         onUpdate([...msgs]);
       }

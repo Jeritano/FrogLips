@@ -6,8 +6,14 @@ import { Check } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { recommendStarter } from "../lib/hardware-recommend";
-import { fmtGb } from "../lib/hardware-profile";
+import { classify, fmtGb, type Headroom } from "../lib/hardware-profile";
+import { HardwareWarningBanner } from "./HardwareWarningBanner";
 import { logDiag } from "../lib/diagnostics";
+
+// Bytes-per-GiB for synthesizing a `size_bytes` from a starter's approxGb so
+// the shared `classify()` (and thus HardwareWarningBanner) agrees with the
+// model picker's verdict.
+const GIB = 1024 * 1024 * 1024;
 
 /**
  * First-run setup wizard.
@@ -41,6 +47,12 @@ interface BackendProbe {
     | { kind: "url"; url: string }
     | { kind: "inline"; text: string }
     | null;
+  /**
+   * The recommended zero-install starting point. Renders a "Start here — no
+   * install" badge so a brand-new user reaches for the backend that needs no
+   * setup (native) before the ones that require pip/daemons.
+   */
+  lead?: boolean;
 }
 
 /** RAM bucket a starter is sized for — drives which group leads on this Mac. */
@@ -79,11 +91,20 @@ interface StarterModel {
 const STARTER_MODELS_BY_BACKEND: Record<BackendKey, StarterModel[]> = {
   native: [
     {
-      id: "mlx-community/Llama-3.2-3B-Instruct-4bit",
-      label: "Llama 3.2 3B (4-bit)",
-      size: "~2 GB",
-      approxGb: 2,
-      description: "Small, fast, general-purpose. Default starter pick.",
+      // SHIP-BLOCKER FIX (2026-06-15): the native backend is mistralrs +
+      // candle, which loads STANDARD HF transformers checkpoints
+      // (safetensors + config.json). An `mlx-community/*-4bit` id is
+      // MLX-format — candle can't load it and the loader may panic
+      // (`todo!()` on an unsupported quant). Use a small, ungated,
+      // standard-format instruct repo the loader actually handles. Qwen2.5
+      // 1.5B Instruct: ~3 GB fp16, no HF login required, Qwen2 arch is
+      // first-class in mistralrs. Downloads + warms IN-PROCESS via
+      // nativeLoadModel — no `hf` CLI needed (a zero-install Mac has none).
+      id: "Qwen/Qwen2.5-1.5B-Instruct",
+      label: "Qwen2.5 1.5B Instruct",
+      size: "~3 GB",
+      approxGb: 3,
+      description: "Small, fast, general-purpose. Runs fully in-app — no install.",
       pull: "hf",
       backend: "native",
       tier: "small",
@@ -256,6 +277,7 @@ export function SetupWizard({ onDone }: Props) {
       available: undefined,
       hint: "Ships with the app on Apple Silicon. No install needed.",
       installAction: null,
+      lead: true,
     },
     {
       key: "mlx",
@@ -486,7 +508,18 @@ export function SetupWizard({ onDone }: Props) {
     setDownloading(m);
     setDownloadErr(null);
     try {
-      if (m.pull === "ollama") {
+      if (m.backend === "native") {
+        // SHIP-BLOCKER FIX (2026-06-15): the native backend has NO external
+        // tooling. `pullHfModel` shells out to the `hf`/`huggingface-cli`
+        // binary, which a zero-install Mac does not have → the headline
+        // "install nothing" path hard-failed on step 2 with "no huggingface
+        // CLI found". `nativeLoadModel` downloads the weights IN-PROCESS via
+        // candle's hf-hub path AND warms the model — so this single call is
+        // both the download and the auto-start for native. Awaited (not
+        // fire-and-forget) so a real download/load failure surfaces inline
+        // instead of silently leaving the user on the manual Start path.
+        await api.nativeLoadModel(m.id);
+      } else if (m.pull === "ollama") {
         await api.pullOllamaModel(m.id);
       } else {
         await api.pullHfModel(m.id);
@@ -506,22 +539,21 @@ export function SetupWizard({ onDone }: Props) {
         });
       // Auto-start the model NOW (product review 2026-06-10, onboarding #1):
       // the wizard used to leave the server stopped, so the user's very
-      // first send hit "pick a model and press Start". Fire-and-forget —
-      // the server-status event stream updates the picker/header as it
-      // comes up, and a failure here just lands the user on the old manual
-      // Start path.
-      const startP =
-        m.backend === "native"
-          ? api.nativeLoadModel(m.id)
-          : api.startServer(m.id, m.backend);
-      void Promise.resolve(startP).catch((err) => {
-        logDiag({
-          level: "warn",
-          source: "setup-wizard",
-          message: `auto-start after wizard download failed for ${m.id} (${m.backend}) — user can press Start manually`,
-          detail: err,
+      // first send hit "pick a model and press Start". Native already loaded
+      // above (the load IS the warm), so only ollama/mlx need a start here.
+      // Fire-and-forget — the server-status event stream updates the
+      // picker/header as it comes up, and a failure here just lands the user
+      // on the old manual Start path.
+      if (m.backend !== "native") {
+        void Promise.resolve(api.startServer(m.id, m.backend)).catch((err) => {
+          logDiag({
+            level: "warn",
+            source: "setup-wizard",
+            message: `auto-start after wizard download failed for ${m.id} (${m.backend}) — user can press Start manually`,
+            detail: err,
+          });
         });
-      });
+      }
       setDownloaded(m);
     } catch (err) {
       setDownloadErr(String(err));
@@ -589,7 +621,17 @@ export function SetupWizard({ onDone }: Props) {
                 {probes.map((p) => (
                   <tr key={p.key} data-testid={`setup-wizard-probe-${p.key}`}>
                     <td>
-                      <div className="setup-wizard-backend-name">{p.label}</div>
+                      <div className="setup-wizard-backend-name">
+                        {p.label}
+                        {p.lead && (
+                          <span
+                            className="setup-wizard-lead-badge"
+                            data-testid={`setup-wizard-lead-${p.key}`}
+                          >
+                            Start here — no install
+                          </span>
+                        )}
+                      </div>
                       <div className="setup-wizard-backend-hint">{p.hint}</div>
                     </td>
                     <td>
@@ -684,6 +726,29 @@ export function SetupWizard({ onDone }: Props) {
               Choose one to download now. You can add more later from the model
               browser.
             </p>
+            <p
+              className="setup-wizard-pitch setup-wizard-coldload-note"
+              data-testid="setup-wizard-coldload-note"
+            >
+              The first load downloads the weights (a small starter is a few GB)
+              and warms the model — this can take a minute. Every load after
+              that is instant.
+            </p>
+
+            {/* Fast path (UI review): a user who already has a model on disk
+                shouldn't be forced through a download just to reach chat.
+                Surfaces only when we positively counted ≥1 installed model.
+                Uses the wizard's own finish handler so we never touch App. */}
+            {existingModelsCount > 0 && (
+              <button
+                className="setup-wizard-fastpath"
+                data-testid="setup-wizard-fastpath"
+                onClick={() => finish(null)}
+                title="You already have a model installed — skip straight to chat"
+              >
+                I already have a model → start chatting
+              </button>
+            )}
 
             {availableStarters().length === 0 && (
               <div
@@ -804,6 +869,20 @@ export function SetupWizard({ onDone }: Props) {
                       );
                     })}
                   </div>
+                  {/* Honest hardware-fit interrupt (UI review): the inline
+                      per-card badge covers comfortable/tight, but when the
+                      recommended starter would thrash or not fit at all, say
+                      so plainly via the same banner the model picker uses.
+                      Not a blocker — the user can still download. */}
+                  {ramGb != null &&
+                    recommended &&
+                    (() => {
+                      const hr: Headroom = classify(
+                        { size_bytes: recommended.approxGb * GIB },
+                        { total_ram_gb: ramGb },
+                      );
+                      return <HardwareWarningBanner headroom={hr} />;
+                    })()}
                 </>
               );
             })()}

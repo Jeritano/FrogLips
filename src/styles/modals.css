@@ -320,6 +320,16 @@
     background: var(--surface);
   }
 }
+/* a11y (2026-06-15): honor the OS "reduce transparency" setting — make the
+   frosted-glass Quick Prompt opaque and drop the blur (mirrors the
+   no-backdrop-filter fallback above). */
+@media (prefers-reduced-transparency: reduce) {
+  .quick-root {
+    background: var(--surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
 .quick-input-wrap {
   display: flex;
   gap: 6px;
@@ -1416,6 +1426,24 @@
   animation: ui-fade-in var(--dur-fast) var(--ease-out);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+}
+/* a11y (2026-06-15): drop the behind-modal blur when the OS requests reduced
+   transparency. The overlays keep their semi-opaque scrim tint (set on each
+   selector elsewhere), they just stop blurring the content behind them. */
+@media (prefers-reduced-transparency: reduce) {
+  .dashboard-overlay,
+  .mb-overlay,
+  .memories-overlay,
+  .setup-wizard-overlay,
+  .fork-tree-overlay,
+  .tool-history-overlay,
+  .cs-panel-overlay,
+  .cs-body-overlay,
+  .skills-panel-overlay,
+  .prompt-library-overlay {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 .dashboard-modal,
 .mb-panel,

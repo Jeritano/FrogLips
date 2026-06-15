@@ -114,6 +114,9 @@ export function SettingsModal({
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [keepAliveInit, setKeepAliveInit] = useState("30m");
   const [maxIterInit, setMaxIterInit] = useState("80");
+  // Auto-update is ON BY DEFAULT — only an explicit `false` opts out, so absent/
+  // null reads as checked. See useUpdateCheck for the matching gate semantics.
+  const [autoUpdate, setAutoUpdate] = useState(true);
   const getSettings = useSettingsGetter();
   const updateSettings = useUpdateSettings();
   useEffect(() => {
@@ -121,6 +124,7 @@ export function SettingsModal({
       .then((s) => {
         setKeepAliveInit(s.ollama_keep_alive ?? "30m");
         setMaxIterInit(String(s.agent_max_iterations ?? 80));
+        setAutoUpdate(s.auto_update_check !== false);
       })
       .catch(() => {});
   }, [getSettings]);
@@ -207,6 +211,28 @@ export function SettingsModal({
                   {updateMsg && (
                     <span className="settings-hint">{updateMsg}</span>
                   )}
+                </div>
+                <div className="settings-row">
+                  <span>Auto-update</span>
+                  <label>
+                    <input
+                      data-testid="settings-auto-update"
+                      type="checkbox"
+                      checked={autoUpdate}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setAutoUpdate(next);
+                        void updateSettings({
+                          auto_update_check: next,
+                        }).catch(() => {
+                          // Persist failed — revert the optimistic toggle so the
+                          // UI reflects the real (unchanged) setting.
+                          setAutoUpdate(!next);
+                        });
+                      }}
+                    />{" "}
+                    Check for updates automatically in the background
+                  </label>
                 </div>
                 <div className="settings-row">
                   <span>Setup</span>

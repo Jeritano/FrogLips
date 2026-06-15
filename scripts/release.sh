@@ -5,6 +5,25 @@ cd "$(dirname "$0")/.."
 VERSION=$(node -p "require('./package.json').version")
 echo "▶ Building Froglips v${VERSION}…"
 
+# ── Version lockstep preflight ──────────────────────────────────────────────
+# package.json, tauri.conf.json and src-tauri/Cargo.toml MUST all declare the
+# SAME version. A mismatch ships a bundle whose Info.plist / updater manifest /
+# Cargo metadata disagree (the stale-updater class of bug). Fail loudly here,
+# before the expensive build, rather than discovering it post-install.
+# (Git-tag agreement is checked by hand at publish time — this only enforces the
+# three in-tree files.)
+TAURI_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+CARGO_VERSION=$(grep -m1 '^version = ' src-tauri/Cargo.toml | sed -E 's/^version = "(.*)"/\1/')
+if [[ "$VERSION" != "$TAURI_VERSION" || "$VERSION" != "$CARGO_VERSION" ]]; then
+  echo "✗ Version mismatch — refusing to build:" >&2
+  echo "    package.json      = $VERSION" >&2
+  echo "    tauri.conf.json   = $TAURI_VERSION" >&2
+  echo "    src-tauri/Cargo.toml = $CARGO_VERSION" >&2
+  echo "  Bring all three into lockstep before releasing." >&2
+  exit 1
+fi
+echo "✓ Version lockstep OK (package.json = tauri.conf.json = Cargo.toml = $VERSION)"
+
 # Kill any running instance so DMG bundling + app bundle replace work.
 # NOTE: matches Contents/MacOS specifically — avoids killing bundle_dmg.sh,
 # which has "Froglips.app" in its argv and was getting clobbered before.

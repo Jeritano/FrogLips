@@ -893,7 +893,8 @@ export function ChatInput({
           onClick={toggleVoice}
           className={`mic-btn ${listening ? "listening" : ""}`}
           title={listening ? "Stop dictation" : "Start dictation"}
-          aria-label="Voice input"
+          aria-label={listening ? "Stop dictation" : "Start dictation"}
+          aria-pressed={listening}
         >
           <Mic size={16} />
         </button>
@@ -903,6 +904,7 @@ export function ChatInput({
             onClick={onAbort}
             className="send-btn stop"
             title="Stop"
+            aria-label="Stop generating"
           >
             <Square size={16} />
           </button>
@@ -913,6 +915,8 @@ export function ChatInput({
             disabled={disabled || (!text.trim() && images.length === 0)}
             className="send-btn"
             title="Send"
+            aria-label="Send message"
+            aria-keyshortcuts="Enter"
           >
             <ArrowUp size={16} />
           </button>

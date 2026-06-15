@@ -141,6 +141,13 @@ export function CommandPalette({
             className="cmdk-input"
             data-testid="command-palette-input"
             placeholder="Type a command or conversation title…"
+            role="combobox"
+            aria-expanded={results.length > 0}
+            aria-controls="cmdk-listbox"
+            aria-autocomplete="list"
+            aria-activedescendant={
+              results.length > 0 ? `cmdk-option-${sel}` : undefined
+            }
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -163,7 +170,13 @@ export function CommandPalette({
             }}
           />
         </div>
-        <div className="cmdk-list" ref={listRef}>
+        <div
+          className="cmdk-list"
+          ref={listRef}
+          id="cmdk-listbox"
+          role="listbox"
+          aria-label="Commands and conversations"
+        >
           {results.length === 0 && (
             <div className="cmdk-empty">No matches.</div>
           )}
@@ -172,6 +185,9 @@ export function CommandPalette({
               key={r.key}
               type="button"
               data-idx={i}
+              id={`cmdk-option-${i}`}
+              role="option"
+              aria-selected={i === sel}
               className={`cmdk-row${i === sel ? " selected" : ""}`}
               onMouseEnter={() => setSel(i)}
               onClick={() => runRow(i)}

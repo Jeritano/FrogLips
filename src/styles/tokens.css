@@ -9,8 +9,12 @@
   --border: #27272a;
   --border-subtle: #1a1a1d;
   --text: #fafafa;
-  --text-2: #71717a;
-  --text-3: #3f3f46;
+  /* a11y (2026-06-15): bumped for WCAG AA. --text-2 #71717a was ~3.9:1 on
+     surface (fails AA 4.5); #8a8a93 is ≥4.97:1 on every dark surface. --text-3
+     #3f3f46 was ~1.8:1; #6e6e75 clears the 3:1 large/non-essential floor
+     (≥3.36:1) on surface/surface-2/hover. */
+  --text-2: #8a8a93;
+  --text-3: #6e6e75;
   --text-muted: #a1a1aa;
   --accent: #6366f1;
   --accent-bg: rgba(99, 102, 241, 0.12);
@@ -159,7 +163,10 @@
   --border-subtle: #e4e4e7;
   --text: #18181b;
   --text-2: #3f3f46;
-  --text-3: #71717a;
+  /* a11y (2026-06-15): light --text-3 #71717a dipped to ~3.8:1 on surface-2;
+     #65656d lifts it to ≥4.55:1 there (and AA-clean on bg/surface) while
+     staying a notch lighter than --text-2. */
+  --text-3: #65656d;
   --text-muted: #52525b;
   --accent: #4f46e5;
   --accent-bg: rgba(79, 70, 229, 0.1);

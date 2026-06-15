@@ -138,6 +138,20 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     }
   }, []);
 
+  // Reveal the log/data folder (`~/.local-llm-app`) in Finder so a user filing
+  // a bug can attach app.log / crash.log / diag.log directly. Best-effort —
+  // surfaces any failure on the inline data-status line.
+  const handleRevealLogs = useCallback(async () => {
+    try {
+      await api.revealLogDir();
+    } catch (err) {
+      setDataStatus({
+        kind: "err",
+        text: `Open log folder failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     void refreshCrashLog();
@@ -511,6 +525,14 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
         <section className="dashboard-card diag-crash" data-testid="diag-crash">
           <div className="diag-crash-head">
             <h3>Crash log</h3>
+            <button
+              type="button"
+              data-testid="diag-reveal-logs"
+              onClick={() => void handleRevealLogs()}
+              title="Open the log folder (~/.local-llm-app) in Finder"
+            >
+              Open log folder
+            </button>
             <button
               type="button"
               data-testid="diag-crash-refresh"

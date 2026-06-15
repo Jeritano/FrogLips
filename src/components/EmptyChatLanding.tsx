@@ -109,6 +109,10 @@ export function EmptyChatLanding({
             </span>
           </button>
         </div>
+        <div className="empty-chat-coldload" data-testid="empty-chat-coldload">
+          The first load downloads the weights and warms the model — give it a
+          minute. Every load after that is instant.
+        </div>
         <div className="empty-chat-pointer">
           <strong>⌘K</strong> opens the command palette from anywhere.
         </div>

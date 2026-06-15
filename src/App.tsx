@@ -264,6 +264,16 @@ function App() {
   const [degradedHealth, setDegradedHealth] = useState<
     import("./lib/tauri-api").HealthSubsystem[]
   >([]);
+  // DB recovery / availability banner (item 1). `dbNotice` holds the worst-case
+  // startup DB condition surfaced from the Rust pool layer: an unavailable pool
+  // (disk full / permission denied) or a corrupt DB that was quarantined +
+  // recreated this run. Dismissible — once acknowledged it stays hidden for the
+  // session. Polled once on mount; these conditions are fixed at startup.
+  const [dbNotice, setDbNotice] = useState<{
+    kind: "unavailable" | "recovered";
+    detail: string;
+  } | null>(null);
+  const [dbNoticeDismissed, setDbNoticeDismissed] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   // RAM-pressure chip (inference wave D): macOS memorystatus level, polled
@@ -482,17 +492,55 @@ function App() {
   );
 
   // Initial health-registry poll on mount (degradations recorded during boot,
-  // before the listener above attached, are surfaced on first render).
+  // before the listener above attached, are surfaced on first render), plus a
+  // modest 5s timer poll so the pill CLEARS once a subsystem recovers. A
+  // recovery (state → ok) does not always ride an `app-diagnostics` event the
+  // way a degradation does, so the event-driven re-poll above alone could leave
+  // a stale "Degraded" pill up; this interval keeps it honest. Cleared on
+  // unmount.
   useEffect(() => {
     let cancelled = false;
-    api
-      .healthSnapshot()
-      .then((rows) => {
-        if (!cancelled) setDegradedHealth(rows.filter((r) => r.state !== "ok"));
-      })
-      .catch(() => {
-        /* observational — pill simply stays hidden */
-      });
+    const poll = () => {
+      api
+        .healthSnapshot()
+        .then((rows) => {
+          if (!cancelled)
+            setDegradedHealth(rows.filter((r) => r.state !== "ok"));
+        })
+        .catch(() => {
+          /* observational — leave the pill as-is on a transient IPC failure */
+        });
+    };
+    poll();
+    const id = window.setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  // DB recovery / availability notice (item 1): probe the Rust pool layer once
+  // on mount. An unavailable pool (disk full / permission denied at startup)
+  // takes precedence over a corrupt-DB recovery, since with no pool the app is
+  // largely non-functional and that's the more urgent message. Both conditions
+  // are fixed at startup, so a single poll is sufficient.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const unavailable = await api.dbUnavailableNotice();
+        if (cancelled) return;
+        if (unavailable) {
+          setDbNotice({ kind: "unavailable", detail: unavailable });
+          return;
+        }
+        const recovered = await api.dbRecoveryNotice();
+        if (cancelled) return;
+        if (recovered) setDbNotice({ kind: "recovered", detail: recovered });
+      } catch {
+        /* observational — no banner on a transient IPC failure */
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -819,6 +867,81 @@ function App() {
           on this element). titleBarStyle: Overlay strips the OS drag bar
           so we provide one explicitly. */}
       <div className="window-drag-strip" data-tauri-drag-region />
+      {/* DB recovery / availability banner (item 1). Dismissible startup notice
+          surfaced when the SQLite pool failed to build (disk full / permission
+          denied) or a corrupt DB was quarantined + recreated this run. Inline
+          styles (no CSS file in this wave's ownership) using existing theme
+          variables; spans the top of the window above the sidebar + main pane. */}
+      {dbNotice && !dbNoticeDismissed && (
+        <div
+          className="db-startup-banner"
+          role="alert"
+          data-testid="db-startup-banner"
+          data-kind={dbNotice.kind}
+          style={{
+            // Fixed overlay at the top so the banner never perturbs the locked
+            // grid layout (sidebar | main). Dismissible.
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            padding: "8px 12px",
+            background: "var(--warning-bg, rgba(217,168,108,0.14))",
+            borderBottom: "1px solid var(--warning, #d9a86c)",
+            backdropFilter: "blur(8px)",
+            color: "var(--text, inherit)",
+            fontSize: 13,
+            zIndex: 1000,
+          }}
+        >
+          <AlertTriangle
+            size={15}
+            aria-hidden="true"
+            style={{ flexShrink: 0, marginTop: 1, color: "var(--warning, #d9a86c)" }}
+          />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {dbNotice.kind === "unavailable" ? (
+              <>
+                <strong>Database unavailable.</strong> Froglips couldn't open its
+                local database, so history and memory are disabled this session.{" "}
+                <span style={{ opacity: 0.85, wordBreak: "break-word" }}>
+                  {dbNotice.detail}
+                </span>
+              </>
+            ) : (
+              <>
+                <strong>Database recovered.</strong> A corrupt database was found
+                on startup and moved aside; a fresh one was created. Your previous
+                data is preserved at{" "}
+                <span style={{ opacity: 0.85, wordBreak: "break-word" }}>
+                  {dbNotice.detail}
+                </span>
+                .
+              </>
+            )}
+          </div>
+          <button
+            type="button"
+            data-testid="db-startup-banner-dismiss"
+            aria-label="Dismiss database notice"
+            onClick={() => setDbNoticeDismissed(true)}
+            style={{
+              flexShrink: 0,
+              background: "transparent",
+              border: "none",
+              color: "inherit",
+              cursor: "pointer",
+              padding: 2,
+              opacity: 0.7,
+            }}
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
       <aside className="sidebar">
         <div className="sidebar-top" data-tauri-drag-region>
           <div className="topbar-menu-wrap">

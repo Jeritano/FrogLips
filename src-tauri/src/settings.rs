@@ -43,8 +43,13 @@ pub struct Settings {
     /// installed mlx_lm.server supports --draft-model, the spawn adds it:
     /// 1.5-2.5x decode on big models, output distribution unchanged.
     pub mlx_draft_model: Option<String>,
-    /// Opt-in automatic update checks (default off pending updater
-    /// investigation 2026-06-11; manual check in Settings always works).
+    /// Automatic background update checks. Default ON: `None` (legacy files /
+    /// fresh installs) and `Some(true)` both enable it; only `Some(false)`
+    /// (the Settings → General toggle) opts out. The brief 2026-06 default-off
+    /// was for the "vanishing app" probe, whose real cause was a release-script
+    /// `ln -sf` Desktop alias breaking the codesign seal (fixed) — not the
+    /// updater. The frontend gate (useUpdateCheck) treats absent as enabled, so
+    /// keeping this `Option<bool>` needs no migration. Manual check always works.
     pub auto_update_check: Option<bool>,
     /// Backend liveness probe (item 5, 2026-06-13). When enabled (DEFAULT true),
     /// the restart-watcher additionally checks that a ready backend still
@@ -985,16 +990,18 @@ mod tests {
             assert_eq!(p.archive_age_days, 365);
 
             // Explicit config survives save → load.
-            let mut s2 = Settings::default();
-            s2.maintenance = Some(MaintenanceConfig {
-                enabled: true,
-                archive_messages: true,
-                archive_age_days: 30,
-                active_window_secs: 3600,
-                hard_delete_archived: false,
-                auto_vacuum: false,
-                idle_interval_hours: 12,
-            });
+            let s2 = Settings {
+                maintenance: Some(MaintenanceConfig {
+                    enabled: true,
+                    archive_messages: true,
+                    archive_age_days: 30,
+                    active_window_secs: 3600,
+                    hard_delete_archived: false,
+                    auto_vacuum: false,
+                    idle_interval_hours: 12,
+                }),
+                ..Default::default()
+            };
             save(&s2).expect("save");
             let back = load().maintenance.expect("roundtrip");
             assert_eq!(back.archive_age_days, 30);

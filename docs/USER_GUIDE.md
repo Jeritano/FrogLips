@@ -31,14 +31,14 @@ This kills any running Froglips, builds, signs, and installs to `/Applications` 
 
 **Install nothing.** Froglips ships its own native backend — an in-process engine (`mistralrs` + candle + Metal kernels) that runs models directly on your hardware. There is no daemon to install, no Python to set up.
 
-Pick "⚡ Load a HuggingFace model natively…" from the model dropdown and enter a repo id (e.g. `NousResearch/Llama-3.2-1B`). First load downloads weights from HuggingFace into `~/.cache/huggingface/hub`; subsequent loads are instant.
+Pick "⚡ Load a HuggingFace model natively…" from the model dropdown and enter a repo id (e.g. `Qwen/Qwen2.5-1.5B-Instruct` — small, instruction-tuned, no HF login required). The native engine loads **standard** HuggingFace transformers checkpoints (safetensors + `config.json`); MLX-format repos (e.g. `mlx-community/*-4bit`) are not loadable by this backend — use the MLX backend for those. The first load downloads weights from HuggingFace into `~/.cache/huggingface/hub` and warms the model — give it a minute; every load after that is instant.
 
 ## 3. First chat
 
 1. Click **+ New chat** in the sidebar.
 2. Click the model dropdown → **⚡ Load a HuggingFace model natively…**
-3. Enter a small repo id, e.g. `NousResearch/Llama-3.2-1B`. Click **Start**.
-4. First load downloads weights (~2 GB for 1B-class models) — a progress indicator tracks the download and model load. After that, type and hit Enter.
+3. Enter a small, instruction-tuned repo id, e.g. `Qwen/Qwen2.5-1.5B-Instruct`. Click **Start**.
+4. The first load downloads the weights (a few GB for 1–2B-class models) and warms the model — a progress indicator tracks the download and load, and it can take a minute. After that, type and hit Enter; every later load is instant.
 
 ## 4. The Model Library
 
@@ -468,7 +468,7 @@ Updates are minisign-signed; the public key is embedded in the app. A tampered b
 Load a model first: model dropdown → **⚡ Load a HuggingFace model natively…** and enter a repo id. Until a model has finished loading, the picker has nothing to show.
 
 **Model fails to load**
-First loads download weights from HuggingFace into `~/.cache/huggingface/hub`; a slow or interrupted download is the usual cause. Retry the load — completed shards are reused. Very large models may exceed available memory; try a smaller repo.
+First loads download weights from HuggingFace into `~/.cache/huggingface/hub`; a slow or interrupted download is the usual cause. Retry the load — completed shards are reused. Very large models may exceed available memory; try a smaller repo. Note: the native backend loads **standard** transformers checkpoints only — MLX-format repos (`mlx-community/*-4bit`, etc.) won't load natively; pick a plain safetensors repo (e.g. `Qwen/Qwen2.5-1.5B-Instruct`) or use the MLX backend for MLX models.
 
 **"Workspace root is outside" errors**
 Run an agent tool whose path falls outside the configured workspace. Either widen the workspace (settings ⚙) or move the file in.

@@ -117,6 +117,20 @@ pub fn read_crash_log() -> String {
     crate::crash_log::read_log()
 }
 
+/// Reveal the log/data directory (`~/.local-llm-app`, home of `app.log`,
+/// `crash.log`, `diag.log` and the DB) in Finder. Uses the opener plugin's
+/// LaunchServices path (no shell), same trust boundary as `open_external`. The
+/// directory is derived from `logging::log_path()` — never from caller input —
+/// so there's no path-injection surface. Returns an error if the log dir can't
+/// be resolved (no home directory).
+#[tauri::command]
+pub fn reveal_log_dir(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = crate::logging::log_path()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .ok_or("log directory unavailable")?;
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(map_err)
+}
+
 /// Append a diagnostic line to `~/.local-llm-app/diag.log`. Best-effort —
 /// errors are swallowed and `()` is returned regardless. Each call timestamps
 /// the entry and appends a newline.
