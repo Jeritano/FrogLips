@@ -433,6 +433,88 @@ fn run_reclaim_phase() -> PhaseResult {
     }
 }
 
+/* ── Phase 4: auto-refresh stale RAG corpora ── */
+
+/// Outcome of a stale-corpus refresh sweep, for diagnostics + a future UI.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RefreshReport {
+    /// Corpora whose source folder had drifted and were re-ingested.
+    pub refreshed: usize,
+    /// Corpora checked total.
+    pub checked: usize,
+    /// Chunks re-created across all refreshed corpora.
+    pub chunks: usize,
+}
+
+/// Re-ingest every corpus whose source folder has drifted since its last
+/// ingest (W2-RAG, 2026-06-15). Cheap by construction: `corpus_stale` is a
+/// stat-only diff, and the re-ingest itself takes the copy-forward fast path
+/// for every UNCHANGED file (no re-read/re-chunk/re-embed), so the cost is
+/// proportional to what actually changed, not corpus size. Embedding is local
+/// (hashed or the user's own Ollama), so this spends no metered API credits.
+/// Fully fail-open: a failure on one corpus is logged and the sweep continues.
+///
+/// This is a `pub fn` so it can back BOTH a scheduled sweep (wired below) and a
+/// manual "Refresh stale" action from the RAG panel once a Tauri command is
+/// added for it (see the file-tail note — that command + the UI button live in
+/// files outside this module's ownership).
+pub fn refresh_stale_corpora() -> RefreshReport {
+    let mut report = RefreshReport::default();
+    let corpora = match crate::rag::list_corpora() {
+        Ok(c) => c,
+        Err(e) => {
+            crate::diagnostics::warn_with(
+                "maintenance",
+                "stale-refresh: list_corpora failed — skipped",
+                serde_json::json!({ "error": e.to_string() }),
+            );
+            return report;
+        }
+    };
+    for c in &corpora {
+        report.checked += 1;
+        let stale = match crate::rag::corpus_stale(&c.name) {
+            Ok(s) => s,
+            Err(e) => {
+                crate::diagnostics::warn_with(
+                    "maintenance",
+                    "stale-refresh: staleness check failed — corpus skipped",
+                    serde_json::json!({ "corpus": c.name, "error": e.to_string() }),
+                );
+                continue;
+            }
+        };
+        if !stale {
+            continue;
+        }
+        match crate::rag::ingest_folder(crate::rag::IngestOpts {
+            name: c.name.clone(),
+            root: c.root_path.clone(),
+            glob: None,
+        }) {
+            Ok(rep) => {
+                report.refreshed += 1;
+                report.chunks += rep.chunks_created;
+                crate::diagnostics::info(
+                    "maintenance",
+                    &format!(
+                        "stale-refresh: re-ingested '{}' ({} chunks)",
+                        c.name, rep.chunks_created
+                    ),
+                );
+            }
+            Err(e) => {
+                crate::diagnostics::warn_with(
+                    "maintenance",
+                    "stale-refresh: re-ingest failed — corpus skipped",
+                    serde_json::json!({ "corpus": c.name, "error": e.to_string() }),
+                );
+            }
+        }
+    }
+    report
+}
+
 /* ── Orchestration ── */
 
 /// Run a maintenance pass under `cfg`. Each phase is fail-open. The VACUUM
@@ -557,6 +639,7 @@ pub fn start_maintenance_scheduler(
     tauri::async_runtime::spawn(async move {
         let mut last_pass_at: i64 = 0;
         let mut last_archive_at: i64 = 0;
+        let mut last_refresh_at: i64 = 0;
         loop {
             if crate::is_shutting_down() {
                 break;
@@ -599,6 +682,32 @@ pub fn start_maintenance_scheduler(
                 // for ~24h by a pass that moved zero rows.
                 if r.archive.ran {
                     last_archive_at = now;
+                }
+            }
+            // Auto-refresh stale RAG corpora, gated to once per day like the
+            // archive phase: re-walking every corpus root + re-embedding changed
+            // files is the heavy part, so a wake more frequent than the interval
+            // shouldn't keep re-scanning. Runs after the DB pass, off the worker
+            // via spawn_blocking (corpus_stale stats the filesystem, ingest does
+            // synchronous I/O). Fully fail-open inside refresh_stale_corpora.
+            if now - last_refresh_at >= ARCHIVE_EVAL_SECS {
+                let refresh = tauri::async_runtime::spawn_blocking(refresh_stale_corpora).await;
+                if let Ok(r) = refresh {
+                    // Advance the gate whenever the sweep ran to completion, even
+                    // if nothing was stale — a clean scan still satisfies the
+                    // daily cadence; failures inside are logged + counted as a
+                    // no-op so they don't suppress the next day's sweep harder
+                    // than a successful empty one.
+                    last_refresh_at = now;
+                    if r.refreshed > 0 {
+                        crate::diagnostics::info(
+                            "maintenance",
+                            &format!(
+                                "stale-refresh: {} of {} corpora re-ingested ({} chunks)",
+                                r.refreshed, r.checked, r.chunks
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -906,5 +1015,55 @@ mod tests {
         assert!(!report.archive.ran);
         assert!(!report.reclaim.ran);
         assert!(!report.vacuumed);
+    }
+
+    /// W2-RAG (2026-06-15): the stale-corpus sweep re-ingests a corpus whose
+    /// source folder drifted, and leaves a fresh one untouched. Uses a unique
+    /// corpus name + temp dir so it coexists with the shared dev DB.
+    #[test]
+    fn refresh_stale_corpora_reingests_drifted_corpus() {
+        let tag = format!("{}_refr", std::process::id());
+        let name = format!("__test_refresh_{tag}");
+        let dir = std::env::temp_dir().join(format!("maint_refresh_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("doc.txt");
+        std::fs::write(&file, "refreshcheck refreshcheck original body text").unwrap();
+        crate::rag::ingest_folder(crate::rag::IngestOpts {
+            name: name.clone(),
+            root: dir.to_string_lossy().into_owned(),
+            glob: None,
+        })
+        .expect("seed ingest");
+
+        // Not stale yet → a sweep refreshes nothing about THIS corpus.
+        assert!(!crate::rag::corpus_stale(&name).unwrap());
+
+        // Drift the source (size changes → detected without an mtime bump).
+        std::fs::write(
+            &file,
+            "refreshcheck UPDATED with a clearly longer replacement body text now",
+        )
+        .unwrap();
+        assert!(crate::rag::corpus_stale(&name).unwrap());
+
+        // The sweep re-ingests it. `checked`/`refreshed` are global counts over
+        // the shared DB, so assert on the per-corpus effect: it is no longer
+        // stale afterwards and the new content is searchable.
+        let report = refresh_stale_corpora();
+        assert!(report.checked >= 1, "sweep must check at least our corpus");
+        assert!(
+            !crate::rag::corpus_stale(&name).unwrap(),
+            "corpus must no longer be stale after the sweep"
+        );
+        let hits = crate::rag::search(&name, "UPDATED", 5).unwrap();
+        assert!(
+            hits.iter().any(|h| h.snippet.contains("UPDATED")),
+            "refreshed content must be searchable, got: {hits:?}"
+        );
+
+        // Cleanup.
+        let _ = crate::rag::delete_corpus(&name);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

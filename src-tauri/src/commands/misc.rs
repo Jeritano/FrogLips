@@ -355,10 +355,76 @@ fn validate_diagnostics_dest(dest: &str) -> Result<std::path::PathBuf, String> {
     super::path_safety::validate_write_dest(dest)
 }
 
-/// Write a single diagnostics bundle to `dest_path`: a concatenated text file
-/// containing the rolling app.log tail, the crash.log, the app version, the
-/// host OS, and settings.json with secret-like values redacted. Turns "the app
-/// misbehaved" into a single actionable artifact the user can share.
+/// Read `~/.local-llm-app/diag.log` (the frontend diagnostic ring) for the
+/// bundle. Returns an empty string if the file is absent. Capped to the same
+/// 256 KiB ceiling the file rotates at so a hostile/runaway log can't balloon
+/// the bundle. Path derived from `logging::log_path()` — never caller input.
+fn read_diag_log() -> String {
+    let Some(path) = crate::logging::log_path()
+        .and_then(|p| p.parent().map(|d| d.join("diag.log")))
+    else {
+        return String::new();
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            const MAX: usize = 256 * 1024;
+            let slice = if bytes.len() > MAX {
+                &bytes[bytes.len() - MAX..]
+            } else {
+                &bytes[..]
+            };
+            String::from_utf8_lossy(slice).into_owned()
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// Build the redacted settings.json text for the bundle (or a placeholder
+/// describing why it's unavailable). Secrets are masked by `redact_secrets`.
+fn settings_section_for_bundle() -> String {
+    match crate::settings::settings_path_for_diagnostics() {
+        Some(p) => match std::fs::read_to_string(&p) {
+            Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(mut v) => {
+                    redact_secrets(&mut v);
+                    serde_json::to_string_pretty(&v)
+                        .unwrap_or_else(|_| "<settings serialize failed>".into())
+                }
+                Err(_) => "<settings.json is not valid JSON>".into(),
+            },
+            Err(_) => "<settings.json not found>".into(),
+        },
+        None => "<settings path unavailable>".into(),
+    }
+}
+
+/// Write the `(name, body)` sections as deflated entries of a real ZIP into
+/// `writer`. Factored out of `export_diagnostics_bundle` so the archive shape
+/// is unit-testable without the IPC/path-validation machinery.
+fn write_zip_sections<W: std::io::Write + std::io::Seek>(
+    writer: W,
+    sections: &[(&str, &str)],
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    let mut zw = zip::ZipWriter::new(writer);
+    let opts =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for (name, body) in sections {
+        zw.start_file(*name, opts)?;
+        zw.write_all(body.as_bytes())?;
+    }
+    zw.finish()?;
+    Ok(())
+}
+
+/// Write a real `.zip` diagnostics bundle to `dest_path` containing separate
+/// entries for `app.log` (tail), `crash.log`, `diag.log`, settings.json with
+/// secret-like values redacted, and a `manifest.txt` header (app version, host
+/// OS, generation time). Turns "the app misbehaved" into a single actionable
+/// artifact the user can attach to a bug report. Stores entries deflated; the
+/// DB is intentionally NOT included (it can be large and may hold private chat
+/// history — the dedicated "Back up database" action handles that explicitly).
 #[tauri::command]
 pub async fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> {
     let dest_resolved = validate_diagnostics_dest(&dest_path)?;
@@ -368,48 +434,61 @@ pub async fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> 
     crate::commands::blocking(move || -> anyhow::Result<()> {
         let app_log = crate::logging::read_tail(256 * 1024);
         let crash_log = crate::crash_log::read_log();
+        let diag_log = read_diag_log();
+        let settings_section = settings_section_for_bundle();
 
-        let settings_section = match crate::settings::settings_path_for_diagnostics() {
-            Some(p) => match std::fs::read_to_string(&p) {
-                Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(mut v) => {
-                        redact_secrets(&mut v);
-                        serde_json::to_string_pretty(&v)
-                            .unwrap_or_else(|_| "<settings serialize failed>".into())
-                    }
-                    Err(_) => "<settings.json is not valid JSON>".into(),
-                },
-                Err(_) => "<settings.json not found>".into(),
-            },
-            None => "<settings path unavailable>".into(),
-        };
-
-        let bundle = format!(
+        let manifest = format!(
             "===== Froglips Diagnostics Bundle =====\n\
-         app version: {version}\n\
-         os: {os}\n\
-         generated: {ts}\n\
-         \n===== app.log (tail) =====\n{app_log}\n\
-         \n===== crash.log =====\n{crash_log}\n\
-         \n===== settings.json (secrets redacted) =====\n{settings}\n",
+             app version: {version}\n\
+             os: {os}\n\
+             generated: {ts}\n\
+             \n\
+             Contents:\n\
+             - app.log       rolling application log (tail)\n\
+             - crash.log     panic / crash records\n\
+             - diag.log      frontend diagnostic ring buffer\n\
+             - settings.json app settings (secret-like values redacted)\n",
             version = env!("CARGO_PKG_VERSION"),
             os = os_description(),
             ts = crate::crash_log::now_rfc3339(),
-            app_log = if app_log.is_empty() {
-                "<empty>"
-            } else {
-                &app_log
-            },
-            crash_log = if crash_log.is_empty() {
-                "<empty>"
-            } else {
-                &crash_log
-            },
-            settings = settings_section,
         );
 
-        std::fs::write(&dest_resolved, bundle)?;
-        Ok(())
+        let empty_or = |s: &str| if s.is_empty() { "<empty>" } else { s }.to_string();
+        let sections: [(&str, String); 5] = [
+            ("manifest.txt", manifest),
+            ("app.log", empty_or(&app_log)),
+            ("crash.log", empty_or(&crash_log)),
+            ("diag.log", empty_or(&diag_log)),
+            ("settings.json", settings_section),
+        ];
+        let section_refs: Vec<(&str, &str)> =
+            sections.iter().map(|(n, b)| (*n, b.as_str())).collect();
+
+        // Write to a temp file in the destination's own directory, then rename
+        // into place so a partial/aborted write never leaves a corrupt .zip at
+        // `dest_resolved`. Same parent dir keeps the rename atomic (no cross-FS
+        // copy). validate_diagnostics_dest already proved the path is safe.
+        let parent = dest_resolved
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("destination has no parent directory"))?;
+        let tmp = parent.join(format!(".froglips-diag-{}.zip.tmp", std::process::id()));
+
+        let result = (|| -> anyhow::Result<()> {
+            let file = std::fs::File::create(&tmp)?;
+            write_zip_sections(file, &section_refs)
+        })();
+
+        match result {
+            Ok(()) => {
+                std::fs::rename(&tmp, &dest_resolved)?;
+                Ok(())
+            }
+            Err(e) => {
+                // Best-effort cleanup of the partial temp file.
+                let _ = std::fs::remove_file(&tmp);
+                Err(e)
+            }
+        }
     })
     .await
 }
@@ -447,6 +526,7 @@ const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     // all failed to persist).
     "ollama_keep_alive",
     "mlx_draft_model",
+    "mlx_max_tokens",
     "auto_update_check",
     "saved_apis",
     "agent_max_iterations",
@@ -1055,6 +1135,35 @@ mod redaction_tests {
         // Non-secret positional args survive.
         assert!(s.contains("server"), "non-secret arg over-redacted");
         assert!(s.contains("3000"), "port arg over-redacted");
+    }
+
+    #[test]
+    fn diagnostics_bundle_is_a_real_readable_zip() {
+        // Build the archive exactly as the command does (same helper), then
+        // re-open it with the zip *reader* to prove it's a genuine .zip — not a
+        // text blob mislabeled with a .zip extension — and that every named
+        // entry round-trips. Regression for the old behaviour where the bundle
+        // was a concatenated text file written to a .zip path.
+        use std::io::{Cursor, Read};
+        let sections: [(&str, &str); 3] = [
+            ("manifest.txt", "Froglips Diagnostics Bundle"),
+            ("app.log", "<empty>"),
+            ("settings.json", "{\"theme\":\"dark\"}"),
+        ];
+        let mut buf: Vec<u8> = Vec::new();
+        write_zip_sections(Cursor::new(&mut buf), &sections).expect("zip write");
+
+        // Local-file-header magic — a real ZIP starts with "PK\x03\x04".
+        assert_eq!(&buf[..4], b"PK\x03\x04", "not a ZIP local file header");
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf)).expect("open zip");
+        assert_eq!(archive.len(), 3, "entry count");
+        for (name, body) in sections {
+            let mut entry = archive.by_name(name).unwrap_or_else(|_| panic!("missing {name}"));
+            let mut got = String::new();
+            entry.read_to_string(&mut got).expect("read entry");
+            assert_eq!(got, body, "{name} body round-trips");
+        }
     }
 }
 

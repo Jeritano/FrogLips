@@ -42,6 +42,7 @@ export function buildSystemPrompt(
   mcpTools: OpenAIToolDef[] = [],
   modelFitness?: ToolFitness,
   savedApiNames: string[] = [],
+  ragCorpora: string[] = [],
 ): string {
   // Weak tool-callers (small/abliterated models) tend to narrate or emit
   // near-JSON. A short, explicit format reminder measurably lifts their
@@ -119,7 +120,18 @@ export function buildSystemPrompt(
     savedApiNames.length && builtIn.includes("call_api")
       ? `\nRegistered APIs for call_api: ${savedApiNames.join(", ")}.`
       : "";
-  const env = `${ws}\n${dateBlock}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\n${paths}\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}${apiBlock}\n${canDo}`;
+  // search_project_knowledge requires an EXACT corpus_name; without a manifest
+  // the model can't know which corpora exist, so indexed knowledge is
+  // effectively uncallable. List the available corpus names so it can pass a
+  // valid `corpus_name` (gated on the tool being allowlisted, same shape as
+  // the call_api registry line above).
+  const ragBlock =
+    ragCorpora.length && builtIn.includes("search_project_knowledge")
+      ? `\nIndexed knowledge corpora for search_project_knowledge (use one of these EXACT names as corpus_name): ${ragCorpora.join(
+          ", ",
+        )}.`
+      : "";
+  const env = `${ws}\n${dateBlock}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\n${paths}\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}${apiBlock}${ragBlock}\n${canDo}`;
   if (override && override.trim()) {
     return `${override.trim()}\n\n${env}${weakBlock}`;
   }

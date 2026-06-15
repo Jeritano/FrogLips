@@ -43,6 +43,14 @@ pub struct Settings {
     /// installed mlx_lm.server supports --draft-model, the spawn adds it:
     /// 1.5-2.5x decode on big models, output distribution unchanged.
     pub mlx_draft_model: Option<String>,
+    /// Default max RESPONSE tokens for the MLX server (`--max-tokens`). NOTE:
+    /// `mlx_lm.server` has no context-window flag — the context length is fixed
+    /// by the model's own config — so the only user-settable generation knob is
+    /// the default completion length, whose built-in default of 512 truncates
+    /// long replies. When set (and the installed server supports the flag), the
+    /// spawn passes it. `None` on legacy installs → the server's own default.
+    /// A per-request `max_tokens` in the chat call still overrides this default.
+    pub mlx_max_tokens: Option<i64>,
     /// Automatic background update checks. Default ON: `None` (legacy files /
     /// fresh installs) and `Some(true)` both enable it; only `Some(false)`
     /// (the Settings → General toggle) opts out. The brief 2026-06 default-off
@@ -922,6 +930,31 @@ mod tests {
             s.theme = Some("light".into());
             save(&s).expect("save 2");
             assert_eq!(load().theme.as_deref(), Some("light"));
+        });
+    }
+
+    /// MLX tuning knobs (W2-MODELS items 2+3) round-trip through disk, and a
+    /// legacy file lacking them deserializes to `None` (server defaults).
+    #[test]
+    fn mlx_tuning_roundtrips_and_back_compat() {
+        with_tempdir(|dir| {
+            // Legacy file without either key → None (server defaults apply).
+            std::fs::write(dir.join("settings.json"), r#"{ "theme": "dark" }"#)
+                .expect("write legacy");
+            let s = load();
+            assert!(s.mlx_draft_model.is_none());
+            assert!(s.mlx_max_tokens.is_none());
+
+            // Explicit values survive save → load.
+            let s2 = Settings {
+                mlx_draft_model: Some("qwen2.5-0.5b".into()),
+                mlx_max_tokens: Some(4096),
+                ..Default::default()
+            };
+            save(&s2).expect("save");
+            let back = load();
+            assert_eq!(back.mlx_draft_model.as_deref(), Some("qwen2.5-0.5b"));
+            assert_eq!(back.mlx_max_tokens, Some(4096));
         });
     }
 

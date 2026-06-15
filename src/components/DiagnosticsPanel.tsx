@@ -85,6 +85,12 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     text: string;
   } | null>(null);
   const [dataBusy, setDataBusy] = useState(false);
+  // Subsystem health registry — read-only/derived. Surfaces non-`ok` entries
+  // (e.g. a high agent tool-failure rate rolled up from the audit log) so a
+  // degraded subsystem is visible here, not just on the header pill.
+  const [health, setHealth] = useState<
+    { name: string; state: string; reason: string; since: number }[]
+  >([]);
   // App version (shown in the header + useful when a user files a bug).
   const [appVersion, setAppVersion] = useState<string>("");
   useEffect(() => {
@@ -156,6 +162,28 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
     if (!open) return;
     void refreshCrashLog();
   }, [open, refreshCrashLog]);
+
+  // On open, refresh the derived health signals then read the registry. The
+  // agent tool-failure rollup is recomputed as a side effect of querying audit
+  // stats, so we poke that first (best-effort) before snapshotting health.
+  const refreshHealth = useCallback(async () => {
+    try {
+      await api.agentAuditStats();
+    } catch {
+      /* observational — a stats failure must not hide the registry below */
+    }
+    try {
+      const rows = await api.healthSnapshot();
+      setHealth(rows.filter((r) => r.state !== "ok"));
+    } catch {
+      setHealth([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    void refreshHealth();
+  }, [open, refreshHealth]);
 
   const sourceOptions = useMemo(() => {
     const set = new Set<string>();
@@ -450,6 +478,43 @@ export function DiagnosticsPanel({ open, onClose }: Props) {
             </table>
           )}
         </div>
+
+        {health.length > 0 && (
+          <section
+            className="dashboard-card diag-health"
+            data-testid="diag-health"
+          >
+            <div className="diag-health-head">
+              <h3>System health</h3>
+              <button
+                type="button"
+                data-testid="diag-health-refresh"
+                onClick={() => void refreshHealth()}
+                title="Re-read the subsystem health registry"
+              >
+                Refresh
+              </button>
+            </div>
+            <ul className="diag-health-list">
+              {health.map((h) => (
+                <li
+                  key={h.name}
+                  data-testid="diag-health-row"
+                  data-state={h.state}
+                  className={
+                    h.state === "failed"
+                      ? "diag-health-failed"
+                      : "diag-health-degraded"
+                  }
+                >
+                  <span className="diag-health-name">{h.name}</span>
+                  <span className="diag-health-state">{h.state}</span>
+                  <span className="diag-health-reason">{h.reason}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section className="dashboard-card diag-data" data-testid="diag-data">
           <div className="diag-data-head">

@@ -22,6 +22,7 @@ import type { WorkflowGraph } from "../../types";
 import type { CardRunState } from "../../components/workflows/AgentCardNode";
 import { logDiag } from "../diagnostics";
 import { announce } from "../announce";
+import { api } from "../tauri-api";
 
 /**
  * Per-card live state surface for the run panel.
@@ -63,8 +64,24 @@ interface WorkflowRunControlCtx {
     graph: WorkflowGraph;
     opts: Omit<RunWorkflowOptions, "signal" | "workflowId">;
     preflight?: (signal: AbortSignal) => Promise<void>;
+    /**
+     * Human-readable workflow name, used only for the scheduled-run
+     * completion desktop notification. Omitted falls back to a generic
+     * "A scheduled flow" label.
+     */
+    workflowName?: string;
   }): boolean;
   stop(): void;
+  /**
+   * Stop a SPECIFIC running card. Today the runner executes cards through a
+   * single shared abort signal, so stopping the active card stops the run as a
+   * whole (downstream cards are marked skipped) — there is no per-card signal
+   * to abort one card and resume the chain. This is therefore a no-op unless
+   * `cardId` is the card that is currently running, which keeps the affordance
+   * honest: clicking Stop on the active card does exactly what whole-run Stop
+   * does, and clicking it on any other (idle/done) card does nothing.
+   */
+  stopCard(cardId: string): void;
   clearSummary(): void;
 }
 
@@ -110,6 +127,15 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
   // the React state update wouldn't have applied yet.
   const runningIdRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // The card currently executing, tracked synchronously so `stopCard` can
+  // verify a stop request targets the active card without subscribing to the
+  // hot per-card snapshot. Set on onCardStart, cleared on the run boundary.
+  const runningCardIdRef = useRef<string | null>(null);
+  // Provenance of the in-flight run, captured at `start` so the completion
+  // notification (scheduled runs only) knows whether to fire and what to name.
+  const runProvenanceRef = useRef<{ scheduled: boolean; name: string } | null>(
+    null,
+  );
 
   const updateCard = useCallback(
     (id: string, patch: Partial<CardRunSnapshot>) => {
@@ -130,12 +156,28 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
     // resets everything when it actually wraps up.
   }, []);
 
+  // Stop a specific card. Only honored when `cardId` is the card actually
+  // running — see the interface doc for why this can't resume the chain. A
+  // stop request for any other card is a deliberate no-op.
+  const stopCard = useCallback((cardId: string) => {
+    if (runningCardIdRef.current === cardId) {
+      abortRef.current?.abort();
+    }
+  }, []);
+
   const start = useCallback<WorkflowRunCtx["start"]>(
-    ({ workflowId, graph, opts, preflight }) => {
+    ({ workflowId, graph, opts, preflight, workflowName }) => {
       if (runningIdRef.current !== null) {
         return false;
       }
       runningIdRef.current = workflowId;
+      runningCardIdRef.current = null;
+      // Capture provenance for the completion notification. Only scheduled
+      // runs notify (a manual run already has the user's attention on-screen).
+      runProvenanceRef.current = {
+        scheduled: opts.scheduled === true,
+        name: workflowName?.trim() || "A scheduled flow",
+      };
       setRunningWorkflowId(workflowId);
       setCardStates({});
       setLastSummary(null);
@@ -212,7 +254,12 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
             coalesceTimer = setTimeout(flushDeltas, 16);
           };
           const hooks: WorkflowHooks = {
-            onCardStart: (id) => updateCard(id, { state: "running" }),
+            onCardStart: (id) => {
+              // Track the active card synchronously so `stopCard(id)` can
+              // verify a stop targets the running card.
+              runningCardIdRef.current = id;
+              updateCard(id, { state: "running" });
+            },
             onCardOutput: (id, text) => {
               const cur = deltaBuf.get(id) ?? [];
               cur.push(text);
@@ -264,6 +311,31 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
                 finishedAt: Date.now(),
                 errorBanner,
               });
+              // Scheduled runs may finish while the user is in another app or
+              // on a different view, so surface a desktop notification (manual
+              // runs already have the user's attention on-screen). Reuse the
+              // app's native notification mechanism (`agent_show_notification`,
+              // approval-minted by the api wrapper). Best-effort — a failure to
+              // notify must never affect run bookkeeping.
+              const prov = runProvenanceRef.current;
+              if (prov?.scheduled) {
+                const ok = results.status === "ok";
+                api
+                  .agentShowNotification(
+                    ok ? "Scheduled flow finished" : "Scheduled flow failed",
+                    `${prov.name} ${ok ? "completed successfully." : "failed — open Flows for details."}`,
+                  )
+                  .catch((e) =>
+                    logDiag({
+                      level: "warn",
+                      source: "workflow-run",
+                      message: "scheduled-run completion notification failed",
+                      detail: e,
+                    }),
+                  );
+              }
+              runProvenanceRef.current = null;
+              runningCardIdRef.current = null;
               runningIdRef.current = null;
               abortRef.current = null;
               setRunningWorkflowId(null);
@@ -321,6 +393,12 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
           // that handler (e.g. the needsReview gate, or a preflight reject)
           // would otherwise leak the timer + retain the delta buffer.
           clearCoalesce();
+          // Release run-scoped refs on every exit path (the onWorkflowDone /
+          // catch branches above also clear these; this is the belt-and-
+          // suspenders for any path that reaches neither). A thrown run does
+          // NOT notify — provenance is dropped here without firing.
+          runProvenanceRef.current = null;
+          runningCardIdRef.current = null;
         }
       })();
 
@@ -334,8 +412,15 @@ export function WorkflowRunProvider({ children }: { children: ReactNode }) {
   // re-renders only when the running id flips or the run summary lands,
   // NOT on every streamed token (audit H7).
   const controlValue = useMemo<WorkflowRunControlCtx>(
-    () => ({ runningWorkflowId, lastSummary, start, stop, clearSummary }),
-    [runningWorkflowId, lastSummary, start, stop, clearSummary],
+    () => ({
+      runningWorkflowId,
+      lastSummary,
+      start,
+      stop,
+      stopCard,
+      clearSummary,
+    }),
+    [runningWorkflowId, lastSummary, start, stop, stopCard, clearSummary],
   );
   // Hot per-card state — updates on every delta. Subscribers should be
   // scoped to the panel that actually renders the per-card chrome.

@@ -404,6 +404,10 @@ export interface AppSettings {
   ollama_keep_alive?: string | null;
   /** Optional MLX speculative-decoding draft model (same tokenizer family). */
   mlx_draft_model?: string | null;
+  /** Default max RESPONSE tokens for the MLX server (`--max-tokens`). mlx_lm.server
+   *  has no context-window flag; this is the only generation knob. Absent/null =
+   *  the server's own default (512). A per-request max_tokens still overrides. */
+  mlx_max_tokens?: number | null;
   /** Automatic background update checks. Default ON: absent/`null` (legacy
    *  installs) and `true` both enable it; only an explicit `false` opts out
    *  (the Settings → General toggle). See useUpdateCheck. */
@@ -630,6 +634,10 @@ export interface AgentAuditRow {
 
 export interface AgentAuditStats {
   total_calls_24h: number;
+  /** Tool calls in the last 24h that returned an error. */
+  error_calls_24h: number;
+  /** error_calls_24h / total_calls_24h (0 when no calls). */
+  error_rate_24h: number;
   top_tools_24h: Array<{ tool_name: string; count: number }>;
   avg_duration_ms_24h: Array<{ tool_name: string; avg_ms: number }>;
 }

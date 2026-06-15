@@ -18,10 +18,65 @@
       CSS stays lazy in its own chunk.
     -->
     <link rel="stylesheet" href="/src/App.css" />
+    <!--
+      Boot skeleton (Wave 2): paint a styled, theme-aware frame on the FIRST
+      frame instead of a blank white window while the (lazy) App chunk loads.
+      The rules are inlined here so they apply with zero extra round-trips,
+      before App.css or any JS arrives. main.tsx sets `data-theme` synchronously
+      from localStorage before its module body runs, so the `[data-theme]`
+      selectors below resolve correctly; the bare defaults are the app's dark
+      theme and `prefers-color-scheme` is the fallback when no theme is
+      persisted yet. React replaces #root's children on mount, so the skeleton
+      removes itself — no teardown code, no layout shift (it fills the viewport
+      with the same shell background the app paints).
+    -->
+    <style>
+      #boot-skeleton {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #09090b;
+      }
+      @media (prefers-color-scheme: light) {
+        #boot-skeleton {
+          background: #ffffff;
+        }
+      }
+      :root[data-theme="dark"] #boot-skeleton {
+        background: #09090b;
+      }
+      :root[data-theme="light"] #boot-skeleton {
+        background: #ffffff;
+      }
+      #boot-skeleton .boot-spinner {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 3px solid rgba(99, 102, 241, 0.25);
+        border-top-color: #6366f1;
+        animation: boot-spin 0.7s linear infinite;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-skeleton .boot-spinner {
+          animation-duration: 1.6s;
+        }
+      }
+    </style>
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-skeleton" aria-hidden="true">
+        <div class="boot-spinner"></div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

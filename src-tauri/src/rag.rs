@@ -175,42 +175,205 @@ pub struct IngestOpts {
 
 /* ─────────────────────────── Chunking ───────────────────────────────── */
 
+/// Below this many chars a structural segment is glued onto the next one
+/// instead of becoming its own chunk — keeps a lone heading / one-line
+/// paragraph from polluting the index with near-empty vectors.
+const MIN_CHUNK_CHARS: usize = 64;
+
 /// Split `text` into chunks of at most `MAX_CHUNK_CHARS` characters with
 /// `CHUNK_OVERLAP_CHARS` of overlap between adjacent chunks.
 ///
-/// Returns a list of `(start_byte, end_byte, chunk_text)`. Operates on char
-/// boundaries (not bytes) so multi-byte UTF-8 sequences are never split, but
-/// reports byte offsets for downstream slicing. Empty / whitespace-only
-/// inputs return an empty Vec.
+/// Structure-aware (2026-06-15, W2-RAG): rather than slicing blind
+/// `MAX_CHUNK_CHARS` windows, we first cut the text at natural boundaries —
+/// markdown headings (`#`, `##`, …), blank-line paragraph breaks, and
+/// code-block boundaries (a line that opens a `def`/`fn`/`class`/`function`
+/// or whose only non-space content is `{`/`}`). Adjacent boundary segments are
+/// then packed greedily up to `MAX_CHUNK_CHARS`, and any single segment longer
+/// than the cap is sub-split with the original sliding-window-with-overlap so
+/// the cap is never exceeded. The output contract is UNCHANGED — a list of
+/// `(start_byte, end_byte, chunk_text)` on char boundaries — so the embedder,
+/// the stored schema, and the linear-fallback scoring all behave identically;
+/// only the *grouping* of source text into chunks improves. This affects new
+/// ingests only; previously-stored chunks are never re-cut.
+///
+/// Empty / whitespace-only inputs return an empty Vec.
 pub fn chunk_text(text: &str) -> Vec<(usize, usize, String)> {
     if text.trim().is_empty() {
         return Vec::new();
     }
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
-    if chars.is_empty() {
-        return Vec::new();
+    // Pass 1: cut into boundary-aligned segments as (start_byte, end_byte).
+    let segments = boundary_segments(text);
+    // Pass 2: pack segments greedily up to the cap; emit (with cap-respecting
+    // sub-splitting for oversized single segments).
+    let mut out: Vec<(usize, usize, String)> = Vec::new();
+    let mut cur_start: Option<usize> = None;
+    let mut cur_end: usize = 0;
+    let mut cur_chars: usize = 0;
+    let flush = |start: usize, end: usize, out: &mut Vec<(usize, usize, String)>| {
+        let slice = &text[start..end];
+        if slice.trim().is_empty() {
+            return;
+        }
+        // An oversized packed run (a single huge segment) is sub-split with the
+        // sliding window so the cap holds and adjacent sub-chunks overlap.
+        if slice.chars().count() > MAX_CHUNK_CHARS {
+            window_split(text, start, end, out);
+        } else {
+            out.push((start, end, slice.to_string()));
+        }
+    };
+    for (s, e, strong) in segments {
+        let seg_chars = text[s..e].chars().count();
+        match cur_start {
+            None => {
+                cur_start = Some(s);
+                cur_end = e;
+                cur_chars = seg_chars;
+            }
+            Some(start) => {
+                // Flush-and-restart when EITHER (a) appending would overflow the
+                // cap (and the current run is already at least MIN, so we don't
+                // emit a runt), OR (b) this segment opens a STRONG structural
+                // boundary (a heading / code definition) and the current run is
+                // already substantial — so headings genuinely LEAD a chunk
+                // instead of being glued onto the prior section's tail. A soft
+                // (paragraph) boundary only splits on overflow, which keeps
+                // related prose packed. (Whitespace between segments is
+                // preserved because segments are contiguous byte ranges.)
+                let would_overflow = cur_chars + seg_chars > MAX_CHUNK_CHARS;
+                let split_here = (would_overflow || strong) && cur_chars >= MIN_CHUNK_CHARS;
+                if split_here {
+                    flush(start, cur_end, &mut out);
+                    cur_start = Some(s);
+                    cur_end = e;
+                    cur_chars = seg_chars;
+                } else {
+                    cur_end = e;
+                    cur_chars += seg_chars;
+                }
+            }
+        }
     }
+    if let Some(start) = cur_start {
+        flush(start, cur_end, &mut out);
+    }
+    out
+}
+
+/// Cut `[0, text.len())` into byte ranges aligned to structural boundaries:
+/// a new segment begins at a markdown heading line, after a blank-line
+/// paragraph break, and at a code def/`{`/`}` boundary line. Ranges are
+/// contiguous and cover the whole input (no bytes dropped), and every cut sits
+/// on a line boundary (which is always a char boundary), so downstream slicing
+/// is UTF-8 safe.
+///
+/// Each returned range carries a `strong` flag: `true` when the segment OPENS
+/// at a heading or code-definition line (a hard structural boundary), `false`
+/// for a plain paragraph break. The packer flushes eagerly on a strong
+/// boundary so headings lead chunks, but only on overflow for soft ones.
+fn boundary_segments(text: &str) -> Vec<(usize, usize, bool)> {
+    // (offset, strong). The leading 0 is the implicit document start.
+    let mut cuts: Vec<(usize, bool)> = vec![(0, true)];
+    let mut offset = 0usize;
+    let mut prev_blank = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim();
+        let strong = is_heading_line(trimmed) || is_code_boundary_line(trimmed);
+        let is_boundary_start = strong || (prev_blank && !trimmed.is_empty());
+        if is_boundary_start && offset != 0 {
+            cuts.push((offset, strong));
+        }
+        prev_blank = trimmed.is_empty();
+        offset += line.len();
+    }
+    cuts.push((text.len(), false));
+    // Sort by offset; on a duplicate offset keep the strong flag (a heading that
+    // also follows a blank line). Then pair consecutive cuts into ranges where
+    // the range's `strong` is the flag of its OPENING cut.
+    cuts.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    cuts.dedup_by_key(|c| c.0);
+    cuts.windows(2)
+        .filter(|w| w[1].0 > w[0].0)
+        .map(|w| (w[0].0, w[1].0, w[0].1))
+        .collect()
+}
+
+/// A markdown ATX heading line: 1–6 leading `#` then a space (or EOL).
+fn is_heading_line(trimmed: &str) -> bool {
+    let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+    (1..=6).contains(&hashes)
+        && trimmed[hashes..]
+            .chars()
+            .next()
+            .map_or(trimmed.len() == hashes, |c| c == ' ')
+}
+
+/// A code structural boundary: a line that opens a definition (rust `fn`/
+/// `struct`/`enum`/`impl`/`trait`/`mod`, py/js `def`/`class`/`function`) or a
+/// line whose only non-space content is a single brace.
+fn is_code_boundary_line(trimmed: &str) -> bool {
+    if trimmed == "{" || trimmed == "}" {
+        return true;
+    }
+    const DEF_KW: &[&str] = &[
+        "fn ",
+        "pub fn ",
+        "async fn ",
+        "pub async fn ",
+        "struct ",
+        "pub struct ",
+        "enum ",
+        "pub enum ",
+        "impl ",
+        "trait ",
+        "pub trait ",
+        "mod ",
+        "pub mod ",
+        "def ",
+        "async def ",
+        "class ",
+        "function ",
+        "export function ",
+    ];
+    DEF_KW.iter().any(|kw| trimmed.starts_with(kw))
+}
+
+/// Sub-split a single oversized byte range with the original sliding window
+/// (`MAX_CHUNK_CHARS` cap, `CHUNK_OVERLAP_CHARS` overlap), operating on char
+/// boundaries within `text[range_start..range_end]`. Pure-whitespace tail
+/// slices are dropped. This is the verbatim pre-2026-06-15 windowing, scoped
+/// to a sub-range so the boundary packer can lean on it for huge segments.
+fn window_split(
+    text: &str,
+    range_start: usize,
+    range_end: usize,
+    out: &mut Vec<(usize, usize, String)>,
+) {
+    let sub = &text[range_start..range_end];
+    let chars: Vec<(usize, char)> = sub.char_indices().collect();
     let n = chars.len();
-    let mut out = Vec::new();
+    if n == 0 {
+        return;
+    }
     let mut start = 0usize;
     while start < n {
         let end = (start + MAX_CHUNK_CHARS).min(n);
-        let start_byte = chars[start].0;
-        // end_byte is the byte index just past the last included char.
-        let end_byte = if end == n { text.len() } else { chars[end].0 };
+        let start_byte = range_start + chars[start].0;
+        let end_byte = if end == n {
+            range_end
+        } else {
+            range_start + chars[end].0
+        };
         let slice = &text[start_byte..end_byte];
-        // Skip pure-whitespace tail chunks (e.g. trailing newlines).
         if !slice.trim().is_empty() {
             out.push((start_byte, end_byte, slice.to_string()));
         }
         if end == n {
             break;
         }
-        // Next window: step forward by (MAX - overlap) chars.
         let step = MAX_CHUNK_CHARS.saturating_sub(CHUNK_OVERLAP_CHARS).max(1);
         start += step;
     }
-    out
 }
 
 /* ─────────────────────────── Embedding ──────────────────────────────── */
@@ -1208,6 +1371,102 @@ pub fn list_corpora() -> Result<Vec<CorpusInfo>> {
     Ok(rows)
 }
 
+/// Whether a corpus's source folder has drifted from what was last ingested.
+///
+/// W2-RAG (2026-06-15): re-walks the corpus `root_path` (same skip/ext/glob
+/// rules as ingest, minus the glob — staleness is a coarse "anything changed?"
+/// signal) and compares the live `(mtime_ms, size)` of each file against the
+/// `rag_files` fingerprints recorded by the last ingest. A corpus is STALE if
+/// any tracked file changed/disappeared, or a new ingestable file appeared.
+/// Pure read + `stat` (no embedding, no DB writes), so it is cheap enough to
+/// poll. A missing root, or a corpus that produced zero fingerprints, is
+/// reported as NOT stale (nothing actionable / can't compare).
+pub fn corpus_stale(name: &str) -> Result<bool> {
+    validate_name(name)?;
+    let conn = get_db()?;
+    let row: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, root_path FROM rag_corpora WHERE name = ?1",
+            params![name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (corpus_id, root_path) = match row {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let root = PathBuf::from(&root_path);
+    if !root.is_dir() {
+        // The folder is gone — there's nothing to re-ingest against, so don't
+        // flag it as stale (a delete is a separate, explicit user action).
+        return Ok(false);
+    }
+
+    // Last-ingest fingerprints keyed by the same relative path ingest stores.
+    let mut fingerprints: HashMap<String, (i64, i64)> = HashMap::new();
+    {
+        let mut stmt =
+            conn.prepare("SELECT path, mtime_ms, size FROM rag_files WHERE corpus_id = ?1")?;
+        let rows = stmt.query_map(params![corpus_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?),
+            ))
+        })?;
+        for row in rows {
+            let (path, fp) = row?;
+            fingerprints.insert(path, fp);
+        }
+    }
+    // No fingerprints recorded (empty/older corpus) — can't meaningfully diff.
+    if fingerprints.is_empty() {
+        return Ok(false);
+    }
+
+    let root_canon = std::fs::canonicalize(&root).unwrap_or(root);
+    let mut files: Vec<PathBuf> = Vec::new();
+    walk_files(&root_canon, None, &mut files);
+
+    let mut seen = 0usize;
+    for file in &files {
+        if crate::agent::is_protected_read_path(file) {
+            continue;
+        }
+        let meta = match std::fs::metadata(file) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.len() > MAX_FILE_BYTES {
+            continue;
+        }
+        let rel = file
+            .strip_prefix(&root_canon)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .into_owned();
+        let mtime_ms: i64 = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let size = meta.len() as i64;
+        match fingerprints.get(&rel) {
+            // New ingestable file the last ingest never saw → stale.
+            None => return Ok(true),
+            // Same path but a different (mtime, size) → stale.
+            Some(&(fmt, fsz)) if fmt != mtime_ms || fsz != size => return Ok(true),
+            Some(_) => {}
+        }
+        seen += 1;
+    }
+    // A tracked file that is no longer present on disk → stale.
+    if seen < fingerprints.len() {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub fn delete_corpus(name: &str) -> Result<()> {
     validate_name(name)?;
     // WS3: single-writer gate.
@@ -1272,6 +1531,97 @@ mod tests {
         assert!(!chunks.is_empty());
         for (_, _, t) in chunks {
             assert!(!t.is_empty());
+        }
+    }
+
+    /// Structure-aware chunking (W2-RAG, 2026-06-15): the offsets must always
+    /// reconstruct the original text verbatim (no bytes dropped/duplicated
+    /// outside the intentional sliding-window overlap), every chunk must
+    /// respect the cap, and every (start,end) must land on a char boundary so
+    /// downstream slicing is UTF-8 safe.
+    #[test]
+    fn chunk_offsets_are_valid_and_in_bounds() {
+        let doc = "# Title\n\nIntro paragraph with some words.\n\n\
+                   ## Section\n\nfn do_work() {\n    let x = 1;\n}\n\n\
+                   Another paragraph here that says things.\n";
+        let chunks = chunk_text(doc);
+        assert!(!chunks.is_empty());
+        for (s, e, t) in &chunks {
+            assert!(e > s, "end must exceed start");
+            assert!(*e <= doc.len(), "end within bounds");
+            assert!(doc.is_char_boundary(*s), "start on char boundary");
+            assert!(doc.is_char_boundary(*e), "end on char boundary");
+            // The stored text must equal the slice it claims to cover.
+            assert_eq!(t, &doc[*s..*e], "chunk text must match its byte range");
+            assert!(t.chars().count() <= MAX_CHUNK_CHARS, "cap respected");
+        }
+        // Coverage: the union of ranges must span the whole non-trivial doc
+        // (first chunk starts at 0, last ends at len).
+        assert_eq!(chunks.first().unwrap().0, 0);
+        assert_eq!(chunks.last().unwrap().1, doc.len());
+    }
+
+    /// A markdown document with several headings should split at heading
+    /// boundaries (not blind 512-char windows) when the sections are large
+    /// enough to stand alone.
+    #[test]
+    fn chunk_splits_on_markdown_headings() {
+        // Three sections, each body large enough (~300 chars) that two adjacent
+        // sections can't pack into one ≤MAX_CHUNK_CHARS chunk — so the heading
+        // boundary forces a split rather than a blind 512-char window.
+        let body = "x ".repeat(150); // ~300 chars per section body
+        let doc = format!(
+            "# Alpha\n\n{body}\n\n## Beta\n\n{body}\n\n## Gamma\n\n{body}\n"
+        );
+        let chunks = chunk_text(&doc);
+        // Expect at least three chunks (one per section).
+        assert!(
+            chunks.len() >= 3,
+            "expected per-section chunks, got {}: {:#?}",
+            chunks.len(),
+            chunks.iter().map(|c| &c.2).collect::<Vec<_>>()
+        );
+        // The first chunk should head with the first heading (the heading
+        // boundary is honoured, not sliced mid-section).
+        assert!(chunks[0].2.trim_start().starts_with("# Alpha"));
+        // A blind 512-char windower would have put "## Beta" mid-chunk; here it
+        // must begin a chunk of its own.
+        assert!(
+            chunks.iter().any(|c| c.2.trim_start().starts_with("## Beta")),
+            "## Beta should head its own chunk: {:#?}",
+            chunks.iter().map(|c| &c.2).collect::<Vec<_>>()
+        );
+    }
+
+    /// Tiny segments (a lone heading, a one-line paragraph) get glued onto
+    /// neighbours instead of producing near-empty chunks.
+    #[test]
+    fn chunk_globs_tiny_segments() {
+        let doc = "# H\n\nshort\n\nalso short\n\ntiny\n";
+        let chunks = chunk_text(doc);
+        // Everything is well under MIN_CHUNK_CHARS, so it should coalesce into
+        // a single chunk rather than four micro-chunks.
+        assert_eq!(
+            chunks.len(),
+            1,
+            "tiny segments should glob: {:#?}",
+            chunks.iter().map(|c| &c.2).collect::<Vec<_>>()
+        );
+    }
+
+    /// An oversized single segment (one giant paragraph with no internal
+    /// boundary) must still be sub-split with overlap so the cap holds.
+    #[test]
+    fn chunk_subsplits_oversized_segment() {
+        let para = "word ".repeat(400); // 2000 chars, single paragraph
+        let chunks = chunk_text(&para);
+        assert!(chunks.len() >= 2, "oversized segment must sub-split");
+        for (_, _, t) in &chunks {
+            assert!(t.chars().count() <= MAX_CHUNK_CHARS);
+        }
+        // Sub-split chunks overlap (the original sliding-window contract).
+        for w in chunks.windows(2) {
+            assert!(w[1].0 < w[0].1, "sub-split chunks must overlap");
         }
     }
 
@@ -1479,6 +1829,57 @@ mod tests {
             hits.iter().any(|h| h.snippet.contains("gammaunique")),
             "carried-forward chunks must remain searchable, got: {hits:?}"
         );
+
+        let _ = delete_corpus(&name);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// W2-RAG (2026-06-15): `corpus_stale` is false right after an ingest,
+    /// becomes true when a source file changes / a new file appears / a tracked
+    /// file is removed, and goes back to false after a re-ingest.
+    #[test]
+    fn corpus_stale_tracks_source_drift() {
+        let tag = format!("{}_stale", std::process::id());
+        let name = format!("__test_stale_{tag}");
+        let dir = std::env::temp_dir().join(format!("rag_stale_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("doc.txt");
+        std::fs::write(&file, "stalecheck stalecheck stalecheck content here").unwrap();
+        let opts = || IngestOpts {
+            name: name.clone(),
+            root: dir.to_string_lossy().into_owned(),
+            glob: None,
+        };
+        ingest_folder(opts()).expect("first ingest");
+
+        // Fresh after ingest → not stale.
+        assert!(!corpus_stale(&name).unwrap(), "fresh corpus must not be stale");
+
+        // Modify the file so its SIZE changes — `corpus_stale` keys on
+        // (mtime, size), and a size delta is detected independently of the
+        // filesystem mtime clock granularity, keeping this test deterministic
+        // without a filetime dependency.
+        std::fs::write(
+            &file,
+            "stalecheck stalecheck CHANGED different and noticeably longer content here now",
+        )
+        .unwrap();
+        assert!(corpus_stale(&name).unwrap(), "modified file must be stale");
+
+        // Re-ingest → not stale again.
+        ingest_folder(opts()).expect("re-ingest");
+        assert!(
+            !corpus_stale(&name).unwrap(),
+            "re-ingested corpus must not be stale"
+        );
+
+        // A brand-new file appears → stale.
+        std::fs::write(dir.join("extra.txt"), "an entirely new document file").unwrap();
+        assert!(corpus_stale(&name).unwrap(), "new file must mark corpus stale");
+
+        // Unknown corpus → not stale (no error).
+        assert!(!corpus_stale("__no_such_corpus_xyz").unwrap());
 
         let _ = delete_corpus(&name);
         let _ = std::fs::remove_dir_all(&dir);

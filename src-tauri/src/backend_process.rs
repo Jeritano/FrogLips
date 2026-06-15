@@ -328,7 +328,13 @@ impl ServerState {
         //     cache AND caps a previously UNBOUNDED cache-growth path
         //   --draft-model (settings)  → speculative decoding, 1.5-2.5x
         //     decode on big models, output distribution unchanged
+        //   --max-tokens (settings)   → default response length; the built-in
+        //     512 truncates long replies. mlx_lm.server has NO context-window
+        //     flag (context is fixed by the model config), so this is the only
+        //     user-settable generation knob.
         let help = mlx_server_help(&binary).await;
+        // Single settings read for every settings-driven MLX flag below.
+        let mlx_settings = crate::settings::load();
         if help.contains("--prefill-step-size") {
             cmd.arg("--prefill-step-size").arg("4096");
         }
@@ -339,14 +345,21 @@ impl ServerState {
             cmd.arg("--prompt-cache-bytes").arg("32G");
         }
         if help.contains("--draft-model") {
-            if let Some(draft) = crate::settings::load()
+            if let Some(draft) = mlx_settings
                 .mlx_draft_model
-                .filter(|d| !d.trim().is_empty())
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
             {
-                cmd.arg("--draft-model").arg(draft.trim());
+                cmd.arg("--draft-model").arg(draft);
                 if help.contains("--num-draft-tokens") {
                     cmd.arg("--num-draft-tokens").arg("3");
                 }
+            }
+        }
+        if help.contains("--max-tokens") {
+            if let Some(max) = mlx_settings.mlx_max_tokens.filter(|n| *n > 0) {
+                cmd.arg("--max-tokens").arg(max.to_string());
             }
         }
         let mut child = cmd

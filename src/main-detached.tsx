@@ -21,6 +21,7 @@ import ReactDOM from "react-dom/client";
 import { parseDetachedParams } from "./lib/detached-params";
 import { DetachedChatView } from "./components/DetachedChatView";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { recordBootTiming } from "./lib/diagnostics";
 import "./App.css";
 
 // The dedicated entry IS the detached window, so it implies `detached=1` even
@@ -54,3 +55,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </ErrorBoundary>
   </React.StrictMode>,
 );
+
+// Per-window boot/TTI metric (cheap, local, no telemetry) so a regression on
+// the detached conversation window is distinguishable from the main shell.
+recordBootTiming("detached");

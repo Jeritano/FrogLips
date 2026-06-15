@@ -22,6 +22,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { QuickPrompt } from "./components/QuickPrompt";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { recordBootTiming } from "./lib/diagnostics";
 // Styles: the same aggregator the main window uses. It is pure CSS (only
 // @imports other stylesheets — no JS), so it carries no markdown payload; it
 // just provides the design tokens + `.quick-*` rules this popover needs.
@@ -34,3 +35,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </ErrorBoundary>
   </React.StrictMode>,
 );
+
+// Per-window boot/TTI metric (cheap, local, no telemetry). The Quick Prompt
+// popover boots from its own lean chunk; recording it separately makes a
+// regression on this window distinguishable from the main shell's.
+recordBootTiming("quick");

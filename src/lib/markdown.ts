@@ -397,11 +397,47 @@ export function chipifyCitations(root: HTMLElement | DocumentFragment): void {
 //
 // Runs AFTER DOMPurify, same as chipifyCitations. Wraps each fenced
 // `<pre><code class="hljs language-x">` block in a `.code-block` div with a
-// header row: language label + copy button. The <button> is built here via
-// document.createElement — PURIFY_CONFIG deliberately FORBIDs <button>, so a
-// model can never author one; ours is injected post-sanitize and carries no
-// inline handlers (clicks are handled by a delegated listener in
-// MessageList, keeping this output a pure string).
+// header row: language label + Copy / Download / soft-wrap-toggle buttons. The
+// <button>s are built here via document.createElement — PURIFY_CONFIG
+// deliberately FORBIDs <button>, so a model can never author one; ours are
+// injected post-sanitize and carry no inline handlers (clicks are handled by a
+// delegated listener in MessageList, keeping this output a pure string).
+
+// Map a language label (from the `language-<lang>` class) to a plausible file
+// extension for the Download button's inferred filename. Falls back to `txt`.
+const LANG_FILE_EXT: Record<string, string> = {
+  javascript: "js",
+  js: "js",
+  typescript: "ts",
+  ts: "ts",
+  tsx: "tsx",
+  jsx: "jsx",
+  python: "py",
+  py: "py",
+  rust: "rs",
+  rs: "rs",
+  bash: "sh",
+  sh: "sh",
+  zsh: "sh",
+  shell: "sh",
+  json: "json",
+  css: "css",
+  html: "html",
+  xml: "xml",
+  sql: "sql",
+  yaml: "yaml",
+  yml: "yml",
+  markdown: "md",
+  md: "md",
+  go: "go",
+  java: "java",
+  csharp: "cs",
+  cs: "cs",
+  cpp: "cpp",
+  c: "c",
+  dockerfile: "dockerfile",
+  diff: "diff",
+};
 
 /**
  * Wrap `<pre><code>` blocks in a `.code-block` header chrome.
@@ -429,12 +465,33 @@ export function wrapCodeBlocks(root: HTMLElement | DocumentFragment): void {
     const label = doc.createElement("span");
     label.className = "code-lang";
     label.textContent = lang;
+    // Button group: soft-wrap toggle, Download, Copy. All handled by the
+    // delegated listener in MessageList — no inline handlers.
+    const actions = doc.createElement("span");
+    actions.className = "code-block-actions";
+    const wrapBtn = doc.createElement("button");
+    wrapBtn.className = "code-wrap-btn";
+    wrapBtn.type = "button";
+    wrapBtn.title = "Toggle soft wrap";
+    wrapBtn.textContent = "Wrap";
+    const dlBtn = doc.createElement("button");
+    dlBtn.className = "code-download-btn";
+    dlBtn.type = "button";
+    // Inferred filename — the delegated handler reads `data-filename` to build
+    // the download blob. e.g. python → snippet.py.
+    const ext = LANG_FILE_EXT[lang] ?? "txt";
+    dlBtn.setAttribute("data-filename", `snippet.${ext}`);
+    dlBtn.title = `Download as snippet.${ext}`;
+    dlBtn.textContent = "Download";
     const btn = doc.createElement("button");
     btn.className = "code-copy-btn";
     btn.type = "button";
     btn.textContent = "Copy";
+    actions.appendChild(wrapBtn);
+    actions.appendChild(dlBtn);
+    actions.appendChild(btn);
     header.appendChild(label);
-    header.appendChild(btn);
+    header.appendChild(actions);
     pre.replaceWith(wrapper);
     wrapper.appendChild(header);
     wrapper.appendChild(pre);

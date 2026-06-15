@@ -143,6 +143,13 @@ pub struct AuditStats {
     pub top_tools_24h: Vec<TopToolEntry>,
     /// Average duration_ms per tool over the last 24h.
     pub avg_duration_ms_24h: Vec<AvgDurationEntry>,
+    /// Tool calls in the last 24h whose `outcome` was `error` (a tool actually
+    /// failed — distinct from a policy `denied`). Surfaces a rising
+    /// tool-failure signal in the audit UI + health registry.
+    pub error_calls_24h: i64,
+    /// Fraction of the last-24h calls that errored, in [0.0, 1.0]. `0.0` when
+    /// there were no calls in the window.
+    pub error_rate_24h: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -368,6 +375,24 @@ pub fn stats() -> Result<AuditStats> {
         |r| r.get(0),
     )?;
 
+    // Failed tool calls in the window. Only `outcome = 'error'` counts as a
+    // tool *failure* — `denied` is a policy decision, `dry_run`/`duplicate`/
+    // `stall_guard` are loop bookkeeping, none of which signal a broken tool.
+    let error_calls_24h: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM agent_audit WHERE ts >= ?1 AND outcome = 'error'",
+        params![cutoff],
+        |r| r.get(0),
+    )?;
+    let error_rate_24h = if total_calls_24h > 0 {
+        error_calls_24h as f64 / total_calls_24h as f64
+    } else {
+        0.0
+    };
+    // Roll the failure rate into the health registry so a high error rate shows
+    // up on the "Degraded" pill + Diagnostics panel, not just buried in the
+    // audit table. Purely observational — never alters control flow.
+    crate::health::record_tool_failure_rate(total_calls_24h, error_calls_24h, error_rate_24h);
+
     let mut stmt = conn.prepare(
         "SELECT tool_name, COUNT(*) AS c
            FROM agent_audit
@@ -407,6 +432,8 @@ pub fn stats() -> Result<AuditStats> {
         total_calls_24h,
         top_tools_24h,
         avg_duration_ms_24h,
+        error_calls_24h,
+        error_rate_24h,
     })
 }
 
@@ -982,6 +1009,49 @@ mod tests {
             .query_row("SELECT MIN(duration_ms) FROM agent_audit", [], |r| r.get(0))
             .unwrap();
         assert_eq!(min_dur, 3, "oldest survivor is the (total-CAP)th insert");
+    }
+
+    #[test]
+    fn error_stats_count_only_error_outcomes() {
+        // Mirrors the failure-rate aggregation in stats(): only `outcome =
+        // 'error'` is a tool failure; denied/dry_run/ok are excluded. Runs the
+        // exact SQL against an in-memory DB (stats() needs the shared pool).
+        let conn = fresh_db();
+        let now = now_millis();
+        let mk = |outcome: &str| AuditEntry {
+            ts: now,
+            conversation_id: None,
+            tool_name: "t".into(),
+            args_json: "{}".into(),
+            result_body: "".into(),
+            duration_ms: 1,
+            approval: "auto".into(),
+            outcome: outcome.into(),
+            error_kind: None,
+            workflow_run_id: None,
+        };
+        for o in ["ok", "ok", "error", "error", "denied", "dry_run"] {
+            insert(&conn, mk(o));
+        }
+        let cutoff = now - 24 * 60 * 60 * 1000;
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_audit WHERE ts >= ?1",
+                params![cutoff],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let errors: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_audit WHERE ts >= ?1 AND outcome = 'error'",
+                params![cutoff],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 6);
+        assert_eq!(errors, 2, "only 'error' rows count as failures");
+        let rate = errors as f64 / total as f64;
+        assert!((rate - 2.0 / 6.0).abs() < 1e-9);
     }
 
     #[test]

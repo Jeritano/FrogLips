@@ -138,6 +138,43 @@ import type {
   WebSearchResult,
 } from "../types";
 
+/**
+ * One persisted workflow run — mirrors the `WorkflowRun` struct serialized by
+ * `src-tauri/src/workflows.rs` (NOT the stale `WorkflowRun` in `types.ts`,
+ * which predates this and carries the wrong field names). `started_at` is unix
+ * seconds; `results_json` is the JSON-encoded {@link WorkflowRunResultRecord}
+ * summary, or null for an older/empty run.
+ */
+export interface WorkflowRunRecord {
+  id: number;
+  workflow_id: number;
+  started_at: number;
+  status: string;
+  results_json: string | null;
+}
+
+/**
+ * Parsed shape of a run's `results_json` — the persisted form of the runner's
+ * `WorkflowRunResult` (see `src/lib/workflow/runner.ts`). Only the fields the
+ * Run History view reads are declared; unknown fields are tolerated.
+ */
+export interface WorkflowRunResultRecord {
+  status: "ok" | "failed";
+  cards: Array<{
+    cardId: string;
+    name: string;
+    status: "ok" | "error" | "skipped" | "aborted";
+    output: string;
+    error?: string;
+  }>;
+  halted?: {
+    cardId: string;
+    cardName: string;
+    key: string;
+    value: string;
+  } | null;
+}
+
 /** Read-only storage stats from the DB maintenance agent (WS4). */
 export interface MaintenanceStats {
   db_bytes: number;
@@ -1204,8 +1241,29 @@ export const api = {
   /** Write exported transcript content (markdown/json) to a chosen path. */
   roundtableSaveFile: (destPath: string, content: string) =>
     invoke<void>("roundtable_save_file", { destPath, content }),
+  /**
+   * List the persisted runs for a workflow (most recent first, capped Rust-side).
+   *
+   * NOTE on the return type: the Rust `WorkflowRun` struct serializes
+   * `{ id, workflow_id, started_at, status, results_json }` where
+   * `results_json` is nullable. The `WorkflowRun` type imported here (from
+   * `types.ts`, owned by another module) is stale — it declares `created_at`
+   * and a non-nullable `results_json`. The binding keeps that declared type so
+   * the existing agent-tool consumer in `agent-loop/tool-registry.ts` keeps
+   * compiling; UI code that needs the ACCURATE shape should read rows through
+   * the local {@link WorkflowRunRecord} type (e.g. via a cast at the call
+   * site), which matches what Rust actually sends.
+   */
   workflowRunsList: (workflowId: number) =>
     invoke<WorkflowRun[]>("workflow_runs_list", { workflowId }),
+  /**
+   * Same backend command as {@link workflowRunsList}, typed to the ACCURATE
+   * Rust serialization ({@link WorkflowRunRecord}: `started_at`, nullable
+   * `results_json`). Use this from UI that surfaces run history; the older
+   * `workflowRunsList` is retained only for the legacy agent-tool consumer.
+   */
+  workflowRunsListTyped: (workflowId: number) =>
+    invoke<WorkflowRunRecord[]>("workflow_runs_list", { workflowId }),
 
   // Workflow skills (procedural memory). One skill = a named, replayable
   // sequence of tool calls scoped to a workflow. Save after a successful

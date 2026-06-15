@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fmtBytesBinary as fmtBytes } from "../lib/format";
-import { FileText, X } from "lucide-react";
+import { FileText, RefreshCw, X } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { EmptyState } from "./EmptyState";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
@@ -42,6 +42,9 @@ export function RagPanel({ onCorporaChanged }: Props) {
   const [draftRoot, setDraftRoot] = useState("");
   const [draftGlob, setDraftGlob] = useState("");
   const [ingesting, setIngesting] = useState(false);
+  // Name of the corpus currently being re-ingested via its row button (so only
+  // that row shows a spinner, not the whole form).
+  const [reingesting, setReingesting] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
 
@@ -109,6 +112,33 @@ export function RagPanel({ onCorporaChanged }: Props) {
         onCorporaChanged?.();
       } catch (e) {
         setErr(`Delete failed: ${e}`);
+      }
+    },
+    [refresh, onCorporaChanged],
+  );
+
+  // Manual re-ingest of an existing corpus from its stored root path. Picks up
+  // source-file changes since the last index; unchanged files take the backend
+  // copy-forward fast path (no re-embed), so this is cheap when little changed.
+  // (A backend also auto-refreshes stale corpora on its daily maintenance pass;
+  // this button is the on-demand path.)
+  const handleReingest = useCallback(
+    async (name: string, root: string) => {
+      setReingesting(name);
+      setErr(null);
+      setInfo(null);
+      try {
+        const report: RagIngestReport = await api.ragIngestFolder(name, root);
+        setInfo(
+          `Re-indexed '${name}': ${report.files_indexed}/${report.files_seen} files → ` +
+            `${report.chunks_created} chunks in ${report.duration_ms} ms.`,
+        );
+        await refresh();
+        onCorporaChanged?.();
+      } catch (e) {
+        setErr(`Re-ingest failed: ${e}`);
+      } finally {
+        setReingesting(null);
       }
     },
     [refresh, onCorporaChanged],
@@ -242,6 +272,15 @@ export function RagPanel({ onCorporaChanged }: Props) {
                   <td className="rag-col-r">{c.chunk_count}</td>
                   <td className="rag-col-r">{fmtAge(c.updated_at)}</td>
                   <td className="rag-col-r">
+                    <button
+                      onClick={() => void handleReingest(c.name, c.root_path)}
+                      disabled={reingesting === c.name}
+                      title={`Re-ingest ${c.name} from ${c.root_path} (picks up source changes)`}
+                      aria-label={`Re-ingest ${c.name}`}
+                      data-testid={`rag-reingest-${c.name}`}
+                    >
+                      <RefreshCw size={14} />
+                    </button>
                     <button
                       onClick={() =>
                         deleteConfirm.request(c.name, (n) => {

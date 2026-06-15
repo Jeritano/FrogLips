@@ -84,6 +84,11 @@ getrandom = "0.2"
 pdf-extract = "0.7"
 html2text = "0.13"
 sha2 = "0.10"
+# Diagnostics bundle: a real .zip the user can attach to a bug report (was a
+# concatenated text file mislabeled `.zip`). default-features off + `deflate`
+# only pulls the pure-Rust flate2/zlib-rs backend — no C dependency, so
+# notarization is unaffected and no extra dylib ships.
+zip = { version = "8", default-features = false, features = ["deflate"] }
 notify = "8"
 globset = "0.4"
 scraper = "0.20"

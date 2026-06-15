@@ -20,6 +20,28 @@ function fmtTs(ms: number): string {
   }
 }
 
+/* The Rust `AuditStats` carries derived tool-failure fields (error_calls_24h /
+ * error_rate_24h) that roll up into the health pill. Read them tolerantly so
+ * this stays correct whether or not the shared `AgentAuditStats` type has the
+ * fields declared yet. */
+function failureSignal(
+  stats: AgentAuditStats | null,
+): { errors: number; rate: number } | null {
+  if (!stats) return null;
+  const s = stats as AgentAuditStats & {
+    error_calls_24h?: number;
+    error_rate_24h?: number;
+  };
+  const errors = typeof s.error_calls_24h === "number" ? s.error_calls_24h : 0;
+  const rate = typeof s.error_rate_24h === "number" ? s.error_rate_24h : 0;
+  if (errors <= 0) return null;
+  return { errors, rate };
+}
+
+/* Mirrors the Rust health thresholds (health.rs): >=25% over a real sample is
+ * an elevated tool-failure rate worth flagging in the audit UI. */
+const ELEVATED_FAILURE_RATE = 0.25;
+
 export function AuditLog() {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<AgentAuditRow[]>([]);
@@ -100,6 +122,23 @@ export function AuditLog() {
             {stats.total_calls_24h} calls / 24h
           </span>
         )}
+        {(() => {
+          const f = failureSignal(stats);
+          if (!f) return null;
+          const elevated = f.rate >= ELEVATED_FAILURE_RATE;
+          return (
+            <span
+              className={
+                elevated
+                  ? "audit-log-hint audit-log-fail-elevated"
+                  : "audit-log-hint"
+              }
+              title="Agent tool calls that errored in the last 24h"
+            >
+              {f.errors} failed ({Math.round(f.rate * 100)}%)
+            </span>
+          );
+        })()}
       </div>
 
       {open && (
@@ -123,6 +162,22 @@ export function AuditLog() {
                     .join(", ")}
                 </div>
               )}
+              {(() => {
+                const f = failureSignal(stats);
+                if (!f) return null;
+                const elevated = f.rate >= ELEVATED_FAILURE_RATE;
+                return (
+                  <div
+                    className={
+                      elevated ? "audit-log-fail-elevated" : undefined
+                    }
+                  >
+                    Tool failures (24h): {f.errors} of {stats.total_calls_24h} (
+                    {Math.round(f.rate * 100)}%)
+                    {elevated ? " — elevated, see Diagnostics" : ""}
+                  </div>
+                );
+              })()}
             </div>
           )}
 

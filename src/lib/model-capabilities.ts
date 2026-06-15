@@ -111,6 +111,22 @@ export function classifyToolFitness(
   return "untested";
 }
 
+/* ── Compact context-window label ───────────────────────────────────────────
+ *
+ * Render a resolved context-window token count as a short human marker for the
+ * picker ("8k", "32k", "128k", "1M"). Mirrors the buckets the agent-loop
+ * budgeter uses; purely cosmetic so it rounds aggressively.
+ */
+export function formatContextTokens(tokens: number | null | undefined): string {
+  if (!tokens || tokens <= 0) return "";
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return `${m >= 10 ? Math.round(m) : Number(m.toFixed(1))}M`;
+  }
+  const k = Math.round(tokens / 1000);
+  return k > 0 ? `${k}k` : `${tokens}`;
+}
+
 /** Per-message attachment caps. UX bound — not a backend limit. */
 export const MAX_IMAGES_PER_MESSAGE = 4;
 /** Per-image size cap before base64 expansion. 4 MiB matches the "useful for

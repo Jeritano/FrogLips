@@ -100,12 +100,17 @@ export async function* streamChat(
     const decoder = new TextDecoder();
     let buf = "";
     const MAX_BUF = 1 << 20; // 1 MB — guard against malformed server output
-    // Reasoning-model fallback: capture `delta.reasoning` / `reasoning_content`
-    // and, if the turn produces NO `content` (e.g. gemma4 and other "thinking"
-    // models that stream only reasoning), surface the reasoning so the reply
-    // isn't dropped as an empty response.
-    let anyContent = false;
-    let reasoningAcc = "";
+    // Reasoning-model capture: some "thinking" models (R1, Qwen3, gpt-oss) stream
+    // the chain-of-thought in a SEPARATE OpenAI-style `delta.reasoning` /
+    // `reasoning_content` field instead of inline `<think>…</think>`. We wrap that
+    // stream in literal `<think>…</think>` sentinels and emit it BEFORE the answer
+    // so it travels in the persisted content; MessageList splits it back out into a
+    // collapsed "Thought for a moment" disclosure. A model that emits no `content`
+    // at all (only reasoning) still surfaces its chain-of-thought this way rather
+    // than dropping the reply as empty. Models that already inline `<think>` tags
+    // need no special handling — those tags pass through untouched.
+    let reasoningOpen = false;
+    let reasoningChars = 0;
     const REASONING_CAP = 1 << 20;
 
     while (true) {
@@ -127,8 +132,10 @@ export async function* streamChat(
 
         const payload = line.slice(5).trim();
         if (payload === "[DONE]") {
-          if (!anyContent && reasoningAcc)
-            yield { delta: reasoningAcc, done: false };
+          if (reasoningOpen) {
+            yield { delta: "</think>", done: false };
+            reasoningOpen = false;
+          }
           yield { delta: "", done: true };
           return;
         }
@@ -136,19 +143,31 @@ export async function* streamChat(
           const obj = JSON.parse(payload);
           const d = obj?.choices?.[0]?.delta ?? {};
           const content: string = d?.content ?? "";
+          const reasoning: string = d?.reasoning ?? d?.reasoning_content ?? "";
+          // Reasoning arrives first (and may interleave with no content yet).
+          // Open a single `<think>` span, stream the chain-of-thought into it,
+          // then close it the moment real content starts.
+          if (reasoning && !content && reasoningChars < REASONING_CAP) {
+            if (!reasoningOpen) {
+              yield { delta: "<think>", done: false };
+              reasoningOpen = true;
+            }
+            reasoningChars += reasoning.length;
+            yield { delta: reasoning, done: false };
+          }
           if (content) {
-            anyContent = true;
+            if (reasoningOpen) {
+              yield { delta: "</think>\n\n", done: false };
+              reasoningOpen = false;
+            }
             yield { delta: content, done: false };
-          } else if (!anyContent) {
-            const r: string = d?.reasoning ?? d?.reasoning_content ?? "";
-            if (r && reasoningAcc.length < REASONING_CAP) reasoningAcc += r;
           }
         } catch {
           // skip keepalives
         }
       }
     }
-    if (!anyContent && reasoningAcc) yield { delta: reasoningAcc, done: false };
+    if (reasoningOpen) yield { delta: "</think>", done: false };
     yield { delta: "", done: true };
   } finally {
     to.clear();

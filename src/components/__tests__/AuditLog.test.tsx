@@ -16,6 +16,8 @@ const apiMocks = vi.hoisted(() => ({
   agentAuditList: vi.fn<() => Promise<AgentAuditRow[]>>(async () => []),
   agentAuditStats: vi.fn<() => Promise<AgentAuditStats>>(async () => ({
     total_calls_24h: 0,
+    error_calls_24h: 0,
+    error_rate_24h: 0,
     top_tools_24h: [],
     avg_duration_ms_24h: [],
   })),

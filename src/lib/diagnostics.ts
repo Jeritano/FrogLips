@@ -188,6 +188,44 @@ export function subscribeDiag(fn: (entries: DiagEntry[]) => void): () => void {
   };
 }
 
+/* ── Boot / time-to-interactive timing ────────────────────────────────────
+ *
+ * Per-window startup metric so a boot regression is visible beyond the static
+ * byte budgets the build gate enforces. `performance.now()` is measured from
+ * navigation start inside each webview, so the value at the moment React's
+ * root render returns is a cheap, local proxy for time-to-interactive. Recorded
+ * as an `info` diagnostic (in-memory ring + localStorage only — no telemetry,
+ * no IPC) so it shows up in the Diagnostics panel next to everything else.
+ *
+ * `label` distinguishes the windows that each have their own entry
+ * (e.g. "main", "quick"). Idempotent per label within a window: a duplicate
+ * call (StrictMode double-invoke, accidental re-import) is ignored so the panel
+ * isn't spammed with two boot lines for one launch.
+ */
+const bootTimingRecorded = new Set<string>();
+
+export function recordBootTiming(label: string): void {
+  if (bootTimingRecorded.has(label)) return;
+  bootTimingRecorded.add(label);
+  try {
+    if (
+      typeof performance === "undefined" ||
+      typeof performance.now !== "function"
+    ) {
+      return;
+    }
+    const tti = Math.round(performance.now());
+    logDiag({
+      level: "info",
+      source: "boot-timing",
+      message: `${label} TTI ${tti}ms`,
+      detail: { window: label, ttiMs: tti },
+    });
+  } catch {
+    /* timing is best-effort — never block or crash a window boot */
+  }
+}
+
 /* ── Test hooks ─────────────────────────────────────────────────────────── */
 
 /** Test-only: drop in-memory state without touching localStorage. */
@@ -195,4 +233,5 @@ export function __resetDiagnosticsForTests(): void {
   entries.length = 0;
   subscribers.clear();
   hydrated = false;
+  bootTimingRecorded.clear();
 }

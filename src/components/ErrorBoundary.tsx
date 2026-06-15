@@ -1,5 +1,6 @@
 import { Component, type ReactNode } from "react";
 import { logDiag } from "../lib/diagnostics";
+import { api } from "../lib/tauri-api";
 
 /**
  * Catches render/effect errors so a crash in one subtree doesn't blank the
@@ -31,15 +32,35 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(err: unknown, info: { componentStack?: string | null }) {
+    const label = this.props.label ?? "react";
+    const message = err instanceof Error ? err.message : String(err);
     logDiag({
       level: "error",
       source: "error-boundary",
-      message: `${this.props.label ?? "react"}: ${err instanceof Error ? err.message : String(err)}`,
+      message: `${label}: ${message}`,
       detail: {
         stack: err instanceof Error ? err.stack : undefined,
         componentStack: info.componentStack ?? undefined,
       },
     });
+    // logDiag only reaches the in-memory ring + localStorage. A React render
+    // crash is exactly the kind of fault we want preserved on disk for a bug
+    // report, so also flush a single line to the on-disk diagnostics log
+    // (~/.local-llm-app/diag.log via append_diag_log). That log sits beside
+    // crash.log in the same data dir and is bundled into the support archive
+    // alongside it (commands::misc support-bundle), so a caught error survives
+    // a process restart even though crash.log itself is panic-hook-only and
+    // has no frontend-writable command. Best-effort: api.appendDiagLog is
+    // absent in some test mocks and the write must never re-throw out of an
+    // error boundary.
+    try {
+      const stack = err instanceof Error && err.stack ? ` :: ${err.stack}` : "";
+      void api
+        .appendDiagLog?.(`[error-boundary] ${label}: ${message}${stack}`)
+        .catch(() => undefined);
+    } catch {
+      /* swallow — disk forward is observational only */
+    }
   }
 
   reset = () => this.setState({ err: null });

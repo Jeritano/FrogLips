@@ -440,12 +440,18 @@
   animation: blink 1s step-start infinite;
 }
 
-/* Streaming bubble renders plain (un-parsed) text for performance, so preserve
-   newlines/whitespace until the message completes and re-renders as markdown.
-   PERF (2026-05-30). */
+/* Streaming bubble: the trailing in-flight TAIL renders as plain (un-parsed)
+   text, so preserve its newlines/whitespace. PERF (2026-05-30). */
 .content.markdown.streaming-plain {
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* The already-complete prefix IS real markdown (marked emits <br>/<p>), so it
+   must NOT inherit the tail's pre-wrap — that would render marked's leftover
+   "\n" between block tags a second time (double-spaced lines). Matches the
+   completed-message `.message.assistant .content` rule. */
+.content.markdown.streaming-plain .streaming-prefix {
+  white-space: normal;
 }
 
 @keyframes blink {
@@ -970,4 +976,151 @@
   color: var(--warn-fg, #fbbf24);
   border-radius: var(--radius-full, 999px);
   padding: 0 6px;
+}
+
+/* ── Reasoning-model "thinking" disclosure ──────────────────────────────────
+   Collapsed chain-of-thought rendered ABOVE the answer (R1 / Qwen3 / gpt-oss).
+   Lives inside .content so it inherits the bubble's left offset. */
+.thinking-disclosure {
+  margin: 0 0 8px;
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+.thinking-summary {
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.thinking-summary::-webkit-details-marker {
+  display: none;
+}
+.thinking-summary::before {
+  content: "▸";
+  font-size: 9px;
+  transition: transform 0.12s var(--ease-standard, ease);
+}
+.thinking-disclosure[open] .thinking-summary::before {
+  transform: rotate(90deg);
+}
+.thinking-summary:hover {
+  color: var(--text-2);
+}
+.thinking-body {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Keep a very long chain-of-thought from dominating the viewport. */
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* ── Jump-to-latest pill ────────────────────────────────────────────────────
+   Floating control shown only when autoscroll is unstuck AND content is
+   streaming. `sticky` keeps it pinned near the bottom of the scroll container
+   without an extra positioned wrapper. */
+.jump-latest-pill {
+  position: sticky;
+  bottom: 12px;
+  align-self: center;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 14px;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full, 999px);
+  box-shadow: var(--elev-2);
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    opacity 0.12s;
+}
+.jump-latest-pill:hover {
+  background: var(--surface-hover);
+  border-color: var(--text-3);
+}
+.jump-latest-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── update_plan live checklist ──────────────────────────────────────────────
+   Sticky pinned task list parsed from the latest update_plan call. Sits at the
+   top of the scroll container so progress stays visible while the user reads. */
+.plan-checklist {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 24px 6px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius, 8px);
+  box-shadow: var(--elev-1);
+}
+.plan-checklist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.plan-checklist-title {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+}
+.plan-checklist-count {
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.plan-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+.plan-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.plan-step-mark {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  color: var(--text-3);
+}
+.plan-step.in_progress {
+  color: var(--text);
+}
+.plan-step.in_progress .plan-step-mark {
+  color: var(--accent);
+}
+.plan-step.done {
+  color: var(--text-3);
+}
+.plan-step.done .plan-step-mark {
+  color: var(--green-fg);
+}
+.plan-step.done .plan-step-text {
+  text-decoration: line-through;
 }

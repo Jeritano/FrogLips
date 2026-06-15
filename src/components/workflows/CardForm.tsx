@@ -41,6 +41,19 @@ interface Props {
   isNew: boolean;
   onSave: (card: WorkflowCard) => void;
   onClose: () => void;
+  /**
+   * "Test this card" dry-run. Runs the CURRENT draft in isolation against
+   * `sampleInput` (seeded as the upstream handoff), streaming output through
+   * `onDelta` and resolving with the final text. Throws on failure. `signal`
+   * lets the form cancel an in-flight test. Optional so the form still renders
+   * in contexts that don't wire a runner.
+   */
+  onTest?: (
+    card: WorkflowCard,
+    sampleInput: string,
+    onDelta: (text: string) => void,
+    signal: AbortSignal,
+  ) => Promise<string>;
 }
 
 /**
@@ -323,7 +336,14 @@ function decodeSchedule(schedule: string | null): {
  * save/cancel. The `--wf-fly-*` custom properties drive the fly transform;
  * all motion is gated by the global prefers-reduced-motion rule.
  */
-export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
+export function CardForm({
+  card,
+  origin,
+  isNew,
+  onSave,
+  onClose,
+  onTest,
+}: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   // `loadAllPresets()` reads localStorage + JSON.parses + validates the custom
@@ -1071,6 +1091,7 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
               onChange={setTools}
               onToggleOne={toggleTool}
             />
+            {onTest && <TestCardSection draft={draft} onTest={onTest} />}
           </div>
           <div className="wf-form-foot">
             <button type="button" className="wf-btn" onClick={handleCancel}>
@@ -1089,6 +1110,125 @@ export function CardForm({ card, origin, isNew, onSave, onClose }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ── Test this card (single-card dry-run) ─────────────────────────────────
+ * A collapsible section that runs the CURRENT draft in isolation against a
+ * user-typed sample input, streaming the output inline. Uses the parent's
+ * `onTest` (wired to the workflow runner) so the card runs exactly as it would
+ * in a real chain — same model/backend/tools/approval policy — but without the
+ * rest of the graph and without recording a run in history. The sample input
+ * is fed in as the upstream handoff so cards that consume "previous step
+ * output" can be exercised without wiring a real predecessor.
+ */
+function TestCardSection({
+  draft,
+  onTest,
+}: {
+  draft: WorkflowCard;
+  onTest: NonNullable<Props["onTest"]>;
+}) {
+  const [sample, setSample] = useState("");
+  const [output, setOutput] = useState("");
+  const [running, setRunning] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Abort any in-flight test if the form unmounts (Save/Cancel/close).
+  useEffect(
+    () => () => abortRef.current?.abort(),
+    [],
+  );
+
+  const stop = useCallback(() => abortRef.current?.abort(), []);
+
+  const run = useCallback(async () => {
+    setErr(null);
+    setOutput("");
+    setDone(false);
+    setRunning(true);
+    const ac = new AbortController();
+    abortRef.current = ac;
+    try {
+      // Stream deltas straight into the output buffer. The runner already caps
+      // a card's output; this view just appends what it streams.
+      const final = await onTest(
+        draft,
+        sample,
+        (text) => setOutput((prev) => prev + text),
+        ac.signal,
+      );
+      if (!ac.signal.aborted) {
+        // Prefer the final text (post-cap) when present; otherwise keep the
+        // streamed buffer (some backends don't stream a separate final).
+        if (final) setOutput(final);
+        setDone(true);
+      }
+    } catch (e) {
+      if (!ac.signal.aborted) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      if (abortRef.current === ac) abortRef.current = null;
+      setRunning(false);
+    }
+  }, [draft, onTest, sample]);
+
+  return (
+    <details className="wf-field wf-collapse" data-testid="wf-test-card">
+      <summary className="wf-collapse-summary">
+        <span>Test this card</span>
+      </summary>
+      <div className="wf-collapse-body" style={{ display: "grid", gap: 8 }}>
+        <label className="wf-field" style={{ margin: 0 }}>
+          <span>Sample input (optional)</span>
+          <textarea
+            value={sample}
+            onChange={(e) => setSample(e.target.value)}
+            rows={2}
+            placeholder="Stand in for the previous card's output. Leave blank to run with no upstream input."
+            data-testid="wf-test-input"
+          />
+        </label>
+        <div style={{ display: "flex", gap: 8 }}>
+          {running ? (
+            <button
+              type="button"
+              className="wf-btn wf-btn-danger"
+              onClick={stop}
+              data-testid="wf-test-stop"
+            >
+              Stop test
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="wf-btn wf-btn-primary"
+              onClick={() => void run()}
+              data-testid="wf-test-run"
+            >
+              Run test
+            </button>
+          )}
+        </div>
+        <small className="wf-field-hint">
+          Runs only this card with your current (unsaved) edits — no chain, and
+          this test is not recorded in run history.
+        </small>
+        {err && (
+          <p className="wf-field-error" role="alert" data-testid="wf-test-error">
+            {err}
+          </p>
+        )}
+        {(running || output || done) && (
+          <pre className="wf-run-output" data-testid="wf-test-output">
+            {output || (running ? "Running…" : "(no output)")}
+          </pre>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -1275,6 +1415,19 @@ const SchedulePicker = memo(function SchedulePicker({
       )}
       {!error && warning && (
         <p className="wf-field-hint wf-sched-warn">{warning}</p>
+      )}
+      {/* Scheduled runs are driven by an in-app timer (the Rust scheduler scans
+          every ~30s while the process is alive) — there is no background
+          daemon. Make that limitation explicit on any non-manual schedule so a
+          user doesn't expect a 9am run to fire while the app is closed. */}
+      {parts.mode !== "manual" && (
+        <p
+          className="wf-field-hint wf-sched-warn"
+          data-testid="wf-sched-app-open-warning"
+        >
+          ⚠ Scheduled runs only fire while Froglips is open — they will not run
+          in the background or while the app is quit.
+        </p>
       )}
       <small className="wf-field-hint">{HINT}</small>
     </div>

@@ -2,8 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Puzzle, X } from "lucide-react";
+import { History, Puzzle, X } from "lucide-react";
 import { api } from "../../lib/tauri-api";
+import type {
+  WorkflowRunRecord,
+  WorkflowRunResultRecord,
+} from "../../lib/tauri-api";
+import { useModalA11y } from "../../lib/use-modal-a11y";
 import { validateGraph, parseWorkflowTrigger } from "../../lib/workflow";
 import type { RunWorkflowOptions } from "../../lib/workflow";
 import {
@@ -70,6 +75,10 @@ export function WorkflowsPage({ status }: Props) {
   // header. The panel itself owns its fetch lifecycle and refetches when
   // `workflowId` changes, so we just toggle visibility here.
   const [skillsOpen, setSkillsOpen] = useState(false);
+  // Run History panel — past runs of the open workflow (persisted in Rust as
+  // `workflow_runs`, previously only readable by an agent tool). Same toggle
+  // pattern as Skills; the panel owns its own fetch lifecycle.
+  const [historyOpen, setHistoryOpen] = useState(false);
   // Shareable-Flow import (paste a copied Flow doc).
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
@@ -417,6 +426,8 @@ export function WorkflowsPage({ status }: Props) {
     // list into the new one. The panel itself also refetches on
     // workflowId change, but closing keeps the UX uncluttered.
     setSkillsOpen(false);
+    // Same for the Run History panel.
+    setHistoryOpen(false);
     // Clear any sticky error banner from a prior workflow's run.
     setErr(null);
   }
@@ -777,6 +788,67 @@ export function WorkflowsPage({ status }: Props) {
     [cards, edges, selected, validation, baseRunOpts, run.start],
   );
 
+  // "Test this card" dry-run (CardForm). Runs ONE card in isolation against a
+  // user-typed sample input — no chain, no history record (workflowId null) —
+  // and streams its output back to the form via `onDelta`, resolving with the
+  // final text. Errors throw so the form can surface them inline. Deliberately
+  // bypasses the global run provider (the test is isolated and the editor modal
+  // owns its own output area), but refuses to start while a real run is in
+  // flight so a test can't fight a live run for the backend.
+  const testCard = useCallback(
+    async (
+      card: WorkflowCard,
+      sampleInput: string,
+      onDelta: (text: string) => void,
+      signal: AbortSignal,
+    ): Promise<string> => {
+      if (run.runningWorkflowId !== null) {
+        throw new Error(
+          "A workflow run is in progress — wait for it to finish before testing a card.",
+        );
+      }
+      // A card with no pinned model needs the loaded chat model as a fallback.
+      if (!card.model && !(status?.model ?? "")) {
+        throw new Error(
+          "Load a model first (assign one to this card, or load a default in the chat picker).",
+        );
+      }
+      await ensureCardModelLoaded(card);
+      if (signal.aborted) throw new Error("Test cancelled.");
+      const { runWorkflow } = await import("../../lib/workflow/runner");
+      let finalOutput = "";
+      const result = await runWorkflow(
+        { cards: [card], edges: [] },
+        {
+          onCardOutput: (_id, text) => onDelta(text),
+          onCardDone: (_id, r) => {
+            if (r.status === "ok") finalOutput = r.output;
+          },
+        },
+        {
+          // workflowId null → the run is NOT recorded in history (a test is not
+          // a real run). initialInput seeds the card as if upstream produced it.
+          workflowId: null,
+          model: status?.model ?? "",
+          defaultBackend:
+            (status?.backend as RunWorkflowOptions["defaultBackend"]) ??
+            undefined,
+          serverStatus: status,
+          initialInput: sampleInput,
+          signal,
+        },
+      );
+      const errored = result.cards.find((c) => c.status === "error");
+      if (errored) {
+        throw new Error(errored.error || "Card failed during test.");
+      }
+      if (signal.aborted) throw new Error("Test cancelled.");
+      return finalOutput;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ensureCardModelLoaded reads `status`, already a dep; run.runningWorkflowId read at call time via the captured `run`.
+    [status, run],
+  );
+
   // Imperative focus hook the canvas registers into (review UX #5): clicking a
   // failed card in the status panel scrolls + frames its node on the canvas.
   // A ref (not state) so the canvas registering its focuser never re-renders
@@ -850,6 +922,7 @@ export function WorkflowsPage({ status }: Props) {
             run.start({
               workflowId: wf.id,
               graph: wf.graph,
+              workflowName: wf.name,
               opts: { ...opts, scheduled: true, startCardId: trigger.card_id },
               // A05: pre-load the models of the cards that will run, exactly like
               // every manual entry point — otherwise a scheduled local-model
@@ -1102,6 +1175,17 @@ export function WorkflowsPage({ status }: Props) {
       >
         Export
       </button>
+      {/* Run History opener — past runs of this workflow (when, status,
+          per-card outputs). Persisted in Rust; surfaced here for the user. */}
+      <button
+        type="button"
+        className="wf-btn topbar-action"
+        onClick={() => setHistoryOpen(true)}
+        data-testid="wf-open-history"
+        title="View past runs of this workflow"
+      >
+        History
+      </button>
       {/* Skills panel opener — procedural memory inspector. Lives next
           to Run/Stop so the user can pop the panel mid-build. */}
       <button
@@ -1162,6 +1246,7 @@ export function WorkflowsPage({ status }: Props) {
           onCreateFromDeck={createFromDeck}
           onFocusNode={focusNode}
           onRerunFromCard={runFromCard}
+          onStopCard={run.stopCard}
           onRegisterFocus={registerFocusNode}
           workspace={workspace}
         />
@@ -1173,6 +1258,7 @@ export function WorkflowsPage({ status }: Props) {
           isNew={formIsNew}
           onSave={saveCard}
           onClose={closeForm}
+          onTest={testCard}
         />
       )}
       <SkillsPanel
@@ -1180,6 +1266,20 @@ export function WorkflowsPage({ status }: Props) {
         workflowName={name || selected.name}
         open={skillsOpen}
         onClose={() => setSkillsOpen(false)}
+      />
+      <RunHistoryPanel
+        workflowId={selected.id}
+        workflowName={name || selected.name}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        // Refetch whenever a run of THIS workflow finishes while the panel is
+        // open (the provider stamps `finishedAt` on completion), so the newest
+        // run appears without the user reopening the panel.
+        refetchKey={
+          run.lastSummary?.workflowId === selected.id
+            ? (run.lastSummary?.finishedAt ?? 0)
+            : 0
+        }
       />
     </div>
   );
@@ -1201,6 +1301,8 @@ interface RunSurfaceProps {
   onFocusNode: (id: string) => void;
   /** Re-run the graph resuming from a card (the "re-run from here" action). */
   onRerunFromCard: (id: string) => void;
+  /** Stop the currently-running card (RunPanel per-row Stop). */
+  onStopCard: (id: string) => void;
   /** Lets the canvas hand its imperative node-focuser up to the page. */
   onRegisterFocus: (fn: ((id: string) => void) | null) => void;
   /** Active agent write-workspace for the RunPanel's "where do files go" chip. */
@@ -1226,6 +1328,7 @@ function RunSurface({
   onCreateFromDeck,
   onFocusNode,
   onRerunFromCard,
+  onStopCard,
   onRegisterFocus,
   workspace,
 }: RunSurfaceProps) {
@@ -1300,8 +1403,247 @@ function RunSurface({
         runningCardId={runningCardId}
         onFocusNode={onFocusNode}
         onRerunFromCard={onRerunFromCard}
+        onStopCard={onStopCard}
         workspace={workspace}
       />
     </>
   );
+}
+
+/* ── Run History panel ─────────────────────────────────────────────────────
+ * Surfaces the persisted `workflow_runs` rows (previously only reachable by an
+ * agent tool). Lists each past run — when it ran, its status, and a per-card
+ * output preview — newest first, capped Rust-side. A row expands to show every
+ * card's full recorded output. Reuses the `skills-panel-*` overlay chrome so
+ * the visual language matches the Skills panel.
+ */
+interface RunHistoryPanelProps {
+  workflowId: number;
+  workflowName: string;
+  open: boolean;
+  onClose: () => void;
+  /** Changes when a run of this workflow finishes — forces a refetch. */
+  refetchKey: number;
+}
+
+function RunHistoryPanel({
+  workflowId,
+  workflowName,
+  open,
+  onClose,
+  refetchKey,
+}: RunHistoryPanelProps) {
+  const [rows, setRows] = useState<WorkflowRunRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // Ids of the runs the user has expanded to see full per-card output.
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      setRows(await api.workflowRunsListTyped(workflowId));
+    } catch (e) {
+      setErr(`Load failed: ${e}`);
+      logDiag({
+        level: "warn",
+        source: "run-history-panel",
+        message: "workflowRunsList failed",
+        detail: e,
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [workflowId]);
+
+  // Fetch when the panel opens, when the workflow changes while open, and when
+  // a run of this workflow completes (refetchKey bump). Clear expansion state
+  // on a workflow switch so a stale run id can't stay expanded.
+  useEffect(() => {
+    if (!open) return;
+    setExpanded(new Set());
+    void refresh();
+  }, [open, workflowId, refetchKey, refresh]);
+
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useModalA11y({ open, onClose, containerRef: overlayRef });
+
+  if (!open) return null;
+
+  const toggle = (id: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  return (
+    <div
+      className="skills-panel-overlay"
+      data-testid="run-history-panel"
+      ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Run history for ${workflowName}`}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="skills-panel-box">
+        <header className="skills-panel-header">
+          <h2 className="skills-panel-title">
+            Run history ·{" "}
+            <span className="skills-panel-wf">{workflowName}</span>
+          </h2>
+          <button
+            type="button"
+            className="skills-panel-close"
+            onClick={onClose}
+            aria-label="Close run history"
+            data-testid="run-history-close"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        {err && (
+          <div className="wf-error" onClick={() => setErr(null)}>
+            {err}
+          </div>
+        )}
+
+        <div className="skills-panel-body">
+          {rows.length === 0 && !loading ? (
+            <EmptyState
+              icon={<History size={24} />}
+              heading="No runs yet"
+              sub="Runs of this workflow — manual or scheduled — are recorded here so you can review when they ran and what each card produced."
+              data-testid="run-history-empty"
+            />
+          ) : (
+            <ul className="wf-run-history-list" data-testid="run-history-list">
+              {loading && rows.length === 0 && (
+                <li className="wf-run-history-loading">Loading…</li>
+              )}
+              {rows.map((r) => (
+                <RunHistoryRow
+                  key={r.id}
+                  run={r}
+                  expanded={expanded.has(r.id)}
+                  onToggle={() => toggle(r.id)}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** One run in the history list. Collapsed shows when/status/card summary +
+ *  the last card's output preview; expanded shows every card's full output. */
+function RunHistoryRow({
+  run,
+  expanded,
+  onToggle,
+}: {
+  run: WorkflowRunRecord;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  // `results_json` is the persisted runner summary; tolerate null / bad JSON.
+  const parsed = useMemo<WorkflowRunResultRecord | null>(() => {
+    if (!run.results_json) return null;
+    try {
+      return JSON.parse(run.results_json) as WorkflowRunResultRecord;
+    } catch {
+      return null;
+    }
+  }, [run.results_json]);
+
+  const cards = parsed?.cards ?? [];
+  // Preview = the last card that produced output (the chain's tail result).
+  const previewCard = [...cards].reverse().find((c) => c.output.trim() !== "");
+  const failedCount = cards.filter((c) => c.status === "error").length;
+
+  return (
+    <li className="wf-run-history-item" data-state={run.status}>
+      <button
+        type="button"
+        className="wf-run-history-head"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        data-testid={`run-history-row-${run.id}`}
+      >
+        <span aria-hidden="true" className="wf-run-history-disclose">
+          {expanded ? "▾" : "▸"}
+        </span>
+        <span
+          className={`wf-run-history-status wf-run-history-status-${run.status}`}
+        >
+          {run.status === "ok" ? "✓ ok" : "✗ failed"}
+        </span>
+        <span className="wf-run-history-when">
+          {formatRunTimestamp(run.started_at)}
+        </span>
+        <span className="wf-run-history-meta">
+          {cards.length} card{cards.length === 1 ? "" : "s"}
+          {failedCount > 0 ? ` · ${failedCount} errored` : ""}
+          {parsed?.halted ? " · halted" : ""}
+        </span>
+      </button>
+      {!expanded && previewCard && (
+        <pre className="wf-run-history-preview">
+          {truncatePreview(previewCard.output)}
+        </pre>
+      )}
+      {expanded && (
+        <div className="wf-run-history-detail">
+          {cards.length === 0 ? (
+            <p className="wf-run-history-nodata">
+              No per-card detail was recorded for this run.
+            </p>
+          ) : (
+            cards.map((c, i) => (
+              <div
+                key={`${c.cardId}-${i}`}
+                className="wf-run-history-card"
+                data-state={c.status}
+              >
+                <div className="wf-run-history-card-head">
+                  <span className="wf-run-history-card-name">{c.name}</span>
+                  <span className="wf-run-history-card-status">{c.status}</span>
+                </div>
+                {c.error && (
+                  <pre className="wf-run-output wf-run-error">{c.error}</pre>
+                )}
+                {c.output && (
+                  <pre className="wf-run-history-card-output">{c.output}</pre>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** Format a unix-SECONDS run timestamp as a readable local date+time. */
+function formatRunTimestamp(unixSecs: number): string {
+  if (!Number.isFinite(unixSecs) || unixSecs <= 0) return "unknown time";
+  try {
+    return new Date(unixSecs * 1000).toLocaleString();
+  } catch {
+    return "unknown time";
+  }
+}
+
+/** Single-line-ish preview of a card output for the collapsed history row. */
+function truncatePreview(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
 }

@@ -34,7 +34,15 @@
   text-transform: lowercase;
   user-select: none;
 }
-.markdown .code-copy-btn {
+/* Header button group: soft-wrap toggle, Download, Copy. Shared chrome. */
+.markdown .code-block-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.markdown .code-copy-btn,
+.markdown .code-download-btn,
+.markdown .code-wrap-btn {
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
   color: var(--text-muted);
@@ -43,7 +51,7 @@
   border-radius: var(--radius-xs);
   padding: 2px var(--space-2);
   cursor: pointer;
-  /* Hidden until the block is hovered (or the button is keyboard-focused)
+  /* Hidden until the block is hovered (or a button is keyboard-focused)
      so dense code-heavy replies stay quiet. */
   opacity: 0;
   transition:
@@ -52,16 +60,36 @@
     background var(--dur-fast) var(--ease-standard);
 }
 .markdown .code-block:hover .code-copy-btn,
-.markdown .code-copy-btn:focus-visible {
+.markdown .code-block:hover .code-download-btn,
+.markdown .code-block:hover .code-wrap-btn,
+.markdown .code-copy-btn:focus-visible,
+.markdown .code-download-btn:focus-visible,
+.markdown .code-wrap-btn:focus-visible {
   opacity: 1;
 }
-.markdown .code-copy-btn:hover {
+.markdown .code-copy-btn:hover,
+.markdown .code-download-btn:hover,
+.markdown .code-wrap-btn:hover {
   color: var(--text);
   background: var(--overlay-soft);
 }
 .markdown .code-copy-btn.copied {
   opacity: 1;
   color: var(--green-fg);
+}
+/* Soft-wrap toggle: when active, keep it visible + accented and switch the
+   <pre> from horizontal scroll to wrapped lines. */
+.markdown .code-wrap-btn.active {
+  opacity: 1;
+  color: var(--accent);
+}
+.markdown .code-block.wrap pre {
+  overflow-x: visible;
+}
+.markdown .code-block.wrap pre code {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 /* ── KaTeX ──────────────────────────────────────────────────────────────── */

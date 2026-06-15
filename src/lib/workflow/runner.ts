@@ -176,6 +176,16 @@ export interface RunWorkflowOptions {
    * cards; the runner trusts it without re-validating.
    */
   precomputedOrder?: WorkflowCard[];
+  /**
+   * Seed text fed to the FIRST executed card exactly as if it were the output
+   * of a preceding step — used by the CardForm "Test this card" dry-run so the
+   * user can supply a sample upstream handoff without wiring a real predecessor.
+   * Wrapped in the same `<untrusted-data>` fence as a real cross-card handoff
+   * (see {@link buildHandoffMessage}); empty/whitespace/absent is ignored so a
+   * normal run is unaffected. Only the first card sees it; subsequent cards
+   * receive the previous card's real output.
+   */
+  initialInput?: string;
 }
 
 /**
@@ -563,7 +573,16 @@ export async function runWorkflow(
     }
 
     const results: CardResult[] = [];
-    let previousOutput: string | null = null;
+    // Seed the first card with the caller-supplied sample input (the "Test this
+    // card" dry-run), capped like a real handoff so a huge paste can't blow the
+    // first card's context. Empty/whitespace is treated as no input. Subsequent
+    // cards overwrite this with their real upstream output.
+    let previousOutput: string | null =
+      opts.initialInput && opts.initialInput.trim().length > 0
+        ? opts.initialInput.length > HANDOFF_OUTPUT_CAP
+          ? `${safeTruncate(opts.initialInput, HANDOFF_OUTPUT_CAP)}… [truncated for handoff]`
+          : opts.initialInput
+        : null;
     let failed = false;
     // Gate/halt: set when a completed card's `haltWhen` matched the scratchpad.
     // Distinct from `failed` — downstream cards are skipped the same way, but

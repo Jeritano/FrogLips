@@ -11,7 +11,7 @@ import {
   useUpdateSettings,
 } from "../contexts/SettingsContext";
 import pkg from "../../package.json";
-import type { ServerStatus } from "../types";
+import type { ModelEntry, ServerStatus } from "../types";
 
 /*
  * App settings window (Cmd+, — product review 2026-06-10, IA #2). App-level
@@ -90,6 +90,102 @@ launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0`}
           <code> sudo sysctl iogpu.wired_limit_mb=118784</code>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * MLX backend tuning (W2-MODELS items 2 + 3). Surfaces two knobs that were
+ * fully wired in the Rust spawn path but had no UI:
+ *   - Draft model (`--draft-model`): speculative decoding — pair a small model
+ *     of the SAME tokenizer family beside a big one for ~1.5-2.5x decode with
+ *     an unchanged output distribution.
+ *   - Max response tokens (`--max-tokens`): mlx_lm.server has NO context-window
+ *     flag (context is fixed by the model config), and its built-in 512-token
+ *     default truncates long replies — this raises that default.
+ * Both apply on the NEXT MLX model start; a running server keeps its flags.
+ */
+function MlxTuningCard() {
+  const [mlxModels, setMlxModels] = useState<ModelEntry[]>([]);
+  const [draftInit, setDraftInit] = useState("");
+  const [maxTokInit, setMaxTokInit] = useState("");
+  const getSettings = useSettingsGetter();
+  const updateSettings = useUpdateSettings();
+  useEffect(() => {
+    void api
+      .listAllModels()
+      .then((m) => setMlxModels(m.mlx))
+      .catch(() => {});
+    void getSettings()
+      .then((s) => {
+        setDraftInit(s.mlx_draft_model ?? "");
+        setMaxTokInit(s.mlx_max_tokens != null ? String(s.mlx_max_tokens) : "");
+      })
+      .catch(() => {});
+  }, [getSettings]);
+  return (
+    <div className="settings-tuning-card" data-testid="mlx-tuning-card">
+      <div className="settings-tuning-title">MLX backend tuning</div>
+      <div className="settings-tuning-row">
+        <span>Draft model</span>
+        <select
+          // Keyed on the loaded value so the persisted selection becomes the
+          // default once the async settings + model-list reads resolve (a bare
+          // defaultValue is captured on first render, before either lands).
+          key={`draft-${draftInit}`}
+          data-testid="settings-mlx-draft-model"
+          defaultValue={draftInit}
+          onChange={(e) => {
+            void updateSettings({
+              mlx_draft_model: e.target.value || null,
+            }).catch(() => {});
+          }}
+        >
+          <option value="">None (no speculative decoding)</option>
+          {mlxModels.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.id}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="settings-tuning-row settings-hint">
+        Speculative decoding: a SMALL model of the same tokenizer family (e.g. a
+        0.6B beside a 32B) drafts tokens the main model verifies — ~1.5-2.5x
+        decode, identical output. Mismatched families just run slower.
+      </div>
+      <div className="settings-tuning-row">
+        <span>Max response tokens</span>
+        <input
+          // Keyed like the draft select so a persisted value applies once the
+          // async settings read resolves (defaultValue is mount-only).
+          key={`maxtok-${maxTokInit}`}
+          data-testid="settings-mlx-max-tokens"
+          type="number"
+          min={1}
+          max={131072}
+          placeholder="512 (server default)"
+          defaultValue={maxTokInit}
+          style={{ width: 120 }}
+          onChange={(e) => {
+            const raw = e.target.value.trim();
+            if (raw === "") {
+              void updateSettings({ mlx_max_tokens: null }).catch(() => {});
+              return;
+            }
+            const n = Math.min(
+              131072,
+              Math.max(1, Math.floor(Number(raw) || 512)),
+            );
+            void updateSettings({ mlx_max_tokens: n }).catch(() => {});
+          }}
+        />
+      </div>
+      <div className="settings-tuning-row settings-hint">
+        mlx_lm.server has no context-window setting (the window is fixed by the
+        model). This raises its default reply length — the built-in 512 cuts
+        long answers short. Applies on the next MLX model start.
+      </div>
     </div>
   );
 }
@@ -297,6 +393,7 @@ export function SettingsModal({
             {pane === "backends" && (
               <>
                 <OllamaTuningCard />
+                <MlxTuningCard />
                 <CustomBackendsSettings onChanged={onBackendsChanged} />
               </>
             )}

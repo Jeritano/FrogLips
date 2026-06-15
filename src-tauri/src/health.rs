@@ -90,6 +90,41 @@ pub fn clear(subsystem: &str) {
     REGISTRY.write().remove(subsystem);
 }
 
+/// Registry key for the derived agent tool-failure signal.
+pub const AGENT_TOOLS: &str = "agent_tools";
+
+/// Minimum tool-call sample before a failure rate is allowed to trip the pill —
+/// keeps a single failure out of one or two calls from flapping it on.
+const TOOL_FAILURE_MIN_SAMPLE: i64 = 8;
+/// Failure-rate thresholds for the derived signal.
+const TOOL_FAILURE_DEGRADED_RATE: f64 = 0.25;
+const TOOL_FAILURE_FAILED_RATE: f64 = 0.50;
+
+/// DERIVED, observational rollup of the agent tool-failure rate into the health
+/// registry. Called from `agent_audit::stats` (a read-only aggregate) so a
+/// rising tool-failure rate surfaces on the "Degraded" pill + Diagnostics panel
+/// instead of being buried in the audit table.
+///
+/// Below the minimum sample (or at a healthy rate) the signal is `clear()`ed so
+/// the pill drops once tools recover; at/above the degraded/failed thresholds
+/// it records `Degraded`/`Failed` with a human-readable reason. Reads/writes
+/// here never alter the caller's control flow — `stats()` returns the same
+/// value regardless.
+pub fn record_tool_failure_rate(total: i64, failures: i64, rate: f64) {
+    if total < TOOL_FAILURE_MIN_SAMPLE || rate < TOOL_FAILURE_DEGRADED_RATE {
+        clear(AGENT_TOOLS);
+        return;
+    }
+    let pct = (rate * 100.0).round() as i64;
+    let reason = format!("{failures}/{total} agent tool calls failed in the last 24h ({pct}%)");
+    let state = if rate >= TOOL_FAILURE_FAILED_RATE {
+        HealthState::Failed
+    } else {
+        HealthState::Degraded
+    };
+    set(AGENT_TOOLS, state, &reason);
+}
+
 /// Snapshot of every recorded subsystem, ordered by key (BTreeMap order). Used
 /// by the `health_snapshot` command so the UI can render the pill + panel.
 pub fn snapshot() -> Vec<Subsystem> {
@@ -156,5 +191,40 @@ mod tests {
         assert!(snapshot()
             .into_iter()
             .all(|s| s.name != "never-recorded-subsystem"));
+    }
+
+    fn tool_state() -> Option<HealthState> {
+        snapshot()
+            .into_iter()
+            .find(|s| s.name == AGENT_TOOLS)
+            .map(|s| s.state)
+    }
+
+    #[test]
+    fn tool_failure_rate_trips_and_clears() {
+        let _g = TEST_LOCK.lock();
+        clear(AGENT_TOOLS);
+
+        // Below the minimum sample → never trips, even at a high rate.
+        record_tool_failure_rate(3, 3, 1.0);
+        assert_eq!(tool_state(), None, "small sample must not trip the pill");
+
+        // Healthy rate over a real sample → cleared.
+        record_tool_failure_rate(100, 5, 0.05);
+        assert_eq!(tool_state(), None, "healthy rate stays clear");
+
+        // Degraded band.
+        record_tool_failure_rate(20, 6, 0.30);
+        assert_eq!(tool_state(), Some(HealthState::Degraded));
+
+        // Failed band.
+        record_tool_failure_rate(20, 12, 0.60);
+        assert_eq!(tool_state(), Some(HealthState::Failed));
+
+        // Recovery clears it.
+        record_tool_failure_rate(20, 0, 0.0);
+        assert_eq!(tool_state(), None, "recovery clears the signal");
+
+        clear(AGENT_TOOLS);
     }
 }

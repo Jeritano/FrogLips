@@ -19,6 +19,13 @@ interface Props {
   /** Re-run the graph resuming from this card (failed/partial recovery). */
   onRerunFromCard: (id: string) => void;
   /**
+   * Stop the card currently running. The runner shares one abort signal across
+   * the chain, so stopping the active card stops the run (downstream cards are
+   * marked skipped) — there is no per-card resume. Surfaced per-row so the user
+   * can halt a long card without hunting for the top-bar Stop.
+   */
+  onStopCard: (id: string) => void;
+  /**
    * Active agent write-workspace (`api.agentGetWorkspace()` result). `null`
    * means no project folder is set, so file-writing cards fall back to the
    * home dir — we surface that as a warning chip so "where do files go?" is
@@ -48,12 +55,14 @@ const RunPanelRow = memo(
     rowRef,
     onFocusNode,
     onRerunFromCard,
+    onStopCard,
   }: {
     card: CardRunInfo;
     isRunning: boolean;
     rowRef?: React.Ref<HTMLDivElement>;
     onFocusNode: (id: string) => void;
     onRerunFromCard: (id: string) => void;
+    onStopCard: (id: string) => void;
   }) {
     const isFailed = c.state === "failed";
     return (
@@ -98,6 +107,18 @@ const RunPanelRow = memo(
         </div>
         {c.output && <pre className="wf-run-output">{c.output}</pre>}
         {c.error && <pre className="wf-run-output wf-run-error">{c.error}</pre>}
+        {isRunning && (
+          <button
+            type="button"
+            className="wf-btn wf-btn-danger"
+            onClick={() => onStopCard(c.id)}
+            title="Stop this card (stops the run — downstream cards are skipped)"
+            style={{ marginTop: "var(--space-2)", width: "100%" }}
+            data-testid={`wf-run-stop-${c.id}`}
+          >
+            Stop this card
+          </button>
+        )}
         {isFailed && (
           <button
             type="button"
@@ -142,6 +163,7 @@ export function RunPanel({
   runningCardId,
   onFocusNode,
   onRerunFromCard,
+  onStopCard,
   workspace,
 }: Props) {
   // Auto-scroll the running card into view. Keyed on the running id so it
@@ -199,6 +221,7 @@ export function RunPanel({
             rowRef={c.id === runningCardId ? runningRef : undefined}
             onFocusNode={onFocusNode}
             onRerunFromCard={onRerunFromCard}
+            onStopCard={onStopCard}
           />
         ))}
       </div>

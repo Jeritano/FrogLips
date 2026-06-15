@@ -15,6 +15,7 @@ import React, { Suspense, lazy } from "react";
 import ReactDOM from "react-dom/client";
 import { parseDetachedParams } from "./lib/detached-params";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { recordBootTiming } from "./lib/diagnostics";
 
 // Perf review (2026-06-13, medium): lazy-load the three window roots so each
 // auxiliary webview boots from its own chunk instead of the full chat bundle.
@@ -66,3 +67,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </ErrorBoundary>
   </React.StrictMode>,
 );
+
+// Per-window boot/TTI metric (cheap, local, no telemetry) so a startup
+// regression on the primary window is visible beyond the static byte budgets.
+recordBootTiming("main");

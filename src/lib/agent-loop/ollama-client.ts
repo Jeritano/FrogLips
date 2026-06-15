@@ -218,6 +218,15 @@ export async function streamOllamaChat(
   // Stays armed at the generous cold-start window until the first real
   // content/tool delta lands; flips to the 120s idle cadence thereafter.
   let sawFirstToken = false;
+  // Reasoning-model live disclosure: Ollama's /api/chat streams a thinking
+  // model's chain-of-thought in a SEPARATE `message.thinking` field. We surface
+  // it to the live bubble wrapped in `<think>…</think>` sentinels (MessageList
+  // splits it into a collapsed "Thought for a moment" disclosure and never shows
+  // the raw tags) — but deliberately keep it OUT of the returned `content`, which
+  // is re-sent as agent history: baking the chain-of-thought back into the prompt
+  // would balloon context and confuse the narrate-without-acting guard. Display
+  // only, mirroring the chat path's intent without the resent-context cost.
+  let thinkingOpen = false;
 
   const processLine = (line: string) => {
     // Any line — including an empty keep-alive — proves the stream is alive, so
@@ -236,7 +245,23 @@ export async function streamOllamaChat(
     const msg = obj.message as Record<string, unknown> | undefined;
     if (msg) {
       const c = msg.content;
-      if (typeof c === "string" && c.length > 0) {
+      const hasContentDelta = typeof c === "string" && c.length > 0;
+      // Reasoning span: emit the thinking delta into the live bubble wrapped in
+      // `<think>`, closing it the moment real content starts. Not accumulated
+      // into `content` (see the `thinkingOpen` declaration above).
+      const think = msg.thinking;
+      if (typeof think === "string" && think.length > 0 && !hasContentDelta) {
+        if (!thinkingOpen) {
+          onContentChunk("<think>");
+          thinkingOpen = true;
+        }
+        onContentChunk(think);
+      }
+      if (hasContentDelta) {
+        if (thinkingOpen) {
+          onContentChunk("</think>\n\n");
+          thinkingOpen = false;
+        }
         content += c;
         onContentChunk(c);
       }
@@ -272,6 +297,9 @@ export async function streamOllamaChat(
   } finally {
     to.clear();
   }
+  // Close a reasoning-only span (model emitted thinking but no content) so the
+  // live bubble's `<think>` sentinel is always balanced.
+  if (thinkingOpen) onContentChunk("</think>");
 
   return {
     content,

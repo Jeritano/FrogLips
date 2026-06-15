@@ -13,12 +13,37 @@ import { useSettingsField } from "../contexts/SettingsContext";
 import { useHardwareProfile } from "../hooks/useHardwareProfile";
 import type { HeadroomTier } from "../lib/hardware-profile";
 import { HardwareWarningBanner } from "./HardwareWarningBanner";
+import {
+  classifyToolFitness,
+  formatContextTokens,
+  modelSupportsVision,
+} from "../lib/model-capabilities";
+import { modelContextTokens } from "../lib/agent-loop/context-manager";
 import type {
   AllModels,
   CustomBackend,
   ModelEntry,
   ServerStatus,
 } from "../types";
+
+/**
+ * Compact per-row capability suffix for an `<option>` label. Native `<option>`
+ * elements render plain text only (no JSX), so capability hints in the dropdown
+ * list itself are appended as a terse text tail: a context-window marker, a
+ * vision marker, and a tool-calling caution. Resolved from the same name
+ * heuristics the agent loop + composer already use (model-capabilities.ts /
+ * context-manager.ts) — fast, backend-independent, and good enough for a hint.
+ * The richer, colored badge cluster (incl. RAM headroom) is rendered as real
+ * JSX for the CURRENTLY-SELECTED model beside the picker.
+ */
+function optionCapabilitySuffix(modelId: string): string {
+  const parts: string[] = [];
+  const ctx = formatContextTokens(modelContextTokens(modelId));
+  if (ctx) parts.push(ctx);
+  if (modelSupportsVision(modelId)) parts.push("vision");
+  if (classifyToolFitness(modelId) === "weak") parts.push("weak tools");
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
 
 /** Compact label for the inline headroom badge (full verdict on hover). */
 const HEADROOM_SHORT: Record<HeadroomTier, string> = {
@@ -346,6 +371,21 @@ export function ModelPicker({
   // Headroom verdict for the picked local model (cloud/custom have no size).
   const headroom = selected ? headroomFor(selected) : null;
 
+  // Capability badges for the currently-selected pick (item 1). Cloud/custom
+  // backends carry their model id in `selectedCustom`; resolve from whichever
+  // is active. Uses the synchronous name heuristics (model-capabilities.ts /
+  // context-manager.ts) — the same source the composer + agent loop already
+  // trust as the safe fallback. Cloud/custom rows have no on-disk size, so the
+  // RAM headroom badge above already self-suppresses for them.
+  const badgeModelId = selected?.id ?? selectedCustom?.model ?? null;
+  const caps = badgeModelId
+    ? {
+        tool: classifyToolFitness(badgeModelId),
+        vision: modelSupportsVision(badgeModelId),
+        ctx: formatContextTokens(modelContextTokens(badgeModelId)),
+      }
+    : null;
+
   return (
     <>
       <div className="model-picker">
@@ -376,6 +416,7 @@ export function ModelPicker({
               {models.ollama.map((m) => (
                 <option key={`ollama:${m.id}`} value={`ollama:${m.id}`}>
                   {m.id}
+                  {optionCapabilitySuffix(m.id)}
                 </option>
               ))}
             </optgroup>
@@ -386,6 +427,7 @@ export function ModelPicker({
                 <option key={`mlx:${m.id}`} value={`mlx:${m.id}`}>
                   {m.id}
                   {formatSize(m.size_bytes)}
+                  {optionCapabilitySuffix(m.id)}
                 </option>
               ))}
             </optgroup>
@@ -439,6 +481,41 @@ export function ModelPicker({
           >
             {HEADROOM_SHORT[headroom.tier]}
           </span>
+        )}
+        {caps && !status?.running && (
+          <>
+            {caps.ctx && (
+              <span
+                className="headroom-badge"
+                data-tier="comfortable"
+                title={`Estimated context window ≈ ${caps.ctx} tokens`}
+              >
+                {caps.ctx} ctx
+              </span>
+            )}
+            {caps.vision && (
+              <span
+                className="headroom-badge"
+                data-tier="comfortable"
+                title="This model can accept image attachments"
+              >
+                Vision
+              </span>
+            )}
+            {caps.tool !== "untested" && (
+              <span
+                className="headroom-badge"
+                data-tier={caps.tool === "good" ? "comfortable" : "tight"}
+                title={
+                  caps.tool === "good"
+                    ? "Reliable at tool calling — good for Agent mode & Flows"
+                    : "Often mangles or skips tool calls — Agent mode may struggle"
+                }
+              >
+                {caps.tool === "good" ? "Tools" : "Weak tools"}
+              </span>
+            )}
+          </>
         )}
         {err && (
           <div className="error" role="alert">

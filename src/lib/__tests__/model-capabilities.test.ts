@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyToolFitness,
+  formatContextTokens,
   modelSupportsVision,
 } from "../model-capabilities";
 
@@ -101,5 +102,23 @@ describe("classifyToolFitness", () => {
     expect(classifyToolFitness("some-random-model:7b")).toBe("untested");
     expect(classifyToolFitness(null)).toBe("untested");
     expect(classifyToolFitness("")).toBe("untested");
+  });
+});
+
+describe("formatContextTokens", () => {
+  it("renders k / M markers for common windows", () => {
+    expect(formatContextTokens(8192)).toBe("8k");
+    expect(formatContextTokens(32_768)).toBe("33k");
+    expect(formatContextTokens(128_000)).toBe("128k");
+    expect(formatContextTokens(256_000)).toBe("256k");
+    expect(formatContextTokens(1_000_000)).toBe("1M");
+    expect(formatContextTokens(2_000_000)).toBe("2M");
+  });
+
+  it("returns empty for unknown / zero / negative", () => {
+    expect(formatContextTokens(0)).toBe("");
+    expect(formatContextTokens(null)).toBe("");
+    expect(formatContextTokens(undefined)).toBe("");
+    expect(formatContextTokens(-1)).toBe("");
   });
 });

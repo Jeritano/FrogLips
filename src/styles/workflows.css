@@ -1571,3 +1571,125 @@
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
+
+/* ── Run History panel (workflow_runs) ───────────────────────────────────
+   Surfaces persisted past runs: collapsed rows show when/status/card count +
+   a tail-output preview; expanded shows every card's output. Styled to match
+   the surrounding Flows panels (skills-panel-body container). */
+.wf-run-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wf-run-history-loading {
+  color: var(--text-3);
+  font-size: var(--fs-xs, 12px);
+  padding: 8px 4px;
+}
+.wf-run-history-item {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius, 8px);
+  background: var(--surface);
+  overflow: hidden;
+}
+.wf-run-history-item[data-state="error"] {
+  border-color: color-mix(in oklab, var(--red, #e5484d) 40%, var(--border));
+}
+.wf-run-history-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  transition: background 0.12s;
+}
+.wf-run-history-head:hover {
+  background: var(--surface-hover);
+}
+.wf-run-history-disclose {
+  color: var(--text-3);
+  width: 12px;
+  flex-shrink: 0;
+}
+.wf-run-history-status {
+  font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.wf-run-history-status-ok {
+  color: var(--green, #30a46c);
+}
+.wf-run-history-status-error {
+  color: var(--red, #e5484d);
+}
+.wf-run-history-when {
+  color: var(--text-2);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.wf-run-history-meta {
+  color: var(--text-3);
+  font-size: 12px;
+  margin-left: auto;
+}
+.wf-run-history-preview,
+.wf-run-history-card-output {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+.wf-run-history-detail {
+  border-top: 1px solid var(--border-subtle);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wf-run-history-nodata {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.wf-run-history-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+}
+.wf-run-history-card[data-state="error"] {
+  border-color: color-mix(in oklab, var(--red, #e5484d) 40%, var(--border));
+}
+.wf-run-history-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--surface);
+  font-size: 12px;
+}
+.wf-run-history-card-name {
+  color: var(--text);
+  font-weight: 500;
+}
+.wf-run-history-card-status {
+  color: var(--text-3);
+  font-size: 11px;
+}
