@@ -1256,6 +1256,19 @@ pub async fn rag_corpus_stale(name: String) -> Result<bool, String> {
     blocking(move || rag::corpus_stale(&name)).await
 }
 
+/// Rebuild ONLY the sparse (FTS5 bm25) hybrid-search index for one corpus from
+/// its already-stored chunks — no file walk, no re-embed. Cheap, idempotent,
+/// forward-only path to give a legacy corpus the keyword leg of hybrid
+/// retrieval without a full re-ingest. Returns the chunk count re-derived.
+#[tauri::command]
+pub async fn rag_rebuild_hybrid_index(name: String) -> Result<usize, String> {
+    let trimmed = name.trim().to_string();
+    if trimmed.is_empty() || trimmed.len() > MAX_RAG_NAME_LEN {
+        return Err(format!("name length must be 1..={MAX_RAG_NAME_LEN}"));
+    }
+    blocking(move || rag::rebuild_hybrid_index(&trimmed)).await
+}
+
 #[tauri::command]
 pub async fn rag_delete_corpus(name: String) -> Result<(), String> {
     blocking(move || rag::delete_corpus(&name)).await

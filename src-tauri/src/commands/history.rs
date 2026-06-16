@@ -108,6 +108,43 @@ pub async fn agent_run_checkpoint(
     blocking(move || history::checkpoint_run(&run_id, conv_id, &turns)).await
 }
 
+/// Fetch the most-recent UNFINISHED run checkpoint for a conversation, or `None`
+/// when nothing is resumable (RESUME feature). A run is resumable iff it has
+/// checkpoint shadow rows and none are marked finished. This is a pure READ — it
+/// performs NO resume side effect. The frontend uses the returned turns to show
+/// a REVIEW-BEFORE-CONTINUE "Resume run" affordance and NEVER auto-resumes.
+#[tauri::command]
+pub async fn agent_run_latest_checkpoint(
+    conv_id: i64,
+) -> Result<Option<history::RunCheckpoint>, String> {
+    blocking(move || history::latest_unfinished_run(conv_id)).await
+}
+
+/// Mark a run's checkpoint set FINISHED so it is never re-offered for resume
+/// (RESUME feature). Called when a run completes, when the user dismisses the
+/// resume affordance, or after a successful resume. Idempotent. After closing we
+/// opportunistically trim very old finished sets (bounded, best-effort) so the
+/// shadow rows can't accumulate without limit — failures there are swallowed so
+/// they never fail the close the caller asked for.
+#[tauri::command]
+pub async fn agent_run_close(run_id: String, conv_id: i64) -> Result<usize, String> {
+    blocking(move || {
+        let flipped = history::close_run(&run_id, conv_id)?;
+        // Bounded cleanup of long-dead finished sets. Best-effort: a failure
+        // (db locked, etc.) must not fail the close the caller relies on to
+        // stop re-offering this run.
+        if let Err(e) = history::cleanup_finished_runs() {
+            crate::diagnostics::warn_with(
+                "history",
+                "cleanup_finished_runs failed after close (non-fatal)",
+                serde_json::json!({ "error": e.to_string() }),
+            );
+        }
+        Ok(flipped)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn delete_message(id: i64, app: tauri::AppHandle) -> Result<(), String> {
     let conversation_id = blocking(move || history::delete_message(id)).await?;

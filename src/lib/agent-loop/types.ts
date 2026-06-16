@@ -229,6 +229,21 @@ export interface AgentRunOptions {
    * omitted for interactive chat turns.
    */
   workflowRunId?: number | null;
+  /**
+   * RESUME: prior agent turns rehydrated from a durable checkpoint, to continue
+   * an interrupted long run. When present (and non-empty) the runner appends
+   * these as already-settled history AFTER the incoming `messages` (which carry
+   * the original user prompt + system context) and BEFORE the loop's first LLM
+   * call, then inserts a single conservative re-validation system note so the
+   * model treats the prior work as DONE history rather than re-doing it.
+   *
+   * The turns are the exact `CheckpointTurn` shadow the runner emitted: an
+   * assistant turn that carried tool_calls is the JSON `{ content, tool_calls }`
+   * envelope (decoded here). Past tool calls are NEVER re-executed — they are
+   * reconstructed as history only. Absent/empty = a normal (non-resume) run,
+   * byte-identical to today.
+   */
+  resumeFromTurns?: CheckpointTurn[];
 }
 
 /**

@@ -20,6 +20,38 @@
 //!
 //! All HTTP here is `reqwest::blocking` — ingest and search already run on
 //! the blocking pool (`commands::agent::blocking`), never on async workers.
+//!
+//! ## Daemon-less semantic embeddings (W5-RAGCORE, 2026-06-15) — status
+//!
+//! Goal: semantic RAG/recall WITHOUT Ollama. This module is the single
+//! abstraction every embedding flows through, and every corpus already records
+//! the embedder that produced its vectors (`rag_corpora.embedder`) so vectors
+//! of different models/dims are NEVER cross-scored — the fingerprint guard the
+//! daemon-less path also relies on. Two things landed here now:
+//!
+//!   * The `Candle` variant + `CANDLE_ID` fingerprint are wired through `id()` /
+//!     `from_id()` / the dim + cross-score guards, and `detect()` will prefer an
+//!     available in-process embedder over the weaker hashed fallback. So the
+//!     plumbing, fingerprinting, and "no embedder available" degradation are
+//!     complete and a corpus tagged `Candle` can never be silently queried with
+//!     a different model's vectors.
+//!   * `candle_available()` / `candle_embed_batch()` are the seam where a real
+//!     in-process model runner plugs in. Today they report unavailable + return
+//!     a precise error, so `detect()` cleanly falls back (Ollama → Hashed) and
+//!     nothing regresses.
+//!
+//! PARTIAL — the in-process model RUNNER itself is deliberately NOT landed in
+//! this pass. A correct bge-small / all-MiniLM forward pass needs an always-on
+//! `candle-nn` + `candle-transformers` + `tokenizers` + `hf-hub` +
+//! `safetensors` dependency surface (candle-core is already a dep, but those are
+//! only pulled transitively under the optional `native-mistralrs` feature today)
+//! plus a model download + tokenizer + mean-pool + caching path. Forcing those
+//! always-on risks the bundle-budget / notarization / dual-feature clippy gates,
+//! and a half-correct embedder would silently misrank. So we ship the safe
+//! abstraction + fingerprint guard + clean degradation now; see
+//! `candle_embed_batch` for the exact remaining work. Meanwhile the hybrid
+//! retrieval added in `rag::search` (BM25 sparse leg fused with the hashed dense
+//! leg via RRF) already gives strong keyword/identifier recall daemon-free.
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -27,6 +59,12 @@ use std::time::Duration;
 
 pub const HASHED_ID: &str = "hashed-v1";
 pub const OLLAMA_MODEL: &str = "nomic-embed-text";
+/// Fingerprint for the (partial) in-process candle embedder. Stored in
+/// `rag_corpora.embedder` so a corpus embedded in-process is queried in-process
+/// and never cross-scored against Ollama / hashed vectors. The concrete model
+/// name is folded in so a future model swap (bge-small → all-MiniLM) bumps the
+/// fingerprint and forces a clean re-embed rather than mixing spaces.
+pub const CANDLE_ID: &str = "candle-bge-small-en-v1.5";
 const OLLAMA_BASE: &str = "http://127.0.0.1:11434";
 /// Chunks per `/api/embed` call. Ollama handles large batches fine; 64 keeps
 /// per-request latency and payload size sane for 512-char chunks.
@@ -38,6 +76,12 @@ const EMBED_TIMEOUT: Duration = Duration::from_secs(120);
 pub enum Embedder {
     Hashed,
     Ollama,
+    /// In-process learned embedder (daemon-less). PARTIAL: the model runner is
+    /// not yet implemented (see module docs + `candle_embed_batch`); the variant
+    /// exists so the fingerprint + cross-score guards are complete and a future
+    /// runner is a drop-in. `detect()` only ever returns this once
+    /// `candle_available()` reports true, so today it stays inert.
+    Candle,
 }
 
 impl Embedder {
@@ -45,34 +89,46 @@ impl Embedder {
         match self {
             Embedder::Hashed => HASHED_ID,
             Embedder::Ollama => OLLAMA_MODEL,
+            Embedder::Candle => CANDLE_ID,
         }
     }
 
     pub fn from_id(id: &str) -> Embedder {
         if id == OLLAMA_MODEL {
             Embedder::Ollama
+        } else if id == CANDLE_ID {
+            Embedder::Candle
         } else {
+            // Unknown ids (old DBs, future fingerprints) degrade to hashed —
+            // the always-works space.
             Embedder::Hashed
         }
     }
 
-    /// Pick the best available embedder right now: Ollama + nomic-embed-text
-    /// when the daemon answers and the model is installed, else hashed.
+    /// Pick the best available embedder right now. Preference order: the local
+    /// Ollama daemon (`nomic-embed-text`) when up, else the in-process candle
+    /// learned embedder when available (daemon-less semantic path), else the
+    /// always-works hashed fallback. Candle sits BELOW Ollama deliberately — a
+    /// user who already runs the daemon keeps the established 768-dim space and
+    /// avoids a download; candle is the upgrade ONLY for daemon-less installs.
     pub fn detect() -> Embedder {
         if ollama_has_embed_model() {
             Embedder::Ollama
+        } else if candle_available() {
+            Embedder::Candle
         } else {
             Embedder::Hashed
         }
     }
 
-    /// Embed a batch of texts. Hashed never fails; Ollama errors surface to
-    /// the caller (ingest aborts cleanly rather than silently mixing vector
-    /// spaces).
+    /// Embed a batch of texts. Hashed never fails; Ollama + Candle errors
+    /// surface to the caller (ingest aborts cleanly rather than silently mixing
+    /// vector spaces).
     pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         match self {
             Embedder::Hashed => Ok(texts.iter().map(|t| crate::rag::embed(t)).collect()),
             Embedder::Ollama => ollama_embed_batch(texts),
+            Embedder::Candle => candle_embed_batch(texts),
         }
     }
 
@@ -183,6 +239,52 @@ fn l2_normalize(v: &mut [f32]) {
     }
 }
 
+/* ── Daemon-less in-process candle embedder (PARTIAL — see module docs) ── */
+
+/// Whether the in-process candle learned embedder can serve embeddings right now.
+///
+/// PARTIAL: returns `false` unconditionally today, so `detect()` never selects
+/// the `Candle` variant and the daemon-less path stays inert (clean Ollama →
+/// Hashed degradation). When the model runner below is implemented, this becomes
+/// "is the model file present / downloadable AND does the candle device init".
+fn candle_available() -> bool {
+    false
+}
+
+/// Embed a batch in-process via candle (bge-small-en-v1.5), L2-normalized to
+/// keep the dot-product scoring invariant. PARTIAL — NOT YET IMPLEMENTED.
+///
+/// Remaining work to land this safely (intentionally deferred this pass):
+///   1. Add always-on deps: `candle-nn`, `candle-transformers` (BertModel),
+///      `tokenizers`, `hf-hub`, `safetensors`. `candle-core` is already a
+///      top-level dep; the others are currently only pulled transitively under
+///      the optional `native-mistralrs` feature, so they must be promoted to
+///      unconditional `[dependencies]` (watch the bundle-budget + notarization
+///      gates — all are pure-Rust / no new C dylib, which is why candle was
+///      chosen over `ort`/ONNX).
+///   2. First-use download of `BAAI/bge-small-en-v1.5` (config.json,
+///      tokenizer.json, model.safetensors) via `hf-hub` into the app data dir,
+///      with a size/checksum guard and offline reuse.
+///   3. Load BertModel on the candle Metal device (fallback CPU), tokenize with
+///      the HF tokenizer, run the forward pass, MEAN-POOL the last hidden state
+///      over the attention mask, then `l2_normalize`. Cache the loaded model in
+///      a `OnceLock` so repeated batches don't re-load.
+///   4. Bump `CANDLE_ID` if the model changes so the fingerprint guard forces a
+///      clean re-embed rather than mixing spaces.
+///
+/// Until then this returns a precise, actionable error. It is never reached in
+/// normal operation because `candle_available()` is `false` (so `detect()`
+/// never picks `Candle`); it can only be hit if a corpus's stored fingerprint
+/// is `CANDLE_ID` on a build without the runner — in which case the corpus must
+/// be re-ingested (the error tells the user exactly that).
+fn candle_embed_batch(_texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+    Err(anyhow!(
+        "in-process candle embedder is not available in this build — \
+         re-ingest the corpus (it will use Ollama if running, else the \
+         keyword-grade hashed embedder)"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,10 +293,30 @@ mod tests {
     fn ids_round_trip() {
         assert_eq!(Embedder::from_id(HASHED_ID), Embedder::Hashed);
         assert_eq!(Embedder::from_id(OLLAMA_MODEL), Embedder::Ollama);
+        assert_eq!(Embedder::from_id(CANDLE_ID), Embedder::Candle);
         // Unknown ids degrade to hashed (old DBs, future ids).
         assert_eq!(Embedder::from_id("bge-small-future"), Embedder::Hashed);
         assert_eq!(Embedder::Hashed.id(), HASHED_ID);
         assert_eq!(Embedder::Ollama.id(), OLLAMA_MODEL);
+        assert_eq!(Embedder::Candle.id(), CANDLE_ID);
+        // Every id round-trips through from_id → id (fingerprint guard relies on
+        // this: a stored fingerprint must map back to the same embedder).
+        for e in [Embedder::Hashed, Embedder::Ollama, Embedder::Candle] {
+            assert_eq!(Embedder::from_id(e.id()), e);
+        }
+    }
+
+    /// PARTIAL candle path: the runner isn't implemented, so `candle_available`
+    /// is false and `candle_embed_batch` returns a precise error rather than
+    /// silently producing garbage vectors. This pins the safe degradation.
+    #[test]
+    fn candle_is_inert_until_runner_lands() {
+        assert!(!candle_available(), "candle must report unavailable for now");
+        let err = candle_embed_batch(&["x"]).unwrap_err().to_string();
+        assert!(
+            err.contains("not available") && err.contains("re-ingest"),
+            "candle error must be actionable: {err}"
+        );
     }
 
     #[test]

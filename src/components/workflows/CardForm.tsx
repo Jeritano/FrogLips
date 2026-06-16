@@ -1985,6 +1985,58 @@ function NodeConfigEditor({
           </label>
         </>
       )}
+
+      {nodeType === "parallel" && (
+        <>
+          <label>
+            <span>Branches (2–8)</span>
+            <input
+              type="number"
+              min={2}
+              max={8}
+              step={1}
+              placeholder="3"
+              // Ignored when explicit branch prompts are set below (those define
+              // the branch count); applies only to the identical-pass fallback.
+              disabled={(config.branchPrompts ?? []).length > 0}
+              value={config.members ?? ""}
+              onChange={(e) => patch({ members: num(e.target.value, 2, 8) })}
+            />
+          </label>
+          <label>
+            <span>Branch prompts (optional, one per line)</span>
+            <textarea
+              rows={3}
+              placeholder={
+                "Leave blank to run the card task N identical times.\n" +
+                "Or list one task per line — each runs as its own branch:\n" +
+                "Summarize the document\nList the top risks"
+              }
+              // Persist as a string[] (one non-blank line per branch). Blank
+              // textarea → clear the field so the card falls back to `members`.
+              value={(config.branchPrompts ?? []).join("\n")}
+              onChange={(e) => {
+                const lines = e.target.value
+                  .split("\n")
+                  .map((l) => l.trim())
+                  .filter((l) => l.length > 0)
+                  // Clamp to the same 8-branch ceiling normalizeNodeConfig
+                  // enforces so the form can't author an over-long list.
+                  .slice(0, 8);
+                patch({ branchPrompts: lines.length > 0 ? lines : null });
+              }}
+            />
+          </label>
+          <small className="wf-field-hint">
+            Branches run concurrently (bounded) against the card's model and
+            their outputs are collected verbatim under per-branch headings — no
+            synthesis pass. Use explicit branch prompts for genuinely different
+            sub-tasks, or leave them blank for N independent attempts at the same
+            task. Same-model fan-out is cheap on RAM — the model loads once and
+            serves the branches concurrently (only KV-cache grows).
+          </small>
+        </>
+      )}
     </div>
   );
 }

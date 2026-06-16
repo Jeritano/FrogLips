@@ -773,6 +773,24 @@ button.cancel {
   gap: 10px;
 }
 
+/* Curated model catalog (one-click, RAM-aware discovery) */
+.mb-catalog-intro {
+  padding: 8px 12px;
+  margin: 4px 0 2px;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.mb-catalog-fits-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 .mb-ollama-toolbar {
   display: flex;
   align-items: center;

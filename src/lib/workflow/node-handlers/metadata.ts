@@ -103,4 +103,18 @@ export const NODE_META: Record<WorkflowNodeType, NodeMeta> = {
     advancedAllowed: false,
     buildDefaultConfig: () => null,
   },
+  parallel: {
+    type: "parallel",
+    label: "Parallel",
+    blurb: "Run independent branches at once → collected results.",
+    // Excluded from create_flow ADVANCED mode (like router/blackboard/budget):
+    // its branches need structured config (an explicit branch-prompt list) the
+    // high-level step shape can't express, and the registry parity test pins
+    // the advanced set to {agent, moa, consistency, critic, cascade}.
+    advancedAllowed: false,
+    // Fan-out carries no aggregation config; a bare card defaults to `members`
+    // (3) identical branches at runtime. Return null so an advanced-built card
+    // (were it ever allowed) stays lean — matches router/blackboard/budget.
+    buildDefaultConfig: () => null,
+  },
 };

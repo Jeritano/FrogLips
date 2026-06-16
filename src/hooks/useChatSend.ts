@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import { api } from "../lib/tauri-api";
+import { api, type CheckpointTurn } from "../lib/tauri-api";
 import { streamChat } from "../lib/mlx-client";
 import { streamOllamaPlain } from "../lib/ollama-plain-client";
 import {
@@ -217,6 +217,23 @@ export interface ChatSend {
   send: (text: string, images?: ChatImage[]) => Promise<void>;
   /** Regenerate / edit-and-retry resend with an explicit truncated history. */
   resend: (text: string, priorHistory: Message[]) => Promise<void>;
+  /**
+   * RESUME: continue an interrupted agent run from its durable checkpoint. The
+   * caller (ChatWindow) has already reviewed the checkpoint with the user and
+   * clicked "Resume" — this NEVER fires automatically. No new user turn is
+   * added; the runner continues the loop from the rehydrated agent turns under
+   * the same run_id, and the checkpoint set is closed when the run settles.
+   *
+   *  - `prompt`      : the original user prompt (recall context only).
+   *  - `priorHistory`: the loaded visible conversation messages.
+   *  - `runId`/`turns`: the checkpoint's run id + rehydrated agent turns.
+   */
+  resumeRun: (args: {
+    prompt: string;
+    priorHistory: Message[];
+    runId: string;
+    turns: CheckpointTurn[];
+  }) => Promise<void>;
   /** Abort the in-flight stream / agent run + any active shell. */
   abort: () => void;
   /**
@@ -260,6 +277,14 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       text: string,
       images?: ChatImage[],
       priorHistory?: Message[],
+      // RESUME: when set, this send CONTINUES an interrupted agent run from its
+      // durable checkpoint instead of starting a fresh turn. No new user message
+      // is persisted (the original prompt already lives in the visible history);
+      // the runner is handed the checkpoint's run_id + rehydrated agent turns,
+      // and the set is closed when the run settles. `text` is the original user
+      // prompt (used for recall only); `priorHistory` is the loaded visible
+      // history. Resume is gated to local backends by the caller.
+      resume?: { runId: string; turns: CheckpointTurn[] },
     ): Promise<void> => {
       const {
         status,
@@ -288,6 +313,16 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
         setErr("Start a model first");
         return;
       }
+      // RESUME: a continued run only makes sense in agent mode against an
+      // agent-capable backend. The caller gates this too (and to local backends
+      // only), but refuse here as a backstop so a resume can never silently fall
+      // through to a plain-chat re-prompt of the original message.
+      if (resume && !(agentMode && agentAvailable)) {
+        setErr(
+          "Can't resume this run: turn on Agent mode with an agent-capable backend, then resume.",
+        );
+        return;
+      }
       setErr(null);
 
       let conv: Conversation;
@@ -299,22 +334,30 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       }
       const mode = getMemoryMode();
 
-      const userMsg: Message = {
-        _tmpKey: tmpKey(),
-        conversation_id: conv.id,
-        role: "user",
-        content: text,
-        images,
-      };
-      let userId: number;
-      try {
-        userId = await api.addMessage(conv.id, "user", text, null, images);
-      } catch (e) {
-        setErr(`Failed to save message: ${e}`);
-        return;
+      // RESUME: continuing an interrupted run does NOT add a new user turn — the
+      // original prompt already lives in the visible history (and the durable
+      // checkpoint). The base history is exactly the loaded visible messages.
+      let baseHistory: Message[];
+      if (resume) {
+        baseHistory = [...(priorHistory ?? messages)];
+      } else {
+        const userMsg: Message = {
+          _tmpKey: tmpKey(),
+          conversation_id: conv.id,
+          role: "user",
+          content: text,
+          images,
+        };
+        let userId: number;
+        try {
+          userId = await api.addMessage(conv.id, "user", text, null, images);
+        } catch (e) {
+          setErr(`Failed to save message: ${e}`);
+          return;
+        }
+        userMsg.id = userId;
+        baseHistory = [...(priorHistory ?? messages), userMsg];
       }
-      userMsg.id = userId;
-      const baseHistory = [...(priorHistory ?? messages), userMsg];
       const streamConvId = conv.id;
       const isStreamConvActive = () => convRef.current?.id === streamConvId;
       if (isStreamConvActive()) setMessages(baseHistory);
@@ -709,7 +752,10 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           // Item 4A: a stable run id for this interactive agent send. The
           // runner's onCheckpoint fires per iteration with this id so an
           // interrupted long run leaves a durable (invisible) shadow record.
-          const runId = `run:${crypto.randomUUID()}`;
+          // RESUME: a continued run REUSES the interrupted run's id so its new
+          // checkpoints upsert over the same shadow set (no orphaned duplicate),
+          // and closing that id afterwards retires exactly this run.
+          const runId = resume ? resume.runId : `run:${crypto.randomUUID()}`;
           const agentLoop = await loadAgentLoop();
           const { runAgentLoop } = agentLoop;
           // Item 2: apply the configured global subagent concurrency budget
@@ -726,6 +772,11 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             model: status.model,
             messages: historyForApi,
             conversationId: conv.id,
+            // RESUME: hand the runner the interrupted run's rehydrated agent
+            // turns so it continues from where it left off (past tool calls are
+            // reconstructed as history only, never re-executed). Absent for a
+            // normal send.
+            ...(resume ? { resumeFromTurns: resume.turns } : {}),
             workspaceRoot,
             // Agent turn-budget override from settings (raise for long
             // multi-file builds); undefined → runner default.
@@ -857,6 +908,25 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           // The warming-up notice (if shown) is transient — clear it once the
           // retry produces a result so it doesn't linger as a stale banner.
           if (coldRetryUsed && isStreamConvActive()) setErr(null);
+          // RESUME: the loop RETURNED (didn't throw) → it reached a terminal
+          // state (final answer, turn cap, or circuit-breaker). Close this run's
+          // checkpoint set so it is never re-offered for resume. A user Stop
+          // (ctrl.signal.aborted) is the ONE case we keep OPEN — the run was
+          // interrupted and the user may want to resume it. A thrown error skips
+          // this line entirely (handled in catch) and stays open + resumable.
+          // Fire-and-forget + best-effort: a close IPC failure must not affect
+          // the completed run.
+          if (!ctrl.signal.aborted) {
+            void api.agentRunClose(runId, conv.id).catch((err) =>
+              logDiag({
+                level: "warn",
+                source: "agent-loop",
+                message:
+                  "agentRunClose failed — finished run may still be offered for resume",
+                detail: err,
+              }),
+            );
+          }
           // Flush any pending rAF snapshot so the final state lands before we
           // persist the assistant turn below.
           if (rafHandle) {
@@ -1347,6 +1417,19 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       runSend(text, undefined, priorHistory),
     [runSend],
   );
+  const resumeRun = useCallback(
+    (args: {
+      prompt: string;
+      priorHistory: Message[];
+      runId: string;
+      turns: CheckpointTurn[];
+    }) =>
+      runSend(args.prompt, undefined, args.priorHistory, {
+        runId: args.runId,
+        turns: args.turns,
+      }),
+    [runSend],
+  );
   const abort = useCallback(() => {
     // Key cancelActiveShell by the current loop's AbortSignal so we cancel
     // THIS loop's shell, not whichever happened to be set last in a
@@ -1365,5 +1448,5 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     return true;
   }, []);
 
-  return { send, resend, abort, injectSteering };
+  return { send, resend, resumeRun, abort, injectSteering };
 }

@@ -25,6 +25,7 @@ describe("node-handler registry parity", () => {
     "router",
     "blackboard",
     "budget",
+    "parallel",
   ];
 
   it("registry keys === WORKFLOW_NODE_TYPES === WorkflowNodeType union", () => {

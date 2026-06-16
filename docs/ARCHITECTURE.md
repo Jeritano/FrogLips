@@ -106,6 +106,17 @@ Data durability and portability: an online SQLite backup command, a versioned JS
 
 Embedding cache (`RwLock<Option<HashMap<i64, Vec<f32>>>>` with double-checked lock). Cosine similarity search. `find_duplicate` checks both the active cache and a pending-DB scan. Dimension consistency guard rejects mixed-dim embeddings (otherwise dot products would silently underflow).
 
+### `rag.rs` / `embedder.rs`
+
+Project RAG — local-folder ingestion plus search, surfaced to the agent as `search_project_knowledge`. `rag.rs` owns the corpus tables, chunking (structure-aware, with overlap), the ingest pipeline (per-corpus lock; unchanged files take a copy-forward fast path so re-indexing is cheap), and the staleness check that backs the **Stale** badge in the UI.
+
+**Embedder (`embedder.rs`).** The text vectorizer is pluggable, and each corpus records which embedder produced its vectors (`rag_corpora.embedder`) so a query is always embedded with the *same* embedder as the corpus it searches — vectors of different models or dimensions are never cross-scored. The intended preference order is:
+
+1. A learned embedding model (`nomic-embed-text`) when an embedding backend is reachable — the same model the memory system standardizes on, so it adds no build/bundle weight.
+2. A built-in, dependency-free hashed bag-of-words vectorizer (`hashed-v1`) as the always-works fallback. This is the **daemon-less** path: it keeps RAG fully functional on a zero-dependency install with no embedding daemon, and an in-process learned embedder (e.g. an ONNX `bge-small` via `ort`) is on the roadmap to give daemon-less installs learned-quality recall.
+
+**Retrieval.** Today's scoring is cosine similarity over the chunk vectors. The intended direction is **hybrid retrieval** — combining lexical/keyword signal with vector similarity so exact-token matches (identifiers, error strings) and paraphrase matches both rank well — layered on top of the same corpus schema. Whatever the scoring, the agent-facing tool surface (`search_project_knowledge`) and the on-disk schema are stable, so retrieval quality is swappable without a data migration.
+
 ### `models.rs`
 
 Lists MLX (scans HF hub directory, decodes `models--org--name` → `org/name`) and Ollama (parses `ollama list` stdout with 5 s timeout and child-kill on timeout). `delete_mlx_model` canonicalizes the path and verifies containment within the hub root to defeat any symlink escape. `delete_ollama_model` shells `ollama rm`.

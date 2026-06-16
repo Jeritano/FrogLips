@@ -80,6 +80,91 @@ function checkpointTurnsFrom(msgs: Message[]): CheckpointTurn[] {
 }
 
 /**
+ * RESUME: inverse of {@link checkpointTurnsFrom}. Rehydrate the durable
+ * checkpoint shadow turns back into runner `Message`s so an interrupted long run
+ * can continue from where it left off. Only assistant + tool turns are stored
+ * (system/user came from the live history), so that's all we reconstruct.
+ *
+ * An assistant turn that carried tool_calls was stored as a JSON
+ * `{ content, tool_calls }` envelope — decode it back into a real `tool_calls`
+ * array. A plain assistant/tool turn passes through. Past tool calls are
+ * reconstructed as HISTORY only — they are NEVER re-executed.
+ *
+ * Defensive: a turn whose envelope fails to parse falls back to treating
+ * `content` as opaque text, so a corrupt shadow row degrades to a readable
+ * assistant message rather than crashing the resume. The returned array is
+ * passed through `stripUnpairedToolCalls` by the caller so any half-written
+ * tool-call/result pair (the interruption point) can't 400 the first request.
+ */
+export function rehydrateCheckpointTurns(
+  turns: CheckpointTurn[],
+  conversationId: number,
+): Message[] {
+  const out: Message[] = [];
+  // Turns are persisted ordered by turn_index, but never trust the caller's
+  // order — sort defensively so a reordered IPC payload can't scramble the
+  // tool-call/result pairing.
+  const ordered = [...turns].sort((a, b) => a.turn_index - b.turn_index);
+  for (const t of ordered) {
+    if (t.role !== "assistant" && t.role !== "tool") continue;
+    if (t.role === "assistant") {
+      let content = t.content ?? "";
+      let toolCalls: ToolCall[] | undefined;
+      // An assistant-with-tool-calls turn is a JSON envelope; a plain assistant
+      // turn is raw text. Probe cheaply (must start with `{`) before parsing.
+      if (content.startsWith("{")) {
+        try {
+          const env = JSON.parse(content) as {
+            content?: unknown;
+            tool_calls?: unknown;
+          };
+          if (Array.isArray(env.tool_calls) && env.tool_calls.length > 0) {
+            content = typeof env.content === "string" ? env.content : "";
+            toolCalls = env.tool_calls as ToolCall[];
+          }
+        } catch {
+          // Not an envelope (or corrupt) — keep the raw content as plain text.
+        }
+      }
+      out.push({
+        _tmpKey: makeTmpKey(),
+        conversation_id: conversationId,
+        role: "assistant",
+        content,
+        ...(toolCalls ? { tool_calls: toolCalls } : {}),
+        ...(t.model ? { model: t.model } : {}),
+      });
+    } else {
+      out.push({
+        _tmpKey: makeTmpKey(),
+        conversation_id: conversationId,
+        role: "tool",
+        content: t.content ?? "",
+        ...(t.tool_call_id ? { tool_call_id: t.tool_call_id } : {}),
+        ...(t.tool_name ? { tool_name: t.tool_name } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * RESUME: a single conservative system note inserted once when continuing from a
+ * checkpoint. It tells the model the prior turns are ALREADY-DONE history — do
+ * NOT re-run them — and to re-verify any write target before acting, since the
+ * filesystem may have changed since the interruption (the runner deliberately
+ * does NOT re-apply past tool calls; it surfaces the staleness risk instead).
+ */
+const RESUME_REVALIDATION_NOTE =
+  "[agent-loop] RESUMING an interrupted run. The assistant and tool turns above " +
+  "already happened — treat them as completed history and DO NOT repeat them. " +
+  "Time has passed since they ran, so any file, directory, or external state you " +
+  "touched earlier may have changed. Before you edit or overwrite anything, " +
+  "re-read the current state of that target first and confirm your earlier " +
+  "assumptions still hold — do not act on stale results. Continue from where the " +
+  "run left off toward the user's original request.";
+
+/**
  * Stub-prompt header inserted into the system context when at least one
  * non-pinned Claude Skill is enabled. The translation glossary is the
  * core payload: Anthropic SKILL.md packages reference upstream tool
@@ -688,14 +773,36 @@ export async function runAgentLoop(
     onApproveShellPrefix,
     dryRun = false,
   } = opts;
+  // RESUME: when continuing an interrupted run from its durable checkpoint,
+  // splice the rehydrated agent turns in AFTER the incoming history (system +
+  // original user prompt) and BEFORE sanitizing, then append a single
+  // conservative re-validation system note so the model treats the prior work as
+  // done history rather than re-running it. Past tool calls are reconstructed as
+  // history ONLY — never re-executed. `stripUnpairedToolCalls` below drops any
+  // half-written tool-call/result pair at the interruption point so the first
+  // request can't 400. Absent/empty resume turns = a normal run (no-op here).
+  const incoming = [...opts.messages];
+  const resumeTurns = opts.resumeFromTurns ?? [];
+  if (resumeTurns.length > 0) {
+    incoming.push(
+      ...rehydrateCheckpointTurns(resumeTurns, opts.conversationId),
+    );
+    incoming.push({
+      _tmpKey: makeTmpKey(),
+      conversation_id: opts.conversationId,
+      role: "system",
+      content: RESUME_REVALIDATION_NOTE,
+    });
+  }
   // Root-cause guard for tool-call/result pairing: drop any incoming
   // assistant `tool_calls` turn whose ids aren't ALL paired by `tool` results,
   // and any orphan `tool` result. An aborted run (Stop mid-tool, or mid-
   // confirmation) can leave such an orphan in the React message list; on the
   // next same-conversation send it would reach the backend verbatim and 400
   // ("tool_call_id not found"). Sanitizing the runner input closes every such
-  // path regardless of how the orphan got there. Round 6 (2026-05-30).
-  const msgs: Message[] = stripUnpairedToolCalls([...opts.messages]);
+  // path regardless of how the orphan got there. Round 6 (2026-05-30). For a
+  // RESUME this is also what neutralizes the interruption-point half-pair.
+  const msgs: Message[] = stripUnpairedToolCalls(incoming);
 
   // Project policy: either explicitly supplied (tests / subagents) or loaded
   // lazily from the workspace cwd. `api.policyLoad` returns null for BOTH "no

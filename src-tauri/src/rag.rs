@@ -134,6 +134,183 @@ pub(crate) fn ensure_schema_rung(conn: &rusqlite::Connection) -> Result<()> {
     ensure_schema(conn)
 }
 
+/* ───────────────────────── Sparse (FTS5) index ──────────────────────────
+ *
+ * W5-RAGCORE (2026-06-15): a BM25 keyword index over `rag_chunks.text`, fused
+ * with the existing dense vector path via Reciprocal Rank Fusion (see
+ * `search`). Pure dense retrieval misses exact identifiers and error codes
+ * ("E0277", "TS2345", `useChatSend`) whose surface form carries the signal but
+ * whose learned/hashed embedding washes out; BM25 nails them.
+ *
+ * FORWARD-ONLY + NON-DESTRUCTIVE: this is an additive, derived, fully
+ * rebuildable index — `rag_chunks` (text + BLOB) stays the source of truth,
+ * exactly like the vec0 derived index. It is NOT created by a migration that
+ * touches stored data. Instead it is built lazily on first hybrid search (and
+ * kept in lockstep during ingest), so existing corpora that predate it keep
+ * working: when the FTS table is absent or empty for a corpus, `search` simply
+ * falls back to the dense-only path it used before. A user re-ingest (the
+ * RagPanel re-index button) fully repopulates it.
+ *
+ * External-content FTS5 (`content='rag_chunks'`, `content_rowid='id'`) keeps
+ * the index small — it references the chunk rowid rather than duplicating chunk
+ * bodies. We deliberately do NOT install sync triggers (those would live in
+ * history.rs, which this group does not own); instead every rag.rs write path
+ * that mutates `rag_chunks` mirrors the change into the FTS index inside the
+ * SAME transaction (ingest flush, copy-forward, atomic swap, delete), and a
+ * one-shot `rebuild` backfills any pre-existing rows on first use.
+ */
+
+/// Name of the external-content FTS5 table mirroring `rag_chunks.text`.
+pub(crate) const RAG_FTS: &str = "rag_chunks_fts";
+
+/// Create the FTS5 table if missing. `tokenize` is `porter unicode61` to mirror
+/// `messages_fts`'s stemming, but we keep `remove_diacritics 2` off the default
+/// and add `tokenchars '_'` so snake_case identifiers (`with_write`,
+/// `EMBED_DIM`) index as whole tokens rather than being split on the
+/// underscore — exact-identifier recall is the whole point of the sparse leg.
+/// No-op-safe: `IF NOT EXISTS`. Returns Ok even on a build without FTS5 only if
+/// the CREATE itself succeeds; callers treat any error as "sparse unavailable"
+/// and fall back to dense-only.
+fn ensure_fts_table(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(&format!(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS {RAG_FTS} USING fts5(
+            text,
+            content='rag_chunks',
+            content_rowid='id',
+            tokenize=\"porter unicode61 tokenchars '_'\"
+         );"
+    ))?;
+    Ok(())
+}
+
+/// Whether the FTS table exists AND already holds at least one row. Empty /
+/// absent → the caller skips the sparse leg (dense-only), so a pre-existing
+/// corpus that has never been (re)indexed since this feature shipped keeps its
+/// old behavior with zero migration. Best-effort: any error reads as "no".
+fn fts_has_rows(conn: &rusqlite::Connection) -> bool {
+    // `SELECT 1 FROM <fts> LIMIT 1` errors if the table is absent — treat as no.
+    conn.query_row(&format!("SELECT 1 FROM {RAG_FTS} LIMIT 1"), [], |_| Ok(()))
+        .optional()
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Lazily build (and one-time backfill) the FTS index from `rag_chunks`, used on
+/// the first hybrid search against a DB whose corpora predate the index.
+/// Idempotent and best-effort: returns `true` when the sparse leg is usable
+/// afterward, `false` when FTS5 is unavailable or the build failed (caller then
+/// uses dense-only).
+///
+/// The `rebuild` command re-derives every row from the external-content source
+/// (`rag_chunks`), so it is safe to call repeatedly and never duplicates rows.
+/// Runs through the single-writer gate since it writes the (shared) FTS table.
+fn ensure_fts_populated(conn: &rusqlite::Connection) -> bool {
+    if fts_has_rows(conn) {
+        return true;
+    }
+    // No FTS rows. If there are no chunks AT ALL to index, skip the rebuild
+    // entirely: there is nothing to backfill, the dense path will return nothing
+    // anyway, and a per-search no-op `with_write` would be wasteful churn. (The
+    // ingest path creates + populates the index in lockstep, so a real corpus
+    // never depends on this lazy build to get its rows.) Returning false here
+    // just means "use dense-only this call" — harmless when the corpus is empty.
+    let any_chunks: bool = conn
+        .query_row("SELECT 1 FROM rag_chunks LIMIT 1", [], |_| Ok(()))
+        .optional()
+        .ok()
+        .flatten()
+        .is_some();
+    if !any_chunks {
+        return false;
+    }
+    // Legacy DB whose chunks predate the index → one-time backfill. `rebuild`
+    // re-derives the whole index from the content table (a one-time O(corpus)
+    // cost), then `fts_has_rows` is true on every subsequent search.
+    let built = crate::history::with_write(|tx| {
+        ensure_fts_table(tx)?;
+        tx.execute_batch(&format!(
+            "INSERT INTO {RAG_FTS}({RAG_FTS}) VALUES ('rebuild');"
+        ))?;
+        Ok(())
+    });
+    match built {
+        Ok(()) => true,
+        Err(e) => {
+            crate::diagnostics::warn_with(
+                "rag",
+                "FTS index build failed — hybrid search falls back to dense-only",
+                serde_json::json!({ "error": e.to_string() }),
+            );
+            false
+        }
+    }
+}
+
+/// Mirror an inserted chunk into the FTS index inside the caller's tx. External-
+/// content FTS5 wants the SAME rowid + column value as the content row. Best-
+/// effort: a failure (no FTS5, transient) leaves `rag_chunks` authoritative and
+/// the next `rebuild` recovers it; never propagated so a chunk write isn't lost.
+fn fts_insert_chunk(tx: &rusqlite::Transaction<'_>, chunk_id: i64, text: &str) {
+    if ensure_fts_table(tx).is_err() {
+        return;
+    }
+    let _ = tx.execute(
+        &format!("INSERT INTO {RAG_FTS}(rowid, text) VALUES (?1, ?2)"),
+        params![chunk_id, text],
+    );
+}
+
+/// Mirror the copy-forward path's above-watermark chunks into the FTS index in
+/// the same tx (parallels `vec_backfill_rag_above`). Best-effort.
+fn fts_backfill_above(tx: &rusqlite::Transaction<'_>, corpus_id: i64, path: &str, watermark: i64) {
+    if ensure_fts_table(tx).is_err() {
+        return;
+    }
+    let _ = tx.execute(
+        &format!(
+            "INSERT INTO {RAG_FTS}(rowid, text)
+             SELECT id, text FROM rag_chunks
+             WHERE corpus_id = ?1 AND path = ?2 AND id > ?3"
+        ),
+        params![corpus_id, path, watermark],
+    );
+}
+
+/// Delete the FTS rows for a corpus's OLD generation (chunks at/below the
+/// watermark), mirroring `vec_delete_rag_old_generation`. External-content FTS5
+/// needs the original `text` to remove an entry cleanly, so we issue the special
+/// `('delete', rowid, text)` form joined back to the still-present content rows.
+/// Must run BEFORE the rag_chunks delete so the join still resolves. Best-effort.
+fn fts_delete_old_generation(tx: &rusqlite::Transaction<'_>, corpus_id: i64, watermark: i64) {
+    if !fts_has_rows(tx) {
+        return;
+    }
+    let _ = tx.execute(
+        &format!(
+            "INSERT INTO {RAG_FTS}({RAG_FTS}, rowid, text)
+             SELECT 'delete', id, text FROM rag_chunks
+             WHERE corpus_id = ?1 AND id <= ?2"
+        ),
+        params![corpus_id, watermark],
+    );
+}
+
+/// Delete all FTS rows for a corpus (used by delete_corpus before the FK cascade
+/// drops the rag_chunks rows). Mirrors `vec_delete_rag_corpus`. Best-effort.
+fn fts_delete_corpus(tx: &rusqlite::Transaction<'_>, corpus_id: i64) {
+    if !fts_has_rows(tx) {
+        return;
+    }
+    let _ = tx.execute(
+        &format!(
+            "INSERT INTO {RAG_FTS}({RAG_FTS}, rowid, text)
+             SELECT 'delete', id, text FROM rag_chunks WHERE corpus_id = ?1"
+        ),
+        params![corpus_id],
+    );
+}
+
 /* ─────────────────────────── Types ──────────────────────────────────── */
 
 #[derive(Serialize, Clone, Debug)]
@@ -720,6 +897,11 @@ fn flush_pending(
                     // BLOB intact and search falls back to the linear path.
                     let chunk_id = tx.last_insert_rowid();
                     crate::history::vec_insert_rag_chunk(tx, chunk_id, &embs[ei], &blob);
+                    // Mirror the chunk text into the sparse (FTS5) index in the
+                    // SAME tx (W5-RAGCORE). Best-effort: a failure leaves the
+                    // BLOB/text authoritative and hybrid search falls back to
+                    // dense-only / a later rebuild.
+                    fts_insert_chunk(tx, chunk_id, chunk);
                     ei += 1;
                     count += 1;
                 }
@@ -933,6 +1115,9 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
                     // index in the SAME tx so the derived index carries forward
                     // with the BLOB source. Best-effort + dim-guarded inside.
                     crate::history::vec_backfill_rag_above(tx, corpus_id, &rel, watermark);
+                    // Same lockstep mirror into the sparse (FTS5) index for the
+                    // copy-forward path (W5-RAGCORE). Best-effort.
+                    fts_backfill_above(tx, corpus_id, &rel, watermark);
                     Ok(n)
                 })?;
                 if copied > 0 {
@@ -1064,6 +1249,10 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         // be deleted in the SAME tx as the BLOB rows they mirror — before the
         // rag_chunks delete, while the ids are still resolvable by join.
         crate::history::vec_delete_rag_old_generation(tx, corpus_id, watermark);
+        // Same pre-delete for the sparse (FTS5) index: external-content FTS5
+        // needs the chunk text (still present) to remove an entry cleanly, so
+        // this MUST run before the rag_chunks delete too (W5-RAGCORE).
+        fts_delete_old_generation(tx, corpus_id, watermark);
         tx.execute(
             "DELETE FROM rag_chunks WHERE corpus_id = ?1 AND id <= ?2",
             params![corpus_id, watermark],
@@ -1226,6 +1415,96 @@ fn search_vec_rag(
     Ok(winners)
 }
 
+/// Sparse BM25 top-k for a corpus over the FTS5 index. Returns `(id, rank)`
+/// pairs in ascending bm25 order (best first), where `rank` is the 0-based
+/// position used by RRF (NOT the raw bm25 score — RRF is rank-only by design, so
+/// the dense cosine and sparse bm25 magnitudes never need to be commensurable).
+///
+/// The raw user query is wrapped per-token in double quotes so FTS5 operators
+/// (AND/OR/NEAR/^/*) in user text can't inject query syntax errors — every
+/// token is a plain phrase term (same neutralization as `search_messages_fts`).
+/// Returns an empty Vec (never an error) when the query has no usable tokens or
+/// the FTS table is unavailable — the caller then proceeds dense-only.
+fn search_fts(conn: &rusqlite::Connection, corpus_id: i64, query: &str, k: usize) -> Vec<(i64, usize)> {
+    let safe: Vec<String> = query
+        .split_whitespace()
+        .take(32)
+        .filter_map(|t| {
+            let cleaned = t.replace('"', "");
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(format!("\"{cleaned}\""))
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        return Vec::new();
+    }
+    // OR the terms so a query matches chunks containing ANY token (recall-
+    // oriented; RRF + the dense leg handle precision). bm25() returns smaller =
+    // better, so ORDER BY bm25 ASC is best-first.
+    let fts_query = safe.join(" OR ");
+    let sql = format!(
+        "SELECT f.rowid
+         FROM {RAG_FTS} f
+         JOIN rag_chunks c ON c.id = f.rowid
+         WHERE {RAG_FTS} MATCH ?1 AND c.corpus_id = ?2
+         ORDER BY bm25({RAG_FTS})
+         LIMIT ?3"
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(params![fts_query, corpus_id, k as i64], |r| r.get::<_, i64>(0));
+    let rows = match rows {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(k);
+    for (rank, row) in rows.enumerate() {
+        match row {
+            Ok(id) => out.push((id, rank)),
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+/// Reciprocal Rank Fusion of a dense ranking and a sparse ranking.
+///
+/// RRF score for a doc = Σ_lists 1/(RRF_K + rank_in_list), summed across every
+/// ranked list the doc appears in (rank is 0-based here). It needs no score
+/// normalization — it fuses purely on RANK, which is exactly why it's robust to
+/// the dense cosine and sparse bm25 living on incomparable scales. `RRF_K`
+/// (60, the canonical default from the original RRF paper) damps the influence
+/// of very-top ranks just enough that a doc strong in BOTH lists outranks one
+/// that merely tops a single list.
+///
+/// `dense` is `(score, id)` best-first (the existing winner shape); `sparse` is
+/// `(id, rank)` best-first. Returns `(fused_score, id)` sorted DESC, top `k`.
+/// Ties broken by id DESC for determinism.
+fn rrf_fuse(dense: &[(f32, i64)], sparse: &[(i64, usize)], k: usize) -> Vec<(f32, i64)> {
+    const RRF_K: f32 = 60.0;
+    // `HashMap` is already imported at module scope.
+    let mut acc: HashMap<i64, f32> = HashMap::with_capacity(dense.len() + sparse.len());
+    for (rank, (_score, id)) in dense.iter().enumerate() {
+        *acc.entry(*id).or_insert(0.0) += 1.0 / (RRF_K + rank as f32);
+    }
+    for (id, rank) in sparse.iter() {
+        *acc.entry(*id).or_insert(0.0) += 1.0 / (RRF_K + *rank as f32);
+    }
+    let mut fused: Vec<(f32, i64)> = acc.into_iter().map(|(id, s)| (s, id)).collect();
+    fused.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.1.cmp(&a.1))
+    });
+    fused.truncate(k);
+    fused
+}
+
 pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>> {
     validate_name(corpus_name)?;
     let trimmed = query.trim();
@@ -1259,29 +1538,31 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
             )
         })?;
 
-    // Pass 1: rank chunks → top-k `winners: Vec<(score, id)>` (score DESC).
-    // Prefer the vec0 ANN index when it's usable for this query's dim; else
-    // fall through to the preserved linear scan. Both produce identical winner
-    // shapes so the pass-2 payload fetch + scan_and_wrap below is shared.
-    let winners: Vec<(f32, i64)> = if crate::history::vec0_usable_for(
+    // Pass 1a: DENSE ranking → top `dense_k` `(score, id)` (score DESC). Prefer
+    // the vec0 ANN index when usable for this query's dim; else fall through to
+    // the preserved linear scan. Over-fetch beyond `k` so RRF has enough dense
+    // candidates to fuse with the sparse leg (a doc that's #k+3 dense but #1
+    // sparse should still surface). Bounded so a huge corpus can't blow up.
+    let dense_k = (k.saturating_mul(4)).clamp(k, 100);
+    let dense: Vec<(f32, i64)> = if crate::history::vec0_usable_for(
         &conn,
         crate::history::VEC_RAG_CHUNKS,
         q_emb.len(),
     ) {
-        match search_vec_rag(&conn, corpus_id, &q_emb, k) {
+        match search_vec_rag(&conn, corpus_id, &q_emb, dense_k) {
             // Recall guard (review 2026-06-14): all corpora share ONE global
             // vec0 table, so `search_vec_rag` resolves the KNN GLOBALLY first
             // (bounded by the clamped 8x over-fetch) and only THEN filters to
             // this corpus via the JOIN. When a larger sibling corpus owns the
             // globally-nearest neighbours, a query against a small corpus can
-            // come back with FEWER than k hits even though the corpus holds
+            // come back with FEWER than dense_k hits even though the corpus holds
             // good matches further down the global ranking — silent recall
             // loss vs the linear path, which scans ONLY this corpus. So if the
             // vec0 result is short, fall back to the corpus-scoped linear scan
-            // (its true top-k). A corpus genuinely smaller than k still returns
-            // the same set both ways, so the fallback is free in that case.
-            Ok(w) if w.len() >= k => w,
-            Ok(_) => search_linear(&conn, corpus_id, &q_emb, k)?,
+            // (its true top-k). A corpus genuinely smaller than dense_k still
+            // returns the same set both ways, so the fallback is free in that case.
+            Ok(w) if w.len() >= dense_k => w,
+            Ok(_) => search_linear(&conn, corpus_id, &q_emb, dense_k)?,
             Err(e) => {
                 // vec0 errored at query time (corruption, transient) — never
                 // hard-fail: log once and fall back to the linear scan.
@@ -1290,11 +1571,36 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
                     "vec0 KNN query failed — falling back to linear scan",
                     serde_json::json!({ "error": e.to_string() }),
                 );
-                search_linear(&conn, corpus_id, &q_emb, k)?
+                search_linear(&conn, corpus_id, &q_emb, dense_k)?
             }
         }
     } else {
-        search_linear(&conn, corpus_id, &q_emb, k)?
+        search_linear(&conn, corpus_id, &q_emb, dense_k)?
+    };
+
+    // Pass 1b: SPARSE (BM25) ranking, then FUSE via RRF. The sparse leg fixes
+    // exact-identifier / error-code misses that pure dense retrieval drops. It
+    // is FORWARD-ONLY: only consulted when the FTS index is available + non-
+    // empty for this DB. `ensure_fts_populated` lazily builds + backfills it on
+    // first use against a legacy corpus; if FTS5 is unavailable or the index is
+    // empty (a brand-new corpus that has never been (re)indexed since this
+    // feature shipped) we keep the dense-only ranking verbatim — preserving the
+    // exact pre-hybrid behavior and the linear-fallback parity tests.
+    let winners: Vec<(f32, i64)> = if ensure_fts_populated(&conn) {
+        let sparse = search_fts(&conn, corpus_id, trimmed, dense_k);
+        if sparse.is_empty() {
+            // No keyword matches (or no usable query tokens) → dense is the
+            // ranking; just trim to k so the contract is unchanged.
+            let mut w = dense;
+            w.truncate(k);
+            w
+        } else {
+            rrf_fuse(&dense, &sparse, k)
+        }
+    } else {
+        let mut w = dense;
+        w.truncate(k);
+        w
     };
 
     // Pass 2: fetch the winners' payloads (k ≤ 50, so the IN list is tiny).
@@ -1481,6 +1787,60 @@ pub fn corpus_stale(name: &str) -> Result<bool> {
     Ok(false)
 }
 
+/// Rebuild the sparse (FTS5) hybrid index for one corpus from its already-stored
+/// `rag_chunks` text — no file walk, no re-embed (W5-RAGCORE). This is the cheap
+/// "give this (legacy) corpus the hybrid keyword leg" path the RagPanel exposes
+/// per row: it drops the corpus's current FTS rows and re-derives them from the
+/// content table, so it is safe to run repeatedly and never duplicates entries.
+///
+/// FORWARD-ONLY + NON-DESTRUCTIVE to user data: only the DERIVED FTS index is
+/// touched; `rag_chunks` (the text + BLOB source of truth), the dense vectors,
+/// and the corpus's `embedder` fingerprint are all untouched. For a full re-
+/// embed (e.g. after starting Ollama so a hashed corpus upgrades to learned
+/// vectors) the caller uses the existing re-ingest path, which re-walks +
+/// re-embeds AND repopulates this index in lockstep. Returns the number of
+/// chunks (re)indexed into the sparse leg.
+pub fn rebuild_hybrid_index(name: &str) -> Result<usize> {
+    validate_name(name)?;
+    let conn = get_db()?;
+    let corpus_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM rag_corpora WHERE name = ?1",
+            params![name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let corpus_id = match corpus_id {
+        Some(v) => v,
+        None => anyhow::bail!("corpus '{}' not found", name),
+    };
+    // WS3: single-writer gate. Ensure the table exists, drop this corpus's
+    // current FTS rows (external-content delete needs the still-present text),
+    // then re-insert every chunk's text. All in one tx so a reader never sees a
+    // half-rebuilt index for this corpus.
+    let n = crate::history::with_write(|tx| {
+        ensure_fts_table(tx)?;
+        // Remove this corpus's existing entries (idempotent re-run).
+        tx.execute(
+            &format!(
+                "INSERT INTO {RAG_FTS}({RAG_FTS}, rowid, text)
+                 SELECT 'delete', id, text FROM rag_chunks WHERE corpus_id = ?1"
+            ),
+            params![corpus_id],
+        )?;
+        // Re-derive from the content source.
+        let inserted = tx.execute(
+            &format!(
+                "INSERT INTO {RAG_FTS}(rowid, text)
+                 SELECT id, text FROM rag_chunks WHERE corpus_id = ?1"
+            ),
+            params![corpus_id],
+        )?;
+        Ok(inserted)
+    })?;
+    Ok(n)
+}
+
 pub fn delete_corpus(name: &str) -> Result<()> {
     validate_name(name)?;
     // WS3: single-writer gate.
@@ -1496,6 +1856,10 @@ pub fn delete_corpus(name: &str) -> Result<()> {
             .optional()?;
         if let Some(cid) = corpus_id {
             crate::history::vec_delete_rag_corpus(tx, cid);
+            // Mirror-delete the sparse (FTS5) rows for this corpus before the FK
+            // cascade drops rag_chunks (external-content FTS5 needs the text to
+            // delete cleanly). Best-effort (W5-RAGCORE).
+            fts_delete_corpus(tx, cid);
         }
         tx.execute("DELETE FROM rag_corpora WHERE name = ?1", params![name])?;
         Ok(())
@@ -1894,6 +2258,112 @@ mod tests {
 
         // Unknown corpus → not stale (no error).
         assert!(!corpus_stale("__no_such_corpus_xyz").unwrap());
+
+        let _ = delete_corpus(&name);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ── Hybrid retrieval (RRF) ── */
+
+    /// RRF must rank a doc that appears in BOTH lists above one that tops only a
+    /// single list, and must surface a sparse-only hit the dense list dropped.
+    #[test]
+    fn rrf_fuse_rewards_agreement_and_surfaces_sparse_only() {
+        // Dense best-first: ids 1,2,3 (scores irrelevant to RRF — rank only).
+        let dense = vec![(0.9f32, 1i64), (0.8, 2), (0.7, 3)];
+        // Sparse best-first: id 2 tops it, then a brand-new id 99 the dense
+        // ranking never saw, then id 1.
+        let sparse = vec![(2i64, 0usize), (99, 1), (1, 2)];
+        let fused = rrf_fuse(&dense, &sparse, 5);
+        // id 2 is rank0 sparse + rank1 dense → highest combined RRF.
+        assert_eq!(fused[0].1, 2, "doc strong in both lists must rank first");
+        // The sparse-only id 99 must appear in the fused result (dense alone
+        // would have dropped it entirely) — this is the exact-identifier win.
+        assert!(
+            fused.iter().any(|(_, id)| *id == 99),
+            "sparse-only hit must be surfaced by fusion: {fused:?}"
+        );
+        // Determinism: re-running yields the same order.
+        let again = rrf_fuse(&dense, &sparse, 5);
+        assert_eq!(fused, again);
+    }
+
+    /// Fusion truncates to k and is stable for an empty sparse list (dense-only
+    /// degradation) and an empty dense list (sparse-only).
+    #[test]
+    fn rrf_fuse_edges() {
+        let dense = vec![(0.9f32, 1i64), (0.8, 2), (0.7, 3)];
+        // Empty sparse → preserves dense order, trims to k.
+        let only_dense = rrf_fuse(&dense, &[], 2);
+        assert_eq!(only_dense.len(), 2);
+        assert_eq!(only_dense[0].1, 1);
+        assert_eq!(only_dense[1].1, 2);
+        // Empty dense → sparse order.
+        let sparse = vec![(7i64, 0usize), (8, 1)];
+        let only_sparse = rrf_fuse(&[], &sparse, 5);
+        assert_eq!(only_sparse[0].1, 7);
+        assert_eq!(only_sparse[1].1, 8);
+        // Both empty → empty.
+        assert!(rrf_fuse(&[], &[], 5).is_empty());
+    }
+
+    /// End-to-end hybrid retrieval: an exact identifier / error-code token that
+    /// pure dense (hashed) embedding under-ranks must be found via the fused
+    /// sparse leg. Also asserts the FTS index is built lazily (the corpus is
+    /// ingested before any hybrid search runs) and that `rebuild_hybrid_index`
+    /// is idempotent. Runs against the shared dev DB like the other DB tests.
+    #[test]
+    fn hybrid_search_finds_exact_identifier() {
+        let tag = format!("{}_hyb", std::process::id());
+        let name = format!("__test_hybrid_{tag}");
+        let dir = std::env::temp_dir().join(format!("rag_hybrid_{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A file whose distinctive signal is a code-shaped identifier + an error
+        // code, surrounded by unrelated prose so dense similarity to a natural-
+        // language query is weak but the keyword match is exact.
+        std::fs::write(
+            dir.join("doc.txt"),
+            "The configuration loader reads settings from disk and validates them.\n\
+             When validation fails the function returns error code E0277 from the \
+             handler named resolve_trait_bound which lives in the core module.\n\
+             Unrelated narrative about weather, cooking, and travel follows here \
+             to dilute the dense vector so the identifier carries the real signal.",
+        )
+        .unwrap();
+        let opts = IngestOpts {
+            name: name.clone(),
+            root: dir.to_string_lossy().into_owned(),
+            glob: None,
+        };
+        ingest_folder(opts).expect("ingest");
+
+        // Query the exact error code — the sparse (BM25) leg must surface the
+        // chunk even when dense ranking alone would under-rank it.
+        let hits = search(&name, "E0277", 5).unwrap();
+        assert!(
+            hits.iter().any(|h| h.snippet.contains("E0277")),
+            "exact error-code token must be found via the hybrid sparse leg: {hits:?}"
+        );
+
+        // Exact identifier with an underscore (tokenchars '_' keeps it whole).
+        let hits2 = search(&name, "resolve_trait_bound", 5).unwrap();
+        assert!(
+            hits2.iter().any(|h| h.snippet.contains("resolve_trait_bound")),
+            "snake_case identifier must be found whole: {hits2:?}"
+        );
+
+        // rebuild_hybrid_index re-derives the sparse leg from stored chunks and
+        // is idempotent — two runs (re)index the same chunk count and search
+        // still works afterward.
+        let n1 = rebuild_hybrid_index(&name).expect("rebuild 1");
+        let n2 = rebuild_hybrid_index(&name).expect("rebuild 2");
+        assert_eq!(n1, n2, "rebuild must be idempotent (same chunk count)");
+        let after = search(&name, "E0277", 5).unwrap();
+        assert!(
+            after.iter().any(|h| h.snippet.contains("E0277")),
+            "search must still work after an index rebuild: {after:?}"
+        );
 
         let _ = delete_corpus(&name);
         let _ = std::fs::remove_dir_all(&dir);

@@ -57,6 +57,35 @@ export interface CheckpointTurn {
 }
 
 /**
+ * One rehydrated turn from an unfinished run's durable checkpoint (RESUME) —
+ * mirrors `RunCheckpointTurn` in `src-tauri/src/history.rs`. `content` is the
+ * lossless shadow the runner wrote; an assistant turn that carried tool_calls
+ * holds a JSON `{ content, tool_calls }` envelope (the caller parses it back).
+ */
+export interface RunCheckpointTurn {
+  turn_index: number;
+  role: string;
+  content: string;
+  created_at: number;
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  model?: string | null;
+}
+
+/**
+ * The most-recent UNFINISHED agent run for a conversation (RESUME) — mirrors
+ * `RunCheckpoint` in `src-tauri/src/history.rs`. Returned by
+ * `agentRunLatestCheckpoint`; the frontend shows a review-before-continue
+ * "Resume run" affordance from it and NEVER auto-resumes.
+ */
+export interface RunCheckpoint {
+  run_id: string;
+  started_at: number;
+  updated_at: number;
+  turns: RunCheckpointTurn[];
+}
+
+/**
  * Internal helper: mint a binding-aware approval token. Pre-mints into a
  * local before any further `await`, so a fast burst of dangerous calls
  * can't interleave their mint/consume across the renderer event loop.
@@ -439,6 +468,17 @@ export const api = {
     convId: number,
     turns: CheckpointTurn[],
   ) => invoke<number>("agent_run_checkpoint", { runId, convId, turns }),
+  /** RESUME: fetch the most-recent UNFINISHED run checkpoint for a conversation,
+   *  or null when nothing is resumable. A pure read — performs no resume side
+   *  effect. The caller shows a review-before-continue affordance and never
+   *  auto-resumes. */
+  agentRunLatestCheckpoint: (convId: number) =>
+    invoke<RunCheckpoint | null>("agent_run_latest_checkpoint", { convId }),
+  /** RESUME: mark a run's checkpoint set FINISHED so it's never re-offered for
+   *  resume (on completion, dismissal, or after a successful resume). Idempotent;
+   *  returns the number of shadow rows flipped. */
+  agentRunClose: (runId: string, convId: number) =>
+    invoke<number>("agent_run_close", { runId, convId }),
   deleteMessage: (id: number) => invoke<void>("delete_message", { id }),
 
   // Conversation branching — `conversationFork` deep-copies messages from
@@ -1071,6 +1111,8 @@ export const api = {
     }),
   ragListCorpora: () => invoke<RagCorpusInfo[]>("rag_list_corpora"),
   ragCorpusStale: (name: string) => invoke<boolean>("rag_corpus_stale", { name }),
+  ragRebuildHybridIndex: (name: string) =>
+    invoke<number>("rag_rebuild_hybrid_index", { name }),
   ragDeleteCorpus: (name: string) =>
     invoke<void>("rag_delete_corpus", { name }),
   /**

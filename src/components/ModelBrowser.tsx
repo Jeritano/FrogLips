@@ -11,9 +11,12 @@ import type {
 } from "../types";
 import { OllamaLibraryView } from "./OllamaLibraryView";
 import { InstalledModelsTab } from "./model-browser/InstalledModelsTab";
+import { CatalogTab } from "./model-browser/CatalogTab";
+import type { CatalogEntry } from "./model-browser/catalog";
 import { OpenRouterBrowserTab } from "./model-browser/OpenRouterBrowserTab";
 import { LlmpmPanel } from "./LlmpmPanel";
 import { ModelScopeBrowserTab } from "./model-browser/ModelScopeBrowserTab";
+import { useHardwareProfile } from "../hooks/useHardwareProfile";
 import { X } from "lucide-react";
 /** Type-only re-import for the GGUF tree shape — HuggingFaceLibraryView owns
  *  it now; this stays a type-level import so the lazy() chunk boundary holds. */
@@ -32,6 +35,7 @@ type Backend =
   | "ollama"
   | "hf"
   | "installed"
+  | "catalog"
   | "openrouter"
   | "llmpm"
   | "modelscope";
@@ -42,18 +46,13 @@ type Backend =
  * started here keeps progressing if the user wanders to another tab —
  * it's passed in through `ggufContext`. */
 
-interface CatalogEntry {
-  id: string;
-  label: string;
-  size: string;
-  tags: string[];
-  desc: string;
-}
-
 /* ───────────────────────────────────────────────────────────────────────────
    Curated Ollama catalog. Sourced from ollama.com/library — popular models.
+   Single source of truth for BOTH the Ollama-library fallback AND the curated
+   "Catalog" tab (model-browser/CatalogTab). `CatalogEntry` is the shared shape
+   from model-browser/catalog.ts.
    ─────────────────────────────────────────────────────────────────────── */
-const OLLAMA: CatalogEntry[] = [
+export const OLLAMA: CatalogEntry[] = [
   // ── Ollama Cloud (hosted by Ollama, no local VRAM) ──
   {
     id: "kimi-k2-thinking:cloud",
@@ -839,6 +838,9 @@ interface Props {
 export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
   const [tab, setTab] = useState<Backend>("installed");
   const [query, setQuery] = useState("");
+  // Detected machine RAM for the Catalog tab's fit badges. Same module-deduped
+  // hook the model picker uses, so the verdict is identical across surfaces.
+  const { profile } = useHardwareProfile();
   const [pulling, setPulling] = useState<string | null>(null);
   const [done, setDone] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
@@ -1145,9 +1147,11 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
               placeholder={
                 tab === "ollama"
                   ? "Filter Ollama models…"
-                  : tab === "openrouter"
-                    ? "Filter OpenRouter models…"
-                    : "Filter installed models…"
+                  : tab === "catalog"
+                    ? "Filter curated catalog…"
+                    : tab === "openrouter"
+                      ? "Filter OpenRouter models…"
+                      : "Filter installed models…"
               }
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -1188,6 +1192,7 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
                 ggufInstalled.length}
               )
             </option>
+            <option value="catalog">Catalog ({OLLAMA.length})</option>
             <option value="ollama">Ollama ({OLLAMA.length})</option>
             <option value="hf">HuggingFace (live)</option>
             <option value="openrouter">OpenRouter (cloud)</option>
@@ -1215,6 +1220,23 @@ export function ModelBrowser({ onClose, onPulled, onSelectOpenRouter }: Props) {
                 void refreshInstalled();
                 void refreshGgufInstalled();
               }}
+            />
+          )}
+
+          {tab === "catalog" && (
+            <CatalogTab
+              catalog={OLLAMA}
+              installedOllama={installedOllama}
+              machine={profile}
+              query={query}
+              pull={(name) => void pull(name, "ollama")}
+              requestRemove={(name) => requestRemove(name, "ollama")}
+              pulling={pulling}
+              pullProgress={ollamaProgress}
+              deleting={deleting}
+              done={done}
+              errors={errors}
+              confirmDelete={confirmDelete}
             />
           )}
 

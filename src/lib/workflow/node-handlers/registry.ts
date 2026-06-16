@@ -19,6 +19,7 @@ import { cascadeHandler } from "./cascade";
 import { consistencyHandler } from "./consistency";
 import { criticHandler } from "./critic";
 import { moaHandler } from "./moa";
+import { parallelHandler } from "./parallel";
 import { routerHandler } from "./router";
 import type { NodeHandler } from "./types";
 
@@ -34,6 +35,7 @@ export const HANDLERS: Record<WorkflowNodeType, NodeHandler> = {
   router: routerHandler,
   blackboard: blackboardHandler,
   budget: budgetHandler,
+  parallel: parallelHandler,
 };
 
 /** Resolve a card's node type to its handler, defaulting to the plain `agent`

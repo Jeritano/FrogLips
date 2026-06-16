@@ -889,7 +889,8 @@ export type WorkflowNodeType =
   | "cascade"
   | "router"
   | "blackboard"
-  | "budget";
+  | "budget"
+  | "parallel";
 
 /** One route option for a `router` node. */
 export interface WorkflowRoute {
@@ -966,6 +967,9 @@ export interface WorkflowNodeConfig {
    * skipped, run still records ok). Null = never halt.
    */
   haltWhen?: { key: string; equals: string } | null;
+  /** parallel: explicit per-branch task prompts; each runs concurrently as its
+   *  own branch (overrides `members`). */
+  branchPrompts?: string[] | null;
 }
 
 /** Node types selectable in the CardForm UI, with human labels + blurbs. */
@@ -1009,6 +1013,11 @@ export const WORKFLOW_NODE_TYPES: ReadonlyArray<{
     value: "budget",
     label: "Budget",
     blurb: "Run under a token/time ceiling; return best effort.",
+  },
+  {
+    value: "parallel",
+    label: "Parallel",
+    blurb: "Run independent branches at once → collected results.",
   },
 ];
 
@@ -1327,6 +1336,12 @@ function normalizeNodeConfig(raw: unknown): WorkflowNodeConfig | null {
     const equals =
       typeof h.equals === "string" ? h.equals.slice(0, STR_CAP) : null;
     if (key && equals != null) out.haltWhen = { key, equals };
+  }
+  if (Array.isArray(r.branchPrompts)) {
+    const prompts = r.branchPrompts
+      .filter((p): p is string => typeof p === "string")
+      .map((p) => p.slice(0, STR_CAP));
+    if (prompts.length > 0) out.branchPrompts = prompts;
   }
   // Drop null-only string fields to keep the object lean, then bail if empty.
   for (const k of Object.keys(out) as (keyof WorkflowNodeConfig)[]) {

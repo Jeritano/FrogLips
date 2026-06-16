@@ -1,6 +1,6 @@
 # Froglips — User Guide
 
-Version 0.13.13 · macOS (Apple Silicon)
+Version 0.14.4 · macOS (Apple Silicon)
 
 ## 1. Install
 
@@ -60,6 +60,25 @@ selector at the top switches between views:
 - **Inline:** on the HuggingFace / RP views, any model that's already downloaded shows a red **Remove** button instead of *Pull*.
 
 Removing frees up the actual disk space — there is no undo.
+
+### Model capability badges
+
+To help you pick a model that will succeed *before* you hit a wall, the model
+picker annotates models with lightweight badges derived from the model id:
+
+- **Vision** — flags models from known multimodal families (LLaVA, Qwen-VL,
+  Gemma 3, Pixtral, Llama 3.2-Vision, …); the image-attach control only shows on
+  these.
+- **Tool-calling fitness** — a hint of how reliably a model emits the
+  OpenAI-style tool calls that Agent mode and Flows need: **good** (e.g.
+  Qwen 2.5/3, Mistral, Llama 3.1/3.3, frontier cloud models), **weak** (small or
+  abliterated/uncensored builds that tend to narrate instead of calling), or
+  **untested** (unknown family — no warning either way).
+- **Context window** — a compact marker (`8k` / `32k` / `128k` / `1M`) of the
+  model's context size.
+
+These are heuristics meant to steer, not gates — a "weak" model still loads, and
+where the backend can report real capabilities it overrides the heuristic.
 
 ## 5. Memory system
 
@@ -129,6 +148,32 @@ demand) and cloud backends; MLX/native routes only switch to the already-loaded
 model. Semantic matching needs an embedding model (`nomic-embed-text`); without
 one it cleanly falls back to keyword + classifier. Agent mode keeps the active
 model (routing applies to plain chat).
+
+## 5c. Project knowledge (RAG)
+
+Point Froglips at a local folder and it indexes the files so the agent can
+**semantically search** them via the `search_project_knowledge` tool. Open the
+RAG panel from the Knowledge surface.
+
+**Index a folder:** enter a corpus **name**, an **absolute folder path** (or
+drag a folder in), and an optional **glob filter** (e.g. `**/*.{ts,tsx}`), then
+**Ingest folder**. Indexing runs on the backend and reports how many files and
+chunks it created.
+
+**The corpus manifest:** each indexed corpus shows its **chunk count** and how
+long ago it was last indexed. When the source files on disk have changed since
+the last index, a yellow **Stale** badge appears next to the corpus name.
+
+**Re-index:** click the ↻ button on a corpus row to re-ingest it from its
+recorded folder. Unchanged files take a fast copy-forward path (no re-embed), so
+re-indexing is cheap when little changed. A stale corpus is also refreshed on
+the app's daily maintenance pass; this button is the on-demand path.
+
+**Click-to-open hits:** the **Test search (debug)** box runs the real retriever
+against a corpus and lists the top hits with their relevance score and a
+snippet. Each hit's path is a **clickable link** that opens the source file in
+your default app — the open is confined to the corpus's recorded folder, so a
+hit can never open a file outside it.
 
 ## 6. Agent mode
 
@@ -209,6 +254,7 @@ Each preset comes with a system prompt tailored to its purpose. Switching preset
 
 - Every `run_shell`, `write_file`, `edit_file`, `multi_edit`, `make_dir`, `move_path`, `copy_path`, `delete_path`, `applescript_run`, `clipboard_set`, `open_app`, `git_commit`, `kill_process`, `agent_undo`, and `spawn_subagent` call requires explicit user approval. An `http_request` carrying a request body always asks for confirmation too, even when you've approved a session.
 - The confirm dialog shows a `destructive` / `privileged` / `pipe-from-network` badge for risky patterns (e.g. `rm -rf /`, `sudo`, `curl … | sh`).
+- **"Trust this task" (per-run)** — on a normal-risk confirmation dialog you can tick **Allow all remaining actions for this task** before clicking **Allow**. For the rest of *that single agent run* every normal-risk tool call auto-approves so you aren't clicking through each step of a multi-step task. It is scoped to the one run (it resets when the run ends), and it deliberately does NOT cover destructive-risk calls, shell, or MCP tools — those always re-confirm. The checkbox is hidden on non-normal-risk dialogs so it can never silently waive a dangerous action.
 - **Path-aware risk escalation** — writes targeting `/etc/`, `/Library/Launch{Agents,Daemons}/`, shell rc files (`.zshrc`, `.bashrc`, …), `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, or any `.app` / `.command` / `.terminal` / `.workflow` / `.tool` bundle (root OR internal) are automatically classified `destructive`. The chat agent's session-level **Approve all this session → writes/edits** toggle CANNOT waive these — they always show the explicit confirmation modal with the loud red badge.
 - Path traversal (`..`) is collapsed before risk classification so `~/foo/../../etc/hosts` doesn't slip through as "normal". Symlink escape, reads/writes to `~/.ssh`, `~/.aws`, `~/Library/Keychains`, `.env*`, sudoers, browser profiles, `.netrc`, `gh`/`gcloud` config, etc. are blocked by the Rust side regardless of UI risk.
 - Content the agent reads from outside the model — files, PDFs, the clipboard, web pages, and git output — is scanned for prompt-injection before it reaches the model.
@@ -287,6 +333,11 @@ sidebar (the 🧩 Workflows entry).
   progress aborts it cleanly (you'll see the run recorded as failed with the
   remaining cards skipped). A blue banner warns while a run is live. Future
   releases will lift run state above the page so navigation is non-destructive.
+- **Run History** — click the **History** button to open a panel of this
+  workflow's past runs (manual and scheduled). Each entry records when it ran,
+  its overall status, and a per-card summary you can expand to see what each card
+  produced — so you can review an unattended scheduled run after the fact. A
+  one-off **Test** run against typed sample input is deliberately *not* recorded.
 - **Schedule** — a card with a schedule triggers the workflow unattended. A
   card must explicitly opt into `unattended` for its declared tools to
   auto-approve on a scheduled run; everything else still hits the deny-all gate.
@@ -410,19 +461,35 @@ appears above the composer:
 
 - **Export**: ⤓ Export button in the agent toolbar saves the current conversation as Markdown (timestamps, model tags, tool calls + results included).
 - **Per-message actions**: hover any message — Copy (clipboard), Regenerate (assistant only, deletes the prior pair and re-asks), Edit (user only — drafts your last prompt back into the input so you can change it and resend).
+- **Reasoning disclosure**: reasoning models (DeepSeek-R1, Qwen3, gpt-oss, …) emit a chain-of-thought before their answer. Froglips splits that out of the prose: while the model is still thinking it streams into an expanded **Thinking…** disclosure; once the answer arrives the disclosure collapses to **Thought for a moment**, which you can re-open to read the reasoning. The final answer is never cluttered with the raw `<think>` text.
+
+### Find in a conversation (Cmd+F)
+
+Press **Cmd+F** in an open conversation to bring up a find bar scoped to that
+thread. Type a query and Froglips highlights every match across the *whole*
+conversation — including earlier messages hidden behind "Show earlier messages"
+— and shows a live `current / total` count. Use the next/prev arrows (or Enter /
+Shift+Enter) to step through hits; Esc closes the bar.
 
 ## 12. Themes + keyboard shortcuts
 
 - ☀/☾ in sidebar toggles **light/dark theme**. Persisted across restarts.
+- **System theme**: alongside Light and Dark there is a **System** option that follows your macOS appearance and live-updates the moment the OS flips light↔dark — no relaunch. A fresh install defaults to System; an explicit Light/Dark choice pins that theme.
 - **Sidebar collapse**: a collapse/expand toggle hides the conversation sidebar to give the chat full width. State is remembered.
 - **Markdown rendering**: assistant + user messages render Markdown with code-block syntax highlighting for 20+ languages.
 - **Citation chips**: when the agent references a workspace file, the chip is clickable — Froglips confirms the resolved path and opens it. Opens are confined to the workspace root; absolute or traversal paths are rejected.
 - **Scroll behavior**: the chat sticks to the bottom while a reply streams, but if you scroll up to read, autoscroll pauses so you aren't yanked back down — it resumes when you return to the bottom.
 - **Empty-chat landing**: a brand-new chat shows clickable example prompts instead of a blank surface; click one to drop it into the composer.
 - **Reduced motion**: entrance animations are disabled when your system "reduce motion" setting is on.
-- Cmd+N — new chat
-- Cmd+L — open model library
-- Cmd+K — focus model picker
+
+### Keyboard shortcuts
+
+- **Cmd+N** — new chat
+- **Cmd+L** — open model library
+- **Cmd+K** — focus model picker
+- **Cmd+F** — find in the open conversation (see §11)
+- **Cmd+,** — open settings
+- **?** (no modifier, outside any text field) — toggle the **keyboard-shortcuts cheatsheet**, a small overlay listing these shortcuts so they're discoverable without leaving the keyboard.
 
 ## 13. Voice input
 
@@ -457,8 +524,14 @@ fresh instead of failing to launch.
 
 Two ways to get a new version:
 
-- **In-app**: Agent settings ⚙ → **Check now**. Downloads, installs, relaunches.
+- **In-app**: Settings → Updates → **Check for updates**. Downloads, installs, relaunches.
 - **Manual**: download the DMG from the Releases page.
+
+**Automatic update checks** run quietly in the background (shortly after launch,
+then about once a day) and surface a banner when a newer version is available —
+they never install on their own. This is **on by default**; toggle **Auto-update
+→ "Check for updates automatically in the background"** off in Settings to opt
+out. The manual **Check for updates** button works regardless of the toggle.
 
 Updates are minisign-signed; the public key is embedded in the app. A tampered build will fail verification and refuse to install.
 

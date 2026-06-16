@@ -1072,6 +1072,29 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v30 — RESUME: a `run_done` flag on checkpoint shadow rows so a finished /
+    // dismissed run won't be re-offered for resume (item: resume an interrupted
+    // long run). Additive + nullable: every existing row (and every non-agent
+    // message) keeps it NULL, which the reader treats as "open" for any run that
+    // has shadow rows — i.e. an upgrade preserves the prior durable checkpoints
+    // exactly, and a run interrupted across the upgrade is still resumable. New
+    // checkpoint writes set `run_done = 0` explicitly; `close_run` flips a run's
+    // rows to 1. Index on (conversation_id, run_done) keeps the "most recent
+    // unfinished run for this conversation" probe cheap. Forward-only: no stored
+    // checkpoint/conversation/memory data is rewritten or destroyed.
+    Migration {
+        version: 30,
+        apply: |conn| {
+            if !column_exists(conn, "messages", "run_done")? {
+                conn.execute("ALTER TABLE messages ADD COLUMN run_done INTEGER", [])?;
+            }
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_messages_conv_run_done
+                    ON messages(conversation_id, run_done);",
+            )?;
+            Ok(())
+        },
+    },
 ];
 
 /// Add the additive `conv_id INTEGER` sibling column to `table`, preferring an
@@ -2243,11 +2266,16 @@ pub fn checkpoint_run(run_id: &str, conv_id: i64, turns: &[CheckpointTurn]) -> R
         // turn keeps its original settle time across later checkpoints.
         let now = now_unix();
         for t in turns {
+            // `run_done = 0` is set ONLY on first insert — the DO UPDATE branch
+            // deliberately leaves it untouched (like `created_at`) so a run that
+            // `close_run` already flipped to 1 can never be silently re-opened by
+            // a late, racing checkpoint write. A live run only ever appends/edits
+            // turns, so its rows stay at 0 until it finishes or the user dismisses.
             tx.execute(
                 "INSERT INTO messages
                     (conversation_id, role, content, created_at, model,
-                     run_id, turn_index, tool_call_id, tool_name)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     run_id, turn_index, tool_call_id, tool_name, run_done)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
                  ON CONFLICT(conversation_id, run_id, turn_index) DO UPDATE SET
                     role = excluded.role,
                     content = excluded.content,
@@ -2283,6 +2311,181 @@ pub fn checkpoint_run(run_id: &str, conv_id: i64, turns: &[CheckpointTurn]) -> R
             params![conv_id, run_id, turns.len() as i64],
         )?;
         Ok(turns.len())
+    })
+}
+
+/// One rehydrated turn from an unfinished run's durable checkpoint, returned by
+/// [`latest_unfinished_run`]. Mirrors a `CheckpointTurn` plus the row id +
+/// settle time, so the frontend can both preview the run ("what was already
+/// done") and reconstruct the message history to resume from. `content` is the
+/// lossless shadow the runner wrote: for an assistant turn that carried
+/// tool_calls it is a JSON `{ content, tool_calls }` envelope (see
+/// `checkpointTurnsFrom` in runner.ts); the frontend parses it back.
+#[derive(Serialize, Clone)]
+pub struct RunCheckpointTurn {
+    pub turn_index: i64,
+    pub role: String,
+    pub content: String,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// The most-recent UNFINISHED agent run for a conversation, returned by
+/// [`latest_unfinished_run`]. "Unfinished" = the run has checkpoint shadow rows
+/// and none of them are marked `run_done = 1`. The frontend uses this to offer a
+/// REVIEW-BEFORE-CONTINUE "Resume run" affordance — it NEVER auto-resumes.
+#[derive(Serialize, Clone)]
+pub struct RunCheckpoint {
+    /// The interrupted run's id (`run:<uuid>`).
+    pub run_id: String,
+    /// Settle time of the run's first checkpoint row (UNIX seconds).
+    pub started_at: i64,
+    /// Settle time of the run's most-recent checkpoint row (UNIX seconds).
+    pub updated_at: i64,
+    /// All recoverable agent turns, ordered by `turn_index`.
+    pub turns: Vec<RunCheckpointTurn>,
+}
+
+/// Read the most-recent UNFINISHED run checkpoint for a conversation, or `None`
+/// when there is no resumable run. A run is resumable iff it has at least one
+/// checkpoint shadow row (`run_id IS NOT NULL`) AND no row of that run is marked
+/// finished (`run_done = 1`). Rows whose `run_done` is NULL (written before v30,
+/// or pre-existing) count as open, so an upgrade leaves prior interrupted runs
+/// resumable.
+///
+/// "Most recent" is the run whose newest shadow row has the highest `id`
+/// (autoincrement, monotonic per insert). Only that one run's turns are
+/// returned — a conversation realistically has at most one interrupted run, and
+/// we never offer to resume an older one over a newer.
+///
+/// This is a READ — no resume side effect happens here. Resuming itself is an
+/// explicit, user-driven frontend action.
+pub fn latest_unfinished_run(conv_id: i64) -> Result<Option<RunCheckpoint>> {
+    let conn = get_db()?;
+    // Find the candidate run: the one with the newest shadow row among runs that
+    // have NO finished row. `MAX(run_done) IS NOT 1` keeps a run only while none
+    // of its rows are closed; SQLite's `IS NOT` treats NULL run_done as open.
+    let run_id: Option<String> = conn
+        .query_row(
+            "SELECT run_id FROM messages
+             WHERE conversation_id = ?1 AND run_id IS NOT NULL
+             GROUP BY run_id
+             HAVING MAX(run_done) IS NOT 1
+             ORDER BY MAX(id) DESC
+             LIMIT 1",
+            params![conv_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(run_id) = run_id else {
+        return Ok(None);
+    };
+    let mut stmt = conn.prepare(
+        "SELECT turn_index, role, content, created_at, tool_call_id, tool_name, model
+         FROM messages
+         WHERE conversation_id = ?1 AND run_id = ?2
+         ORDER BY turn_index ASC",
+    )?;
+    let turns = stmt
+        .query_map(params![conv_id, run_id], |r| {
+            Ok(RunCheckpointTurn {
+                turn_index: r.get(0)?,
+                role: r.get(1)?,
+                content: r.get(2)?,
+                created_at: r.get(3)?,
+                tool_call_id: r.get(4)?,
+                tool_name: r.get(5)?,
+                model: r.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if turns.is_empty() {
+        // Defensive: the GROUP BY found a run id but the per-run read returned
+        // nothing (a concurrent close/cleanup raced between the two queries).
+        // Treat as "no resumable run" rather than returning an empty shell.
+        return Ok(None);
+    }
+    let started_at = turns.first().map(|t| t.created_at).unwrap_or(0);
+    let updated_at = turns.iter().map(|t| t.created_at).max().unwrap_or(started_at);
+    Ok(Some(RunCheckpoint {
+        run_id,
+        started_at,
+        updated_at,
+        turns,
+    }))
+}
+
+/// Mark a run's checkpoint set FINISHED so it is never re-offered for resume.
+/// Called when a run completes, when the user dismisses the resume affordance,
+/// or after a successful resume. Flips `run_done = 1` on every shadow row of the
+/// `(conversation_id, run_id)` set — a bounded, run-scoped UPDATE (no full scan;
+/// served by `idx_messages_conv_run_turn`). Idempotent: re-closing an already-
+/// closed (or absent) run is a benign no-op.
+///
+/// We KEEP the shadow rows (just flip the flag) rather than deleting them so the
+/// durable record survives for forensics; the periodic `cleanup_finished_runs`
+/// trim bounds their on-disk footprint. Returns the number of rows flipped.
+pub fn close_run(run_id: &str, conv_id: i64) -> Result<usize> {
+    if run_id.trim().is_empty() {
+        anyhow::bail!("run_id must not be empty");
+    }
+    with_write(|tx| {
+        let n = tx.execute(
+            "UPDATE messages SET run_done = 1
+             WHERE conversation_id = ?1 AND run_id = ?2 AND run_id IS NOT NULL
+               AND (run_done IS NULL OR run_done = 0)",
+            params![conv_id, run_id],
+        )?;
+        Ok(n)
+    })
+}
+
+/// How many finished checkpoint sets to keep before trimming, globally. A
+/// closed set is dead weight (only kept for forensics), so we bound the count so
+/// a heavy agent user's `messages` table can't accumulate them without limit.
+const FINISHED_RUNS_KEEP: i64 = 200;
+
+/// Bounded cleanup of FINISHED checkpoint shadow rows. Deletes the rows of the
+/// OLDEST finished runs beyond the most-recent `FINISHED_RUNS_KEEP`, run-by-run,
+/// so the delete is bounded and never touches an open (resumable) run or any
+/// visible message (`run_id IS NULL`). Best-effort + idempotent; safe to call on
+/// every app boot. Returns the number of rows deleted.
+///
+/// Forward-only: only rows explicitly marked `run_done = 1` are eligible — an
+/// in-flight or NULL-flagged (pre-v30) run is never deleted.
+pub fn cleanup_finished_runs() -> Result<usize> {
+    with_write(|tx| {
+        // Distinct finished runs, newest first by their last row id; everything
+        // past the keep-window is eligible for deletion.
+        let stale: Vec<(i64, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT conversation_id, run_id FROM messages
+                 WHERE run_id IS NOT NULL AND run_done = 1
+                 GROUP BY conversation_id, run_id
+                 ORDER BY MAX(id) DESC
+                 LIMIT -1 OFFSET ?1",
+            )?;
+            let rows = stmt
+                .query_map(params![FINISHED_RUNS_KEEP], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let mut deleted = 0usize;
+        for (conv_id, run_id) in stale {
+            deleted += tx.execute(
+                "DELETE FROM messages
+                 WHERE conversation_id = ?1 AND run_id = ?2 AND run_done = 1",
+                params![conv_id, run_id],
+            )?;
+        }
+        Ok(deleted)
     })
 }
 
@@ -3091,6 +3294,8 @@ mod tests {
             "tool_name",
             "run_id",
             "turn_index",
+            // v30 — resume: checkpoint-set finished flag.
+            "run_done",
         ] {
             assert!(cols("messages").contains(&c.to_string()), "messages.{c}");
         }
@@ -3484,6 +3689,117 @@ mod tests {
         assert_eq!(total2, 4, "1 user + 3 checkpoint rows after extend");
         assert_eq!(list_messages(conv).unwrap().len(), 1, "still 1 visible");
 
+        delete_conversation(conv).unwrap();
+    }
+
+    /// RESUME (v30): `latest_unfinished_run` returns an open run's rehydrated
+    /// turns, ordered by turn_index, with started/updated timestamps; `close_run`
+    /// flips the set to finished so it is never re-offered; and the newest open
+    /// run wins when more than one exists.
+    #[test]
+    fn latest_unfinished_run_reads_and_close_run_finishes() {
+        let conv =
+            create_conversation(&format!("__test_resume_{}", std::process::id()), None).unwrap();
+        add_message(conv, "user", "build me a thing", None, None).unwrap();
+
+        // No checkpoint yet → nothing to resume.
+        assert!(latest_unfinished_run(conv).unwrap().is_none());
+
+        let run = format!("run:resume:{}", std::process::id());
+        let turns = vec![
+            CheckpointTurn {
+                turn_index: 0,
+                role: "assistant".into(),
+                content: "{\"content\":\"working\",\"tool_calls\":[{\"id\":\"c1\"}]}".into(),
+                tool_call_id: None,
+                tool_name: None,
+                model: Some("m".into()),
+            },
+            CheckpointTurn {
+                turn_index: 1,
+                role: "tool".into(),
+                content: "{\"ok\":true}".into(),
+                tool_call_id: Some("c1".into()),
+                tool_name: Some("read_file".into()),
+                model: None,
+            },
+        ];
+        checkpoint_run(&run, conv, &turns).unwrap();
+
+        let open = latest_unfinished_run(conv).unwrap().expect("an open run");
+        assert_eq!(open.run_id, run);
+        assert_eq!(open.turns.len(), 2);
+        assert_eq!(open.turns[0].turn_index, 0);
+        assert_eq!(open.turns[0].role, "assistant");
+        assert_eq!(open.turns[1].tool_name.as_deref(), Some("read_file"));
+        assert!(open.updated_at >= open.started_at);
+
+        // Close it → no longer offered, but the shadow rows survive.
+        let flipped = close_run(&run, conv).unwrap();
+        assert_eq!(flipped, 2);
+        assert!(
+            latest_unfinished_run(conv).unwrap().is_none(),
+            "a closed run must not be offered for resume"
+        );
+        let surviving: i64 = get_db()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND run_id = ?2",
+                params![conv, run],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(surviving, 2, "close keeps the rows, only flips run_done");
+
+        // Re-closing is a benign no-op (0 rows flipped, already done).
+        assert_eq!(close_run(&run, conv).unwrap(), 0);
+
+        // A newer open run wins over an older one.
+        let run2 = format!("run:resume2:{}", std::process::id());
+        checkpoint_run(
+            &run2,
+            conv,
+            &[CheckpointTurn {
+                turn_index: 0,
+                role: "assistant".into(),
+                content: "second run".into(),
+                tool_call_id: None,
+                tool_name: None,
+                model: Some("m".into()),
+            }],
+        )
+        .unwrap();
+        let newest = latest_unfinished_run(conv).unwrap().expect("newest open run");
+        assert_eq!(newest.run_id, run2, "the most-recent open run is offered");
+
+        delete_conversation(conv).unwrap();
+    }
+
+    /// RESUME (v30): a checkpoint row whose `run_done` is NULL (the pre-v30
+    /// shape — an upgrade leaves prior interrupted runs' rows NULL) still counts
+    /// as OPEN, so a run interrupted across the upgrade remains resumable.
+    #[test]
+    fn null_run_done_counts_as_open() {
+        let conv =
+            create_conversation(&format!("__test_resume_null_{}", std::process::id()), None)
+                .unwrap();
+        let run = format!("run:nullopen:{}", std::process::id());
+        // Write a checkpoint row directly with run_done left NULL, simulating a
+        // row persisted before v30 added the column.
+        with_write(|tx| {
+            tx.execute(
+                "INSERT INTO messages
+                    (conversation_id, role, content, created_at, run_id, turn_index, run_done)
+                 VALUES (?1, 'assistant', 'pre-v30', 0, ?2, 0, NULL)",
+                params![conv, run],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let open = latest_unfinished_run(conv)
+            .unwrap()
+            .expect("NULL run_done is open");
+        assert_eq!(open.run_id, run);
         delete_conversation(conv).unwrap();
     }
 

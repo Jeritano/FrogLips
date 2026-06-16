@@ -9,8 +9,9 @@ import {
   ArrowDown,
   X,
   BookOpen,
+  Play,
 } from "lucide-react";
-import { api } from "../lib/tauri-api";
+import { api, type RunCheckpoint } from "../lib/tauri-api";
 import { demoteMemory, getRagContextEnabled, setRagContextEnabled } from "../lib/memory-client";
 import type { ConfirmDecision } from "../lib/agent-loop";
 import { summarizeToolCall } from "../lib/agent-loop/dispatch";
@@ -176,6 +177,253 @@ const ConfirmBody = memo(function ConfirmBody({
   );
 });
 
+/**
+ * RESUME: review-before-continue affordance for an interrupted agent run found
+ * on this conversation's durable checkpoint. Collapsed by default — the user
+ * expands it to see WHAT was already done (turn count + tools used + the last
+ * action), then explicitly clicks Resume. We NEVER auto-resume: a buggy resume
+ * on a cloud route could re-bill turns, so resume is also gated to local
+ * backends (the button is disabled with an explanation when the active backend
+ * is a cloud route). Plain presentational; inline styles + CSS variables so no
+ * stylesheet ownership is needed.
+ */
+const ResumeBanner = memo(function ResumeBanner({
+  ckpt,
+  open,
+  busy,
+  canResume,
+  localBackend,
+  onToggleReview,
+  onResume,
+  onDismiss,
+}: {
+  ckpt: RunCheckpoint;
+  open: boolean;
+  busy: boolean;
+  canResume: boolean;
+  localBackend: boolean;
+  onToggleReview: () => void;
+  onResume: () => void;
+  onDismiss: () => void;
+}) {
+  // Summarize what the run already did. Tool turns are `role:"tool"`; collect
+  // the distinct tool names (in first-seen order) for an at-a-glance recap.
+  const toolTurns = ckpt.turns.filter((t) => t.role === "tool");
+  const toolNames: string[] = [];
+  for (const t of toolTurns) {
+    const n = t.tool_name ?? "tool";
+    if (!toolNames.includes(n)) toolNames.push(n);
+  }
+  const when = ckpt.updated_at
+    ? new Date(ckpt.updated_at * 1000).toLocaleString()
+    : "an earlier session";
+  return (
+    <div
+      data-testid="resume-banner"
+      style={{
+        margin: "8px 12px",
+        padding: "10px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--border, #333)",
+        background: "var(--surface-2, rgba(255,255,255,0.04))",
+        fontSize: 13,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+        }}
+      >
+        <span style={{ display: "inline-flex", color: "var(--text-muted)" }}>
+          <Play size={16} />
+        </span>
+        <strong>Unfinished agent run</strong>
+        <span style={{ color: "var(--text-muted)" }}>
+          {ckpt.turns.length} turn{ckpt.turns.length === 1 ? "" : "s"}
+          {toolTurns.length > 0
+            ? ` · ${toolTurns.length} tool call${toolTurns.length === 1 ? "" : "s"}`
+            : ""}{" "}
+          · last active {when}
+        </span>
+        <button
+          type="button"
+          data-testid="resume-review-toggle"
+          onClick={onToggleReview}
+          aria-expanded={open}
+          style={{
+            marginLeft: "auto",
+            font: "inherit",
+            cursor: "pointer",
+            background: "none",
+            border: "none",
+            color: "var(--accent, #7aa2f7)",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          {open ? "Hide details" : "Review"}
+          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </button>
+      </div>
+
+      {open && (
+        <div
+          data-testid="resume-review-body"
+          style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}
+        >
+          <div style={{ color: "var(--text-muted)" }}>
+            This run was interrupted before it finished. Resuming continues from
+            where it left off — the work below is treated as already-done history
+            and is <strong>not</strong> repeated. The model is asked to re-check
+            any file it touched before editing again, in case it changed since.
+          </div>
+          {toolNames.length > 0 && (
+            <div>
+              <span style={{ color: "var(--text-muted)" }}>Tools used: </span>
+              {toolNames.map((n) => (
+                <code
+                  key={n}
+                  style={{
+                    marginRight: 6,
+                    padding: "1px 5px",
+                    borderRadius: 4,
+                    background: "var(--surface-3, rgba(255,255,255,0.06))",
+                  }}
+                >
+                  {n}
+                </code>
+              ))}
+            </div>
+          )}
+          <ol
+            data-testid="resume-turn-list"
+            style={{
+              listStyle: "decimal",
+              margin: "2px 0 0 18px",
+              padding: 0,
+              maxHeight: 180,
+              overflowY: "auto",
+              display: "flex",
+              flexDirection: "column",
+              gap: 3,
+            }}
+          >
+            {ckpt.turns.map((t) => (
+              <li key={t.turn_index} style={{ color: "var(--text)" }}>
+                <span style={{ color: "var(--text-muted)" }}>
+                  {t.role === "tool"
+                    ? `tool result${t.tool_name ? ` (${t.tool_name})` : ""}`
+                    : "assistant"}
+                  :{" "}
+                </span>
+                {summarizeResumeTurn(t.content)}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {!localBackend && (
+        <div
+          data-testid="resume-cloud-note"
+          style={{ marginTop: 8, color: "var(--warning-fg, #e0af68)" }}
+        >
+          Resume is available on local backends only (Ollama or MLX). Cloud
+          routes bill per turn, so resuming one could silently re-bill — switch
+          to a local model to resume this run.
+        </div>
+      )}
+
+      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+        <button
+          type="button"
+          data-testid="resume-confirm"
+          onClick={onResume}
+          disabled={busy || !canResume}
+          title={
+            canResume
+              ? "Continue this run from its checkpoint"
+              : localBackend
+                ? "Turn on Agent mode to resume"
+                : "Switch to a local backend to resume"
+          }
+          style={{
+            font: "inherit",
+            cursor: busy || !canResume ? "not-allowed" : "pointer",
+            opacity: busy || !canResume ? 0.5 : 1,
+            padding: "5px 12px",
+            borderRadius: 6,
+            border: "none",
+            background: "var(--accent, #7aa2f7)",
+            color: "var(--accent-fg, #0b0f1a)",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+          }}
+        >
+          <Play size={14} /> Resume run
+        </button>
+        <button
+          type="button"
+          data-testid="resume-dismiss"
+          onClick={onDismiss}
+          disabled={busy}
+          title="Discard this checkpoint — it won't be offered again"
+          style={{
+            font: "inherit",
+            cursor: busy ? "not-allowed" : "pointer",
+            opacity: busy ? 0.5 : 1,
+            padding: "5px 12px",
+            borderRadius: 6,
+            border: "1px solid var(--border, #333)",
+            background: "none",
+            color: "var(--text)",
+          }}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
+});
+
+/**
+ * RESUME: one-line preview of a checkpoint turn's content for the review panel.
+ * An assistant-with-tool-calls turn is stored as a JSON `{ content, tool_calls }`
+ * envelope — decode it to show the prelude + the called tool names. Everything
+ * else is shown as trimmed single-line text. Defensive against malformed JSON.
+ */
+function summarizeResumeTurn(content: string): string {
+  const collapse = (s: string) =>
+    s.replace(/\s+/g, " ").trim().slice(0, 140) || "(no text)";
+  if (content.startsWith("{")) {
+    try {
+      const env = JSON.parse(content) as {
+        content?: unknown;
+        tool_calls?: Array<{ function?: { name?: string } }>;
+      };
+      if (Array.isArray(env.tool_calls) && env.tool_calls.length > 0) {
+        const names = env.tool_calls
+          .map((c) => c.function?.name)
+          .filter((n): n is string => typeof n === "string")
+          .join(", ");
+        const prelude =
+          typeof env.content === "string" && env.content.trim()
+            ? `${collapse(env.content)} → `
+            : "";
+        return `${prelude}called ${names || "tool"}`;
+      }
+    } catch {
+      // Fall through to plain text.
+    }
+  }
+  return collapse(content);
+}
+
 export function ChatWindow({
   status,
   conversation,
@@ -251,6 +499,15 @@ export function ChatWindow({
   // system prompt). Decoded from `conversation.params`; all-null = defaults.
   const [convParams, setConvParams] = useState<ConversationParams>(emptyParams);
   const [showParamsPanel, setShowParamsPanel] = useState(false);
+  // RESUME: an unfinished agent run detected on this conversation's durable
+  // checkpoint, surfaced as a "Resume run" affordance. `null` = nothing to
+  // resume. `resumeReviewOpen` expands the review-before-continue panel; the
+  // user MUST click Resume — we NEVER auto-resume (a buggy resume on a cloud
+  // route could re-bill turns). `resumeBusy` guards the buttons while the
+  // resume/dismiss IPC settles.
+  const [pendingResume, setPendingResume] = useState<RunCheckpoint | null>(null);
+  const [resumeReviewOpen, setResumeReviewOpen] = useState(false);
+  const [resumeBusy, setResumeBusy] = useState(false);
 
   const agent = useAgentSettings();
   const askUser = useAskUserModal(setErr);
@@ -331,9 +588,33 @@ export function ChatWindow({
         .catch((e) => {
           if (!ignore) setErr(String(e));
         });
+      // RESUME: probe the durable checkpoint for an UNFINISHED run on this
+      // conversation. A hit surfaces a "Resume run" affordance (collapsed by
+      // default — review-before-continue). This is a pure read with no resume
+      // side effect; we NEVER auto-resume. Best-effort: a probe failure just
+      // leaves the affordance hidden.
+      api
+        .agentRunLatestCheckpoint(conversation.id)
+        .then((ckpt) => {
+          if (!ignore) setPendingResume(ckpt ?? null);
+        })
+        .catch((e) => {
+          if (!ignore) {
+            setPendingResume(null);
+            logDiag({
+              level: "warn",
+              source: "chat-window",
+              message:
+                "agentRunLatestCheckpoint probe failed — resume affordance hidden",
+              detail: e,
+            });
+          }
+        });
     } else {
       setMessages([]);
+      setPendingResume(null);
     }
+    setResumeReviewOpen(false);
     setRecalled([]);
     setRecallOpen(false); // collapse the recall pill on conversation switch
     setRoutedNotice(null); // clear the previous chat's route chip on switch
@@ -553,7 +834,7 @@ export function ChatWindow({
   // selected model (via ModelPicker's exposed start) and then dispatches.
   // The composer is never disabled behind the Start ceremony.
   const [warming, setWarming] = useState(false);
-  const { send, resend, abort, injectSteering } = useChatSend({
+  const { send, resend, resumeRun, abort, injectSteering } = useChatSend({
     status,
     agentMode,
     agentAvailable,
@@ -645,6 +926,89 @@ export function ChatWindow({
       window.setTimeout(() => setSteerSent(false), 2500);
     }
   }, [steerText, injectSteering]);
+
+  // RESUME: a run can only be safely resumed on a LOCAL backend. A cloud route
+  // (`:cloud` ollama tags, custom, OpenRouter) bills per turn, and a buggy /
+  // mis-rehydrated resume could silently re-bill — so we gate resume to
+  // local-only (ollama non-:cloud, mlx) and tell the user precisely why a cloud
+  // route can't resume rather than risk it.
+  const isLocalBackend =
+    (status?.backend === "ollama" && !status.model?.endsWith(":cloud")) ||
+    status?.backend === "mlx";
+
+  // RESUME: continue the interrupted run after the user reviewed it and clicked
+  // Resume. Picks the original user prompt from the visible history (recall
+  // context only — the run continues from the checkpoint, not a new turn), hands
+  // the checkpoint's run_id + rehydrated turns to the send pipeline, and clears
+  // the affordance. NEVER called automatically.
+  const handleResume = useCallback(async () => {
+    if (!pendingResume || resumeBusy) return;
+    if (!isLocalBackend) {
+      setErr(
+        "Resume is available on local backends only (Ollama or MLX). " +
+          "Cloud routes bill per turn, so resuming one could silently re-bill — " +
+          "switch to a local model to resume this run.",
+      );
+      return;
+    }
+    if (!(agentMode && agentAvailable)) {
+      setErr("Turn on Agent mode to resume this run.");
+      return;
+    }
+    setResumeBusy(true);
+    const ckpt = pendingResume;
+    // The original prompt: the last visible user turn that started the run.
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const prompt = lastUser?.content ?? "";
+    // Clear the affordance up front so a second click can't double-fire; the
+    // run's own completion will close the checkpoint set.
+    setPendingResume(null);
+    setResumeReviewOpen(false);
+    try {
+      await resumeRun({
+        prompt,
+        priorHistory: messages,
+        runId: ckpt.run_id,
+        turns: ckpt.turns,
+      });
+    } catch (e) {
+      setErr(`Failed to resume run: ${e}`);
+    } finally {
+      setResumeBusy(false);
+    }
+  }, [
+    pendingResume,
+    resumeBusy,
+    isLocalBackend,
+    agentMode,
+    agentAvailable,
+    messages,
+    resumeRun,
+  ]);
+
+  // RESUME: dismiss the affordance WITHOUT resuming. Closes the checkpoint set
+  // so it is never re-offered, then hides the affordance. Best-effort: even if
+  // the close IPC fails we still hide it this session.
+  const handleDismissResume = useCallback(async () => {
+    if (!pendingResume || resumeBusy) return;
+    setResumeBusy(true);
+    const conv = convRef.current;
+    const ckpt = pendingResume;
+    setPendingResume(null);
+    setResumeReviewOpen(false);
+    try {
+      if (conv) await api.agentRunClose(ckpt.run_id, conv.id);
+    } catch (e) {
+      logDiag({
+        level: "warn",
+        source: "chat-window",
+        message: "agentRunClose on dismiss failed — run may be re-offered",
+        detail: e,
+      });
+    } finally {
+      setResumeBusy(false);
+    }
+  }, [pendingResume, resumeBusy]);
 
   /**
    * Persist per-conversation params. Optimistically updates local state so
@@ -763,6 +1127,22 @@ export function ChatWindow({
         >
           <ShieldCheck size={14} /> Dry-run: tool side-effects suppressed
         </div>
+      )}
+      {/* RESUME: an interrupted run was found on this conversation's durable
+          checkpoint. Surface a review-before-continue affordance — collapsed by
+          default. The user MUST click Resume; we NEVER auto-resume. Hidden while
+          a run is already in flight. */}
+      {pendingResume && !isWorking && (
+        <ResumeBanner
+          ckpt={pendingResume}
+          open={resumeReviewOpen}
+          busy={resumeBusy}
+          canResume={isLocalBackend && agentMode && agentAvailable}
+          localBackend={isLocalBackend}
+          onToggleReview={() => setResumeReviewOpen((o) => !o)}
+          onResume={() => void handleResume()}
+          onDismiss={() => void handleDismissResume()}
+        />
       )}
       {showLanding ? (
         <EmptyChatLanding modelReady={!!status?.running} />
