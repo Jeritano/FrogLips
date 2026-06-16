@@ -204,9 +204,27 @@ export function CustomBackendsSettings({ onChanged }: Props) {
       })}
 
       {!adding ? (
-        <button className="agent-settings-btn" onClick={() => setAdding(true)}>
-          + Add cloud backend
-        </button>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          <button className="agent-settings-btn" onClick={() => setAdding(true)}>
+            + Add cloud backend
+          </button>
+          <button
+            className="agent-settings-btn"
+            title="Nous Portal — OpenAI-compatible access to Hermes + 300+ models. Add your Nous API key."
+            onClick={() => {
+              // Base URL has NO /v1 — custom_chat_stream appends
+              // /v1/chat/completions (custom_backend.rs). Model + key are
+              // left for the user (their Nous Portal model id + API key).
+              setDraftName("Nous Portal");
+              setDraftUrl("https://inference-api.nousresearch.com");
+              setDraftModel("Hermes-4");
+              setDraftKey("");
+              setAdding(true);
+            }}
+          >
+            + Nous Portal
+          </button>
+        </div>
       ) : (
         <div
           style={{

@@ -225,6 +225,29 @@ export const OLLAMA: CatalogEntry[] = [
     desc: "Math-specialized Qwen2",
   },
 
+  // Hermes (Nous Research) — open-weight, uncensored, strong tool-calling.
+  {
+    id: "gurubot/Hermes-4.3-36B-GGUF:Q4_K_M",
+    label: "Hermes 4.3 36B",
+    size: "22 GB",
+    tags: ["chat", "reasoning", "tools"],
+    desc: "Nous flagship — hybrid reasoning + tool-calling, uncensored",
+  },
+  {
+    id: "hermes3:8b",
+    label: "Hermes 3 8B",
+    size: "5 GB",
+    tags: ["chat", "tools"],
+    desc: "Nous Hermes 3 (Llama 3.1) — strong function-calling, uncensored",
+  },
+  {
+    id: "hermes3:70b",
+    label: "Hermes 3 70B",
+    size: "43 GB",
+    tags: ["chat", "tools"],
+    desc: "Large Hermes 3 — top open-weight tool-caller",
+  },
+
   // DeepSeek
   {
     id: "deepseek-r1:671b",

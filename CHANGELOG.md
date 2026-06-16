@@ -4,6 +4,19 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.6] — 2026-06-16
+
+### Added
+
+- **Nous Research Hermes models in the curated catalog** — Hermes 4.3 36B
+  (uncensored hybrid-reasoning flagship), Hermes 3 8B, and Hermes 3 70B, with
+  one-click install, RAM-fit badges, and capability flags (strong tool-calling,
+  128k context). Hermes is registered as a known strong tool-caller.
+- **Nous Portal one-click provider** — a preset in Settings → custom backends
+  that pre-fills the OpenAI-compatible base URL
+  (`https://inference-api.nousresearch.com`); add your Nous API key (stored in
+  the Keychain) for hosted Hermes + 300+ models with tool use.
+
 ## [0.14.5] — 2026-06-15
 
 Completes the improvement roadmap (waves 4–5: medium tier + big bets).

@@ -64,6 +64,7 @@ const TOOL_GOOD_PATTERNS: RegExp[] = [
   /qwen-?2\.?5/i,
   /qwen-?3/i,
   /hermes-?3/i,
+  /hermes-?4/i,
   /mistral-?nemo/i,
   /mistral-?small/i,
   /mistral-?large/i,

@@ -49,6 +49,9 @@ const CONTEXT_OVERRIDES: Array<{ pattern: RegExp; tokens: number }> = [
       /(?:^|[^a-z0-9])(?:128k|llama-?4|llama-?3\.[123]|llama3[._-]?[123])(?![a-z0-9])/i,
     tokens: 128_000,
   },
+  // Hermes 3 / 4 are Llama-3.1-based → 128k window (Ollama /api/show still wins
+  // when present; this is the fallback for MLX/native/cloud-tag lookups).
+  { pattern: /(?:^|[^a-z0-9])hermes(?![a-z0-9])/i, tokens: 128_000 },
   // Qwen2.5 / Qwen3 / Mistral-Nemo / Command-R all 32k+ class.
   {
     pattern:
