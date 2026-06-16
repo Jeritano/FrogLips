@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { BookOpen, Download, Terminal, Users, Zap } from "lucide-react";
 import { api } from "../lib/tauri-api";
+import { startFirstRunTour } from "./FirstRunTour";
 
 /*
  * Workstation launchpad (product review 2026-06-10, onboarding #7). The
@@ -114,7 +115,24 @@ export function EmptyChatLanding({
           minute. Every load after that is instant.
         </div>
         <div className="empty-chat-pointer">
-          <strong>⌘K</strong> opens the command palette from anywhere.
+          <strong>⌘K</strong> opens the command palette from anywhere.{" "}
+          <button
+            type="button"
+            className="empty-chat-tour-link"
+            data-testid="empty-chat-tour-link"
+            onClick={() => startFirstRunTour()}
+            style={{
+              background: "none",
+              border: "none",
+              padding: 0,
+              font: "inherit",
+              color: "var(--accent, #6366f1)",
+              cursor: "pointer",
+              textDecoration: "underline",
+            }}
+          >
+            Take a tour
+          </button>
         </div>
 
         {browserOpen && (
@@ -230,7 +248,24 @@ export function EmptyChatLanding({
         ))}
       </div>
       <div className="empty-chat-pointer">
-        <strong>⌘K</strong> opens the command palette from anywhere.
+        <strong>⌘K</strong> opens the command palette from anywhere.{" "}
+        <button
+          type="button"
+          className="empty-chat-tour-link"
+          data-testid="empty-chat-tour-link"
+          onClick={() => startFirstRunTour()}
+          style={{
+            background: "none",
+            border: "none",
+            padding: 0,
+            font: "inherit",
+            color: "var(--accent, #6366f1)",
+            cursor: "pointer",
+            textDecoration: "underline",
+          }}
+        >
+          Take a tour
+        </button>
       </div>
     </div>
   );

@@ -430,6 +430,12 @@ export interface AppSettings {
   /** Local-inference admission permits (item 1). Default 1 — serialize local
    *  inference so a fan-out doesn't thrash one GPU/CPU. Cloud routes bypass. */
   inference_permits?: number | null;
+  /** Beginner "Simple mode" (W5B). When `true`, the agent toolbar + settings
+   *  panel collapse the dense tool allowlist + advanced knobs to a curated
+   *  minimal set, hiding the rest behind an Advanced expander. Absent/`null`
+   *  (legacy installs / fresh users) and `false` both mean OFF — today's full
+   *  advanced UI. Toggled from a visible Simple/Advanced control. */
+  simple_mode?: boolean | null;
 }
 
 /**

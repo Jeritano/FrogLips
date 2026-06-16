@@ -2,6 +2,10 @@ import { lazy, Suspense, useState } from "react";
 import { McpSettings } from "./McpSettings";
 import { CustomBackendsSettings } from "./CustomBackendsSettings";
 import { ErrorBar } from "./ErrorBar";
+import {
+  useSettingsField,
+  useUpdateSettings,
+} from "../contexts/SettingsContext";
 import type { AgentSettings } from "../hooks/useAgentSettings";
 import {
   SYNTAX_THEMES,
@@ -65,6 +69,22 @@ const ALL_TOOL_NAMES = [
   "list_subagents",
 ] as const;
 
+/**
+ * Curated, low-risk tool subset surfaced in Simple mode (W5B). These are the
+ * read-only / inspect-only tools a beginner reaches for first; the full
+ * 47-tool grid (writes, shell, subagents, AppleScript, …) stays one click away
+ * behind the "Advanced" expander, so nothing is removed — only de-emphasized.
+ */
+const SIMPLE_TOOL_NAMES: readonly string[] = [
+  "read_file",
+  "list_dir",
+  "search_files",
+  "file_exists",
+  "web_fetch",
+  "web_search",
+  "read_pdf",
+] as const;
+
 interface Props {
   agent: AgentSettings;
   workspaceRoot: string | null;
@@ -98,8 +118,63 @@ export function AgentSettingsPanel({
   const [bubbleColor, setBubbleColorState] = useState<string | null>(() =>
     getBubbleColor(),
   );
+  // Simple mode (W5B). Default OFF (advanced/today's behavior): absent/null and
+  // false both resolve to false, so existing users keep the full UI.
+  const simpleMode = useSettingsField((s) => s?.simple_mode === true);
+  const updateSettings = useUpdateSettings();
+  // In simple mode the dense tool grid + advanced knobs collapse behind this
+  // expander. Nothing is removed — only hidden until the user opts in.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Whether the advanced disclosure (full grid + session-approval / dry-run /
+  // shell-prefix rows) is rendered. Always on in advanced mode; gated behind
+  // the expander in simple mode. The curated short grid uses the SAME allowlist
+  // machinery, so toggles stay reachable + reversible across both views.
+  const showAdvanced = !simpleMode || advancedOpen;
+  // Widen to `readonly string[]` so the ternary doesn't produce a union of a
+  // const tuple + a string[] (whose `.map` signatures TS won't unify).
+  const gridTools: readonly string[] = showAdvanced
+    ? ALL_TOOL_NAMES
+    : SIMPLE_TOOL_NAMES;
   return (
     <div className="agent-settings" data-testid="agent-settings-panel">
+      <div className="agent-settings-row">
+        <span className="agent-settings-label">Mode:</span>
+        <div
+          className="agent-mode-switch"
+          role="radiogroup"
+          aria-label="Agent settings complexity"
+        >
+          <button
+            type="button"
+            role="radio"
+            aria-checked={simpleMode}
+            data-testid="agent-mode-simple"
+            className={`agent-settings-btn${simpleMode ? " armed" : ""}`}
+            onClick={() => {
+              void updateSettings({ simple_mode: true });
+            }}
+          >
+            Simple
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={!simpleMode}
+            data-testid="agent-mode-advanced"
+            className={`agent-settings-btn${!simpleMode ? " armed" : ""}`}
+            onClick={() => {
+              void updateSettings({ simple_mode: false });
+            }}
+          >
+            Advanced
+          </button>
+        </div>
+        <span className="agent-settings-hint">
+          {simpleMode
+            ? "Beginner view — a curated set of safe tools. Switch to Advanced for everything."
+            : "Full controls: every tool, dry-run, session approvals."}
+        </span>
+      </div>
       <div className="agent-settings-row">
         <span className="agent-settings-label">Workspace:</span>
         <code className="agent-settings-value">
@@ -122,49 +197,57 @@ export function AgentSettingsPanel({
         message={workspaceErr}
         onDismiss={onDismissWorkspaceErr ?? (() => undefined)}
       />
-      <div className="agent-settings-row">
-        <span className="agent-settings-label">Approve all this session:</span>
-        <label>
-          <input
-            type="checkbox"
-            checked={agent.approveAllShell}
-            onChange={(e) => agent.setApproveAllShell(e.target.checked)}
-          />
-          shell (normal-risk only)
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={agent.approveAllWrite}
-            onChange={(e) => agent.setApproveAllWrite(e.target.checked)}
-          />
-          writes/edits
-        </label>
-      </div>
-      <div className="agent-settings-row">
-        <span className="agent-settings-label">Safety:</span>
-        <label data-testid="agent-dry-run-toggle">
-          <input
-            type="checkbox"
-            checked={agent.dryRun}
-            onChange={(e) => agent.setDryRun(e.target.checked)}
-          />
-          Dry-run mode
-        </label>
-        <span className="agent-settings-hint">
-          Side-effectful tools report what they would do without executing.
-        </span>
-      </div>
+      {showAdvanced && (
+        <div className="agent-settings-row">
+          <span className="agent-settings-label">
+            Approve all this session:
+          </span>
+          <label>
+            <input
+              type="checkbox"
+              checked={agent.approveAllShell}
+              onChange={(e) => agent.setApproveAllShell(e.target.checked)}
+            />
+            shell (normal-risk only)
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={agent.approveAllWrite}
+              onChange={(e) => agent.setApproveAllWrite(e.target.checked)}
+            />
+            writes/edits
+          </label>
+        </div>
+      )}
+      {showAdvanced && (
+        <div className="agent-settings-row">
+          <span className="agent-settings-label">Safety:</span>
+          <label data-testid="agent-dry-run-toggle">
+            <input
+              type="checkbox"
+              checked={agent.dryRun}
+              onChange={(e) => agent.setDryRun(e.target.checked)}
+            />
+            Dry-run mode
+          </label>
+          <span className="agent-settings-hint">
+            Side-effectful tools report what they would do without executing.
+          </span>
+        </div>
+      )}
       <div className="agent-settings-row">
         <span className="agent-settings-label">Allowed tools:</span>
         <span className="agent-settings-hint">
           {agent.allowlist.length === 0
-            ? "(all enabled)"
+            ? simpleMode && !advancedOpen
+              ? "(all enabled — showing safe tools)"
+              : "(all enabled)"
             : `${agent.allowlist.length} selected`}
         </span>
       </div>
       <div className="agent-tool-grid">
-        {ALL_TOOL_NAMES.map((n) => {
+        {gridTools.map((n) => {
           const enabled =
             agent.allowlist.length === 0 || agent.allowlist.includes(n);
           return (
@@ -187,7 +270,20 @@ export function AgentSettingsPanel({
           Reset to all enabled
         </button>
       )}
-      {agent.approvedShellPrefixes.length > 0 && (
+      {/* Simple mode: a single expander reveals the full 47-tool grid and the
+          advanced rows. Nothing is removed — only one click away. */}
+      {simpleMode && (
+        <button
+          type="button"
+          className="agent-settings-btn"
+          data-testid="agent-advanced-toggle"
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((v) => !v)}
+        >
+          {advancedOpen ? "Hide advanced" : "Advanced…"}
+        </button>
+      )}
+      {showAdvanced && agent.approvedShellPrefixes.length > 0 && (
         <div className="agent-settings-row">
           <span className="agent-settings-label">Approved shell prefixes:</span>
           <span className="agent-settings-value">
@@ -258,11 +354,18 @@ export function AgentSettingsPanel({
           })}
         </div>
       </div>
-      <McpSettings />
-      <CustomBackendsSettings />
-      <Suspense fallback={<div className="lazy-loading">Loading…</div>}>
-        <AuditLog />
-      </Suspense>
+      {/* MCP servers, custom backends, and the audit log are power-user
+          surfaces — kept out of the simple view until the user expands
+          Advanced. They stay fully reachable, just not on the beginner path. */}
+      {showAdvanced && (
+        <>
+          <McpSettings />
+          <CustomBackendsSettings />
+          <Suspense fallback={<div className="lazy-loading">Loading…</div>}>
+            <AuditLog />
+          </Suspense>
+        </>
+      )}
     </div>
   );
 }

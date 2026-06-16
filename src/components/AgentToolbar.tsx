@@ -4,6 +4,7 @@ import { ExportMenu } from "./ExportMenu";
 import { api } from "../lib/tauri-api";
 import { classifyToolFitness } from "../lib/model-capabilities";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
+import { useSettingsFieldOptional } from "../contexts/SettingsContext";
 import type { AgentSettings } from "../hooks/useAgentSettings";
 import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
 import type {
@@ -288,6 +289,13 @@ export function AgentToolbar(props: Props) {
     onCloseExportMenu,
   } = props;
 
+  // Simple mode (W5B). Default OFF (advanced/today's behavior). When ON, the
+  // per-conversation "Params" advanced toggle is hidden from the toolbar — it's
+  // an advanced knob; the agent gear still exposes everything via the panel.
+  // Provider-optional read so the standalone AgentToolbar unit test (no
+  // <SettingsProvider>) still renders; in the app it always sits inside one.
+  const simpleMode = useSettingsFieldOptional((s) => s?.simple_mode === true);
+
   // Only surface a hint when the active model is KNOWN-WEAK at tool calling —
   // good/untested stay silent (calm, no false alarms). Steers the user toward a
   // model that will succeed before they hit a wall.
@@ -348,15 +356,21 @@ export function AgentToolbar(props: Props) {
       >
         <History size={16} /> History
       </button>
-      <button
-        data-testid="params-toggle"
-        className={`agent-toggle ${showParamsPanel ? "active" : ""}`}
-        onClick={onToggleParams}
-        title="Per-conversation model parameters"
-        aria-expanded={showParamsPanel}
-      >
-        <Settings size={16} /> Params{!paramsAreEmpty(convParams) ? " •" : ""}
-      </button>
+      {/* The per-conversation model-parameter override is an advanced knob —
+          hidden in Simple mode (still reachable by switching to Advanced in the
+          agent settings panel). Kept visible whenever a non-default param is
+          already set so an existing override is never silently stranded. */}
+      {(!simpleMode || !paramsAreEmpty(convParams)) && (
+        <button
+          data-testid="params-toggle"
+          className={`agent-toggle ${showParamsPanel ? "active" : ""}`}
+          onClick={onToggleParams}
+          title="Per-conversation model parameters"
+          aria-expanded={showParamsPanel}
+        >
+          <Settings size={16} /> Params{!paramsAreEmpty(convParams) ? " •" : ""}
+        </button>
+      )}
       <button
         data-testid="agent-toggle"
         className={`agent-toggle ${agentMode ? "active" : ""}`}

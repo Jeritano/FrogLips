@@ -1,3 +1,13 @@
+/* Root font-size multiplier — the single lever the global UI-scale preference
+   pulls. `--ui-scale` is set on <html> by src/lib/appearance.ts (default 1,
+   applied synchronously at boot). The rem-based --fs-* / --space-* token scales
+   below resolve against this root, so every token-driven size + gap tracks the
+   chosen scale. At --ui-scale:1 the root is 16px → identical to today's render.
+   Raw px in individual components stays fixed (accepted limitation). */
+html {
+  font-size: calc(16px * var(--ui-scale, 1));
+}
+
 :root {
   --bg: #09090b;
   /* Subtle 2-stop frame behind the rounded panels so they read as floating
@@ -53,14 +63,17 @@
   --border-hairline: 0.5px solid var(--border-subtle);
   --blur-glass: saturate(150%) blur(16px);
 
-  /* 4pt spacing scale */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --space-7: 32px;
+  /* 4pt spacing scale. Authored in rem against the 16px root so the whole
+     scale tracks the user's UI-scale preference (--ui-scale on <html>, set by
+     src/lib/appearance.ts). At --ui-scale:1 the root is 16px, so every value
+     below is byte-identical to its historical px (e.g. 0.25rem === 4px). */
+  --space-1: 0.25rem; /* 4px */
+  --space-2: 0.5rem; /* 8px */
+  --space-3: 0.75rem; /* 12px */
+  --space-4: 1rem; /* 16px */
+  --space-5: 1.25rem; /* 20px */
+  --space-6: 1.5rem; /* 24px */
+  --space-7: 2rem; /* 32px */
 
   /* Radius scale */
   --radius-2xs: 2px;
@@ -72,16 +85,20 @@
   --radius-xl: 12px; /* top-level panels / large modals */
   --radius-full: 999px;
 
-  /* Type scale */
-  --fs-2xs: 10px;
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-md: 13px;
-  --fs-base: 14px;
-  --fs-lg: 16px;
-  --fs-xl: 20px;
-  --fs-2xl: 24px;
-  --fs-3xl: 30px;
+  /* Type scale. Authored in rem against the 16px root so every token tracks
+     the UI-scale preference (--ui-scale on <html>). At --ui-scale:1 the root
+     is 16px and each value below is byte-identical to its historical px
+     (e.g. 0.875rem === 14px). Raw px font-sizes in individual components are
+     NOT covered here and will not scale — that's an accepted limitation. */
+  --fs-2xs: 0.625rem; /* 10px */
+  --fs-xs: 0.6875rem; /* 11px */
+  --fs-sm: 0.75rem; /* 12px */
+  --fs-md: 0.8125rem; /* 13px */
+  --fs-base: 0.875rem; /* 14px */
+  --fs-lg: 1rem; /* 16px */
+  --fs-xl: 1.25rem; /* 20px */
+  --fs-2xl: 1.5rem; /* 24px */
+  --fs-3xl: 1.875rem; /* 30px */
 
   /* z-index ladder */
   --z-popover: 50;

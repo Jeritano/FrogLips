@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   Zap,
   Clock,
@@ -10,6 +18,7 @@ import {
   X,
   BookOpen,
   Play,
+  Columns,
 } from "lucide-react";
 import { api, type RunCheckpoint } from "../lib/tauri-api";
 import { demoteMemory, getRagContextEnabled, setRagContextEnabled } from "../lib/memory-client";
@@ -53,6 +62,13 @@ import { useMessageActions } from "../hooks/useMessageActions";
 import type { RouteDecision } from "../lib/chat-router";
 import { RoutesSettings } from "./RoutesSettings";
 import { useEvent } from "../hooks/useEvent";
+
+// Side-by-side multi-model compare (W5B-COMPARE). Lazy-loaded so its selector +
+// concurrent-stream engine stay out of the first-paint chunk; it only downloads
+// when the user actually opens compare mode.
+const CompareView = lazy(() =>
+  import("./CompareView").then((m) => ({ default: m.CompareView })),
+);
 
 interface Props {
   status: ServerStatus | null;
@@ -471,6 +487,11 @@ export function ChatWindow({
   const [steerText, setSteerText] = useState("");
   const [steerSent, setSteerSent] = useState(false);
   const [agentMode, setAgentMode] = useState(false);
+  // Side-by-side compare mode (W5B-COMPARE). Exploratory: a separate surface
+  // that runs ONE prompt across 2–3 models concurrently and shows each reply in
+  // its own column. Default OFF (today's behavior). Nothing it streams is
+  // persisted, so the normal single-model history is never touched.
+  const [compareMode, setCompareMode] = useState(false);
   // Multi-model auto-routing (plain chat). Persisted across sessions.
   const [autoRoute, setAutoRoute] = useState<boolean>(
     () => localStorage.getItem("chat.autoRoute") === "1",
@@ -1144,7 +1165,22 @@ export function ChatWindow({
           onDismiss={() => void handleDismissResume()}
         />
       )}
-      {showLanding ? (
+      {compareMode ? (
+        <Suspense
+          fallback={<div className="lazy-loading">Loading compare…</div>}
+        >
+          <CompareView
+            status={status}
+            history={messages}
+            params={{
+              temperature: convParams.temperature,
+              top_p: convParams.top_p,
+              max_tokens: convParams.max_tokens,
+            }}
+            onClose={() => setCompareMode(false)}
+          />
+        </Suspense>
+      ) : showLanding ? (
         <EmptyChatLanding modelReady={!!status?.running} />
       ) : (
         <StreamingMessageList
@@ -1337,6 +1373,17 @@ export function ChatWindow({
           >
             <BookOpen size={14} /> Use docs {ragContext ? "on" : "off"}
           </button>
+          {/* W5B-COMPARE: enter/exit side-by-side multi-model compare. A
+              separate exploratory surface; nothing it streams is saved. */}
+          <button
+            type="button"
+            className={`route-toggle${compareMode ? " on" : ""}`}
+            onClick={() => setCompareMode((v) => !v)}
+            data-testid="compare-toggle"
+            title="Run one prompt across 2–3 models side by side (exploratory — not saved to chat)"
+          >
+            <Columns size={14} /> Compare {compareMode ? "on" : "off"}
+          </button>
         </div>
 
         {showRoutes && (
@@ -1346,29 +1393,33 @@ export function ChatWindow({
           />
         )}
 
-        <AgentToolbar
-          conversation={conversation}
-          messages={messages}
-          agent={agent}
-          agentMode={agentMode}
-          agentAvailable={agentAvailable}
-          agentStatus={agentStatus}
-          agentMetrics={agentMetrics}
-          activeModel={status?.model ?? null}
-          isWorking={isWorking}
-          workspaceRoot={workspaceRoot}
-          projectPolicy={projectPolicy}
-          convParams={convParams}
-          showParamsPanel={showParamsPanel}
-          showAgentSettings={showAgentSettings}
-          showExportMenu={showExportMenu}
-          onToggleAgent={() => setAgentMode((v) => !v)}
-          onToggleParams={() => setShowParamsPanel((v) => !v)}
-          onToggleAgentSettings={() => setShowAgentSettings((v) => !v)}
-          onToggleToolHistory={() => setShowToolHistory((v) => !v)}
-          onToggleExportMenu={() => setShowExportMenu((v) => !v)}
-          onCloseExportMenu={() => setShowExportMenu(false)}
-        />
+        {/* The agent toolbar steers the SINGLE-model chat — hide it while the
+            exploratory compare surface is open (it has its own controls). */}
+        {!compareMode && (
+          <AgentToolbar
+            conversation={conversation}
+            messages={messages}
+            agent={agent}
+            agentMode={agentMode}
+            agentAvailable={agentAvailable}
+            agentStatus={agentStatus}
+            agentMetrics={agentMetrics}
+            activeModel={status?.model ?? null}
+            isWorking={isWorking}
+            workspaceRoot={workspaceRoot}
+            projectPolicy={projectPolicy}
+            convParams={convParams}
+            showParamsPanel={showParamsPanel}
+            showAgentSettings={showAgentSettings}
+            showExportMenu={showExportMenu}
+            onToggleAgent={() => setAgentMode((v) => !v)}
+            onToggleParams={() => setShowParamsPanel((v) => !v)}
+            onToggleAgentSettings={() => setShowAgentSettings((v) => !v)}
+            onToggleToolHistory={() => setShowToolHistory((v) => !v)}
+            onToggleExportMenu={() => setShowExportMenu((v) => !v)}
+            onCloseExportMenu={() => setShowExportMenu(false)}
+          />
+        )}
 
         {showParamsPanel && (
           <ParamsPanel
@@ -1509,6 +1560,7 @@ export function ChatWindow({
           </div>
         )}
 
+        {!compareMode && (
         <div className="composer-row">
           <ChatInput
             // Without an ensureModel handle (detached windows) keep the old
@@ -1543,6 +1595,7 @@ export function ChatWindow({
             status={status}
           />
         </div>
+        )}
       </div>
 
       {showToolHistory && (

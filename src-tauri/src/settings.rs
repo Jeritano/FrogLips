@@ -80,6 +80,14 @@ pub struct Settings {
     /// inference so a fan-out doesn't thrash a single GPU/CPU). Cloud routes
     /// bypass the gate. Frontend clamps to >= 1.
     pub inference_permits: Option<i64>,
+    /// Beginner "Simple mode" (W5B). When `Some(true)`, the agent toolbar +
+    /// settings panel collapse the 47-tool firehose and advanced knobs to a
+    /// curated minimal set, hiding the rest behind an Advanced expander. `None`
+    /// on legacy files / fresh installs and `Some(false)` both mean OFF —
+    /// today's full advanced UI — so existing users never suddenly lose
+    /// controls. Toggled from the in-app Simple/Advanced control. Rides
+    /// settings.json via serde(default); no DB migration.
+    pub simple_mode: Option<bool>,
     /// Cached machine profile (RAM / cores / CPU) detected once on first launch
     /// and refreshed weekly, so the model picker and onboarding can size models
     /// to the hardware without re-probing sysctl every render. Absent on legacy

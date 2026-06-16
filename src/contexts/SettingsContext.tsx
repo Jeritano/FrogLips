@@ -255,3 +255,56 @@ export function useUpdateSettings(): (
 ) => Promise<AppSettings> {
   return useSettingsContext().updateSettings;
 }
+
+/**
+ * A stable, empty store used by `useSettingsFieldOptional` when there is NO
+ * `<SettingsProvider>` above the caller. It never notifies and always reports a
+ * `null` blob, so the selector resolves to its caller-supplied default. This
+ * keeps `useSyncExternalStore` happy (a referentially-stable getSnapshot) while
+ * letting a component that lives inside the provider in production still render
+ * standalone in a unit test without one — no provider boilerplate per test.
+ */
+const NULL_STORE: SettingsStore = {
+  get: () => null,
+  subscribe: () => () => {},
+  set: () => {},
+};
+
+/**
+ * Provider-OPTIONAL variant of {@link useSettingsField}. Identical behaviour
+ * when a `<SettingsProvider>` is present; when it is ABSENT, the selector is
+ * applied to a permanent `null` blob (so the caller's `?? default` wins) instead
+ * of throwing. Use for a component that always sits inside the provider in the
+ * real app but is unit-tested in isolation — it reads the real setting in
+ * production and degrades to the default in a bare test harness.
+ */
+export function useSettingsFieldOptional<T>(
+  selector: (settings: AppSettings | null) => T,
+): T {
+  const ctx = useContext(SettingsContext);
+  const store = ctx?.store ?? NULL_STORE;
+  const cacheRef = useRef<{
+    selector: (settings: AppSettings | null) => T;
+    input: AppSettings | null;
+    value: T;
+  } | null>(null);
+  const getSnapshot = useCallback(() => {
+    const input = store.get();
+    const cached = cacheRef.current;
+    if (
+      cached &&
+      Object.is(cached.selector, selector) &&
+      Object.is(cached.input, input)
+    ) {
+      return cached.value;
+    }
+    const next = selector(input);
+    if (cached && Object.is(cached.value, next)) {
+      cacheRef.current = { selector, input, value: cached.value };
+      return cached.value;
+    }
+    cacheRef.current = { selector, input, value: next };
+    return next;
+  }, [store, selector]);
+  return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot);
+}

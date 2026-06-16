@@ -6,7 +6,9 @@ import {
   type SyntaxThemeId,
   type UiFont,
   type TranscriptSize,
+  type UiScale,
   type ThemePref,
+  UI_SCALES,
   getCodeTheme,
   setCodeTheme,
   getCodeFont,
@@ -15,6 +17,8 @@ import {
   setUiFont,
   getTranscriptSize,
   setTranscriptSize,
+  getUiScale,
+  setUiScale,
   getHighContrast,
   setHighContrast,
 } from "../lib/appearance";
@@ -102,6 +106,7 @@ export function AppearanceModal({
   const [txtSize, setTxtSize] = useState<TranscriptSize>(() =>
     getTranscriptSize(),
   );
+  const [uiScale, setUiScaleState] = useState<UiScale>(() => getUiScale());
   const [highContrast, setHC] = useState<boolean>(() => getHighContrast());
   const [bubbleColor, setBubbleColorState] = useState<string | null>(() =>
     getBubbleColor(),
@@ -256,9 +261,41 @@ export function AppearanceModal({
 
           <div className="appr-row">
             <div className="appr-row-text">
+              <span className="appr-row-title">Interface scale</span>
+              <span className="appr-row-desc">
+                Zoom the whole interface — menus, sidebar, and chrome. 100% is
+                the default.
+              </span>
+            </div>
+            <div
+              className="appr-seg"
+              role="radiogroup"
+              aria-label="Interface scale"
+            >
+              {UI_SCALES.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={uiScale === s.id}
+                  className={`appr-seg-btn${uiScale === s.id ? " on" : ""}`}
+                  onClick={() => {
+                    setUiScaleState(s.id);
+                    setUiScale(s.id);
+                  }}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="appr-row">
+            <div className="appr-row-text">
               <span className="appr-row-title">Transcript text size</span>
               <span className="appr-row-desc">
-                Size of the conversation transcript text.
+                Size of the conversation transcript text, on top of the scale
+                above.
               </span>
             </div>
             <div

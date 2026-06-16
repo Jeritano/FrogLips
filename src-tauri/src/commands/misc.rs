@@ -602,6 +602,10 @@ const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     "auto_update_check",
     "saved_apis",
     "agent_max_iterations",
+    // W5B (2026-06-15): beginner "Simple mode" toggle. Without this key the
+    // settings_set carrying it would be silently rejected and the toggle would
+    // never persist.
+    "simple_mode",
 ];
 
 /// Per-field byte caps for the "About You" profile. Keeps a hostile or
@@ -1044,6 +1048,7 @@ mod settings_validation_tests {
     fn accepts_known_keys() {
         assert!(validate_settings_patch(&obj(r#"{"theme":"dark"}"#)).is_ok());
         assert!(validate_settings_patch(&obj(r#"{"setup_complete":true}"#)).is_ok());
+        assert!(validate_settings_patch(&obj(r#"{"simple_mode":true}"#)).is_ok());
         assert!(validate_settings_patch(&obj("{}")).is_ok());
     }
 

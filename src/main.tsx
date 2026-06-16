@@ -23,6 +23,11 @@ try {
         : "light";
   else if (mirror === "light" || mirror === "dark") resolved = mirror;
   if (resolved) document.documentElement.dataset.theme = resolved;
+  // UI scale (W5B): apply the persisted multiplier synchronously so a non-100%
+  // scale doesn't flash at default size. 100%/absent → leave unset (calc → 1).
+  const s = localStorage.getItem("froglips.uiScale");
+  if (s && s !== "100" && /^(90|110|125|150)$/.test(s))
+    document.documentElement.style.setProperty("--ui-scale", String(Number(s) / 100));
 } catch {
   /* localStorage unavailable — keep the dark default */
 }

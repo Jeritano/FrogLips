@@ -39,6 +39,7 @@ import {
   paletteIcons,
   type PaletteAction,
 } from "./components/CommandPalette";
+import { FirstRunTour, startFirstRunTour } from "./components/FirstRunTour";
 import { api } from "./lib/tauri-api";
 import { applyAllAppearance } from "./lib/appearance";
 import { applyBubbleColor } from "./lib/bubble-color";
@@ -437,19 +438,37 @@ function App() {
     // Heuristic: if setup_complete is unset BUT the user has a last_model
     // already picked, this is an existing install that pre-dates the wizard.
     // Auto-mark them complete so the wizard never opens.
+    // Seed the first-run-tour "seen" flag for an EXISTING user so the tour
+    // never auto-opens for them — it's for genuinely-new installs only. The
+    // FirstRunTour gates auto-open on the absence of this localStorage flag,
+    // and a returning user's flag is brand new (so absent) without this seed.
+    const seedTourSeen = () => {
+      try {
+        if (localStorage.getItem("froglips.tourSeen") === null) {
+          localStorage.setItem("froglips.tourSeen", "true");
+        }
+      } catch {
+        /* private mode / quota — tour reads the same key defensively */
+      }
+    };
     Promise.all([api.setupCompleteGet(), api.settingsGet()])
       .then(async ([done, s]) => {
         if (ignored) return;
         if (done) {
+          // Returning user — never auto-show the tour.
+          seedTourSeen();
           setWizardOpen(false);
           return;
         }
         if (s.last_model) {
+          // Existing install pre-dating the wizard — also a returning user.
+          seedTourSeen();
           await api.setupCompleteSet(true).catch(() => {});
           if (ignored) return;
           setWizardOpen(false);
           return;
         }
+        // Genuinely-new user: leave the tour flag UNSET so it auto-opens once.
         setWizardOpen(true);
       })
       .catch((err) => {
@@ -878,6 +897,13 @@ function App() {
         label: "Keyboard shortcuts",
         hint: "?",
         run: () => setShortcutsOpen(true),
+      },
+      {
+        id: "take-a-tour",
+        label: "Take a tour",
+        hint: "intro",
+        icon: <Compass size={14} />,
+        run: () => startFirstRunTour(),
       },
       {
         id: "rerun-wizard",
@@ -1696,6 +1722,11 @@ function App() {
         conversations={conversations}
         onOpenConversation={onPaletteOpenConversation}
       />
+      {/* First-run guided tour (W5B). Self-gating: auto-opens once for a fresh
+          user (localStorage `froglips.tourSeen`), never for returning users
+          (App seeds the flag above), and re-openable via the palette / landing
+          link. Always skippable — it never blocks the UI. */}
+      <FirstRunTour />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}

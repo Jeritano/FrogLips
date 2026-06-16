@@ -236,6 +236,52 @@ export function applyTranscriptSize(): void {
   document.documentElement.dataset.transcriptSize = getTranscriptSize();
 }
 
+/* ── Global UI scale ───────────────────────────────────────────────────── */
+
+/**
+ * Global interface zoom. Drives `--ui-scale` on <html>, which scales the
+ * rem-based `--fs-*` / `--space-*` token scales in styles/tokens.css (and any
+ * other rem-authored size). 100% is the historical default and renders
+ * byte-identically. Raw px sizes in individual components do NOT scale — an
+ * accepted limitation of the bounded approach.
+ *
+ * Composes with the transcript-size pref: this scale sets the rem base for all
+ * chrome; transcript size then adjusts the message body on top of it.
+ */
+export type UiScale = "90" | "100" | "110" | "125" | "150";
+
+export const UI_SCALES: { id: UiScale; label: string }[] = [
+  { id: "90", label: "90%" },
+  { id: "100", label: "100%" },
+  { id: "110", label: "110%" },
+  { id: "125", label: "125%" },
+  { id: "150", label: "150%" },
+];
+
+function isUiScale(v: string | null): v is UiScale {
+  return v != null && UI_SCALES.some((s) => s.id === v);
+}
+
+export function getUiScale(): UiScale {
+  const v = read("uiScale");
+  return isUiScale(v) ? v : "100";
+}
+
+export function setUiScale(v: UiScale): void {
+  // Persist the default as a removal so a fresh/100% install stores nothing and
+  // boots at the byte-identical default.
+  write("uiScale", v === "100" ? null : v);
+  applyUiScale();
+}
+
+/** Write `--ui-scale` (a unitless multiplier, e.g. 1.25) to <html>. Called at
+ *  boot and whenever the preference changes. 100% sets exactly 1. */
+export function applyUiScale(): void {
+  if (typeof document === "undefined") return;
+  const mult = Number(getUiScale()) / 100;
+  document.documentElement.style.setProperty("--ui-scale", String(mult));
+}
+
 /* ── High-contrast dark theme ──────────────────────────────────────────── */
 
 export function getHighContrast(): boolean {
@@ -259,6 +305,7 @@ export function applyAllAppearance(appTheme?: Mode): void {
   applyCodeTheme(appTheme);
   applyCodeFont();
   applyUiFont();
+  applyUiScale();
   applyTranscriptSize();
   applyHighContrast();
 }

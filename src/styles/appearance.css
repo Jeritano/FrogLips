@@ -275,12 +275,15 @@
 /* ── Global wiring the prefs drive ──────────────────────────────────────── */
 
 /* Transcript text size — scales rendered chat message bodies. Medium = the
- * component default (no rule). */
+ * component default (no rule). Authored in rem so the two size controls
+ * COMPOSE: the global UI-scale preference (--ui-scale on <html>) sets the rem
+ * base for all chrome, and transcript size then adjusts the message body on
+ * top of it. At --ui-scale:1 these resolve to 13px / 16px exactly as before. */
 :root[data-transcript-size="small"] .markdown {
-  font-size: 13px;
+  font-size: 0.8125rem; /* 13px @ scale 1 */
 }
 :root[data-transcript-size="large"] .markdown {
-  font-size: 16px;
+  font-size: 1rem; /* 16px @ scale 1 */
 }
 
 /* High-contrast — boosts the surface/border separation in whichever theme is

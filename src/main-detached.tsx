@@ -26,6 +26,9 @@ try {
         : "light";
   else if (mirror === "light" || mirror === "dark") resolved = mirror;
   if (resolved) document.documentElement.dataset.theme = resolved;
+  const s = localStorage.getItem("froglips.uiScale");
+  if (s && s !== "100" && /^(90|110|125|150)$/.test(s))
+    document.documentElement.style.setProperty("--ui-scale", String(Number(s) / 100));
 } catch {
   /* localStorage unavailable — keep the dark default */
 }
