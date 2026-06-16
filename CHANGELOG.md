@@ -4,6 +4,46 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.9] — 2026-06-16
+
+Full-codebase review remediation (3 waves: correctness/security/data-integrity,
+performance, and a luxury UI pass) — zero criticals found; this hardens the edges
+and lifts the look from "dev tool" to "premium".
+
+### Fixed (correctness / security / data-integrity)
+
+- `file_exists` now honors the read denylist + workspace confinement and fails
+  closed (it was a no-approval existence/size oracle for protected paths).
+- MCP stdin writes time out instead of stalling every RPC + the stop path when a
+  server wedges; data-import routed through the single-writer lock; the inference
+  permit gate gained an over-capacity guard; background loops bail on shutdown.
+- Forking a conversation no longer copies hidden agent-checkpoint rows into the
+  fork; the message full-text-search triggers gained the checkpoint guard with a
+  one-time index repair (migration v32) — prevents a corruptible search index.
+- Agent turn-limit / circuit-breaker notices now persist (they vanished on reload).
+
+### Performance
+
+- Streaming emits one IPC event per network chunk instead of per token.
+- The Quick Prompt popover loads a lean stylesheet (render-blocking CSS 167 → 8 KB).
+- KaTeX is lazy-loaded only when a message actually contains math (chat boot
+  graph −250 KB for the common case).
+- Composer + streaming render fewer times; smaller Rust hot-path costs in memory
+  recall and RAG search.
+
+### UI — premium pass
+
+- A unified design system instead of a bypassed one: raw px font-sizes routed onto
+  the type scale (so the UI-scale lever finally reaches every surface), one chat
+  reading rhythm, theme-correct accents + elevation (no more wrong colors in light
+  mode), frosted-glass overlays, a single pill style, and motion tokens.
+- A real brand mark (in the hero, sidebar, and setup wizard), a display-size hero
+  heading, a command-palette key-hint footer, a brighten-on-hover send button, and
+  a subtle glyph in the assistant avatar.
+- Fixed two visible defects: the selected compare-model chip label was invisible,
+  and the landing card understated the toolkit ("46 tools" → derived from the real
+  count).
+
 ## [0.14.8] — 2026-06-16
 
 ### Fixed
