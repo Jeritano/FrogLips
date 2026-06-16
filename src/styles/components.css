@@ -281,6 +281,49 @@
   border: 0;
 }
 
+/* ── Unified pill base (2026-06-16 luxury pass) ──────────────────────────
+ * One token-driven recipe behind every small rounded toggle/chip so the
+ * three parallel pill systems (panel + skills + chat) read as one family.
+ * Chat-owned pills (.route-toggle / .compare-chip / .recall-pill in chat.css)
+ * share this SAME visual recipe by hand; panel/skills pills `extend` it via a
+ * second class. Neutral resting state on --surface-2 + hairline border;
+ * `.is-on` lifts to the accent wash. Geometry authored in tokens so it tracks
+ * the global UI-scale. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: var(--leading-snug);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition:
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
+}
+.pill:hover:not(:disabled):not([aria-disabled="true"]) {
+  color: var(--text);
+  border-color: var(--border);
+}
+.pill.is-on {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.pill:disabled,
+.pill[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Toast (reusable bottom-right notification) ──────────────────────────
  * Used for the undo-delete affordance. Mirrors .quick-toast geometry but
  * carries an action + close button. */
@@ -475,7 +518,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 4px);
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   cursor: pointer;
 }
@@ -510,8 +553,8 @@
 .cs-panel-box {
   width: min(960px, 100%);
   background: color-mix(in srgb, var(--surface) 76%, transparent);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
   border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
   color: var(--text);
@@ -519,7 +562,7 @@
   flex-direction: column;
   min-height: 0;
   max-height: 88vh;
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+  box-shadow: var(--elev-4);
   overflow: hidden;
 }
 .cs-panel-header {
@@ -545,7 +588,7 @@
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm, 4px);
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   cursor: pointer;
 }
@@ -661,7 +704,7 @@
 }
 .cs-cell-path {
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-2, var(--text));
   white-space: nowrap;
   overflow: hidden;
@@ -684,12 +727,12 @@
 /* ── Chips ── */
 .cs-chip {
   display: inline-block;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 2px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid transparent;
   line-height: 1.4;
 }
@@ -772,7 +815,20 @@
   display: flex;
   flex-direction: column;
   max-height: 86vh;
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.38);
+  box-shadow: var(--elev-4);
+  overflow: hidden;
+}
+/* Wider variant for the embedded MCP browser overlay (was an inline style on
+   the SkillsToolsView <McpBrowseOverlay/> box). */
+.cs-body-box--wide {
+  width: min(900px, 92vw);
+  height: min(640px, 86vh);
+}
+/* Fill the remaining body height for an embedded scroll-owning child (the
+   <McpView/> inside the browse overlay). */
+.cs-body-fill {
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 .cs-body-header {
@@ -811,7 +867,7 @@
 }
 .cs-body-meta-path {
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-2, var(--text));
   flex: 1;
   min-width: 0;
@@ -820,7 +876,7 @@
   white-space: nowrap;
 }
 .cs-body-meta-note {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-3, var(--text-2, var(--text)));
   font-style: italic;
 }
@@ -837,7 +893,7 @@
   max-height: 60vh;
   overflow: auto;
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   margin: var(--space-3, 12px);
   white-space: pre-wrap;
@@ -931,6 +987,30 @@
   color: var(--danger-fg);
   background: var(--danger-bg);
   border-color: var(--danger-border);
+}
+
+/* Capability badges (context window / vision / tool fitness) beside the model
+   picker. These describe a capability, not RAM headroom, so they get their own
+   NEUTRAL surface chip rather than borrowing the green "comfortable" headroom
+   tier. The tool-fitness caution variant keeps the warn palette. Shares the
+   headroom-badge geometry (inline-flex pill, --fs-2xs) for a consistent row. */
+.cap-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.cap-badge.is-caution {
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
 }
 
 .hw-warning-banner {

@@ -273,9 +273,7 @@ export function MemoryPanel({
         className="memory-toggle"
         onClick={() => setOpen(!open)}
       >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
-        </svg>
+        <Star size={13} fill="currentColor" aria-hidden="true" />
         Memories
         <span className="memory-count">
           {active.length}
@@ -333,7 +331,7 @@ export function MemoryPanel({
                   role="tab"
                   aria-selected={scopeFilter === s}
                   data-testid={`scope-chip-${s}`}
-                  className={`memory-scope-chip ${scopeFilter === s ? "active" : ""}`}
+                  className={`pill memory-scope-chip ${scopeFilter === s ? "active is-on" : ""}`}
                   onClick={() => setScopeFilter(s)}
                 >
                   {s === "all" ? "All" : SCOPE_LABELS[s]}

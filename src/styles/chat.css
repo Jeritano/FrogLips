@@ -15,12 +15,12 @@
 .markdown pre {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   overflow-x: auto;
   margin: 8px 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.45;
 }
 .markdown pre code {
@@ -87,7 +87,7 @@
   border: 1px solid var(--border);
   padding: 4px 8px;
   text-align: left;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .markdown th {
   background: var(--surface-2);
@@ -109,7 +109,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 5px 10px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   outline: none;
   transition: border-color 0.15s;
 }
@@ -140,7 +140,7 @@
   border-radius: 6px;
   padding: 5px 12px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
   transition:
     background 0.15s,
     border-color 0.15s;
@@ -196,7 +196,7 @@
 }
 
 .status-text {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 
@@ -262,8 +262,12 @@
 }
 
 .message {
-  font-size: 14px;
-  line-height: 1.65;
+  /* One body leading for BOTH speakers (was 1.4 user / 1.65 assistant). A
+     single rhythm reads more crafted; the per-bubble one-offs below now route
+     through this so the two columns sit on the same baseline grid. */
+  --leading: 1.55;
+  font-size: var(--fs-base);
+  line-height: var(--leading);
 }
 
 /* User bubble */
@@ -286,7 +290,7 @@
   word-wrap: break-word;
   overflow-wrap: anywhere;
   word-break: break-word;
-  line-height: 1.4;
+  line-height: var(--leading);
 }
 
 /* Assistant row */
@@ -303,11 +307,19 @@
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: linear-gradient(
-    135deg,
-    var(--accent) 0%,
-    color-mix(in oklab, var(--accent) 60%, #a855f7) 100%
-  );
+  /* A subtle on-accent spark glyph centered over the accent gradient so the
+     avatar reads as a mark, not an anonymous circle. The white spark sits
+     legibly on the saturated accent in BOTH themes (same contrast guarantee
+     as the white-on-accent user bubble). The gradient is the lower layer. */
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='white'><path d='M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z'/></svg>"),
+    linear-gradient(
+      135deg,
+      var(--accent) 0%,
+      color-mix(in oklab, var(--accent) 60%, #a855f7) 100%
+    );
+  background-repeat: no-repeat;
+  background-position: center;
   margin-top: 1px;
 }
 
@@ -321,14 +333,16 @@
      keeps pre-wrap via the more-specific .streaming-plain rule below. */
   white-space: normal;
   word-wrap: break-word;
-  max-width: 76ch;
+  /* Tighter measure (~68ch) keeps prose lines in the comfortable reading band
+     instead of stretching wide on a maximized window. */
+  max-width: 68ch;
 }
 
 /* System */
 .message.system {
   text-align: center;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 2px 24px;
 }
 
@@ -339,7 +353,7 @@
   gap: 10px;
   padding: 14px 24px 10px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.02em;
 }
 .model-divider-line {
@@ -348,14 +362,14 @@
   background: var(--border-subtle);
 }
 .model-divider.change .model-divider-line {
-  background: rgba(99, 102, 241, 0.25);
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 .model-divider-label code {
   background: var(--surface-2);
   color: var(--text-2);
   padding: 1px 6px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: "SF Mono", Menlo, monospace;
 }
 .model-divider.change .model-divider-label code {
@@ -366,7 +380,7 @@
 .model-end-footer {
   text-align: center;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 16px 24px 8px;
   border-top: 1px dashed var(--border-subtle);
   margin: 16px 24px 0;
@@ -377,7 +391,7 @@
   padding: 1px 6px;
   border-radius: 4px;
   font-family: "SF Mono", Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 /* Pin-to-memory button */
@@ -473,19 +487,19 @@
   gap: 6px;
   background: var(--accent-bg);
   color: var(--accent);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  border-radius: var(--radius-full);
   padding: 3px 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin-bottom: 6px;
   width: fit-content;
 }
 .recall-icon {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .error-bar {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--danger-fg);
   padding: 4px 4px 6px;
   display: flex;
@@ -500,7 +514,7 @@
   background: transparent;
   border: 0;
   color: var(--danger-fg);
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1;
   cursor: pointer;
   /* UI re-review L-2: padding-block was effectively 0 so the hit area was
@@ -522,7 +536,7 @@
   background: transparent;
   border: 1px solid var(--border-subtle);
   color: var(--danger-fg);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 2px 8px;
   border-radius: 4px;
   cursor: pointer;
@@ -557,7 +571,7 @@
 
 .chat-input.dropping {
   border-color: var(--accent);
-  background: rgba(99, 102, 241, 0.04);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
 }
 
 .chat-input textarea {
@@ -567,7 +581,7 @@
   border: 0;
   outline: none;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--fs-base);
   resize: none;
   line-height: 1.5;
   min-height: 28px;
@@ -590,11 +604,12 @@
   justify-content: center;
   flex-shrink: 0;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg, #fff);
   transition:
-    opacity 0.15s,
-    background 0.15s;
-  font-size: 14px;
+    background var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-fast) var(--ease-standard);
+  font-size: var(--fs-base);
   line-height: 1;
 }
 
@@ -605,8 +620,12 @@
   cursor: not-allowed;
 }
 
+/* Hover BRIGHTENS (was a cheap-feeling opacity dim): mix the accent toward
+   white + lift with a subtle shadow so the primary action reads as gaining
+   energy, not fading. The global button:active scale press handles the tap. */
 .send-btn:hover:not(:disabled) {
-  opacity: 0.82;
+  background: color-mix(in srgb, var(--accent) 88%, white);
+  box-shadow: var(--elev-1);
 }
 
 .send-btn.stop {
@@ -652,7 +671,7 @@
 }
 
 .voice-err {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--danger-fg);
   padding: 0 4px 6px;
 }
@@ -717,7 +736,7 @@
   border: 0;
   background: rgba(0, 0, 0, 0.6);
   color: #fff;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
   display: flex;
   align-items: center;
@@ -1012,7 +1031,7 @@
 }
 .thinking-body {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   color: var(--text-2);
   white-space: pre-wrap;
@@ -1104,7 +1123,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1;
   transition:
     background 0.12s,
@@ -1181,7 +1200,7 @@ mark.find-hit.find-current {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
   color: var(--text-2);
 }
@@ -1286,7 +1305,7 @@ mark.find-hit.find-current {
 .compare-chip.on {
   background: var(--accent-bg);
   border-color: var(--accent);
-  color: var(--accent-strong);
+  color: var(--accent);
 }
 .compare-chip:disabled {
   opacity: 0.45;
@@ -1419,4 +1438,241 @@ mark.find-hit.find-current {
 }
 .compare-col-cold {
   color: var(--warn-fg);
+}
+
+/* ── Recall-pill expand list ─────────────────────────────────────────────────
+   The recalled-memories pill (ChatWindow) expands into an inspect/correct list.
+   Was built from inline-style objects with raw px; routed onto the token scale
+   here. `.recall-pill` (above) supplies the pill chrome; the toggle reuses it. */
+.recall-pill-toggle {
+  cursor: pointer;
+  font: inherit;
+}
+.recall-list {
+  list-style: none;
+  margin: var(--space-1) 0 var(--space-2);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.recall-list-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.recall-item-text {
+  flex: 1;
+  word-break: break-word;
+}
+.recall-item-actions {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+.recall-item-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 2px var(--space-1);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+.recall-item-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--text-3);
+}
+.recall-item-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.recall-item-delete {
+  color: var(--danger-fg);
+}
+.recall-item-delete:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
+/* ── Mid-run steering row ─────────────────────────────────────────────────────
+   While an agent run is in flight the user can queue extra guidance. Was inline
+   px styling; now a real composer-style row on the token scale. */
+.steering-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.steering-input {
+  flex: 1;
+  box-sizing: border-box;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px var(--space-2);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  outline: none;
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
+}
+.steering-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.steering-send {
+  font-size: var(--fs-sm);
+  padding: 5px var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
+}
+.steering-send:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--text-3);
+}
+.steering-send:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.steering-confirm {
+  font-size: var(--fs-xs);
+  color: var(--accent);
+}
+
+/* ── Resume-interrupted-run banner ───────────────────────────────────────────
+   Review-before-continue affordance for an interrupted agent run. Was an inline-
+   styled block; moved onto the token scale + elevation ladder. The primary
+   Resume button uses the accent fill with on-accent text. */
+.resume-banner {
+  margin: var(--space-2) var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  box-shadow: var(--elev-1);
+  font-size: var(--fs-md);
+}
+.resume-banner-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.resume-banner-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+.resume-banner-meta {
+  color: var(--text-muted);
+}
+.resume-review-toggle {
+  margin-left: auto;
+  font: inherit;
+  cursor: pointer;
+  background: none;
+  border: none;
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.resume-review-body {
+  margin-top: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.resume-review-note {
+  color: var(--text-muted);
+}
+.resume-tools-label {
+  color: var(--text-muted);
+}
+.resume-tool-chip {
+  margin-right: var(--space-1);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-xs);
+  background: var(--overlay-soft);
+  font-family: var(--mono);
+}
+.resume-turn-list {
+  list-style: decimal;
+  margin: 2px 0 0 18px;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text);
+}
+.resume-turn-role {
+  color: var(--text-muted);
+}
+.resume-cloud-note {
+  margin-top: var(--space-2);
+  color: var(--warn-fg);
+}
+.resume-actions {
+  margin-top: var(--space-3);
+  display: flex;
+  gap: var(--space-2);
+}
+.resume-confirm-btn {
+  font: inherit;
+  cursor: pointer;
+  padding: 5px var(--space-3);
+  border-radius: var(--radius-sm);
+  border: none;
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition:
+    background var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
+}
+.resume-confirm-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, white);
+  box-shadow: var(--elev-1);
+}
+.resume-confirm-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.resume-dismiss-btn {
+  font: inherit;
+  cursor: pointer;
+  padding: 5px var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text);
+  transition:
+    background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
+}
+.resume-dismiss-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--text-3);
+}
+.resume-dismiss-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }

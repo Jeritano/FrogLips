@@ -73,7 +73,7 @@ export function CommandPalette({
     }
   }, [open]);
 
-  const results = useMemo(() => {
+  const { results, totalMatches } = useMemo(() => {
     const q = query.trim();
     const actionHits = (
       q ? actions.filter((a) => fuzzyMatch(q, a.label)) : actions
@@ -87,20 +87,24 @@ export function CommandPalette({
     }));
     // Conversations join the list only once the user types — an empty query
     // shows the action registry, not a wall of chat titles.
-    const convHits = q
-      ? conversations
-          .filter((c) => fuzzyMatch(q, c.title))
-          .slice(0, MAX_RESULTS)
-          .map((c) => ({
-            kind: "conv" as const,
-            key: `conv-${c.id}`,
-            label: c.title,
-            hint: "conversation",
-            icon: <MessageSquare size={14} />,
-            run: () => onOpenConversation(c),
-          }))
+    const convMatches = q
+      ? conversations.filter((c) => fuzzyMatch(q, c.title))
       : [];
-    return [...actionHits, ...convHits].slice(0, MAX_RESULTS);
+    const convHits = convMatches.slice(0, MAX_RESULTS).map((c) => ({
+      kind: "conv" as const,
+      key: `conv-${c.id}`,
+      label: c.title,
+      hint: "conversation",
+      icon: <MessageSquare size={14} />,
+      run: () => onOpenConversation(c),
+    }));
+    const all = [...actionHits, ...convHits];
+    return {
+      results: all.slice(0, MAX_RESULTS),
+      // Pre-slice match total so the footer can show an "N of M" overflow cue
+      // when more matched than the MAX_RESULTS cap renders.
+      totalMatches: actionHits.length + convMatches.length,
+    };
   }, [query, actions, conversations, onOpenConversation]);
 
   // Clamp selection when the result set shrinks under it.
@@ -197,6 +201,34 @@ export function CommandPalette({
               {r.hint && <span className="cmdk-row-hint">{r.hint}</span>}
             </button>
           ))}
+        </div>
+        {/* Footer: key hints + an "N of M" overflow cue. The cheapest way to
+            make the palette read as a real command surface — and to tell the
+            user when the visible rows are a capped subset of the matches. */}
+        <div className="cmdk-footer" data-testid="cmdk-footer">
+          <span className="cmdk-footer-hints">
+            <span className="cmdk-footer-hint">
+              <kbd className="cmdk-key">↑</kbd>
+              <kbd className="cmdk-key">↓</kbd> navigate
+            </span>
+            <span className="cmdk-footer-sep" aria-hidden="true">
+              ·
+            </span>
+            <span className="cmdk-footer-hint">
+              <kbd className="cmdk-key">↵</kbd> open
+            </span>
+            <span className="cmdk-footer-sep" aria-hidden="true">
+              ·
+            </span>
+            <span className="cmdk-footer-hint">
+              <kbd className="cmdk-key">esc</kbd> close
+            </span>
+          </span>
+          {totalMatches > results.length && (
+            <span className="cmdk-footer-count" data-testid="cmdk-footer-count">
+              {results.length} of {totalMatches}
+            </span>
+          )}
         </div>
       </div>
     </div>

@@ -235,30 +235,13 @@ const ResumeBanner = memo(function ResumeBanner({
     ? new Date(ckpt.updated_at * 1000).toLocaleString()
     : "an earlier session";
   return (
-    <div
-      data-testid="resume-banner"
-      style={{
-        margin: "8px 12px",
-        padding: "10px 12px",
-        borderRadius: 8,
-        border: "1px solid var(--border, #333)",
-        background: "var(--surface-2, rgba(255,255,255,0.04))",
-        fontSize: 13,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          flexWrap: "wrap",
-        }}
-      >
-        <span style={{ display: "inline-flex", color: "var(--text-muted)" }}>
+    <div className="resume-banner" data-testid="resume-banner">
+      <div className="resume-banner-head">
+        <span className="resume-banner-icon">
           <Play size={16} />
         </span>
         <strong>Unfinished agent run</strong>
-        <span style={{ color: "var(--text-muted)" }}>
+        <span className="resume-banner-meta">
           {ckpt.turns.length} turn{ckpt.turns.length === 1 ? "" : "s"}
           {toolTurns.length > 0
             ? ` · ${toolTurns.length} tool call${toolTurns.length === 1 ? "" : "s"}`
@@ -267,20 +250,10 @@ const ResumeBanner = memo(function ResumeBanner({
         </span>
         <button
           type="button"
+          className="resume-review-toggle"
           data-testid="resume-review-toggle"
           onClick={onToggleReview}
           aria-expanded={open}
-          style={{
-            marginLeft: "auto",
-            font: "inherit",
-            cursor: "pointer",
-            background: "none",
-            border: "none",
-            color: "var(--accent, #7aa2f7)",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-          }}
         >
           {open ? "Hide details" : "Review"}
           {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -288,11 +261,8 @@ const ResumeBanner = memo(function ResumeBanner({
       </div>
 
       {open && (
-        <div
-          data-testid="resume-review-body"
-          style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}
-        >
-          <div style={{ color: "var(--text-muted)" }}>
+        <div className="resume-review-body" data-testid="resume-review-body">
+          <div className="resume-review-note">
             This run was interrupted before it finished. Resuming continues from
             where it left off — the work below is treated as already-done history
             and is <strong>not</strong> repeated. The model is asked to re-check
@@ -300,38 +270,18 @@ const ResumeBanner = memo(function ResumeBanner({
           </div>
           {toolNames.length > 0 && (
             <div>
-              <span style={{ color: "var(--text-muted)" }}>Tools used: </span>
+              <span className="resume-tools-label">Tools used: </span>
               {toolNames.map((n) => (
-                <code
-                  key={n}
-                  style={{
-                    marginRight: 6,
-                    padding: "1px 5px",
-                    borderRadius: 4,
-                    background: "var(--surface-3, rgba(255,255,255,0.06))",
-                  }}
-                >
+                <code key={n} className="resume-tool-chip">
                   {n}
                 </code>
               ))}
             </div>
           )}
-          <ol
-            data-testid="resume-turn-list"
-            style={{
-              listStyle: "decimal",
-              margin: "2px 0 0 18px",
-              padding: 0,
-              maxHeight: 180,
-              overflowY: "auto",
-              display: "flex",
-              flexDirection: "column",
-              gap: 3,
-            }}
-          >
+          <ol className="resume-turn-list" data-testid="resume-turn-list">
             {ckpt.turns.map((t) => (
-              <li key={t.turn_index} style={{ color: "var(--text)" }}>
-                <span style={{ color: "var(--text-muted)" }}>
+              <li key={t.turn_index}>
+                <span className="resume-turn-role">
                   {t.role === "tool"
                     ? `tool result${t.tool_name ? ` (${t.tool_name})` : ""}`
                     : "assistant"}
@@ -345,19 +295,17 @@ const ResumeBanner = memo(function ResumeBanner({
       )}
 
       {!localBackend && (
-        <div
-          data-testid="resume-cloud-note"
-          style={{ marginTop: 8, color: "var(--warning-fg, #e0af68)" }}
-        >
+        <div className="resume-cloud-note" data-testid="resume-cloud-note">
           Resume is available on local backends only (Ollama or MLX). Cloud
           routes bill per turn, so resuming one could silently re-bill — switch
           to a local model to resume this run.
         </div>
       )}
 
-      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+      <div className="resume-actions">
         <button
           type="button"
+          className="resume-confirm-btn"
           data-testid="resume-confirm"
           onClick={onResume}
           disabled={busy || !canResume}
@@ -368,38 +316,16 @@ const ResumeBanner = memo(function ResumeBanner({
                 ? "Turn on Agent mode to resume"
                 : "Switch to a local backend to resume"
           }
-          style={{
-            font: "inherit",
-            cursor: busy || !canResume ? "not-allowed" : "pointer",
-            opacity: busy || !canResume ? 0.5 : 1,
-            padding: "5px 12px",
-            borderRadius: 6,
-            border: "none",
-            background: "var(--accent, #7aa2f7)",
-            color: "var(--accent-fg, #0b0f1a)",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 5,
-          }}
         >
           <Play size={14} /> Resume run
         </button>
         <button
           type="button"
+          className="resume-dismiss-btn"
           data-testid="resume-dismiss"
           onClick={onDismiss}
           disabled={busy}
           title="Discard this checkpoint — it won't be offered again"
-          style={{
-            font: "inherit",
-            cursor: busy ? "not-allowed" : "pointer",
-            opacity: busy ? 0.5 : 1,
-            padding: "5px 12px",
-            borderRadius: 6,
-            border: "1px solid var(--border, #333)",
-            background: "none",
-            color: "var(--text)",
-          }}
         >
           Dismiss
         </button>
@@ -1234,10 +1160,9 @@ export function ChatWindow({
       <div className="chat-input-wrap">
         {recalled.length > 0 && (
           <div className="recall-pill-wrap" data-testid="recall-pill-wrap">
-            {/* `.recall-pill` is owned by W4-CHAT2 (chat.css). The button reuses
-                it for the pill look; minimal inline resets here keep the new
-                expandable affordance usable before W4-CHAT2 adds dedicated CSS
-                for .recall-pill-toggle / .recall-list / .recall-item-*. */}
+            {/* `.recall-pill` is owned by C2-chat (chat.css); the toggle reuses
+                it for the pill look. The expand list + rows now have dedicated
+                token-driven classes (.recall-list / .recall-item-*). */}
             <button
               type="button"
               className="recall-pill recall-pill-toggle"
@@ -1245,7 +1170,6 @@ export function ChatWindow({
               data-testid="recall-pill-toggle"
               onClick={() => setRecallOpen((o) => !o)}
               title="Show the memories recalled for this turn"
-              style={{ cursor: "pointer", font: "inherit" }}
             >
               <span className="recall-icon">
                 <Zap size={16} />
@@ -1259,41 +1183,15 @@ export function ChatWindow({
               )}
             </button>
             {recallOpen && (
-              <ul
-                className="recall-list"
-                data-testid="recall-list"
-                style={{
-                  listStyle: "none",
-                  margin: "4px 0 6px",
-                  padding: 0,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 4,
-                }}
-              >
+              <ul className="recall-list" data-testid="recall-list">
                 {recalled.map((m) => (
                   <li
                     key={m.id}
                     className="recall-list-item"
                     data-testid={`recall-item-${m.id}`}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      fontSize: 12,
-                      color: "var(--text-muted)",
-                    }}
                   >
-                    <span
-                      className="recall-item-text"
-                      style={{ flex: 1, wordBreak: "break-word" }}
-                    >
-                      {m.content}
-                    </span>
-                    <span
-                      className="recall-item-actions"
-                      style={{ display: "inline-flex", gap: 4 }}
-                    >
+                    <span className="recall-item-text">{m.content}</span>
+                    <span className="recall-item-actions">
                       <button
                         type="button"
                         className="recall-item-btn"
@@ -1302,15 +1200,6 @@ export function ChatWindow({
                         aria-label="Demote recalled memory"
                         data-testid={`recall-demote-${m.id}`}
                         onClick={() => void recallDemote(m)}
-                        style={{
-                          cursor: recallBusy === m.id ? "default" : "pointer",
-                          background: "var(--surface)",
-                          color: "var(--text)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 4,
-                          padding: "2px 4px",
-                          display: "inline-flex",
-                        }}
                       >
                         <ArrowDown size={13} />
                       </button>
@@ -1322,15 +1211,6 @@ export function ChatWindow({
                         aria-label="Delete recalled memory"
                         data-testid={`recall-delete-${m.id}`}
                         onClick={() => void recallDelete(m)}
-                        style={{
-                          cursor: recallBusy === m.id ? "default" : "pointer",
-                          background: "var(--surface)",
-                          color: "var(--danger-fg, #fca5a5)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 4,
-                          padding: "2px 4px",
-                          display: "inline-flex",
-                        }}
                       >
                         <X size={13} />
                       </button>
@@ -1531,16 +1411,7 @@ export function ChatWindow({
             boundary — without aborting. Shown only during an agent run; plain
             streaming has no turn boundary to inject at. */}
         {agentMode && agentAvailable && isWorking && (
-          <div
-            className="steering-row"
-            data-testid="steering-row"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              marginBottom: 6,
-            }}
-          >
+          <div className="steering-row" data-testid="steering-row">
             <input
               type="text"
               className="steering-input"
@@ -1554,17 +1425,6 @@ export function ChatWindow({
                 }
               }}
               placeholder="Steer the running agent (added at the next step, no interrupt)…"
-              style={{
-                flex: 1,
-                boxSizing: "border-box",
-                background: "var(--surface)",
-                color: "var(--text)",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                padding: "5px 8px",
-                fontSize: 12,
-                fontFamily: "inherit",
-              }}
             />
             <button
               type="button"
@@ -1573,23 +1433,11 @@ export function ChatWindow({
               onClick={submitSteering}
               disabled={!steerText.trim()}
               title="Queue this guidance for the next agent step"
-              style={{
-                fontSize: 12,
-                padding: "5px 10px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                background: "var(--surface)",
-                color: "var(--text)",
-                cursor: steerText.trim() ? "pointer" : "default",
-              }}
             >
               Steer
             </button>
             {steerSent && (
-              <span
-                data-testid="steering-confirm"
-                style={{ fontSize: 11, color: "var(--accent)" }}
-              >
+              <span className="steering-confirm" data-testid="steering-confirm">
                 Queued ✓
               </span>
             )}

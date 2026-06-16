@@ -65,10 +65,12 @@ const KB = 1024;
 // render-blocking CSS drops from ~151 KB to ~15 KB; the 30 KB cap locks the win
 // in and trips loudly if App.css ever gets re-welded onto this window.
 const WINDOW_BUDGETS = [
-  // main App CSS cap 160→168 KB in v0.14.5: +~4 KB of render-blocking App.css
-  // from the new chat surfaces (side-by-side compare, in-chat find bar, recall-
-  // pill list, plan checklist) + appearance (light high-contrast, ui-scale).
-  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 172 * KB },
+  // main App CSS cap 160→168 (v0.14.5) →172 (skills-tools) →184 KB (v0.14.9
+  // luxury pass): +~7 KB of render-blocking App.css from the design system pass —
+  // token-driven classes that replaced inline styles (recall list, steering row,
+  // resume banner, FirstRunTour), the unified .pill base, brand mark, frosted-
+  // glass overlays, and the px→var(--fs-*) type-scale sweep across the sheets.
+  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 184 * KB },
   { html: "quick.html", label: "Quick Prompt popover", maxBytes: 240 * KB, cssMaxBytes: 30 * KB },
   // detached boot graph 940→955 KB in v0.14.5: +~5 KB from the Compare toggle +
   // resume-affordance code now in the ChatWindow chunk the detached window loads.

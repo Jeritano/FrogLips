@@ -1071,10 +1071,7 @@ function McpBrowseOverlay({ onClose }: { onClose: () => void }) {
       aria-modal="true"
       aria-label="Browse and add MCP servers"
     >
-      <div
-        className="cs-body-box"
-        style={{ width: "min(900px, 92vw)", height: "min(640px, 86vh)" }}
-      >
+      <div className="cs-body-box cs-body-box--wide">
         <header className="cs-body-header">
           <h3 className="cs-body-title">
             <Blocks size={15} aria-hidden="true" /> MCP servers
@@ -1088,7 +1085,7 @@ function McpBrowseOverlay({ onClose }: { onClose: () => void }) {
             <X size={16} />
           </button>
         </header>
-        <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+        <div className="cs-body-fill">
           <McpView />
         </div>
       </div>

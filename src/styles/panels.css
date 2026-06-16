@@ -11,8 +11,8 @@
   right: 0;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-3);
   max-height: 220px;
   overflow-y: auto;
   z-index: 10;
@@ -24,9 +24,9 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .prompt-autocomplete-item.active,
@@ -37,11 +37,11 @@
 
 .prompt-autocomplete-trigger {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--accent);
   background: var(--surface-2);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .prompt-autocomplete-name {
@@ -50,13 +50,13 @@
 }
 
 .prompt-autocomplete-tag {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-3);
   border: 1px solid var(--border);
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .prompt-library-overlay {
@@ -73,7 +73,7 @@
 .prompt-library {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   width: min(640px, 100%);
   max-height: 80vh;
   overflow-y: auto;
@@ -114,7 +114,7 @@
 .prompt-library-list li {
   padding: 8px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--surface-2);
 }
 
@@ -127,20 +127,20 @@
 .prompt-trigger {
   font-family: var(--mono);
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   background: var(--surface);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .prompt-name {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .prompt-body-preview {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   white-space: pre-wrap;
 }
@@ -157,7 +157,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
 }
 
@@ -165,11 +165,11 @@
 .prompt-library-field textarea {
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 6px 8px;
   color: var(--text);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .prompt-library-editor-actions {
@@ -192,7 +192,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   cursor: pointer;
 }
@@ -257,7 +257,7 @@
 }
 
 .pull-label {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   white-space: nowrap;
 }
@@ -267,12 +267,12 @@
 }
 
 .pull-ok {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--green);
 }
 
 .error {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--danger-fg);
   padding: 2px 0;
   display: flex;
@@ -300,10 +300,10 @@ button.cancel {
   background: var(--surface-2);
   color: var(--text-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 5px 10px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 /* ── Model Browser Modal ── */
@@ -322,7 +322,7 @@ button.cancel {
 .mb-panel {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   width: 700px;
   max-width: 92vw;
   height: 580px;
@@ -330,7 +330,7 @@ button.cancel {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--elev-4);
 }
 
 .mb-header {
@@ -338,7 +338,7 @@ button.cancel {
   align-items: center;
   gap: 12px;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: var(--border-hairline);
   flex-shrink: 0;
 }
 
@@ -354,11 +354,11 @@ button.cancel {
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 6px 12px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--dur-fast) var(--ease-standard);
 }
 
 .mb-search:focus {
@@ -370,7 +370,7 @@ button.cancel {
   color: var(--text-2);
   border: 0;
   cursor: pointer;
-  font-size: 16px;
+  font-size: var(--fs-lg);
   width: 32px;
   height: 32px;
   display: inline-flex;
@@ -378,8 +378,8 @@ button.cancel {
   justify-content: center;
   border-radius: var(--radius-sm);
   transition:
-    color 0.15s,
-    background 0.15s;
+    color var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard);
   flex-shrink: 0;
 }
 
@@ -398,7 +398,7 @@ button.cancel {
 }
 
 .mb-source-label {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   font-weight: 500;
 }
@@ -433,11 +433,11 @@ button.cancel {
   border-bottom: 2px solid transparent;
   padding: 6px 14px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
   transition:
-    color 0.15s,
-    border-color 0.15s;
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
   margin-bottom: -1px;
 }
 
@@ -451,13 +451,13 @@ button.cancel {
 }
 
 .mb-tab-count {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-3);
   margin-left: 4px;
   font-weight: 400;
   background: var(--surface-2);
   padding: 1px 6px;
-  border-radius: 8px;
+  border-radius: var(--radius);
 }
 
 .mb-tab.active .mb-tab-count {
@@ -527,7 +527,7 @@ button.cancel {
 .mb-empty {
   text-align: center;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--fs-md);
   padding: 40px 0;
 }
 
@@ -566,7 +566,7 @@ button.cancel {
 }
 
 .mb-card-label {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text);
 }
@@ -577,16 +577,16 @@ button.cancel {
 }
 
 .mb-tag {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .mb-card-desc {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   white-space: nowrap;
   overflow: hidden;
@@ -594,7 +594,7 @@ button.cancel {
 }
 
 .mb-card-err {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--danger-fg);
   margin-top: 3px;
 }
@@ -633,7 +633,7 @@ button.cancel {
   }
 }
 .mb-pull-status {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -657,7 +657,7 @@ button.cancel {
 }
 
 .mb-card-size {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
@@ -666,9 +666,9 @@ button.cancel {
   background: var(--accent-bg);
   color: var(--accent);
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 5px 14px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
   min-width: 60px;
@@ -676,8 +676,8 @@ button.cancel {
   align-items: center;
   justify-content: center;
   transition:
-    background 0.15s,
-    opacity 0.15s;
+    background var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-fast) var(--ease-standard);
 }
 
 .mb-pull-btn:hover:not(:disabled) {
@@ -699,16 +699,16 @@ button.cancel {
   background: var(--danger-bg);
   color: var(--danger);
   border: 1px solid var(--danger-border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 5px 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
   min-width: 80px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s;
+  transition: background var(--dur-fast) var(--ease-standard);
 }
 .mb-delete-btn:hover:not(:disabled) {
   background: var(--danger-bg-strong);
@@ -729,7 +729,7 @@ button.cancel {
 
 .mb-section-title {
   padding: 12px 0 6px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-muted);
@@ -741,8 +741,8 @@ button.cancel {
   margin: 6px 0;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
   color: var(--text-muted);
 }
 .mb-disk-summary strong {
@@ -777,7 +777,7 @@ button.cancel {
 .mb-catalog-intro {
   padding: 8px 12px;
   margin: 4px 0 2px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   line-height: 1.5;
 }
@@ -785,7 +785,7 @@ button.cancel {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   cursor: pointer;
   white-space: nowrap;
@@ -810,15 +810,15 @@ button.cancel {
   background: var(--surface-2);
   color: var(--text-2);
   border: 1px solid var(--border-subtle);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 4px 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   cursor: pointer;
   transition:
-    background 0.15s,
-    color 0.15s,
-    border-color 0.15s;
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 .mb-ollama-chip:hover {
   border-color: var(--border);
@@ -831,9 +831,9 @@ button.cancel {
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -841,9 +841,9 @@ button.cancel {
   background: var(--warn-bg);
   border: 1px solid var(--warn-border);
   color: var(--warn-fg);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .mb-ollama-card {
@@ -853,14 +853,14 @@ button.cancel {
 
 .mb-ollama-name {
   margin: 0 0 4px;
-  font-size: 16px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--text);
 }
 
 .mb-ollama-desc {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   line-height: 1.45;
   /* 3-line clamp matches the screenshot. Falls back to overflow:hidden on
@@ -875,23 +875,20 @@ button.cancel {
 
 .mb-ollama-cloudhint {
   margin: 6px 0 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-2);
-  background: rgba(34, 197, 94, 0.08);
-  border: 1px solid rgba(34, 197, 94, 0.25);
-  border-radius: 6px;
+  background: var(--green-bg);
+  border: 1px solid var(--green-border);
+  border-radius: var(--radius-sm);
   padding: 5px 8px;
   line-height: 1.4;
 }
 .mb-ollama-cloudhint code {
-  font-family:
-    SF Mono,
-    Menlo,
-    monospace;
-  font-size: 10px;
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
   background: var(--surface);
   padding: 0 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-2xs);
 }
 
 .mb-ollama-chiprow {
@@ -911,7 +908,7 @@ button.cancel {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -959,11 +956,11 @@ button.cancel {
   border: 0;
   padding: 8px 10px;
   cursor: pointer;
-  font-size: 13px;
-  border-radius: 6px;
+  font-size: var(--fs-md);
+  border-radius: var(--radius-sm);
   transition:
-    color 0.15s,
-    background 0.15s;
+    color var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard);
 }
 .memory-toggle:hover {
   color: var(--text);
@@ -974,18 +971,18 @@ button.cancel {
 }
 
 .memory-count {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   background: var(--surface-2);
   padding: 1px 6px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   margin-left: auto;
 }
 
 .memory-chevron {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-3);
-  transition: transform 0.15s;
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 .memory-chevron.open {
   transform: rotate(90deg);
@@ -1008,7 +1005,7 @@ button.cancel {
 }
 
 .memory-mode-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-2);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1019,9 +1016,9 @@ button.cancel {
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 3px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   outline: none;
 }
 
@@ -1039,11 +1036,11 @@ button.cancel {
   border-bottom: 2px solid transparent;
   padding: 4px 8px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin-bottom: -1px;
   transition:
-    color 0.15s,
-    border-color 0.15s;
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 
 .memory-tab.active {
@@ -1052,11 +1049,11 @@ button.cancel {
 }
 
 .memory-tab-count {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   background: var(--surface-2);
   color: var(--text-3);
   padding: 1px 5px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   margin-left: 3px;
 }
 
@@ -1071,13 +1068,13 @@ button.cancel {
   gap: 6px;
   background: var(--surface-2);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 6px 8px;
 }
 
 .memory-item-content {
   flex: 1;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   line-height: 1.4;
   word-wrap: break-word;
@@ -1099,13 +1096,13 @@ button.cancel {
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   display: flex;
   align-items: center;
   justify-content: center;
   transition:
-    background 0.15s,
-    color 0.15s;
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 }
 .memory-btn.approve:hover:not(:disabled) {
   background: var(--green-bg);
@@ -1157,12 +1154,12 @@ button.cancel {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   cursor: pointer;
   transition:
-    background 0.15s,
-    color 0.15s,
-    border-color 0.15s;
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 .agent-toggle:hover:not(:disabled) {
   background: var(--surface-hover);
@@ -1240,7 +1237,7 @@ button.cancel {
   color: var(--text);
 }
 .empty-chat-sub {
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--text-2);
 }
 .empty-chat-chips {
@@ -1252,16 +1249,16 @@ button.cancel {
   margin-top: 4px;
 }
 .empty-chat-chip {
-  font-size: 12px;
-  padding: 6px 12px;
-  border-radius: 16px;
+  font-size: var(--fs-sm);
+  padding: 6px var(--space-3);
+  border-radius: var(--radius-full);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
   transition:
-    background 0.12s,
-    border-color 0.12s;
+    background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 .empty-chat-chip:hover {
   background: var(--accent-bg);
@@ -1269,7 +1266,7 @@ button.cancel {
   color: var(--accent);
 }
 .empty-chat-pointer {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   margin-top: 8px;
 }
@@ -1383,8 +1380,8 @@ button.cancel {
 .tool-disclosure > summary.tool-disclosure-summary::before {
   content: "▸";
   color: var(--text-3, var(--text-2));
-  font-size: 10px;
-  transition: transform 0.12s ease;
+  font-size: var(--fs-2xs);
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 .tool-disclosure[open] > summary.tool-disclosure-summary::before {
   transform: rotate(90deg);
@@ -1413,25 +1410,35 @@ button.cancel {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 200;
-  animation: fadeIn 0.15s;
+  animation: fadeIn var(--dur-fast) var(--ease-out);
+}
+/* Drop the behind-modal blur when the OS requests reduced transparency; the
+   semi-opaque scrim above still dims the background. */
+@media (prefers-reduced-transparency: reduce) {
+  .agent-confirm-overlay {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 .agent-confirm-box {
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 20px;
   width: 420px;
   max-width: 90vw;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--elev-4);
 }
 
 .agent-confirm-title {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text);
   margin-bottom: 12px;
@@ -1440,9 +1447,9 @@ button.cancel {
 .agent-confirm-title code {
   background: var(--surface);
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   color: var(--accent);
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 /* UX re-review H-3: long-running call chip surfaced beside the risk
@@ -1451,10 +1458,10 @@ button.cancel {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 2px 8px;
   margin: 0 0 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--surface);
   color: var(--text-muted);
   border: 1px solid var(--border-subtle);
@@ -1474,9 +1481,9 @@ button.cancel {
   margin: 0 0 16px;
   background: var(--surface);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   max-height: 220px;
   overflow-y: auto;
@@ -1492,15 +1499,15 @@ button.cancel {
 
 .agent-confirm-deny {
   padding: 6px 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
   transition:
-    background 0.15s,
-    color 0.15s;
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 }
 .agent-confirm-deny:hover {
   background: var(--surface-hover);
@@ -1509,27 +1516,27 @@ button.cancel {
 
 .agent-confirm-allow {
   padding: 6px 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 0;
   background: var(--accent);
   color: #fff;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 .agent-confirm-allow:hover {
   opacity: 0.85;
 }
 
 .agent-metrics {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono, monospace);
   color: var(--text-muted);
   padding: 2px 8px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .agent-settings {
@@ -1610,9 +1617,9 @@ button.cancel {
   gap: 4px;
   padding: 3px 8px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-full);
   font-family: var(--mono, monospace);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   cursor: pointer;
   user-select: none;
 }
@@ -1638,7 +1645,7 @@ button.cancel {
   letter-spacing: 0.5px;
 }
 .agent-risk-badge.risk-destructive {
-  background: rgba(220, 38, 38, 0.2);
+  background: var(--danger-bg-strong);
   color: var(--danger);
 }
 .agent-risk-badge.risk-pipe-from-network {
@@ -1682,7 +1689,7 @@ button.cancel {
   gap: 4px;
   margin-top: 6px;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 .message:hover .msg-actions {
   opacity: 1;
@@ -1723,10 +1730,10 @@ button.cancel {
 .params-panel {
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 10px 12px;
   margin: 6px 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .params-panel-header {
@@ -1769,9 +1776,9 @@ button.cancel {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 5px 7px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
 }
 
@@ -1943,8 +1950,8 @@ button.cancel {
   width: 100%;
   font-family: inherit;
   transition:
-    background 0.1s,
-    border-color 0.1s;
+    background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 .openrouter-row:hover {
   background: var(--surface-hover);
@@ -2122,8 +2129,8 @@ button.cancel {
   cursor: pointer;
   text-align: left;
   transition:
-    border-color 0.15s,
-    background 0.15s;
+    border-color var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard);
 }
 .launchpad-card:hover {
   border-color: var(--accent);

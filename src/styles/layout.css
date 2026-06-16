@@ -106,7 +106,7 @@
   border-radius: 6px;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-base);
   flex-shrink: 0;
 }
 .theme-toggle:hover {
@@ -130,7 +130,7 @@
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   width: 100%;
   box-sizing: border-box;
 }
@@ -161,7 +161,7 @@
 }
 .tool-history-title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 .tool-history-close {
   background: transparent;
@@ -190,12 +190,12 @@
 }
 .tool-history-name {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--accent);
   font-weight: 600;
 }
 .tool-history-status {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   padding: 1px 6px;
   border-radius: 3px;
   text-transform: uppercase;
@@ -226,14 +226,14 @@
   text-align: center;
   color: var(--text-muted);
   padding: 40px 20px;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 .tool-history-toggle {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -260,7 +260,7 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1.5;
 }
 
@@ -308,7 +308,7 @@ body {
   background: transparent;
   color: var(--text-2);
   border-radius: 8px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   text-align: left;
   cursor: pointer;
@@ -463,7 +463,7 @@ body {
    chrome instead of pushing the row taller. */
 .topbar-action {
   padding: 4px 10px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1;
 }
 
@@ -473,7 +473,7 @@ body {
 .topbar-view-title {
   /* UI re-review M2: was 14px/600 — header chrome grew 1-2px taller on
      non-chat views. ModelPicker controls in chat are 13px so match. */
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text);
   margin: 0;
@@ -550,7 +550,7 @@ body {
    <select> (Native loader trigger + Browse models). Lower contrast than
    the select so the model list reads as the primary surface. */
 .topbar-action-secondary {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 4px 8px;
   border-radius: 6px;
   background: var(--surface);
@@ -579,7 +579,7 @@ body {
   color: var(--text);
   padding: 6px 10px;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -631,7 +631,7 @@ body {
   color: var(--text);
   text-align: left;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
   border-radius: 6px;
   display: flex;
@@ -674,7 +674,7 @@ body {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  font-size: 20px;
+  font-size: var(--fs-xl);
   cursor: pointer;
   width: 32px;
   height: 32px;
@@ -690,7 +690,7 @@ body {
 /* ── About You profile modal ── */
 .profile-intro {
   margin: 0 4px 12px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1.5;
   color: var(--text-muted);
 }
@@ -709,14 +709,14 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .profile-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
 }
 .profile-field input,
@@ -726,7 +726,7 @@ body {
   border-radius: var(--radius-sm);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-md);
   padding: 7px 9px;
   resize: vertical;
 }
@@ -846,7 +846,7 @@ body {
   padding: 6px 6px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--text-2);
   transition:
     background 0.1s,
@@ -890,7 +890,7 @@ body {
   border: 1px solid var(--accent);
   border-radius: 4px;
   padding: 2px 6px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-family: inherit;
   outline: none;
   min-width: 0;
@@ -983,4 +983,228 @@ header {
 .ram-chip.critical {
   border-color: var(--danger, #f87171);
   color: var(--danger, #f87171);
+}
+
+/* ── Brand mark (BrandMark.tsx) ───────────────────────────────────────────
+   One asset, three placements (empty-chat hero, sidebar header, wizard step
+   1). currentColor everywhere so the glyph inherits its container's color and
+   tracks the theme. */
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  line-height: 1;
+}
+.brand-mark-word {
+  font-size: 1.05em;
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.02em;
+}
+
+/* Sidebar header glyph — pushed to the right edge of the title-bar strip so it
+   stays clear of the locked, position:fixed hamburger/collapse cluster on the
+   left. Muted by default; lifts to accent on hover for a small moment of life. */
+.sidebar-brand {
+  margin-left: auto;
+  margin-right: 2px;
+  align-self: center;
+  color: var(--text-3);
+  transition: color var(--dur-fast) var(--ease-standard);
+  -webkit-app-region: no-drag;
+}
+.sidebar-brand:hover {
+  color: var(--accent);
+}
+
+/* ── Empty-chat hero polish ───────────────────────────────────────────────
+   The heading was plain ~17px body text; give it one confident display
+   moment. Specificity (.empty-chat-landing .empty-chat-heading) intentionally
+   beats the base .empty-chat-heading rule in panels.css so the upgrade lands
+   without editing that file. */
+.empty-chat-brand {
+  color: var(--accent);
+  margin-bottom: var(--space-1);
+}
+.empty-chat-landing .empty-chat-heading {
+  margin: 0;
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.02em;
+  line-height: var(--leading-tight);
+}
+.empty-chat-tagline {
+  font-size: var(--fs-md);
+  color: var(--text-2);
+  letter-spacing: 0.01em;
+}
+/* Tour link — was styled entirely via inline styles on the button; moved to a
+   real class so EmptyChatLanding carries no inline style objects. */
+.empty-chat-tour-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* ── Command-palette footer (CommandPalette.tsx) ──────────────────────────
+   Key hints + an "N of M" overflow cue — the cheapest "real command surface"
+   upgrade. New class, so no cascade conflict with the cmdk rules in
+   modals.css. */
+.cmdk-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-3);
+  font-size: var(--fs-2xs);
+}
+.cmdk-footer-hints {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.cmdk-footer-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.cmdk-footer-sep {
+  color: var(--text-3);
+  opacity: 0.6;
+}
+.cmdk-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.2em;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+  line-height: 1.3;
+}
+.cmdk-footer-count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+/* ── First-run tour (FirstRunTour.tsx) ────────────────────────────────────
+   Moved off inline-style objects onto token-driven classes. The action
+   buttons use the shared <Button> primitive (ui-btn--*), so only the
+   container/typography lives here. */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-modal) + 10);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay-soft);
+  backdrop-filter: blur(2px);
+}
+.tour-card {
+  width: min(420px, calc(100vw - 2 * var(--space-4)));
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  padding: var(--space-5);
+}
+.tour-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.tour-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius);
+  background: var(--accent-bg);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.tour-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+}
+.tour-close:hover {
+  color: var(--text);
+}
+.tour-title {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+}
+.tour-body {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: var(--leading-normal);
+  color: var(--text-muted);
+}
+.tour-dots {
+  display: flex;
+  gap: var(--space-1);
+  margin: var(--space-4) 0;
+  justify-content: center;
+}
+.tour-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  background: var(--border);
+  transition: background var(--dur-fast) var(--ease-standard);
+}
+.tour-dot.active {
+  background: var(--accent);
+}
+.tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.tour-actions-right {
+  display: flex;
+  gap: var(--space-2);
+}
+.tour-skip-text {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-md);
+  padding: var(--space-2) 0;
+  border-radius: var(--radius-sm);
+}
+.tour-skip-text:hover {
+  color: var(--text);
+}
+
+/* Wizard step-1 brand mark — accent, centered above the H2. */
+.setup-wizard-brand {
+  color: var(--accent);
+  margin-bottom: var(--space-2);
 }

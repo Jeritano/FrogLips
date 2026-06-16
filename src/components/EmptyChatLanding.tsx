@@ -2,6 +2,11 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { BookOpen, Download, Terminal, Users, Zap } from "lucide-react";
 import { api } from "../lib/tauri-api";
 import { startFirstRunTour } from "./FirstRunTour";
+import { BrandMark } from "./BrandMark";
+
+// One product tagline, reused verbatim across the wizard, this landing, and
+// the README so the brand voice doesn't diverge.
+const TAGLINE = "the local-LLM power workstation";
 
 /*
  * Workstation launchpad (product review 2026-06-10, onboarding #7). The
@@ -87,7 +92,9 @@ export function EmptyChatLanding({
   if (noModels) {
     return (
       <div className="empty-chat-landing" data-testid="empty-chat-landing">
-        <div className="empty-chat-heading">Your local-LLM workstation</div>
+        <BrandMark className="empty-chat-brand" size={26} title="Froglips" />
+        <h1 className="empty-chat-heading">Your local-LLM workstation</h1>
+        <div className="empty-chat-tagline">{TAGLINE}</div>
         <div className="empty-chat-sub">
           No local models installed yet — grab a starter and everything below
           unlocks.
@@ -121,15 +128,6 @@ export function EmptyChatLanding({
             className="empty-chat-tour-link"
             data-testid="empty-chat-tour-link"
             onClick={() => startFirstRunTour()}
-            style={{
-              background: "none",
-              border: "none",
-              padding: 0,
-              font: "inherit",
-              color: "var(--accent, #6366f1)",
-              cursor: "pointer",
-              textDecoration: "underline",
-            }}
           >
             Take a tour
           </button>
@@ -158,7 +156,9 @@ export function EmptyChatLanding({
 
   return (
     <div className="empty-chat-landing" data-testid="empty-chat-landing">
-      <div className="empty-chat-heading">Your local-LLM workstation</div>
+      <BrandMark className="empty-chat-brand" size={26} title="Froglips" />
+      <h1 className="empty-chat-heading">Your local-LLM workstation</h1>
+      <div className="empty-chat-tagline">{TAGLINE}</div>
       <div className="empty-chat-sub">
         {modelReady
           ? "Everything below runs on this machine. Pick a lane:"
@@ -185,7 +185,8 @@ export function EmptyChatLanding({
           </span>
           <span className="launchpad-title">Run an agent task</span>
           <span className="launchpad-desc">
-            46 tools on your files, shell and web — every risky call confirmed.
+            A full toolkit for your files, shell and web — every risky call
+            confirmed.
           </span>
         </button>
         <button
@@ -254,15 +255,6 @@ export function EmptyChatLanding({
           className="empty-chat-tour-link"
           data-testid="empty-chat-tour-link"
           onClick={() => startFirstRunTour()}
-          style={{
-            background: "none",
-            border: "none",
-            padding: 0,
-            font: "inherit",
-            color: "var(--accent, #6366f1)",
-            cursor: "pointer",
-            textDecoration: "underline",
-          }}
         >
           Take a tour
         </button>

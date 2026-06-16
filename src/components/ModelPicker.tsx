@@ -67,6 +67,27 @@ const HEADROOM_SHORT: Record<HeadroomTier, string> = {
   impossible: "Too big",
 };
 
+/**
+ * Title-cased display name for a backend id. The raw status carries lowercase
+ * backend strings ("ollama" / "mlx" / …); the status pill reads as a polished
+ * product label ("Ollama", "MLX") rather than a debug token.
+ */
+const BACKEND_LABELS: Record<string, string> = {
+  ollama: "Ollama",
+  mlx: "MLX",
+  native: "Native",
+  custom: "Cloud",
+  openrouter: "OpenRouter",
+};
+
+function backendLabel(backend: string | null | undefined): string {
+  if (!backend) return "";
+  return (
+    BACKEND_LABELS[backend] ??
+    backend.charAt(0).toUpperCase() + backend.slice(1)
+  );
+}
+
 // ModelBrowser bundles several large tabs (HF, GGUF, OpenRouter) plus their
 // data fetchers. Lazy-load so the picker shell stays in the first-paint chunk and
 // the browser only downloads when the user opens "Browse & download models".
@@ -516,12 +537,12 @@ export function ModelPicker({
         />
         <span className="status-text">
           {nativeLoading
-            ? "loading · native"
+            ? "Loading · Native"
             : status?.running
               ? status.ready
-                ? `${status.backend} · running`
-                : `loading · ${status.backend}`
-              : "stopped"}
+                ? `${backendLabel(status.backend)} · Running`
+                : `Loading · ${backendLabel(status.backend)}`
+              : "Stopped"}
         </span>
         {headroom?.label && !status?.running && (
           <span
@@ -536,8 +557,7 @@ export function ModelPicker({
           <>
             {caps.ctx && (
               <span
-                className="headroom-badge"
-                data-tier="comfortable"
+                className="cap-badge"
                 title={`Estimated context window ≈ ${caps.ctx} tokens`}
               >
                 {caps.ctx} ctx
@@ -545,8 +565,7 @@ export function ModelPicker({
             )}
             {caps.vision && (
               <span
-                className="headroom-badge"
-                data-tier="comfortable"
+                className="cap-badge"
                 title="This model can accept image attachments"
               >
                 Vision
@@ -554,8 +573,7 @@ export function ModelPicker({
             )}
             {caps.tool !== "untested" && (
               <span
-                className="headroom-badge"
-                data-tier={caps.tool === "good" ? "comfortable" : "tight"}
+                className={`cap-badge${caps.tool === "good" ? "" : " is-caution"}`}
                 title={
                   caps.tool === "good"
                     ? "Reliable at tool calling — good for Agent mode & Flows"

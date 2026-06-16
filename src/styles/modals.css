@@ -12,14 +12,14 @@
 .dashboard-modal {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   width: 100%;
   max-width: 1100px;
   max-height: 92vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--elev-4);
 }
 .dashboard-header {
   display: flex;
@@ -32,7 +32,7 @@
 }
 .dashboard-header h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--text);
 }
@@ -100,9 +100,9 @@
   padding: 6px 10px;
   background: var(--danger-bg);
   color: var(--danger-fg);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  border-radius: 4px;
-  font-size: 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-sm);
 }
 .dashboard-grid {
   display: grid;
@@ -303,12 +303,12 @@
   right: 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 10px 14px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
   z-index: 200;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-toast);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -358,13 +358,13 @@
 .setup-wizard-modal {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   width: 100%;
   max-width: 720px;
   max-height: 90vh;
   overflow: auto;
   padding: 24px 28px 20px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--elev-4);
   color: var(--text);
 }
 .setup-wizard-stepper {
@@ -831,10 +831,10 @@
 }
 .hfl-error {
   padding: 10px 16px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--danger-fg);
-  background: rgba(239, 68, 68, 0.08);
-  border-bottom: 1px solid rgba(239, 68, 68, 0.2);
+  background: var(--danger-bg);
+  border-bottom: 1px solid var(--danger-border);
 }
 
 .hfl-grid {
@@ -957,16 +957,13 @@
 .hfl-card-id {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family:
-    SF Mono,
-    Menlo,
-    monospace;
+  font-family: var(--mono);
 }
 .hfl-card-chips {
   display: flex;
@@ -1011,11 +1008,11 @@
   font-variant-numeric: tabular-nums;
 }
 .hfl-card-err {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--danger-fg);
   padding: 4px 8px;
-  background: rgba(239, 68, 68, 0.06);
-  border-radius: 4px;
+  background: var(--danger-bg);
+  border-radius: var(--radius-xs);
 }
 .hfl-card-actions {
   display: flex;
@@ -1098,11 +1095,8 @@
   gap: 4px;
 }
 .hfl-gguf-file-name {
-  font-family:
-    SF Mono,
-    Menlo,
-    monospace;
-  font-size: 12px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text);
   word-break: break-all;
@@ -1284,11 +1278,11 @@
   gap: 8px;
 }
 .hfl-gguf-err {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--danger-fg);
   padding: 8px 10px;
-  background: rgba(239, 68, 68, 0.06);
-  border-radius: 4px;
+  background: var(--danger-bg);
+  border-radius: var(--radius-xs);
 }
 
 /* ── Unified modal motion + material (2026-06-05 premium consolidation) ─────
@@ -1309,8 +1303,12 @@
 .skills-panel-overlay,
 .prompt-library-overlay {
   animation: ui-fade-in var(--dur-fast) var(--ease-out);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  /* Frosted-glass material (--blur-glass = saturate(150%) blur(16px)): the
+     behind-modal content blurs + saturates so the scrim reads as premium
+     frosted glass rather than a flat dim. Neutralized below under
+     prefers-reduced-transparency. */
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
 }
 /* a11y (2026-06-15): drop the behind-modal blur when the OS requests reduced
    transparency. The overlays keep their semi-opaque scrim tint (set on each
@@ -1325,7 +1323,8 @@
   .cs-panel-overlay,
   .cs-body-overlay,
   .skills-panel-overlay,
-  .prompt-library-overlay {
+  .prompt-library-overlay,
+  .cmdk-overlay {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -1384,6 +1383,10 @@
   position: fixed;
   inset: 0;
   background: var(--overlay-soft);
+  /* Frosted-glass scrim so the palette floats over a softened backdrop
+     (Raycast/Arc feel). Neutralized under prefers-reduced-transparency below. */
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
   /* Above the modal ladder — Cmd+K must layer over any open modal. */
   z-index: calc(var(--z-modal) + 10);
   display: flex;
@@ -1404,7 +1407,7 @@
   align-items: center;
   gap: 8px;
   padding: 12px 14px;
-  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-bottom: var(--border-hairline);
   color: var(--text-muted);
 }
 .cmdk-input {
@@ -1475,7 +1478,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 14px 16px 10px;
-  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-bottom: var(--border-hairline);
 }
 .settings-title {
   font-weight: 600;
@@ -1490,7 +1493,7 @@
   flex-direction: column;
   gap: 2px;
   padding: 10px 8px;
-  border-right: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-right: var(--border-hairline);
   min-width: 132px;
 }
 .settings-rail-btn {

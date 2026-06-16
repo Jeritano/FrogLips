@@ -35,6 +35,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Kbd } from "./components/ui";
+import { BrandMark } from "./components/BrandMark";
 import {
   CommandPalette,
   paletteIcons,
@@ -1262,6 +1263,15 @@ function App() {
               <line x1="9" y1="4" x2="9" y2="20" />
             </svg>
           </button>
+          {/* Brand glyph, right-aligned in the title-bar strip so it never
+              collides with the locked, position:fixed hamburger / collapse
+              cluster on the left. Glyph-only keeps the chrome restrained. */}
+          <BrandMark
+            variant="glyph"
+            size={18}
+            className="sidebar-brand"
+            title="Froglips"
+          />
         </div>
         <div className="sidebar-spacer-top" aria-hidden="true" />
         {/* Subsystem-degradation pill (item 6). Renders ONLY when a subsystem

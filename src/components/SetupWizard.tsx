@@ -8,7 +8,12 @@ import { useModalA11y } from "../lib/use-modal-a11y";
 import { recommendStarter } from "../lib/hardware-recommend";
 import { classify, fmtGb, type Headroom } from "../lib/hardware-profile";
 import { HardwareWarningBanner } from "./HardwareWarningBanner";
+import { BrandMark } from "./BrandMark";
 import { logDiag } from "../lib/diagnostics";
+
+// Shared product tagline — kept verbatim in step 1, EmptyChatLanding, and the
+// README so the brand voice stays consistent.
+const TAGLINE = "the local-LLM power workstation";
 
 // Bytes-per-GiB for synthesizing a `size_bytes` from a starter's approxGb so
 // the shared `classify()` (and thus HardwareWarningBanner) agrees with the
@@ -597,10 +602,16 @@ export function SetupWizard({ onDone }: Props) {
 
         {step === 1 && (
           <div className="setup-wizard-step" data-testid="setup-wizard-step-1">
+            <BrandMark
+              className="setup-wizard-brand"
+              size={28}
+              title="Froglips"
+            />
             <h2>Welcome to Froglips</h2>
             <p className="setup-wizard-pitch">
-              A fast local-LLM chat with file, shell, and web tools — runs
-              entirely on your Mac, no cloud calls.
+              {TAGLINE.charAt(0).toUpperCase() + TAGLINE.slice(1)}: a fast
+              local-LLM chat with file, shell, and web tools — runs entirely on
+              your Mac, no cloud calls.
             </p>
             <p className="setup-wizard-pitch">
               First, let's check which backends are already installed.

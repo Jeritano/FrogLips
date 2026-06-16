@@ -8,6 +8,7 @@ import {
   X,
 } from "lucide-react";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { Button } from "./ui";
 
 /*
  * First-run guided tour (W5B). A short, skippable overlay that introduces the
@@ -144,186 +145,70 @@ export function FirstRunTour() {
         // not a gate.
         if (e.target === e.currentTarget) close();
       }}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 1100,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0, 0, 0, 0.45)",
-        backdropFilter: "blur(2px)",
-      }}
     >
-      <div
-        ref={ref}
-        className="tour-card"
-        style={{
-          width: "min(420px, calc(100vw - 32px))",
-          background: "var(--surface, #111113)",
-          color: "var(--text, #fafafa)",
-          border: "1px solid var(--border, #27272a)",
-          borderRadius: "var(--radius-xl, 12px)",
-          boxShadow: "var(--shadow-modal, 0 12px 48px rgba(0,0,0,0.5))",
-          padding: 20,
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 8,
-          }}
-        >
-          <span
-            aria-hidden="true"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 40,
-              height: 40,
-              borderRadius: "var(--radius, 8px)",
-              background: "var(--accent-bg, rgba(99,102,241,0.12))",
-              color: "var(--accent, #6366f1)",
-              flexShrink: 0,
-            }}
-          >
+      <div ref={ref} className="tour-card">
+        <div className="tour-card-head">
+          <span className="tour-icon" aria-hidden="true">
             {s.icon}
           </span>
           <button
             type="button"
+            className="tour-close"
             data-testid="tour-skip"
             aria-label="Skip tour"
             onClick={close}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "var(--text-muted, #a1a1aa)",
-              cursor: "pointer",
-              padding: 2,
-              flexShrink: 0,
-            }}
           >
             <X size={16} />
           </button>
         </div>
 
-        <h2
-          style={{
-            margin: "14px 0 6px",
-            fontSize: 17,
-            fontWeight: 600,
-          }}
-        >
-          {s.title}
-        </h2>
-        <p
-          style={{
-            margin: 0,
-            fontSize: 13.5,
-            lineHeight: 1.5,
-            color: "var(--text-muted, #a1a1aa)",
-          }}
-        >
-          {s.body}
-        </p>
+        <h2 className="tour-title">{s.title}</h2>
+        <p className="tour-body">{s.body}</p>
 
         {/* Step dots — current step highlighted; click to jump. */}
-        <div
-          style={{
-            display: "flex",
-            gap: 6,
-            margin: "16px 0",
-            justifyContent: "center",
-          }}
-          aria-hidden="true"
-        >
+        <div className="tour-dots" aria-hidden="true">
           {STEPS.map((_, i) => (
             <button
               key={i}
               type="button"
               tabIndex={-1}
+              className={`tour-dot${i === step ? " active" : ""}`}
               onClick={() => setStep(i)}
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: "var(--radius-full, 999px)",
-                border: "none",
-                padding: 0,
-                cursor: "pointer",
-                background:
-                  i === step
-                    ? "var(--accent, #6366f1)"
-                    : "var(--border, #27272a)",
-              }}
             />
           ))}
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
-          }}
-        >
+        <div className="tour-actions">
           <button
             type="button"
+            className="tour-skip-text"
             data-testid="tour-skip-text"
             onClick={close}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "var(--text-muted, #a1a1aa)",
-              cursor: "pointer",
-              fontSize: 13,
-              padding: "6px 0",
-            }}
           >
             Skip
           </button>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="tour-actions-right">
             {step > 0 && (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 data-testid="tour-back"
                 onClick={() => setStep((v) => Math.max(0, v - 1))}
-                style={{
-                  background: "var(--surface-2, #18181b)",
-                  border: "1px solid var(--border, #27272a)",
-                  color: "var(--text, #fafafa)",
-                  borderRadius: "var(--radius-sm, 6px)",
-                  padding: "7px 14px",
-                  fontSize: 13,
-                  cursor: "pointer",
-                }}
               >
                 Back
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="sm"
               data-testid="tour-next"
               onClick={() => {
                 if (isLast) close();
                 else setStep((v) => Math.min(STEPS.length - 1, v + 1));
               }}
-              style={{
-                background: "var(--accent, #6366f1)",
-                border: "1px solid var(--accent, #6366f1)",
-                color: "#fff",
-                borderRadius: "var(--radius-sm, 6px)",
-                padding: "7px 14px",
-                fontSize: 13,
-                fontWeight: 500,
-                cursor: "pointer",
-              }}
             >
               {isLast ? "Get started" : "Next"}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

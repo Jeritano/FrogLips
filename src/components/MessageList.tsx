@@ -8,7 +8,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { Check, RotateCw, GitBranch } from "lucide-react";
+import { Check, RotateCw, GitBranch, Pin } from "lucide-react";
 import type { Message, MemoryScope } from "../types";
 import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
@@ -619,21 +619,13 @@ function PinControl({
             style={{ width: 10, height: 10, borderWidth: 1.5 }}
           />
         ) : isPinned ? (
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
-          </svg>
+          // Pinned (saved) — a filled pin so it reads as a committed state and
+          // the gold .pin-btn.pinned color carries through (currentColor).
+          <Pin size={14} fill="currentColor" />
         ) : (
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinejoin="round"
-          >
-            <polygon points="12 2 15.09 8.63 22 9.24 16.54 13.97 18.18 21 12 17.27 5.82 21 7.46 13.97 2 9.24 8.91 8.63 12 2" />
-          </svg>
+          // Actionable: the Pin glyph now AGREES with the "Pin to memory" label
+          // (was a star polygon). Outline until pinned.
+          <Pin size={14} />
         )}
       </button>
     </span>

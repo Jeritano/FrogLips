@@ -29,6 +29,13 @@ html {
   --accent: #6366f1;
   --accent-bg: rgba(99, 102, 241, 0.12);
   --accent-strong: rgba(99, 102, 241, 0.22);
+  /* Readable text/icon color ON an accent fill (filled buttons, badges).
+     Pure white clears WCAG AA (≥4.47:1) on the indigo accent in BOTH themes
+     — the dark accent #6366f1 (4.47:1) and the light accent #4f46e5 (6.29:1).
+     Previously only referenced as var(--accent-fg, #0b0f1a) in ChatWindow's
+     Resume button, where the dark fallback failed contrast on the light-theme
+     accent (3.04:1); defining it here fixes both themes from one place. */
+  --accent-fg: #ffffff;
   --danger: #ef4444;
   --danger-bg: rgba(239, 68, 68, 0.12);
   --danger-bg-strong: rgba(239, 68, 68, 0.22);
@@ -76,7 +83,7 @@ html {
   --space-7: 2rem; /* 32px */
 
   /* Radius scale */
-  --radius-2xs: 2px;
+  --radius-2xs: 2px; /* tightest corner — kept as the ladder's bottom rung */
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius: 8px;
@@ -122,9 +129,17 @@ html {
   --fw-semibold: 600;
   --fw-bold: 700;
 
-  /* Line-height scale */
+  /* Line-height scale. The single home for leading so one-off numeric
+     line-heights across components can retire here.
+       --leading-tight   1.2  → headings / single-line chrome titles
+       --leading-snug    1.35 → compact multi-line labels
+       --leading-body    1.45 → default running text (absorbs the dominant
+                                1.4/1.45 one-offs; sits between snug + normal)
+       --leading-normal  1.5  → roomier body / form copy
+       --leading-relaxed 1.7  → long-form prose */
   --leading-tight: 1.2;
   --leading-snug: 1.35;
+  --leading-body: 1.45;
   --leading-normal: 1.5;
   --leading-relaxed: 1.7;
 
@@ -145,6 +160,12 @@ html {
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* Spinner rotation period. Deliberately a SEPARATE token from the --dur-*
+     scale: the reduced-motion guard below zeroes those durations, but a
+     loading spinner must keep turning (a frozen spinner reads as a hang).
+     Matches the existing 0.7s spinner cadence. */
+  --spin-period: 0.7s;
 
   /* Semantic focus ring (mirrors the :focus-visible rule below so component
      code can reference one token instead of re-declaring outline width). */
