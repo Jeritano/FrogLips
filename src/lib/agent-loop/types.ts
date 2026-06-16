@@ -263,6 +263,13 @@ export interface AgentRunOptions {
    * — today's behavior. Absent/empty (the default) = no server gated.
    */
   mcpServerConfigs?: McpServerConfig[];
+  /**
+   * Gated macOS "Computer Use" mode (settings.computer_use_enabled). When true,
+   * the cu_* desktop-control tools are advertised + permitted and screenshot
+   * tool results are fed back to the model as vision input. Default false:
+   * cu_* tools are dropped from the advertised list AND hard-blocked at dispatch.
+   */
+  computerUseEnabled?: boolean;
 }
 
 /**

@@ -7,6 +7,7 @@ import {
   useUpdateSettings,
 } from "../contexts/SettingsContext";
 import type { AgentSettings } from "../hooks/useAgentSettings";
+import { api } from "../lib/tauri-api";
 import {
   SYNTAX_THEMES,
   getSyntaxTheme,
@@ -122,6 +123,23 @@ export function AgentSettingsPanel({
   // false both resolve to false, so existing users keep the full UI.
   const simpleMode = useSettingsField((s) => s?.simple_mode === true);
   const updateSettings = useUpdateSettings();
+  // Gated macOS Computer Use. Default OFF. Enabling it also nudges the
+  // Accessibility grant (cu_* tools silently no-op without it); status is shown
+  // inline. `cuPerm` is null until checked, then the live grant state.
+  const computerUse = useSettingsField((s) => s?.computer_use_enabled === true);
+  const [cuPerm, setCuPerm] = useState<boolean | null>(null);
+  const checkCuPerm = async (prompt: boolean) => {
+    try {
+      setCuPerm(await api.agentCuCheckPermission(prompt));
+    } catch {
+      setCuPerm(false);
+    }
+  };
+  const onToggleComputerUse = async (checked: boolean) => {
+    await updateSettings({ computer_use_enabled: checked });
+    if (checked) void checkCuPerm(true);
+    else setCuPerm(null);
+  };
   // In simple mode the dense tool grid + advanced knobs collapse behind this
   // expander. Nothing is removed — only hidden until the user opts in.
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -238,6 +256,37 @@ export function AgentSettingsPanel({
           </label>
           <span className="agent-settings-hint">
             Side-effectful tools report what they would do without executing.
+          </span>
+        </div>
+      )}
+      {showAdvanced && (
+        <div className="agent-settings-row" data-testid="computer-use-row">
+          <span className="agent-settings-label">Computer Use:</span>
+          <label>
+            <input
+              type="checkbox"
+              checked={computerUse}
+              onChange={(e) => void onToggleComputerUse(e.target.checked)}
+            />
+            Let the agent see the screen and control the mouse &amp; keyboard
+          </label>
+          {computerUse && (
+            <button
+              type="button"
+              className="agent-settings-btn"
+              onClick={() => void checkCuPerm(true)}
+            >
+              {cuPerm === null
+                ? "Check Accessibility permission"
+                : cuPerm
+                  ? "Accessibility ✓ granted"
+                  : "Grant Accessibility…"}
+            </button>
+          )}
+          <span className="agent-settings-hint">
+            Off by default. Needs macOS Accessibility (System Settings → Privacy
+            &amp; Security → Accessibility). Every cu_* action still asks for
+            confirmation — use “Allow all this task” to run a multi-step flow.
           </span>
         </div>
       )}

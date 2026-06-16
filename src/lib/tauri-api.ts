@@ -147,6 +147,7 @@ import type {
   RagIngestReport,
   ReadResult,
   ScreenshotResult,
+  CuScreenshotResult,
   SearchResult,
   RawWorkflow,
   RoundtableRunSummary,
@@ -803,6 +804,86 @@ export const api = {
       outPath: outPath ?? null,
       approval: await mintApproval("agent_screenshot", { path: outPath }),
     }),
+
+  /* ── Computer Use (gated macOS desktop control) ──────────────────────────
+   * Each action mints an approval token bound to a canonical string the Rust
+   * command reproduces verbatim (commands/agent.rs). Coordinates are ROUNDED
+   * here so the same integers feed both the token binding and the invoke arg —
+   * a float mismatch would otherwise reject the token. */
+
+  /** Read-only Accessibility status. `prompt=true` triggers the macOS
+   *  "open Accessibility settings" dialog when not yet granted. No approval. */
+  agentCuCheckPermission: (prompt: boolean) =>
+    invoke<boolean>("agent_cu_check_permission", { prompt }),
+  agentCuScreenshot: async () =>
+    invoke<CuScreenshotResult>("agent_cu_screenshot", {
+      approval: await mintApproval("agent_cu_screenshot", {}),
+    }),
+  agentCuMove: async (x: number, y: number) => {
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+    return invoke<unknown>("agent_cu_move", {
+      x: xi,
+      y: yi,
+      approval: await mintApproval("agent_cu_move", { text: `${xi}|${yi}` }),
+    });
+  },
+  agentCuClick: async (x: number, y: number, button: string, count: number) => {
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+    const b = button === "right" || button === "middle" ? button : "left";
+    const c = count === 2 ? 2 : 1;
+    return invoke<unknown>("agent_cu_click", {
+      x: xi,
+      y: yi,
+      button: b,
+      count: c,
+      approval: await mintApproval("agent_cu_click", {
+        text: `${xi}|${yi}|${b}|${c}`,
+      }),
+    });
+  },
+  agentCuDrag: async (x1: number, y1: number, x2: number, y2: number) => {
+    const a = Math.round(x1);
+    const b = Math.round(y1);
+    const c = Math.round(x2);
+    const d = Math.round(y2);
+    return invoke<unknown>("agent_cu_drag", {
+      x1: a,
+      y1: b,
+      x2: c,
+      y2: d,
+      approval: await mintApproval("agent_cu_drag", { text: `${a}|${b}|${c}|${d}` }),
+    });
+  },
+  agentCuScroll: async (x: number, y: number, dx: number, dy: number) => {
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+    const dxi = Math.round(dx);
+    const dyi = Math.round(dy);
+    return invoke<unknown>("agent_cu_scroll", {
+      x: xi,
+      y: yi,
+      dx: dxi,
+      dy: dyi,
+      approval: await mintApproval("agent_cu_scroll", {
+        text: `${xi}|${yi}|${dxi}|${dyi}`,
+      }),
+    });
+  },
+  agentCuType: async (text: string) =>
+    invoke<unknown>("agent_cu_type", {
+      text,
+      approval: await mintApproval("agent_cu_type", { text }),
+    }),
+  agentCuKey: async (keys: string) =>
+    invoke<unknown>("agent_cu_key", {
+      keys,
+      approval: await mintApproval("agent_cu_key", { text: keys }),
+    }),
+  agentCuCursorPosition: () =>
+    invoke<unknown>("agent_cu_cursor_position"),
+
   agentClipboardGet: () => invoke<string>("agent_clipboard_get"),
   agentClipboardSet: async (text: string) =>
     invoke<void>("agent_clipboard_set", {

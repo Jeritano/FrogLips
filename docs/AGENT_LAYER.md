@@ -242,6 +242,30 @@ Generic HTTP. Methods: `GET | POST | PUT | PATCH | DELETE | HEAD`. Body capped a
 #### `applescript_run(script)` (v0.9+)
 Generic AppleScript execution. Script size capped at 16 KiB, 30 s timeout. **High-power** — can drive any scriptable macOS app. Dangerous (in `DANGEROUS_TOOLS` / `WRITE_TOOLS`). Returns same shape as `run_shell`.
 
+### Computer Use (v0.14.10+)
+
+Gated, vision-driven desktop control via CoreGraphics `CGEvent` (`src-tauri/src/agent/computer.rs`, macOS-only). The model perceives with `cu_screenshot` and acts in that image's **pixel coordinate space** (origin top-left); the driver maps image pixels → global display points using the captured geometry. The whole family is **OFF by default** — see *Authorization model* and `SECURITY.md` for the four gates. Every `cu_*` tool except `cu_cursor_position` is in `DANGEROUS_TOOLS` and `verify_bound`s a payload-bound approval token.
+
+#### `cu_screenshot()`
+`screencapture -x -t png` then `sips -Z 1568` downscale; returns `{ok, path, bytes, img_w, img_h, point_w, point_h}`. The base64 PNG is stripped from the tool body and re-attached as a synthetic **user** image message after the turn's tool loop (tool-role images are rejected by OpenAI-compatible backends), so vision models actually see the screen. Records the image→point geometry used by every subsequent action.
+
+#### `cu_click(x, y, button?, count?)`
+Click at image-pixel `(x, y)`. `button`: `left` (default) | `right` | `middle`. `count`: 1 or 2 (double-click; sets `kCGMouseEventClickState`).
+
+#### `cu_move(x, y)` / `cu_drag(x1, y1, x2, y2)`
+Move the cursor (hover, no click) / press-drag-release with interpolated intermediate events.
+
+#### `cu_scroll(x, y, dx, dy)`
+Line-unit scroll at `(x, y)` (cursor is moved there first). `dy > 0` scrolls up.
+
+#### `cu_type(text)` / `cu_key(keys)`
+Type Unicode text (chunked through `CGEventKeyboardSetUnicodeString`) / press a key or shortcut, e.g. `cmd+c`, `cmd+shift+t`, `Return`, `Escape`, arrows, `f1`–`f12`.
+
+#### `cu_cursor_position()`
+Read-only cursor location in display points and (when a screenshot exists) image pixels. Not dangerous; no approval.
+
+All `cu_*` actions check macOS Accessibility (`AXIsProcessTrusted`) and **fail closed** with guidance if it isn't granted, rather than silently posting an event the OS drops.
+
 ### Code intelligence (v0.9+)
 
 #### `find_definition(symbol, path?)`
@@ -357,6 +381,13 @@ Beyond the path sandbox, the agent's authorization layer enforces:
   never be auto-approved from a project policy. When a repo-supplied policy is
   in effect the UI warns the user.
 - **Body-bearing `http_request` is elevated risk** — always confirmation-gated.
+- **Computer Use is quadruple-gated and OFF by default.** The `cu_*` desktop-
+  control tools are advertised + permitted only when `settings.computer_use_enabled`
+  is true. When off they are dropped from the system prompt AND hard-blocked at
+  dispatch (`runner.ts` → `kind: "computer_use_disabled"`), so a hallucinated
+  call can never reach the desktop. When on, each call still passes the
+  confirmation modal, a payload-bound Rust approval token (`verify_bound`), and
+  macOS Accessibility (`AXIsProcessTrusted`, checked driver-side, fails closed).
 - **MCP tool descriptions are sanitized** before they enter the system prompt,
   so a malicious MCP server can't inject instructions through its tool
   metadata. The tool audit log redacts secrets, and raw MCP protocol lines are

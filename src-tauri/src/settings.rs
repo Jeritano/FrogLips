@@ -107,6 +107,13 @@ pub struct Settings {
     /// i.e. today's behavior. Rides settings.json via serde(default); no DB
     /// migration.
     pub disabled_tools: Option<Vec<String>>,
+    /// Gated macOS "Computer Use" mode (2026-06-16): when `Some(true)` the agent
+    /// loop advertises + permits the cu_* desktop-control tools (screenshot →
+    /// mouse/keyboard/scroll). Default OFF — `None` (legacy/fresh) and
+    /// `Some(false)` both mean disabled; it is an explicit per-machine opt-in on
+    /// top of the per-call confirmation modal and macOS Accessibility TCC. Rides
+    /// settings.json via serde(default); no DB migration.
+    pub computer_use_enabled: Option<bool>,
     /// HIGH-2 (2026-05-29): forward-compatibility capture. Any top-level key
     /// this build doesn't recognise (because it was written by a NEWER build)
     /// is parked here and re-serialized verbatim on save, so opening an old

@@ -1,6 +1,7 @@
 import type {
   AuditApproval,
   AuditOutcome,
+  ChatImage,
   Message,
   ProjectPolicy,
   ToolCall,
@@ -10,6 +11,8 @@ import { TOOLS } from "./tools";
 import {
   DANGEROUS_TOOLS,
   IRREVERSIBLE_TOOLS,
+  COMPUTER_USE_TOOLS,
+  CU_SCREENSHOT_TOOL,
   SHELL_TOOL,
   WRITE_TOOLS,
   classifyToolRisk,
@@ -1053,6 +1056,7 @@ export async function runAgentLoop(
       // enable state. Both default to "nothing gated" = today's behavior.
       opts.disabledTools ?? [],
       opts.mcpServerConfigs ?? [],
+      opts.computerUseEnabled ?? false,
     ),
   };
   msgs.unshift(sysMsg);
@@ -1188,11 +1192,36 @@ export async function runAgentLoop(
 
       const llmStart = performance.now();
 
+      // Computer Use: drop base64 screenshots from all but the two most recent
+      // image-carrying messages BEFORE budgeting. The token estimator can't see
+      // base64 weight (it lives in `images`, not `content`), so without this a
+      // long perceive→act run would resend every screenshot it ever took each
+      // turn — blowing past the model's image limit and the context window. The
+      // model only needs the latest screen state to choose its next action.
+      // Operates on a copy; the displayed/persisted `msgs` keeps every image.
+      let sendMsgs: Message[] = msgs;
+      {
+        let imageTurnsKept = 0;
+        let stripped: Message[] | null = null;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i];
+          if (!m.images?.length) continue;
+          if (imageTurnsKept < 2) {
+            imageTurnsKept++;
+            continue;
+          }
+          if (!stripped) stripped = msgs.slice();
+          const { images: _dropped, ...withoutImages } = m;
+          stripped[i] = withoutImages;
+        }
+        if (stripped) sendMsgs = stripped;
+      }
+
       // Budget the SENT copy against the model's context window. Operates on a
       // copy — the persisted/displayed `msgs` array is never mutated. Keeps the
       // system prompt (first message) intact; truncates oversized tool results
       // and collapses old turns when the array would overflow the window.
-      const budgeted = applyContextBudget(msgs, {
+      const budgeted = applyContextBudget(sendMsgs, {
         model: opts.model,
         contextTokens: opts.contextTokens,
       });
@@ -1277,6 +1306,12 @@ export async function runAgentLoop(
       // backends keep full parallel tool-call support.
       let toolCalls = result.tool_calls;
       let droppedParallelCount = 0;
+      // Computer Use vision feedback: cu_screenshot returns a base64 image which
+      // is too large for the tool-result text. We pull it out of the result body
+      // and re-attach it as a synthetic user message AFTER this turn's tool loop
+      // (so the assistant↔tool pairing stays adjacent) — user-role images are the
+      // one image path every backend serializer already supports.
+      const pendingScreenshots: ChatImage[] = [];
       if (
         typeof opts.model === "string" &&
         opts.model.endsWith(":cloud") &&
@@ -1570,6 +1605,32 @@ export async function runAgentLoop(
               outcome: "denied",
               errorKind: "tool_not_allowed",
               args: naParsed.ok ? naParsed.args : {},
+            },
+            opts.workflowRunId ?? null,
+          );
+          continue;
+        }
+
+        // Computer Use hard gate (defense in depth). When the per-machine opt-in
+        // is OFF, cu_* tools are already dropped from the advertised list — but a
+        // model can still hallucinate the tool name, so block execution outright
+        // rather than letting a desktop-control call reach the Rust side.
+        if (!opts.computerUseEnabled && COMPUTER_USE_TOOLS.has(fnName)) {
+          const cuParsed = parseArgs(tc.function?.arguments);
+          pushToolResult(
+            msgs,
+            opts.conversationId,
+            onUpdate,
+            tc,
+            rejectionBody(
+              "computer_use_disabled",
+              "Computer Use is turned off. The user must enable it in Settings → Computer Use (and grant macOS Accessibility) before cu_* tools can run.",
+            ),
+            {
+              approval: "denied",
+              outcome: "denied",
+              errorKind: "computer_use_disabled",
+              args: cuParsed.ok ? cuParsed.args : {},
             },
             opts.workflowRunId ?? null,
           );
@@ -2020,6 +2081,47 @@ export async function runAgentLoop(
           }
         }
 
+        // Computer Use perception: a successful cu_screenshot carries a base64
+        // PNG in `image_b64`. Strip it from the model-facing tool body (it would
+        // bloat the text channel) and queue it as a vision attachment flushed
+        // after this turn's tool loop. The model still sees the compact text
+        // (dimensions + a pointer) so it knows the capture succeeded.
+        if (fnName === CU_SCREENSHOT_TOOL && !toolErrorKind) {
+          try {
+            const shot = JSON.parse(result) as {
+              ok?: boolean;
+              image_b64?: string;
+              mime?: string;
+              img_w?: number;
+              img_h?: number;
+              point_w?: number;
+              point_h?: number;
+              bytes?: number;
+              path?: string;
+            };
+            if (shot?.ok && typeof shot.image_b64 === "string" && shot.image_b64) {
+              pendingScreenshots.push({
+                base64: shot.image_b64,
+                mime: shot.mime ?? "image/png",
+                size_bytes: shot.bytes ?? 0,
+                filename: "screenshot.png",
+              });
+              // Compact body: drop image_b64, keep the geometry the model needs.
+              result = JSON.stringify({
+                ok: true,
+                captured: true,
+                img_w: shot.img_w,
+                img_h: shot.img_h,
+                point_w: shot.point_w,
+                point_h: shot.point_h,
+                note: "Screenshot attached as the next image. Click coordinates are in this image's pixel space (img_w×img_h).",
+              });
+            }
+          } catch {
+            /* non-JSON / unexpected shape — leave the body untouched */
+          }
+        }
+
         pushToolResult(
           msgs,
           opts.conversationId,
@@ -2082,6 +2184,23 @@ export async function runAgentLoop(
           // a duplicate. Clearing here keeps re-read-after-write flowing.
           prevTurnSigsHistory.length = 0;
         }
+      }
+
+      // Computer Use vision flush: re-attach any screenshots captured this turn
+      // as a single synthetic USER message so the (vision-capable) model can SEE
+      // the screen on its next turn. Placed AFTER the whole tool loop — never
+      // interleaved between an assistant tool_calls turn and its tool results
+      // (that ordering is what cloud gateways re-validate). user-role `images`
+      // is the one vision path every backend serializer already handles.
+      if (pendingScreenshots.length > 0) {
+        msgs.push({
+          _tmpKey: makeTmpKey(),
+          conversation_id: opts.conversationId,
+          role: "user",
+          content: "[Computer Use] Screenshot of the current screen:",
+          images: pendingScreenshots.slice(),
+        });
+        onUpdate([...msgs]);
       }
 
       // Turn-level non-progress guard (A09): a turn that issued tool calls but

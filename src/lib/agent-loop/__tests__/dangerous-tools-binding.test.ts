@@ -57,6 +57,14 @@ const BACKEND_BOUND = new Set<string>([
   "show_notification",
   "watch_path",
   "stop_watch",
+  // Computer Use — each cu_* action verify_bounds a canonical-string token.
+  "cu_screenshot",
+  "cu_click",
+  "cu_move",
+  "cu_drag",
+  "cu_scroll",
+  "cu_type",
+  "cu_key",
 ]);
 
 // Dangerous tools whose effect is enforced WITHOUT a payload-bound Rust token

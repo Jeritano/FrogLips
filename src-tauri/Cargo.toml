@@ -1,6 +1,6 @@
 [package]
 name = "local-llm-app"
-version = "0.14.9"
+version = "0.14.10"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["Joseph D Eritano"]
 edition = "2021"
@@ -46,6 +46,16 @@ objc2-av-foundation = "0.3"
 # item ACL binds to the notarized Developer ID signature — stable across launches
 # (the ad-hoc-resign ACL churn that drove the original file choice is gone).
 security-framework = "2"
+# Computer Use (2026-06-16): CGEvent mouse/keyboard/scroll synthesis +
+# CGDisplay geometry for the gated desktop-control driver (agent/computer.rs).
+# Both crates are already in the resolved tree via objc2-core-graphics, so this
+# adds no new download — it just makes the ergonomic CGEvent API explicit.
+# Accessibility TCC (AXIsProcessTrusted) is checked via a CoreFoundation option
+# dictionary, hence the direct core-foundation dep.
+# `highsierra` gates CGEvent::new_scroll_event (CGEventCreateScrollWheelEvent2),
+# which the cu_scroll tool needs; the macOS floor is 13.0 so it's always present.
+core-graphics = { version = "0.25", features = ["highsierra"] }
+core-foundation = "0.10"
 
 
 [dependencies]

@@ -11,6 +11,10 @@
 
 pub mod browser;
 pub mod code;
+// Gated macOS desktop "Computer Use" driver. macOS-only (CGEvent); the
+// commands that call it (commands/agent.rs) cfg-branch to an error elsewhere.
+#[cfg(target_os = "macos")]
+pub mod computer;
 pub mod extras;
 pub mod fs;
 pub mod fs_watcher;

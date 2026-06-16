@@ -102,6 +102,7 @@ export type ToolCategory =
   | "Web"
   | "Code"
   | "macOS"
+  | "Computer Use"
   | "Browser"
   | "Tasks"
   | "Watchers"
@@ -1596,6 +1597,276 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
       kind: "api",
       run: async (args) => {
         const r = await api.agentApplescriptRun(String(args.script ?? ""));
+        return JSON.stringify(r);
+      },
+    },
+  },
+  // ── Computer Use (gated macOS desktop control) ─────────────────────────────
+  // Only advertised + permitted when settings.computer_use_enabled is on (the
+  // system prompt filters them; the runner hard-blocks them otherwise). Each is
+  // `dangerous` (confirmation modal) and binds a Rust approval token. The model
+  // perceives via cu_screenshot and acts in that image's PIXEL coordinate space.
+  {
+    name: "cu_screenshot",
+    category: "Computer Use",
+    schema: {
+      description:
+        "COMPUTER USE: capture the screen and SEE it. Returns a downscaled image (attached for you to view) plus its pixel size (img_w×img_h). ALL cu_* click/move/drag/scroll coordinates are in THIS image's pixel space, origin top-left. Take a fresh cu_screenshot after every action that changes the screen, before clicking again.",
+      parameters: { type: "object", properties: {} },
+    },
+    sideEffect: "write",
+    dangerous: true,
+    dryRun: "suppress",
+    cacheableRead: false,
+    rustCommand: "agent_cu_screenshot",
+    approval: { rustCommand: "agent_cu_screenshot", payload: {} },
+    writeTool: false,
+    irreversible: false,
+    flow: {},
+    scope: "chat",
+    handler: {
+      kind: "api",
+      run: async () => {
+        const r = await api.agentCuScreenshot();
+        return JSON.stringify(r);
+      },
+    },
+  },
+  {
+    name: "cu_click",
+    category: "Computer Use",
+    schema: {
+      description:
+        "COMPUTER USE: click at image-pixel coordinates (x,y) from the most recent cu_screenshot. button: left|right|middle (default left). count: 1 or 2 (double-click). Take a cu_screenshot first so coordinates map correctly.",
+      parameters: {
+        type: "object",
+        properties: {
+          x: { type: "number", description: "X in screenshot pixels." },
+          y: { type: "number", description: "Y in screenshot pixels." },
+          button: { type: "string", enum: ["left", "right", "middle"] },
+          count: { type: "number", enum: [1, 2] },
+        },
+        required: ["x", "y"],
+      },
+    },
+    sideEffect: "write",
+    dangerous: true,
+    dryRun: "suppress",
+    cacheableRead: false,
+    rustCommand: "agent_cu_click",
+    approval: { rustCommand: "agent_cu_click", payload: { text: "x|y|button|count" } },
+    writeTool: false,
+    irreversible: false,
+    flow: {},
+    scope: "chat",
+    handler: {
+      kind: "api",
+      run: async (args) => {
+        const r = await api.agentCuClick(
+          Number(args.x ?? 0),
+          Number(args.y ?? 0),
+          String(args.button ?? "left"),
+          Number(args.count ?? 1),
+        );
+        return JSON.stringify(r);
+      },
+    },
+  },
+  {
+    name: "cu_move",
+    category: "Computer Use",
+    schema: {
+      description:
+        "COMPUTER USE: move the cursor (no click) to image-pixel coordinates (x,y) — useful to hover/reveal UI. Coordinates are from the most recent cu_screenshot.",
+      parameters: {
+        type: "object",
+        properties: {
+          x: { type: "number" },
+          y: { type: "number" },
+        },
+        required: ["x", "y"],
+      },
+    },
+    sideEffect: "write",
+    dangerous: true,
+    dryRun: "suppress",
+    cacheableRead: false,
+    rustCommand: "agent_cu_move",
+    approval: { rustCommand: "agent_cu_move", payload: { text: "x|y" } },
+    writeTool: false,
+    irreversible: false,
+    flow: {},
+    scope: "chat",
+    handler: {
+      kind: "api",
+      run: async (args) => {
+        const r = await api.agentCuMove(Number(args.x ?? 0), Number(args.y ?? 0));
+        return JSON.stringify(r);
+      },
+    },
+  },
+  {
+    name: "cu_drag",
+    category: "Computer Use",
+    schema: {
+      description:
+        "COMPUTER USE: press at (x1,y1) and drag to (x2,y2), then release — for selecting text, moving items, or sliders. All coordinates in the most recent cu_screenshot's pixel space.",
+      parameters: {
+        type: "object",
+        properties: {
+          x1: { type: "number" },
+          y1: { type: "number" },
+          x2: { type: "number" },
+          y2: { type: "number" },
+        },
+        required: ["x1", "y1", "x2", "y2"],
+      },
+    },
+    sideEffect: "write",
+    dangerous: true,
+    dryRun: "suppress",
+    cacheableRead: false,
+    rustCommand: "agent_cu_drag",
+    approval: { rustCommand: "agent_cu_drag", payload: { text: "x1|y1|x2|y2" } },
+    writeTool: false,
+    irreversible: false,
+    flow: {},
+    scope: "chat",
+    handler: {
+      kind: "api",
+      run: async (args) => {
+        const r = await api.agentCuDrag(
+          Number(args.x1 ?? 0),
+          Number(args.y1 ?? 0),
+          Number(args.x2 ?? 0),
+          Number(args.y2 ?? 0),
+        );
+        return JSON.stringify(r);
+      },
+    },
+  },
+  {
+    name: "cu_scroll",
+    category: "Computer Use",
+    schema: {
+      description:
+        "COMPUTER USE: scroll at image-pixel (x,y). dy>0 scrolls up, dy<0 down; dx scrolls horizontally. Amounts are in scroll 'lines' (try 3–5). Cursor is moved to (x,y) first so the scroll lands there.",
+      parameters: {
+        type: "object",
+        properties: {
+          x: { type: "number" },
+          y: { type: "number" },
+          dx: { type: "number", description: "Horizontal lines." },
+          dy: { type: "number", description: "Vertical lines (positive = up)." },
+        },
+        required: ["x", "y", "dy"],
+      },
+    },
+    sideEffect: "write",
+    dangerous: true,
+    dryRun: "suppress",
+    cacheableRead: false,
+    rustCommand: "agent_cu_scroll",
+    approval: { rustCommand: "agent_cu_scroll", payload: { text: "x|y|dx|dy" } },
+    writeTool: false,
+    irreversible: false,
+    flow: {},
+    scope: "chat",
+    handler: {
+      kind: "api",
+      run: async (args) => {
+        const r = await api.agentCuScroll(
+          Number(args.x ?? 0),
+          Number(args.y ?? 0),
+          Number(args.dx ?? 0),
+          Number(args.dy ?? 0),
+        );
+        return JSON.stringify(r);
+      },
+    },
+  },
+  {
+    name: "cu_type",
+    category: "Computer Use",
+    schema: {
+      description:
+        "COMPUTER USE: type a string of text into the currently focused field. Click the field first (cu_click) to focus it. For shortcuts and special keys use cu_key instead.",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+      },
+    },
+    sideEffect: "write",
+    dangerous: true,
+    dryRun: "suppress",
+    cacheableRead: false,
+    rustCommand: "agent_cu_type",
+    approval: { rustCommand: "agent_cu_type", payload: { text: "text" } },
+    writeTool: false,
+    irreversible: false,
+    flow: {},
+    scope: "chat",
+    handler: {
+      kind: "api",
+      run: async (args) => {
+        const r = await api.agentCuType(String(args.text ?? ""));
+        return JSON.stringify(r);
+      },
+    },
+  },
+  {
+    name: "cu_key",
+    category: "Computer Use",
+    schema: {
+      description:
+        "COMPUTER USE: press a key or shortcut. Use '+' to combine modifiers (cmd, shift, ctrl, opt/alt, fn) with a key, e.g. 'cmd+c', 'cmd+shift+t', 'Return', 'Escape', 'Tab', 'up'/'down'/'left'/'right', 'f5'.",
+      parameters: {
+        type: "object",
+        properties: { keys: { type: "string", description: "e.g. 'cmd+c' or 'Return'." } },
+        required: ["keys"],
+      },
+    },
+    sideEffect: "write",
+    dangerous: true,
+    dryRun: "suppress",
+    cacheableRead: false,
+    rustCommand: "agent_cu_key",
+    approval: { rustCommand: "agent_cu_key", payload: { text: "keys" } },
+    writeTool: false,
+    irreversible: false,
+    flow: {},
+    scope: "chat",
+    handler: {
+      kind: "api",
+      run: async (args) => {
+        const r = await api.agentCuKey(String(args.keys ?? ""));
+        return JSON.stringify(r);
+      },
+    },
+  },
+  {
+    name: "cu_cursor_position",
+    category: "Computer Use",
+    schema: {
+      description:
+        "COMPUTER USE: read the current cursor position. Returns both display points and (if a cu_screenshot exists) the equivalent image-pixel coordinates. Read-only.",
+      parameters: { type: "object", properties: {} },
+    },
+    sideEffect: "read",
+    dangerous: false,
+    dryRun: "suppress",
+    cacheableRead: false,
+    rustCommand: "agent_cu_cursor_position",
+    approval: null,
+    writeTool: false,
+    irreversible: false,
+    flow: {},
+    scope: "chat",
+    handler: {
+      kind: "api",
+      run: async () => {
+        const r = await api.agentCuCursorPosition();
         return JSON.stringify(r);
       },
     },

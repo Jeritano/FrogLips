@@ -40,7 +40,7 @@ import { TOOL_CATEGORIES } from "../../../components/workflows/tool-categories";
 
 // ── Frozen literal snapshots (copied verbatim from the original files) ────────
 
-// tools.ts — original TOOLS order (77 entries).
+// tools.ts — TOOLS order (85 entries; +8 Computer Use after applescript_run).
 const FROZEN_TOOLS_ORDER = [
   "read_file",
   "read_files",
@@ -73,6 +73,14 @@ const FROZEN_TOOLS_ORDER = [
   "open_app",
   "show_notification",
   "applescript_run",
+  "cu_screenshot",
+  "cu_click",
+  "cu_move",
+  "cu_drag",
+  "cu_scroll",
+  "cu_type",
+  "cu_key",
+  "cu_cursor_position",
   "http_request",
   "call_api",
   "find_definition",
@@ -153,6 +161,13 @@ const FROZEN_DANGEROUS_TOOLS = [
   "format_code",
   "screenshot",
   "show_notification",
+  "cu_screenshot",
+  "cu_click",
+  "cu_move",
+  "cu_drag",
+  "cu_scroll",
+  "cu_type",
+  "cu_key",
   "create_flow",
   "remember",
   "watch_path",
@@ -254,8 +269,8 @@ const FROZEN_DRY_RUN_READ_ONLY = [
 const sorted = (xs: Iterable<string>) => [...xs].slice().sort();
 
 describe("tool-registry: structural invariants", () => {
-  it("has 77 descriptors with unique names", () => {
-    expect(TOOL_REGISTRY.length).toBe(77);
+  it("has 85 descriptors with unique names", () => {
+    expect(TOOL_REGISTRY.length).toBe(85);
     const names = TOOL_REGISTRY.map((d) => d.name);
     expect(new Set(names).size).toBe(names.length);
   });

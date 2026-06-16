@@ -62,6 +62,20 @@ export const IRREVERSIBLE_TOOLS = lazyDerivedSet(() =>
   TOOL_REGISTRY.filter((d) => d.irreversible).map((d) => d.name),
 );
 
+/**
+ * Gated macOS "Computer Use" tools (cu_*). Derived from the registry category.
+ * The runner advertises + permits them ONLY when `settings.computer_use_enabled`
+ * is on — system-prompt.ts drops them from the advertised list and runner.ts
+ * hard-blocks any call when the mode is off (defense in depth: a model that
+ * hallucinates the tool name still can't drive the desktop).
+ */
+export const COMPUTER_USE_TOOLS = lazyDerivedSet(() =>
+  TOOL_REGISTRY.filter((d) => d.category === "Computer Use").map((d) => d.name),
+);
+/** The perception tool whose result carries a base64 image to re-attach as a
+ *  vision message for the model (see runner.ts). */
+export const CU_SCREENSHOT_TOOL = "cu_screenshot";
+
 /* ── Human-readable confirmation summary ── */
 
 /** Clamp a free-form string for a one-line summary so a giant command /

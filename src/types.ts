@@ -290,6 +290,22 @@ export interface ScreenshotResult {
   bytes: number;
 }
 
+/** Result of a Computer-Use screenshot: a downscaled base64 PNG the vision
+ *  model receives, plus the geometry the action tools use to map image-pixel
+ *  coordinates to display points. `image_b64` is stripped before the tool body
+ *  reaches the model (re-attached as an image) — see runner.ts. */
+export interface CuScreenshotResult {
+  ok: boolean;
+  path: string;
+  bytes: number;
+  img_w: number;
+  img_h: number;
+  point_w: number;
+  point_h: number;
+  image_b64: string;
+  mime: string;
+}
+
 export interface HttpReqInput {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
   url: string;
@@ -442,6 +458,12 @@ export interface AppSettings {
    *  ever further restricts). Absent/`null`/`[]` (legacy installs / fresh users)
    *  = nothing disabled = all tools enabled, i.e. today's behavior. */
   disabled_tools?: string[] | null;
+  /** Gated macOS "Computer Use" mode. When `true`, the agent loop advertises +
+   *  permits the cu_* desktop-control tools (screenshot → mouse/keyboard/
+   *  scroll). Default OFF — absent/`null` (legacy/fresh) and `false` both mean
+   *  disabled; an explicit per-machine opt-in on top of the per-call
+   *  confirmation modal and macOS Accessibility permission. */
+  computer_use_enabled?: boolean | null;
 }
 
 /**

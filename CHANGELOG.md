@@ -4,6 +4,42 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.10] — 2026-06-16
+
+Computer Use — gated, vision-driven macOS desktop control. The agent can now SEE
+the screen and drive the mouse + keyboard in a perceive→act loop, off by default
+and wrapped in four independent safety gates.
+
+### Added
+
+- **Computer Use mode** (Settings → Agent → Computer Use; default OFF). When on,
+  the agent gets a new tool family:
+  - `cu_screenshot` — capture + downscale the screen and feed it back to the
+    (vision) model as an image it can actually see. All other cu_* coordinates
+    are in that screenshot's pixel space.
+  - `cu_click` / `cu_move` / `cu_drag` / `cu_scroll` — pixel-accurate mouse
+    control via CoreGraphics CGEvent (left/right/middle, single/double-click,
+    interpolated drags, line scrolling).
+  - `cu_type` / `cu_key` — type Unicode text and press shortcuts/special keys
+    (`cmd+c`, `Return`, arrows, function keys, …).
+  - `cu_cursor_position` — read-only cursor location (points + image pixels).
+- A perceive→act operating guide is injected into the system prompt only while
+  the mode is on, so the model takes a fresh screenshot before each action
+  instead of clicking from stale coordinates.
+- Inline Accessibility-permission status + a one-click "Grant Accessibility…"
+  prompt in the Computer Use settings row.
+
+### Safety
+
+- Four independent gates, all required: the per-machine **opt-in** toggle (off by
+  default), the existing **per-action confirmation modal** (every cu_* tool is
+  dangerous; "Allow all this task" covers a multi-step flow), a **payload-bound
+  Rust approval token** per action, and macOS **Accessibility (TCC)** — actions
+  fail closed with guidance rather than silently no-op'ing when it isn't granted.
+- Defense in depth: when the mode is off the cu_* tools are dropped from the
+  advertised tool list AND hard-blocked at dispatch, so a hallucinated tool call
+  can never reach the desktop.
+
 ## [0.14.9] — 2026-06-16
 
 Full-codebase review remediation (3 waves: correctness/security/data-integrity,

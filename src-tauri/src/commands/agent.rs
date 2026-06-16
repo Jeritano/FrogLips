@@ -194,6 +194,16 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
             "path",
             p.path.as_deref().unwrap_or(""),
         )]))),
+        // Computer Use — every desktop-input action binds to a single canonical
+        // string carried in `text` (built identically on the TS mint side and
+        // the Rust verify side). The tool name is already part of the token, so
+        // sharing the `cu` key namespace across actions can't enable cross-tool
+        // replay. cu_screenshot takes no args → a fixed marker.
+        "agent_cu_screenshot" => Some(sha256_hex(&kv(&[("op", "cu_screenshot")]))),
+        "agent_cu_move" | "agent_cu_click" | "agent_cu_drag" | "agent_cu_type"
+        | "agent_cu_key" | "agent_cu_scroll" => {
+            Some(sha256_hex(&kv(&[("cu", p.text.as_deref().unwrap_or(""))])))
+        }
         // HTTP + browser — URL-bound.
         "agent_http_request" | "agent_web_fetch" | "agent_browser_navigate" => {
             Some(sha256_hex(&kv(&[("url", p.url.as_deref().unwrap_or(""))])))
@@ -626,6 +636,195 @@ pub async fn agent_screenshot(
         },
     )?;
     agent::screenshot(out_path).await
+}
+
+/* ── Computer Use (gated macOS desktop control) ─────────────────────────────
+ *
+ * Each cu_* command is bound by `verify_bound` to a canonical string the TS
+ * side reproduces verbatim when it mints the token (tauri-api.ts). The bodies
+ * cfg-branch: real work on macOS (agent::computer), a clear error elsewhere.
+ * Accessibility-permission enforcement lives inside agent::computer (fail
+ * closed) so a non-granted call returns guidance instead of a silent no-op. */
+
+/// Read-only: is Froglips trusted for Accessibility? `prompt=true` triggers the
+/// macOS "open Accessibility settings" dialog when it is not. No approval — it
+/// neither reads screen content nor posts input.
+#[tauri::command]
+pub fn agent_cu_check_permission(prompt: bool) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(agent::computer::check_permission(prompt))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = prompt;
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub async fn agent_cu_screenshot(approval: String) -> Result<serde_json::Value, String> {
+    verify_bound("agent_cu_screenshot", &approval, ApprovalPayload::default())?;
+    #[cfg(target_os = "macos")]
+    {
+        agent::computer::screenshot().await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("computer use is macOS-only".into())
+    }
+}
+
+#[tauri::command]
+pub async fn agent_cu_move(x: i64, y: i64, approval: String) -> Result<serde_json::Value, String> {
+    verify_bound(
+        "agent_cu_move",
+        &approval,
+        ApprovalPayload {
+            text: Some(format!("{x}|{y}")),
+            ..Default::default()
+        },
+    )?;
+    #[cfg(target_os = "macos")]
+    {
+        Ok(agent::computer::move_to(x as f64, y as f64))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("computer use is macOS-only".into())
+    }
+}
+
+#[tauri::command]
+pub async fn agent_cu_click(
+    x: i64,
+    y: i64,
+    button: String,
+    count: u32,
+    approval: String,
+) -> Result<serde_json::Value, String> {
+    verify_bound(
+        "agent_cu_click",
+        &approval,
+        ApprovalPayload {
+            text: Some(format!("{x}|{y}|{button}|{count}")),
+            ..Default::default()
+        },
+    )?;
+    #[cfg(target_os = "macos")]
+    {
+        Ok(agent::computer::click(x as f64, y as f64, &button, count))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&button, count);
+        Err("computer use is macOS-only".into())
+    }
+}
+
+#[tauri::command]
+pub async fn agent_cu_drag(
+    x1: i64,
+    y1: i64,
+    x2: i64,
+    y2: i64,
+    approval: String,
+) -> Result<serde_json::Value, String> {
+    verify_bound(
+        "agent_cu_drag",
+        &approval,
+        ApprovalPayload {
+            text: Some(format!("{x1}|{y1}|{x2}|{y2}")),
+            ..Default::default()
+        },
+    )?;
+    #[cfg(target_os = "macos")]
+    {
+        Ok(agent::computer::drag(x1 as f64, y1 as f64, x2 as f64, y2 as f64))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("computer use is macOS-only".into())
+    }
+}
+
+#[tauri::command]
+pub async fn agent_cu_scroll(
+    x: i64,
+    y: i64,
+    dx: i64,
+    dy: i64,
+    approval: String,
+) -> Result<serde_json::Value, String> {
+    verify_bound(
+        "agent_cu_scroll",
+        &approval,
+        ApprovalPayload {
+            text: Some(format!("{x}|{y}|{dx}|{dy}")),
+            ..Default::default()
+        },
+    )?;
+    #[cfg(target_os = "macos")]
+    {
+        Ok(agent::computer::scroll(x as f64, y as f64, dx as i32, dy as i32))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("computer use is macOS-only".into())
+    }
+}
+
+#[tauri::command]
+pub async fn agent_cu_type(text: String, approval: String) -> Result<serde_json::Value, String> {
+    verify_bound(
+        "agent_cu_type",
+        &approval,
+        ApprovalPayload {
+            text: Some(text.clone()),
+            ..Default::default()
+        },
+    )?;
+    #[cfg(target_os = "macos")]
+    {
+        Ok(agent::computer::type_text(&text))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("computer use is macOS-only".into())
+    }
+}
+
+#[tauri::command]
+pub async fn agent_cu_key(keys: String, approval: String) -> Result<serde_json::Value, String> {
+    verify_bound(
+        "agent_cu_key",
+        &approval,
+        ApprovalPayload {
+            text: Some(keys.clone()),
+            ..Default::default()
+        },
+    )?;
+    #[cfg(target_os = "macos")]
+    {
+        Ok(agent::computer::key(&keys))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("computer use is macOS-only".into())
+    }
+}
+
+/// Read-only: current cursor location. No approval (observes, never acts).
+#[tauri::command]
+pub async fn agent_cu_cursor_position() -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(agent::computer::cursor_position())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("computer use is macOS-only".into())
+    }
 }
 
 #[tauri::command]
@@ -1524,6 +1723,13 @@ mod binding_tests {
             "agent_show_notification",
             "agent_applescript_run",
             "agent_screenshot",
+            "agent_cu_screenshot",
+            "agent_cu_move",
+            "agent_cu_click",
+            "agent_cu_drag",
+            "agent_cu_scroll",
+            "agent_cu_type",
+            "agent_cu_key",
             "agent_http_request",
             "agent_web_fetch",
             "agent_browser_navigate",

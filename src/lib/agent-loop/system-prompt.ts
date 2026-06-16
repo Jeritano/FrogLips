@@ -1,4 +1,5 @@
 import { TOOLS } from "./tools";
+import { COMPUTER_USE_TOOLS } from "./dispatch";
 import { parseMcpToolName, type OpenAIToolDef } from "./mcp-tools";
 import type { ToolFitness } from "../model-capabilities";
 import type { McpServerConfig } from "../../types";
@@ -54,6 +55,11 @@ export function buildSystemPrompt(
    *  or `true` enabled = available (today's behavior). Default `[]` = no config
    *  known → no server gated. */
   mcpServerConfigs: McpServerConfig[] = [],
+  /** Gated macOS "Computer Use" mode. When false (the default), the cu_*
+   *  desktop-control tools are dropped from the advertised list entirely (the
+   *  runner also hard-blocks them). When true, they're advertised and a short
+   *  operating guide is appended so the model uses the perceive→act loop. */
+  computerUseEnabled = false,
 ): string {
   // Weak tool-callers (small/abliterated models) tend to narrate or emit
   // near-JSON. A short, explicit format reminder measurably lifts their
@@ -67,13 +73,18 @@ export function buildSystemPrompt(
   // allowlist: it only ever FURTHER restricts. Empty set (the default) = today's
   // behavior (allowlist alone decides).
   const disabledSet = disabledTools.length ? new Set(disabledTools) : null;
+  // Computer Use is OFF by default: the cu_* tools are never advertised unless
+  // the per-machine opt-in is on. (The runner also hard-blocks them, so this is
+  // belt-and-suspenders — but advertising a tool the model can't use just wastes
+  // tokens and invites confused retries.)
   const builtIn = (
     allowlist.length
       ? TOOLS.filter((t) => allowlist.includes(t.function.name))
       : TOOLS
   )
     .map((t) => t.function.name)
-    .filter((name) => !disabledSet || !disabledSet.has(name));
+    .filter((name) => !disabledSet || !disabledSet.has(name))
+    .filter((name) => computerUseEnabled || !COMPUTER_USE_TOOLS.has(name));
   // MCP server gate: drop tools from any server whose config `enabled === false`.
   // `undefined`/`true` enabled (and any server with no config row) stays
   // available — today's behavior. Built once as a name set for O(1) lookup.
@@ -164,7 +175,14 @@ export function buildSystemPrompt(
           ", ",
         )}.`
       : "";
-  const env = `${ws}\n${dateBlock}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\n${paths}\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}${apiBlock}${ragBlock}\n${canDo}`;
+  // Computer Use operating guide — only when the gated tools are advertised.
+  // Teaches the perceive→act loop + coordinate space so the model doesn't click
+  // blind. Kept terse; the per-tool schemas carry the details.
+  const cuBlock =
+    computerUseEnabled && builtIn.includes("cu_screenshot")
+      ? "\nCOMPUTER USE: you can control this Mac's screen, mouse, and keyboard via the cu_* tools. Loop: call cu_screenshot to SEE the screen (it returns an image you can view, sized img_w×img_h pixels), decide ONE action, then cu_click/cu_type/cu_key/cu_scroll/cu_drag using coordinates IN THAT IMAGE'S PIXEL SPACE (origin top-left). After any action that changes the screen, take a FRESH cu_screenshot before acting again — never click from a stale image or guessed coordinates. To type into a field, cu_click it first to focus, then cu_type. Use cu_key for shortcuts/special keys (e.g. 'cmd+c', 'Return'). Each action asks the user for confirmation; work in small, verifiable steps and stop to report if something looks wrong."
+      : "";
+  const env = `${ws}\n${dateBlock}\nHost OS: macOS (Darwin). Use macOS commands (e.g. \`open -a Safari https://example.com\`).\n${paths}\nAvailable tools: ${builtIn.join(", ")}${mcpBlock}${apiBlock}${ragBlock}\n${canDo}${cuBlock}`;
   if (override && override.trim()) {
     return `${override.trim()}\n\n${env}${weakBlock}`;
   }

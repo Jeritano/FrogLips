@@ -788,6 +788,7 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             // "nothing gated" = today's behavior when the keys are absent.
             disabledTools: cfg?.disabled_tools ?? [],
             mcpServerConfigs: cfg?.mcp_servers ?? [],
+            computerUseEnabled: cfg?.computer_use_enabled ?? false,
             // Resolved agent backend. Routing is disabled in agent mode, so the
             // active `status.backend` is the target. mlx/native/custom/openrouter
             // pass through; anything else (incl. plain ollama + `:cloud`) is the

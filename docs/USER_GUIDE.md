@@ -273,6 +273,27 @@ The cog button next to the Agent toggle opens a panel:
 - **Allowed tools** — restrict tools per conversation (overridden by preset when preset has its own allowlist).
 - **Approved shell prefixes** — appears once you've checked "Also approve all `<cmd> *`" on a confirm dialog.
 - **Updates** — check for and install a new version.
+- **Computer Use** — opt-in toggle for desktop control (see below). Off by default.
+
+### Computer Use (macOS desktop control)
+
+Lets the agent **see your screen and drive the mouse + keyboard** to do things no API covers — click through a native app, fill a form, drag a file. It's a perceive→act loop: the agent takes a screenshot, looks at it, performs one action, screenshots again. **Off by default**, and wrapped in four independent safety gates.
+
+**Turn it on:**
+
+1. Agent mode → settings (⚙) → check **Computer Use**.
+2. Click **Grant Accessibility…** and add **Froglips** under System Settings → Privacy & Security → **Accessibility**. (The first screenshot also triggers the **Screen Recording** prompt — allow it.) Without these grants every action fails closed with a clear message rather than silently doing nothing.
+
+**Using it:** just ask in plain language ("open System Settings and turn on Night Shift"). The agent calls `cu_screenshot` to see, then `cu_click` / `cu_type` / `cu_key` / `cu_scroll` / `cu_drag`. Coordinates come from what it sees, so it re-screenshots after each change instead of guessing.
+
+**Safety — four gates, all required:**
+
+- **Opt-in** — the `cu_*` tools don't exist for the model until you enable the toggle. When off they're hidden from the agent AND blocked even if it tries to call one.
+- **Per-action confirmation** — every click/type/scroll asks first. For a multi-step task, tick **Allow all remaining actions for this task** on the first prompt to let the flow run without clicking through each step.
+- **Bound approval token** — each action is cryptographically bound to its exact coordinates/text, so what you approve is what runs.
+- **macOS Accessibility** — the OS gates input control behind a permission only you can grant.
+
+Stop a run any time with the Stop button — it halts before the next action.
 
 ### Metrics
 
