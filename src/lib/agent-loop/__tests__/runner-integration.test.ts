@@ -253,12 +253,16 @@ describe("runAgentLoop integration", () => {
       maxIterations: 8,
     });
 
-    // The cap path returns null and appends the explanatory cap message.
-    expect(result).toBeNull();
+    // The cap path RETURNS the explanatory notice (not null) so the caller
+    // persists it as the run's final assistant reply — null is reserved for a
+    // true user-abort. The same notice is also appended to the message array.
+    expect(result).toContain("turn limit");
     const lastSnapshot = collected[collected.length - 1] ?? [];
     const capMsg = lastSnapshot[lastSnapshot.length - 1];
     expect(capMsg?.role).toBe("assistant");
     expect(capMsg?.content).toContain("turn limit");
+    // The returned text matches the appended message exactly.
+    expect(result).toBe(capMsg?.content);
 
     // The loop ran the full (overridden) budget of iterations.
     expect(metrics.last?.iterations).toBe(8);

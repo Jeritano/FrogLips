@@ -1106,6 +1106,44 @@ const MIGRATIONS: &[Migration] = &[
         version: 31,
         apply: crate::claude_skills::ensure_claude_skills_category_column,
     },
+    // v32 — repair the messages_fts DELETE/UPDATE triggers. v18 created `_ad`
+    // and `_au` WITHOUT the `run_id IS NULL` guard the INSERT trigger (`_ai`,
+    // hardened in v28) carries. Because `ensure_messages_fts` uses CREATE
+    // TRIGGER IF NOT EXISTS, an existing DB kept the OLD unguarded triggers — so
+    // deleting/editing a v28 checkpoint shadow row issued an external-content
+    // FTS5 'delete' command for a posting that was never inserted, pushing the
+    // index toward "database disk image is malformed". This rung DROPs both
+    // triggers and recreates them with the guards (`old.run_id IS NULL` on _ad,
+    // `new.run_id IS NULL` on _au), then runs `INSERT INTO
+    // messages_fts(messages_fts) VALUES('rebuild')` ONCE to rebuild the
+    // external-content index from the live `messages` rows — repairing any
+    // inconsistency a prior unguarded delete-posting introduced. Forward-only +
+    // idempotent: DROP IF EXISTS + CREATE IF NOT EXISTS, and `rebuild` is a pure
+    // re-derivation of the index (no stored message/checkpoint data is rewritten
+    // or destroyed). A fresh DB already has the guarded triggers from the v18
+    // rung, so re-running this rung against it just re-asserts them + rebuilds.
+    Migration {
+        version: 32,
+        apply: |conn| {
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS messages_fts_ad;
+                 DROP TRIGGER IF EXISTS messages_fts_au;
+                 CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages
+                 WHEN old.run_id IS NULL BEGIN
+                    INSERT INTO messages_fts(messages_fts, rowid, content)
+                    VALUES ('delete', old.id, old.content);
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages
+                 WHEN new.run_id IS NULL BEGIN
+                    INSERT INTO messages_fts(messages_fts, rowid, content)
+                    VALUES ('delete', old.id, old.content);
+                    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+                 END;
+                 INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');",
+            )?;
+            Ok(())
+        },
+    },
 ];
 
 /// Add the additive `conv_id INTEGER` sibling column to `table`, preferring an
@@ -1257,15 +1295,28 @@ pub(crate) fn ensure_messages_fts(conn: &Connection) -> Result<()> {
          -- of the index. (Query-side run_id filters in search_messages_fts /
          -- search_messages are the robust backstop, since `rebuild`/optimize
          -- re-scan all rows regardless of this trigger guard.)
+         --
+         -- The DELETE/UPDATE triggers carry the MATCHING guard: a shadow row was
+         -- never inserted into the index, so issuing the external-content FTS5
+         -- delete command for it would push a delete-posting with no matching
+         -- insert — which corrupts an external-content index (a later integrity
+         -- check / query can hit a malformed-disk-image error). `_ad`
+         -- guards on `old.run_id IS NULL`; `_au` on `new.run_id IS NULL` (an
+         -- UPDATE OF content never changes run_id, so old/new agree). A row that
+         -- toggled across the NULL boundary is handled by the v18 INSERT/DELETE
+         -- pair, not content UPDATEs. (Older DBs created the unguarded _ad/_au;
+         -- the v32 rung drops+recreates them and runs one `rebuild` to repair.)
          CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages
          WHEN new.run_id IS NULL BEGIN
             INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
          END;
-         CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+         CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages
+         WHEN old.run_id IS NULL BEGIN
             INSERT INTO messages_fts(messages_fts, rowid, content)
             VALUES ('delete', old.id, old.content);
          END;
-         CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+         CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages
+         WHEN new.run_id IS NULL BEGIN
             INSERT INTO messages_fts(messages_fts, rowid, content)
             VALUES ('delete', old.id, old.content);
             INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
@@ -2633,12 +2684,18 @@ fn fork_conversation_tx(
     let new_id = tx.last_insert_rowid();
 
     // Copy messages with id <= cutoff. `INSERT … SELECT` keeps the per-row
-    // work in SQLite and assigns new autoincrement ids automatically.
+    // work in SQLite and assigns new autoincrement ids automatically. The
+    // `run_id IS NULL` guard excludes v28 agent checkpoint shadow rows (a
+    // durable shadow of in-flight agent state hidden from the conversation
+    // view) — mirrors `list_messages` + the maintenance archive DELETE so a
+    // fork is a copy of the VISIBLE turns, never the transient shadows. (Pre-
+    // v28 DBs lack run_id, but setup_schema runs the v28 rung before any read,
+    // so the column is always present here.)
     tx.execute(
         "INSERT INTO messages (conversation_id, role, content, created_at, model, images)
          SELECT ?1, role, content, created_at, model, images
          FROM messages
-         WHERE conversation_id = ?2 AND id <= ?3
+         WHERE conversation_id = ?2 AND id <= ?3 AND run_id IS NULL
          ORDER BY id ASC",
         params![new_id, source_id, at_message_id],
     )?;
@@ -2904,7 +2961,10 @@ mod tests {
                 content TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 model TEXT,
-                images TEXT
+                images TEXT,
+                -- v28 checkpoint columns: the fork copy now filters on `run_id
+                -- IS NULL`, so this minimal hand-rolled schema needs the column.
+                run_id TEXT
             );",
         )
         .unwrap();
@@ -3070,6 +3130,95 @@ mod tests {
             "parent rows must be identical after fork mutation"
         );
         assert_eq!(message_count(&conn, src), 4, "parent count untouched");
+    }
+
+    /// REGRESSION: forking a conversation that has v28 agent checkpoint shadow
+    /// rows (`run_id IS NOT NULL`) must NOT copy those rows into the fork — the
+    /// fork is a branch of the VISIBLE conversation, not of transient in-flight
+    /// agent state. Before the `AND run_id IS NULL` guard on the fork's
+    /// `INSERT … SELECT`, the shadows leaked into the fork and `list_messages`
+    /// on the fork still hid them only because of its own filter — but the rows
+    /// (and the tool-result text the user never saw) were physically duplicated.
+    /// Driven through the global DB so the real `list_messages` reader applies.
+    #[test]
+    fn fork_excludes_checkpoint_shadow_rows() {
+        let conv =
+            create_conversation(&format!("__test_fork_ckpt_{}", std::process::id()), None).unwrap();
+        // Two visible turns (run_id NULL via the normal add_message path).
+        add_message(conv, "user", "build me a thing", None, None).unwrap();
+        let last_visible = add_message(conv, "assistant", "done", None, None).unwrap();
+
+        // Checkpoint shadow rows for an in-flight run — these get HIGHER ids than
+        // the visible turns, so a fork cutoff above them would copy them if the
+        // run_id filter were absent.
+        let run = format!("run:forkckpt:{}", std::process::id());
+        let turns = vec![
+            CheckpointTurn {
+                turn_index: 0,
+                role: "assistant".into(),
+                content: "{\"content\":\"thinking\",\"tool_calls\":[]}".into(),
+                tool_call_id: None,
+                tool_name: None,
+                model: Some("m".into()),
+            },
+            CheckpointTurn {
+                turn_index: 1,
+                role: "tool".into(),
+                content: "secret tool output the user never saw".into(),
+                tool_call_id: Some("call_1".into()),
+                tool_name: Some("read_file".into()),
+                model: None,
+            },
+        ];
+        checkpoint_run(&run, conv, &turns).unwrap();
+
+        // Highest message id in the conversation — above every shadow row, so the
+        // id-cutoff alone would NOT exclude them. Only the run_id filter does.
+        let max_id: i64 = get_db()
+            .unwrap()
+            .query_row(
+                "SELECT MAX(id) FROM messages WHERE conversation_id = ?1",
+                params![conv],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            max_id > last_visible,
+            "shadow rows must have higher ids than the last visible turn"
+        );
+
+        let fork_id = fork_conversation(conv, max_id).unwrap();
+
+        // The fork's VISIBLE conversation is exactly the two visible turns.
+        let visible = list_messages(fork_id).unwrap();
+        assert_eq!(visible.len(), 2, "fork must hold only the visible turns");
+        assert_eq!(visible[0].role, "user");
+        assert_eq!(visible[1].role, "assistant");
+
+        // And the shadow rows were never physically copied: the raw fork message
+        // count equals the visible count (no run_id IS NOT NULL rows on the fork).
+        let raw_fork: i64 = get_db()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                params![fork_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw_fork, 2, "no shadow rows physically copied into the fork");
+        let shadow_on_fork: i64 = get_db()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages \
+                 WHERE conversation_id = ?1 AND run_id IS NOT NULL",
+                params![fork_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(shadow_on_fork, 0, "fork must carry zero checkpoint shadow rows");
+
+        delete_conversation(conv).unwrap();
+        delete_conversation(fork_id).unwrap();
     }
 
     #[test]
@@ -3532,6 +3681,118 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_idx, 1, "conv_id index must be (re)created by the v24 rung");
+    }
+
+    /// REGRESSION (v32 — external-content FTS corruption): the v18 messages_fts
+    /// DELETE/UPDATE triggers lacked the `run_id IS NULL` guard the INSERT
+    /// trigger carries, so deleting a v28 checkpoint shadow row issued an FTS5
+    /// 'delete' command for a posting that was never inserted — corrupting the
+    /// external-content index. This ages a DB back to the pre-v32 shape (OLD
+    /// unguarded triggers, user_version 31, a visible row + a shadow row whose
+    /// stale delete-posting got pushed), runs the ladder, and asserts the v32
+    /// rung repaired it: the FTS integrity-check passes, the visible row is
+    /// searchable, and both triggers now carry the guard.
+    #[test]
+    fn migration_ladder_v32_repairs_unguarded_fts_triggers() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("build full schema");
+
+        // Age the two triggers back to their v18 (unguarded) form and stamp the
+        // DB at v31 — exactly what an install predating the v32 rung looks like.
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS messages_fts_ad;
+             DROP TRIGGER IF EXISTS messages_fts_au;
+             CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+             END;
+             CREATE TRIGGER messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+                INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+             END;
+             PRAGMA user_version = 31;",
+        )
+        .expect("age triggers back to pre-v32 unguarded form");
+
+        conn.execute(
+            "INSERT INTO conversations (title, created_at) VALUES ('t', 0)",
+            [],
+        )
+        .unwrap();
+        let cid: i64 = conn.last_insert_rowid();
+        // A visible row (run_id NULL — the guarded _ai trigger indexes it) and a
+        // checkpoint shadow row (run_id NOT NULL — _ai skips it, so it has NO
+        // posting in the external-content index).
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at, run_id)
+             VALUES (?1, 'user', 'visible needle row', 0, NULL)",
+            params![cid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at, run_id, turn_index)
+             VALUES (?1, 'tool', 'shadow tool output', 0, 'run:x', 0)",
+            params![cid],
+        )
+        .unwrap();
+        let shadow_id: i64 = conn.last_insert_rowid();
+        // Under the OLD unguarded trigger, deleting the shadow row pushes a
+        // 'delete' posting for a rowid that was never inserted — the corruption.
+        conn.execute("DELETE FROM messages WHERE id = ?1", params![shadow_id])
+            .unwrap();
+
+        // Run the ladder: the v32 rung drops+recreates the guarded triggers and
+        // runs one `rebuild` to repair the index.
+        run_migrations(&conn).expect("upgrade across the v32 rung must not abort");
+        assert_eq!(user_version(&conn), latest_version());
+
+        // The FTS index is consistent again: the integrity-check command raises
+        // SQLITE_CORRUPT_VTAB if the index disagrees with the content table.
+        conn.execute_batch(
+            "INSERT INTO messages_fts(messages_fts) VALUES('integrity-check');",
+        )
+        .expect("messages_fts integrity-check must pass after the v32 rebuild");
+
+        // The visible row is still searchable (rebuild re-derived its posting).
+        let found: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'needle'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1, "visible row must remain searchable after repair");
+
+        // Both triggers now carry the run_id-NULL guard.
+        for (name, needle) in [
+            ("messages_fts_ad", "old.run_id IS NULL"),
+            ("messages_fts_au", "new.run_id IS NULL"),
+        ] {
+            let sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                    params![name],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|_| panic!("{name} trigger must exist"));
+            assert!(
+                sql.contains(needle),
+                "{name} must carry the `{needle}` guard after v32; got: {sql}"
+            );
+        }
+
+        // Idempotent: re-running the v32 rung body against the now-current DB is
+        // safe (DROP IF EXISTS + CREATE IF NOT EXISTS + pure rebuild).
+        let v32 = MIGRATIONS
+            .iter()
+            .find(|m| m.version == 32)
+            .expect("v32 rung exists");
+        (v32.apply)(&conn).expect("v32 re-run must not error");
+        conn.execute_batch(
+            "INSERT INTO messages_fts(messages_fts) VALUES('integrity-check');",
+        )
+        .expect("integrity-check must still pass after a v32 re-run");
     }
 
     /// Migration v10 (`images`) is safe to apply twice in a row and against a

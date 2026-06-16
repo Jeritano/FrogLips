@@ -168,9 +168,20 @@ export class InferenceGate {
     if (this.permits < this.capacity) this.permits += 1;
   }
 
-  /** Wake queued waiters up to the number of free permits (used after a grow). */
+  /** Wake queued waiters up to the number of free permits (used after a grow).
+   *  Mirrors `release()`'s over-capacity guard: never grant past `capacity`.
+   *  A shrink floors `permits` at 0 without preempting in-flight holders, so a
+   *  later grow can set `permits > 0` while `inFlight` is still >= `capacity`
+   *  (transiently over-subscribed). Draining unconditionally on `permits` alone
+   *  would then wake a waiter alongside the over-capacity holders, pushing
+   *  `inFlight` past `capacity` and breaking the serialize-local-inference
+   *  guarantee. Gating on `inFlight < capacity` too keeps the counter bounded. */
   private drain(): void {
-    while (this.permits > 0 && this.queue.length > 0) {
+    while (
+      this.permits > 0 &&
+      this.inFlight < this.capacity &&
+      this.queue.length > 0
+    ) {
       const next = this.queue.shift()!;
       if (next.onAbort && next.signal) {
         next.signal.removeEventListener("abort", next.onAbort);

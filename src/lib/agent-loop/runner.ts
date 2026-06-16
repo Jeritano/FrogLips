@@ -996,23 +996,28 @@ export async function runAgentLoop(
   // the run was halted for lack of progress, fan it out, mark the run done, and
   // signal the loop to stop. Returning here lands in the shared `finally`, so the
   // checkpoint flush + metrics recording (the existing abort/cleanup semantics)
-  // still run exactly once. Returns `null` so callers see the same shape as an
-  // aborted / turn-limit exit (no successful final-text payload).
-  const fireCircuitBreaker = (): null => {
+  // still run exactly once. RETURNS the notice text (not null) so the
+  // interactive caller persists it as the run's final assistant reply — a
+  // null return is reserved for a true user-abort, whose notice would otherwise
+  // vanish on reload (the visible `onUpdate` push below is in-memory only).
+  // Subagents/flows receive the notice as their result, which is the expected
+  // "this child gave up, here's why" payload.
+  const fireCircuitBreaker = (): string => {
+    const notice =
+      `[Stopped: no progress after ${stopAndReportHintsFired} attempts ` +
+      `(was stuck on ${stuckReason}). The run was halted to avoid spending ` +
+      `more on a loop that wasn't advancing. Its work so far is saved — ` +
+      `review the errors above, then reply "continue" to resume or adjust ` +
+      `the request.]`;
     msgs.push({
       _tmpKey: makeTmpKey(),
       conversation_id: opts.conversationId,
       role: "assistant",
-      content:
-        `[Stopped: no progress after ${stopAndReportHintsFired} attempts ` +
-        `(was stuck on ${stuckReason}). The run was halted to avoid spending ` +
-        `more on a loop that wasn't advancing. Its work so far is saved — ` +
-        `review the errors above, then reply "continue" to resume or adjust ` +
-        `the request.]`,
+      content: notice,
     });
     onUpdate([...msgs]);
     onStatusChange("done");
-    return null;
+    return notice;
   };
 
   onStatusChange("thinking");
@@ -2207,19 +2212,26 @@ export async function runAgentLoop(
       onStatusChange("thinking");
     }
 
+    // RETURN the limit notice (not null) so the interactive caller persists it
+    // as the run's final assistant reply. A null return is reserved for a true
+    // user-abort; previously this path returned null too, so the visible notice
+    // (pushed via onUpdate, in-memory only) vanished on reload — the run ended
+    // with no saved agent message. Subagents/flows receive the notice as their
+    // result, which is the expected "the child hit its turn cap" payload.
+    const limitNotice =
+      `[Agent reached its turn limit (${MAX_ITERATIONS}) without finishing. ` +
+      `Its work so far is saved — reply "continue" to resume, or raise the ` +
+      `turn limit in Agent settings for long multi-file builds.]`;
     const limitMsg: Message = {
       _tmpKey: makeTmpKey(),
       conversation_id: opts.conversationId,
       role: "assistant",
-      content:
-        `[Agent reached its turn limit (${MAX_ITERATIONS}) without finishing. ` +
-        `Its work so far is saved — reply "continue" to resume, or raise the ` +
-        `turn limit in Agent settings for long multi-file builds.]`,
+      content: limitNotice,
     };
     msgs.push(limitMsg);
     onUpdate([...msgs]);
     onStatusChange("done");
-    return null;
+    return limitNotice;
   } finally {
     // Item 4A: always flush the final settled checkpoint on any exit
     // (completion, abort, exception, iteration cap) so the coalescing throttle

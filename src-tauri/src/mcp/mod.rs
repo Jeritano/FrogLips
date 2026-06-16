@@ -32,6 +32,12 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(120);
 /// Initialize handshake is fast — anything beyond a few seconds means the
 /// server is broken or hanging.
 const INIT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Bound a single stdin write+flush. A wedged server that stops draining its
+/// stdin pipe would otherwise block `write_all`/`flush` forever while holding
+/// the stdin Mutex — which also deadlocks `shutdown` (it needs that same lock
+/// to drop stdin). A few seconds is generous for handing one JSON-RPC line to a
+/// healthy kernel pipe buffer; beyond it the server is stuck.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Max stderr we keep buffered for diagnostic display.
 const STDERR_CAP: usize = 16 * 1024;
 /// Max combined tool-result text we return. Higher than typical tool output
@@ -224,6 +230,25 @@ impl ServerHandle {
         }
     }
 
+    /// A stdin write/flush timed out — the server has wedged (not draining its
+    /// stdin pipe). Mark it stopped, drop its stdin (so a clean EOF reaches the
+    /// child and `shutdown` won't park on the same lock), and fail every
+    /// outstanding waiter so no in-flight RPC hangs the full RPC_TIMEOUT. Mirrors
+    /// the stdout-pump EOF teardown.
+    async fn fail_stdio_write(&self, t: &StdioTransport) {
+        *self.status.write() = "stopped".into();
+        *self.last_error.write() = Some("stdin write timed out (server wedged)".into());
+        {
+            let mut g = t.stdin.lock().await;
+            *g = None;
+        }
+        let drained: Vec<_> = t.waiters.lock().await.drain().collect();
+        for (_, tx) in drained {
+            let _ = tx.send(Err("server stdin stalled".into()));
+        }
+        self.stop.notify_waiters();
+    }
+
     async fn send_rpc_stdio(
         &self,
         t: &StdioTransport,
@@ -270,14 +295,29 @@ impl ServerHandle {
         let mut line = serde_json::to_string(&msg).context("encode rpc")?;
         line.push('\n');
 
-        {
+        // Bound the write+flush: a wedged server that stops draining its stdin
+        // would block these awaits forever while holding the stdin Mutex, which
+        // also deadlocks `shutdown`. On timeout (or a write error) tear the
+        // server down so no caller hangs. Compute the outcome under the lock,
+        // then drop the guard BEFORE `fail_stdio_write` (which re-locks stdin).
+        let write_outcome: Result<()> = {
             let mut g = t.stdin.lock().await;
-            let stdin = g.as_mut().ok_or_else(|| anyhow!("server stdin closed"))?;
-            stdin
-                .write_all(line.as_bytes())
+            match g.as_mut() {
+                None => Err(anyhow!("server stdin closed")),
+                Some(stdin) => match timeout(WRITE_TIMEOUT, async {
+                    stdin.write_all(line.as_bytes()).await.context("write rpc")?;
+                    stdin.flush().await.context("flush rpc")
+                })
                 .await
-                .context("write rpc")?;
-            stdin.flush().await.context("flush rpc")?;
+                {
+                    Ok(r) => r,
+                    Err(_) => Err(anyhow!("stdin write timed out after {}s", WRITE_TIMEOUT.as_secs())),
+                },
+            }
+        };
+        if let Err(e) = write_outcome {
+            self.fail_stdio_write(t).await;
+            return Err(e);
         }
 
         let result = timeout(RPC_TIMEOUT, rx).await;
@@ -311,10 +351,31 @@ impl ServerHandle {
             Transport::Stdio(t) => {
                 let mut line = serde_json::to_string(&msg)?;
                 line.push('\n');
-                let mut g = t.stdin.lock().await;
-                let stdin = g.as_mut().ok_or_else(|| anyhow!("server stdin closed"))?;
-                stdin.write_all(line.as_bytes()).await?;
-                stdin.flush().await?;
+                // Bound write+flush like send_rpc_stdio so a wedged server can't
+                // hang the stdin Mutex (and `shutdown` with it). Drop the guard
+                // before fail_stdio_write, which re-locks stdin.
+                let write_outcome: Result<()> = {
+                    let mut g = t.stdin.lock().await;
+                    match g.as_mut() {
+                        None => Err(anyhow!("server stdin closed")),
+                        Some(stdin) => match timeout(WRITE_TIMEOUT, async {
+                            stdin.write_all(line.as_bytes()).await?;
+                            stdin.flush().await
+                        })
+                        .await
+                        {
+                            Ok(r) => r.map_err(anyhow::Error::from),
+                            Err(_) => Err(anyhow!(
+                                "stdin write timed out after {}s",
+                                WRITE_TIMEOUT.as_secs()
+                            )),
+                        },
+                    }
+                };
+                if let Err(e) = write_outcome {
+                    self.fail_stdio_write(t).await;
+                    return Err(e);
+                }
                 Ok(())
             }
             Transport::Remote(t) => {

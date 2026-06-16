@@ -1156,6 +1156,17 @@ pub async fn file_exists(path: String) -> Result<ExistsResult, String> {
         Ok(p) => p,
         Err(e) => return Err(err_string(ToolError::invalid(e.to_string()))),
     };
+    // Honor the same read denylist + workspace confinement as read_file/list_dir.
+    // file_exists must not leak existence/size/kind of a protected or out-of-
+    // workspace path, so fail CLOSED to exists:false rather than erroring (which
+    // would itself disclose that the path is restricted/exists).
+    if is_protected_for_read(&resolved) || !within_workspace(&resolved) {
+        return Ok(ExistsResult {
+            exists: false,
+            kind: None,
+            size: None,
+        });
+    }
     match tokio::fs::metadata(&resolved).await {
         Ok(m) => {
             let kind = if m.is_dir() {

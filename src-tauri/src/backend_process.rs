@@ -410,6 +410,14 @@ impl ServerState {
                 let mut carry: Vec<u8> = Vec::with_capacity(1024);
                 let mut discarding = false; // true once this line has hit the cap
                 loop {
+                    // Exit cleanly on app shutdown even if our generation hasn't
+                    // changed (a hard exit fires the global SHUTDOWN flag without
+                    // necessarily calling stop() on this backend). Mirrors the MCP
+                    // stderr drainer's sticky-flag check; keeps the task from
+                    // lingering on a read past app exit.
+                    if crate::is_shutting_down() {
+                        break;
+                    }
                     let n: usize = reader.read(&mut scratch).await.unwrap_or_default();
                     if n == 0 {
                         // EOF — emit any partial line we still have, then exit.
@@ -498,6 +506,12 @@ impl ServerState {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 if generation.load(Ordering::Acquire) != my_generation {
                     return; // server stopped or replaced
+                }
+                // Also bail on app shutdown — a hard exit sets the global SHUTDOWN
+                // flag without necessarily bumping our generation, so the gen check
+                // alone would keep this probe polling for up to 90s past app exit.
+                if crate::is_shutting_down() {
+                    return;
                 }
                 // Staged liveness diagnostics (audit HIGH 2026-05-28).
                 // At 500 ms/iter the 90 s probe was previously silent

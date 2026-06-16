@@ -262,13 +262,15 @@ describe("runAgentLoop — backend:'mlx'", () => {
 
     const final = await runAgentLoop(opts);
 
-    // The loop returns null (no completion) on hitting the cap.
-    expect(final).toBeNull();
-    // The final transcript carries the iteration-limit assistant message.
+    // The loop RETURNS the iteration-cap notice (not null) on hitting the cap so
+    // the caller persists it — null is reserved for a true user-abort.
+    expect(final).toMatch(/turn limit/i);
+    // The final transcript carries the same iteration-limit assistant message.
     const last = collected[collected.length - 1] ?? [];
     const capMsg = last.find(
       (m) => m.role === "assistant" && /turn limit/i.test(m.content),
     );
     expect(capMsg).toBeDefined();
+    expect(final).toBe(capMsg?.content);
   });
 });

@@ -12,7 +12,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::history::{db_path, get_db, now_unix};
+use crate::history::{db_path, get_db, now_unix, with_write_lock};
 
 /// JSON export schema version. Bump when the document shape changes in a way
 /// that older importers can't read; `import_data` rejects unknown versions.
@@ -377,8 +377,14 @@ pub fn import_data(src: &Path) -> Result<ImportSummary> {
     let text = std::fs::read_to_string(src)
         .with_context(|| format!("read export file {}", src.display()))?;
     let doc = parse_export(&text)?;
+    // WS3 single-writer gate: `apply_import` opens its own IMMEDIATE transaction,
+    // so it is a WRITER and must hold WRITE_LOCK like every other writer — opening
+    // it un-gated lets it collide with a concurrent `with_write` writer (the loser
+    // burns busy_timeout then fails SQLITE_BUSY). Pull the pooled connection FIRST,
+    // then take the lock (matching `with_write`'s acquisition order so we never
+    // hold the global lock while waiting on a pool slot).
     let mut conn = get_db()?;
-    apply_import(&mut conn, &doc)
+    with_write_lock(|| apply_import(&mut conn, &doc))
 }
 
 #[cfg(test)]
