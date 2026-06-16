@@ -4,6 +4,53 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.5] — 2026-06-15
+
+Completes the improvement roadmap (waves 4–5: medium tier + big bets).
+
+### New
+
+- **Side-by-side model compare** — pick 2–3 models, send one prompt, watch each
+  response stream in its own column (exploratory; never saved to the
+  conversation). Reuses the normal per-backend clients and the inference
+  admission gate (local serial / cloud parallel).
+- **Hybrid RAG retrieval** — keyword (FTS5 bm25) + vector fused via Reciprocal
+  Rank Fusion, so exact identifiers / error codes are no longer missed. Forward-
+  only: existing corpora keep working and gain the keyword leg via a per-corpus
+  "Rebuild hybrid index" button (no re-ingest required).
+- **Resume an interrupted run** — if an agent run is cut off, the conversation
+  offers a review-before-continue "Resume run" from its durable checkpoint
+  (never auto-resumes; no silent cloud re-billing).
+- **Model catalog** — a curated, RAM-aware one-click discovery tab in the model
+  browser, with fit badges from your hardware profile.
+- **Parallel Flows node** — fan out independent branches concurrently and
+  collect the results.
+- **Curated model discovery, System theme, in-chat find (Cmd+F), keyboard-
+  shortcuts overlay (`?`), interface-scale control, Simple mode, and a one-time
+  first-run tour.**
+
+### Improved
+
+- Ollama models discovered via the daemon HTTP API (`/api/tags`); true context-
+  window + vision read from the backend (`/api/show`, HF config) instead of a
+  name regex.
+- Auto-retrieve indexed corpora in plain chat ("Use docs"); RAG corpora show a
+  stale badge with one-click re-ingest.
+- Flows: weekly / day-of-week scheduling with next-fire time; a run-output
+  inspector; per-card stop + re-run.
+- Global UI text-scaling (90–150%) that composes with the chat transcript-size
+  setting; light-theme high-contrast; `prefers-reduced-transparency` fallback.
+- Backend crash recovery is now actionable; backend auto-restart shows inline
+  progress; mid-run steering (inject a message without aborting).
+- Daemon-less embedder abstraction + fingerprint guard landed (the in-process
+  candle model runner itself is staged for a follow-up).
+
+### Notes
+
+Still intentionally not built: an Intel/universal macOS build (Metal + mistralrs
+make it infeasible without major rework — Froglips is Apple-Silicon only by
+design). The in-process candle embedding runner is staged behind its abstraction.
+
 ## [0.14.4] — 2026-06-15
 
 Improvement-roadmap remediation (3 waves, multi-agent verify-then-fix).

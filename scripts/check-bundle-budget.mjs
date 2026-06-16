@@ -59,9 +59,14 @@ const KB = 1024;
 //     quick.html               ~151 KB  → cap 170 KB   ← App.css aggregator; trim toward a lean quick.css (follow-up)
 //     detached.html            ~182 KB  → cap 210 KB   (katex + ChatWindow + App.css)
 const WINDOW_BUDGETS = [
-  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 160 * KB },
+  // main App CSS cap 160→168 KB in v0.14.5: +~4 KB of render-blocking App.css
+  // from the new chat surfaces (side-by-side compare, in-chat find bar, recall-
+  // pill list, plan checklist) + appearance (light high-contrast, ui-scale).
+  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 168 * KB },
   { html: "quick.html", label: "Quick Prompt popover", maxBytes: 240 * KB, cssMaxBytes: 170 * KB },
-  { html: "detached.html", label: "detached conversation", maxBytes: 940 * KB, cssMaxBytes: 210 * KB },
+  // detached boot graph 940→955 KB in v0.14.5: +~5 KB from the Compare toggle +
+  // resume-affordance code now in the ChatWindow chunk the detached window loads.
+  { html: "detached.html", label: "detached conversation", maxBytes: 955 * KB, cssMaxBytes: 210 * KB },
 ];
 
 // Boot-graph sanity floor: every window must boot at least its entry script.
