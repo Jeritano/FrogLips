@@ -782,12 +782,27 @@ pub fn restore_archived(conversation_id: i64) -> Result<usize> {
 mod tests {
     use super::*;
 
+    /// Serialize the maintenance tests. They run archive/restore/trim phases
+    /// against the PROCESS-GLOBAL live DB (a singleton pool — there is no clean
+    /// per-test DB to swap in), so two of them running on different test threads
+    /// race on the shared `messages`/archive tables (intermittent failures under
+    /// `cargo test --no-default-features`). Every test in this module takes this
+    /// lock first, which makes the suite deterministic without weakening any
+    /// assertion. Poison is recovered (a panicking test must not wedge the rest).
+    fn maint_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     /// archive-not-delete + restore round-trip against the real pool: an old
     /// message in a quiet conversation is archived (gone from `messages`,
     /// present in the archive), and `restore_archived` brings it back with its
     /// original id. A FRESH (recently-active) conversation is never touched.
     #[test]
     fn archive_then_restore_round_trip_and_active_window_exclusion() {
+        let _guard = maint_test_lock();
         let now = now_unix();
         // Quiet conversation: a very old message, no recent activity.
         let quiet = history::create_conversation(
@@ -871,6 +886,7 @@ mod tests {
     /// otherwise-quiet conversation must stay in `messages` after a pass.
     #[test]
     fn archive_skips_agent_checkpoint_shadow_rows() {
+        let _guard = maint_test_lock();
         let now = now_unix();
         let conv = history::create_conversation(
             &format!("__test_maint_shadow_{}", std::process::id()),
@@ -951,6 +967,7 @@ mod tests {
     /// Exercises `trim_table` against the real `agent_audit` via a tiny cap.
     #[test]
     fn trim_table_keeps_newest_and_is_noop_below_cap() {
+        let _guard = maint_test_lock();
         // Seed a marker set of rows we can identify + clean up.
         let tag = format!("__test_trim_{}", std::process::id());
         let seed = |n: usize| {
@@ -997,6 +1014,7 @@ mod tests {
     /// `stats()` returns sane (non-erroring) numbers against the real pool.
     #[test]
     fn stats_does_not_error() {
+        let _guard = maint_test_lock();
         let s = stats().expect("stats must not error");
         assert!(s.db_bytes >= 0);
         assert!(s.conversations >= 0);
@@ -1006,6 +1024,7 @@ mod tests {
     /// A disabled policy skips the safe phases entirely (and never errors).
     #[test]
     fn disabled_policy_skips_safe_phases() {
+        let _guard = maint_test_lock();
         let cfg = MaintenanceConfig {
             enabled: false,
             ..MaintenanceConfig::default()
@@ -1022,6 +1041,7 @@ mod tests {
     /// corpus name + temp dir so it coexists with the shared dev DB.
     #[test]
     fn refresh_stale_corpora_reingests_drifted_corpus() {
+        let _guard = maint_test_lock();
         let tag = format!("{}_refr", std::process::id());
         let name = format!("__test_refresh_{tag}");
         let dir = std::env::temp_dir().join(format!("maint_refresh_{tag}"));
