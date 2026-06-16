@@ -4,6 +4,24 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.7] — 2026-06-16
+
+### Added
+
+- **Unified "Skills & Tools" hub** (replaces the "Tools" view) — one place to see
+  and toggle everything the agent can use, modeled on a clean catalog layout:
+  `Skills | Toolsets` tabs, a search box, category chips with live counts, and
+  category-grouped rows with an on/off switch each.
+  - **Skills**: your Claude Skills, now grouped by a `category` (read from
+    SKILL.md frontmatter, default "General"), each with an enable/pin/view/delete
+    + an Import button.
+  - **Toolsets**: built-in agent tools grouped by category (Filesystem, Shell,
+    Web, Code, macOS, …) with per-tool and per-category on/off, plus your MCP
+    servers with an enable toggle, start/stop, and a browse/add-servers flow.
+  - Turning a skill, tool, or MCP server off removes it from what the agent is
+    offered (composes with the per-preset allowlist; the confirmation gate is
+    unchanged). Everything defaults to on, so existing setups are unaffected.
+
 ## [0.14.6] — 2026-06-16
 
 ### Added

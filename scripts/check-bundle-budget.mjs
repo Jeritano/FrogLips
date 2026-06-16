@@ -62,7 +62,7 @@ const WINDOW_BUDGETS = [
   // main App CSS cap 160→168 KB in v0.14.5: +~4 KB of render-blocking App.css
   // from the new chat surfaces (side-by-side compare, in-chat find bar, recall-
   // pill list, plan checklist) + appearance (light high-contrast, ui-scale).
-  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 168 * KB },
+  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 172 * KB },
   { html: "quick.html", label: "Quick Prompt popover", maxBytes: 240 * KB, cssMaxBytes: 170 * KB },
   // detached boot graph 940→955 KB in v0.14.5: +~5 KB from the Compare toggle +
   // resume-affordance code now in the ChatWindow chunk the detached window loads.
