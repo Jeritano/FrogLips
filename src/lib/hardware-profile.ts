@@ -107,6 +107,42 @@ export function fmtGb(gb: number): string {
   return `${Math.round(gb)} GB`;
 }
 
+/**
+ * Pick a fitting alternative after a model failed to run (item 3 recovery).
+ * Given the failed model's id, the list of installed candidates, and the
+ * machine, return the LARGEST candidate that still classifies as
+ * "comfortable" (≤60% RAM) — preferring a capable model over a tiny one — and
+ * that is strictly smaller than the model that just failed. Returns null when
+ * nothing better fits, the machine is unknown, or no candidate has a usable
+ * size (cloud/native rows report 0).
+ */
+export function suggestSmallerModel(
+  failedId: string | null | undefined,
+  candidates: ModelEntry[],
+  machine: Pick<SystemInfo, "total_ram_gb"> | null,
+): ModelEntry | null {
+  if (!machine || !(machine.total_ram_gb > 0)) return null;
+  const failed = candidates.find((m) => m.id === failedId) ?? null;
+  const failedNeed = failed ? estimateModelRamGb(failed) : Infinity;
+
+  let best: ModelEntry | null = null;
+  let bestNeed = 0;
+  for (const m of candidates) {
+    if (m.id === failedId) continue;
+    const need = estimateModelRamGb(m);
+    if (need <= 0) continue; // unknown size — can't honestly recommend
+    // Must be smaller than what failed AND comfortable on this machine.
+    if (need >= failedNeed) continue;
+    if (classify(m, machine).tier !== "comfortable") continue;
+    // Among the comfortable-and-smaller set, prefer the most capable (largest).
+    if (need > bestNeed) {
+      best = m;
+      bestNeed = need;
+    }
+  }
+  return best;
+}
+
 /** True when a hardware profile is stale enough to re-detect (>7 days old). */
 export function isProfileStale(
   detectedAtUnixSec: number,

@@ -14,7 +14,14 @@ import type { AgentStatus } from "../lib/agent-loop";
 import { saveMemory } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
 import { getReplyStat, subscribeReplyStats } from "../lib/reply-stats";
-import { renderMarkdown } from "../lib/markdown";
+import {
+  renderMarkdown,
+  renderUserContent,
+  containsUserCode,
+  subscribeGrammarLoad,
+  getGrammarVersion,
+  setGrammarCacheInvalidator,
+} from "../lib/markdown";
 import { useTwoClickConfirm } from "../lib/use-two-click-confirm";
 // Syntax-highlight colors live in styles/syntax.css as theme-aware CSS
 // vars (was a hardcoded github-dark.css import — its dark-only palette
@@ -79,6 +86,34 @@ function cachedMarkdown(text: string): string {
   markdownCache.set(text, rendered);
   return rendered;
 }
+
+// User-message code cache (item: render fenced/inline code in user bubbles).
+// Same FIFO bound + content-keying as markdownCache. A user message rendered
+// against a not-yet-loaded grammar (plaintext fallback) is invalidated by the
+// grammar-load hook below, identically to the assistant cache.
+const userCodeCache = new Map<string, string>();
+function cachedUserContent(text: string): string {
+  const hit = userCodeCache.get(text);
+  if (hit !== undefined) return hit;
+  const rendered = renderUserContent(text);
+  if (userCodeCache.size >= MARKDOWN_CACHE_MAX) {
+    const firstKey = userCodeCache.keys().next().value;
+    if (firstKey !== undefined) userCodeCache.delete(firstKey);
+  }
+  userCodeCache.set(text, rendered);
+  return rendered;
+}
+
+// When a lazily-loaded highlight.js grammar finishes registering, drop the HTML
+// memos that were produced against the plaintext fallback so the next render
+// re-highlights with the real grammar. markdown.ts owns the load lifecycle and
+// calls this hook (set once at module load) immediately before notifying the
+// React subscribers below. Clearing wholesale is fine — the caches refill
+// lazily and a grammar load is rare.
+setGrammarCacheInvalidator(() => {
+  markdownCache.clear();
+  userCodeCache.clear();
+});
 
 // Tool calls + results are NOT rendered inline. Agent runs stack many
 // web_search / web_fetch / write_file steps; showing each as a bubble buries
@@ -237,15 +272,70 @@ function PlanChecklist({ plan }: { plan: PlanStep[] }) {
   );
 }
 
+// Re-render trigger for lazily-loaded highlight.js grammars. A code block first
+// rendered before its grammar finished loading shows the plaintext fallback;
+// when the grammar lands, markdown.ts clears the HTML caches and bumps a version
+// counter. Subscribing here re-runs the (now cache-miss) render so the block
+// highlights for real. useSyncExternalStore keeps it concurrent-safe.
+function useGrammarVersion(): number {
+  return useSyncExternalStore(subscribeGrammarLoad, getGrammarVersion);
+}
+
 /** Completed assistant prose: collapsed reasoning disclosure (if the reply
  *  carried a `<think>` span) above the markdown-rendered answer. */
 function AssistantContent({ content }: { content: string }) {
   const { thought, answer } = splitThought(content);
+  // Subscribe so a lazy grammar load re-highlights this reply's code blocks.
+  useGrammarVersion();
   return (
     <div className="content markdown">
       <ThinkingDisclosure thought={thought} open={false} />
       <div dangerouslySetInnerHTML={{ __html: cachedMarkdown(answer) }} />
     </div>
+  );
+}
+
+/** Assistant prose for a turn that ALSO made tool calls (tool chrome hidden).
+ *  Renders only the prose + reasoning; returns null when there's nothing to
+ *  show. Separate from AssistantContent so it can return null and still call
+ *  the grammar-version hook unconditionally. */
+function AssistantToolCallContent({ content }: { content: string }) {
+  const { thought, answer } = splitThought(content);
+  // Subscribe so a lazy grammar load re-highlights this turn's code blocks.
+  useGrammarVersion();
+  const html = answer.trim() ? cachedMarkdown(answer) : "";
+  if (!html && !thought) return null;
+  return (
+    <div className="message assistant">
+      <div className="content markdown">
+        <ThinkingDisclosure thought={thought} open={false} />
+        {html && <div dangerouslySetInnerHTML={{ __html: html }} />}
+      </div>
+    </div>
+  );
+}
+
+/** User message body. Plain prose stays literal text (no markdown surprises),
+ *  but pasted fenced ``` blocks + inline `code` get the monospace + syntax-
+ *  highlight + copy-button treatment. Falls back to the original plain-text
+ *  node when the message contains no code, keeping the cheap path for the
+ *  common case. */
+function UserContent({ content }: { content: string }) {
+  const hasCode = containsUserCode(content);
+  // Subscribe so a lazy grammar load re-highlights pasted code (mirrors the
+  // assistant path). Cheap no-op when the message has no code.
+  useGrammarVersion();
+  if (!hasCode) {
+    // No code → preserve the prior behavior exactly: a plain text node, with
+    // the bubble's `white-space: pre-wrap` handling newlines. No marked, no
+    // sanitizer, no surprise formatting.
+    return <div className="content">{content}</div>;
+  }
+  return (
+    <div
+      className="content markdown user-code"
+      dangerouslySetInnerHTML={{ __html: cachedUserContent(content) }}
+    />
   );
 }
 
@@ -360,17 +450,9 @@ function MessageRowImpl({
   if (msg.role === "assistant" && msg.tool_calls?.length) {
     // Tool-call chrome is hidden — render only the assistant's prose, if any.
     // Pure tool-call turns are already filtered out of `rows` upstream.
-    const { thought, answer } = splitThought(msg.content ?? "");
-    const html = answer.trim() ? cachedMarkdown(answer) : "";
-    if (!html && !thought) return null;
-    return (
-      <div className="message assistant">
-        <div className="content markdown">
-          <ThinkingDisclosure thought={thought} open={false} />
-          {html && <div dangerouslySetInnerHTML={{ __html: html }} />}
-        </div>
-      </div>
-    );
+    // Delegated to a component so it can subscribe to lazy-grammar reloads via
+    // useGrammarVersion (hooks can't run after MessageRowImpl's early returns).
+    return <AssistantToolCallContent content={msg.content ?? ""} />;
   }
 
   // User input is plain text — typed by a human, no markdown intent. Skipping
@@ -395,7 +477,7 @@ function MessageRowImpl({
         data-testid={`message-${msg.role}`}
       >
         {isUser ? (
-          <div className="content">{msg.content}</div>
+          <UserContent content={msg.content} />
         ) : (
           <AssistantContent content={msg.content} />
         )}
@@ -667,6 +749,8 @@ const StreamingMessage = memo(function StreamingMessage({
   // clients). Split it out so the live bubble shows a "Thinking…" disclosure
   // instead of dumping the raw chain-of-thought (and never the literal tags).
   const { thought, answer, open } = splitThought(text);
+  // Re-highlight the streamed prefix's code blocks when a lazy grammar lands.
+  useGrammarVersion();
   // PROGRESSIVE MARKDOWN: render the completed prefix as cached markdown (closed
   // code fences highlight live, finished paragraphs format) and keep only the
   // in-flight tail as plain escaped text. `cachedMarkdown` is keyed on the stable
@@ -715,6 +799,10 @@ interface MessageHistoryProps {
   conversationId?: number | null;
   workspaceRoot?: string | null;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  /** When true (in-conversation Find is open) ALL rows render — even the
+   *  windowed/'show earlier' ones — so every match is in the DOM to scroll
+   *  to + highlight. */
+  forceExpand?: boolean;
   onRegenerate?: () => void;
   onEditUser?: (m: Message) => void;
   onFork?: (m: Message) => void;
@@ -725,6 +813,7 @@ const MessageHistory = memo(function MessageHistory({
   conversationId,
   workspaceRoot,
   scrollContainerRef,
+  forceExpand,
   onRegenerate,
   onEditUser,
   onFork,
@@ -766,10 +855,9 @@ const MessageHistory = memo(function MessageHistory({
   // shrinking history (e.g. after a regenerate trims trailing turns) can't
   // leave a stale offset that hides the whole list.
   const maxHidden = Math.max(0, rows.length - WINDOW_SIZE);
-  const effectiveHidden = Math.min(
-    hiddenCount === 0 ? maxHidden : hiddenCount,
-    maxHidden,
-  );
+  const effectiveHidden = forceExpand
+    ? 0
+    : Math.min(hiddenCount === 0 ? maxHidden : hiddenCount, maxHidden);
   const visibleRows = useMemo(
     () => (effectiveHidden > 0 ? rows.slice(effectiveHidden) : rows),
     [rows, effectiveHidden],
@@ -870,6 +958,179 @@ const MessageHistory = memo(function MessageHistory({
     </>
   );
 });
+
+// ── In-conversation Find (Cmd+F) ─────────────────────────────────────────────
+//
+// A lightweight find bar SCOPED to the open conversation. The native webview
+// Cmd+F is unreliable against the 150-row window (it can't see collapsed rows,
+// and Tauri's webview intercepts inconsistently), so we roll our own: search
+// the rendered message DOM, wrap every hit in <mark class="find-hit">, and
+// step through them with next/prev. When find is open the row window is force-
+// expanded (see MessageHistory.forceExpand) so hits inside 'show earlier' rows
+// are in the DOM to scroll to.
+//
+// Highlighting is DOM-based (a TreeWalker over text nodes) rather than text-
+// offset-based so it works regardless of how each message rendered (plain
+// user prose, markdown HTML, syntax-highlighted code) — we highlight what the
+// user actually SEES.
+
+const FIND_HIT_CLASS = "find-hit";
+const FIND_CURRENT_CLASS = "find-current";
+
+// Remove all our <mark> wrappers under `root`, restoring the original text.
+function clearFindMarks(root: HTMLElement): void {
+  const marks = root.querySelectorAll(`mark.${FIND_HIT_CLASS}`);
+  for (const mark of Array.from(marks)) {
+    const parent = mark.parentNode;
+    if (!parent) continue;
+    // Replace the <mark> with its text content, then merge adjacent text nodes.
+    parent.replaceChild(
+      mark.ownerDocument.createTextNode(mark.textContent ?? ""),
+      mark,
+    );
+    parent.normalize();
+  }
+}
+
+// Wrap every case-insensitive occurrence of `query` in a text node under
+// `root` with <mark class="find-hit">. Returns the marks in document order.
+// Skips the find bar itself and non-content nodes (script/style).
+function applyFindMarks(root: HTMLElement, query: string): HTMLElement[] {
+  const marks: HTMLElement[] = [];
+  if (!query) return marks;
+  const needle = query.toLowerCase();
+  const doc = root.ownerDocument;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Node): number {
+      const text = node.nodeValue;
+      if (!text || !text.toLowerCase().includes(needle)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      // Skip text inside the find bar, scripts/styles, and existing marks.
+      let p = node.parentElement;
+      while (p && p !== root) {
+        const tag = p.tagName;
+        if (
+          tag === "SCRIPT" ||
+          tag === "STYLE" ||
+          tag === "MARK" ||
+          p.classList.contains("find-bar")
+        ) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        p = p.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  // Collect first (mutating during walk invalidates the walker).
+  const targets: Text[] = [];
+  let n: Node | null;
+  while ((n = walker.nextNode())) targets.push(n as Text);
+
+  for (const node of targets) {
+    const text = node.nodeValue ?? "";
+    const lower = text.toLowerCase();
+    const frag = doc.createDocumentFragment();
+    let last = 0;
+    let idx = lower.indexOf(needle, last);
+    while (idx !== -1) {
+      if (idx > last) frag.appendChild(doc.createTextNode(text.slice(last, idx)));
+      const mark = doc.createElement("mark");
+      mark.className = FIND_HIT_CLASS;
+      mark.textContent = text.slice(idx, idx + needle.length);
+      frag.appendChild(mark);
+      marks.push(mark);
+      last = idx + needle.length;
+      idx = lower.indexOf(needle, last);
+    }
+    if (last < text.length) frag.appendChild(doc.createTextNode(text.slice(last)));
+    node.parentNode?.replaceChild(frag, node);
+  }
+  return marks;
+}
+
+interface FindBarProps {
+  query: string;
+  onQueryChange: (q: string) => void;
+  current: number;
+  total: number;
+  onNext: () => void;
+  onPrev: () => void;
+  onClose: () => void;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+}
+
+function FindBar({
+  query,
+  onQueryChange,
+  current,
+  total,
+  onNext,
+  onPrev,
+  onClose,
+  inputRef,
+}: FindBarProps) {
+  return (
+    <div className="find-bar" data-testid="find-bar" role="search">
+      <input
+        ref={inputRef}
+        className="find-input"
+        data-testid="find-input"
+        type="text"
+        placeholder="Find in conversation"
+        aria-label="Find in conversation"
+        value={query}
+        onChange={(e) => onQueryChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (e.shiftKey) onPrev();
+            else onNext();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onClose();
+          }
+        }}
+      />
+      <span className="find-count" data-testid="find-count" aria-live="polite">
+        {total > 0 ? `${current + 1}/${total}` : query ? "0/0" : ""}
+      </span>
+      <button
+        type="button"
+        className="find-nav"
+        data-testid="find-prev"
+        onClick={onPrev}
+        disabled={total === 0}
+        title="Previous match (Shift+Enter)"
+        aria-label="Previous match"
+      >
+        ↑
+      </button>
+      <button
+        type="button"
+        className="find-nav"
+        data-testid="find-next"
+        onClick={onNext}
+        disabled={total === 0}
+        title="Next match (Enter)"
+        aria-label="Next match"
+      >
+        ↓
+      </button>
+      <button
+        type="button"
+        className="find-close"
+        data-testid="find-close"
+        onClick={onClose}
+        title="Close (Esc)"
+        aria-label="Close find"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
 
 export function MessageList({
   messages,
@@ -1079,14 +1340,125 @@ export function MessageList({
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
+  // ── In-conversation Find (Cmd+F) ───────────────────────────────────────────
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findActive, setFindActive] = useState(0);
+  const [findCount, setFindCount] = useState(0);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  // Marks in document order — refreshed by the highlight effect, read by nav.
+  const findMarksRef = useRef<HTMLElement[]>([]);
+  // Re-highlight when a lazily-loaded grammar swaps a code block's DOM out from
+  // under us (the marks were in the old nodes).
+  const grammarVersion = useGrammarVersion();
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFindQuery("");
+  }, []);
+
+  // Open on Cmd/Ctrl+F. Bound at the document level (gated on the chat list
+  // being mounted) because the message-list div isn't focusable, so a keydown
+  // on it alone wouldn't fire reliably. Scoped to THIS conversation's list —
+  // see note below for the ChatWindow-level alternative.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "f") {
+        // Only hijack when a message list is present (chat view active).
+        if (!listRef.current) return;
+        e.preventDefault();
+        setFindOpen(true);
+        // Focus + select on the next frame so re-opening over an existing query
+        // selects it for quick replacement.
+        requestAnimationFrame(() => {
+          findInputRef.current?.focus();
+          findInputRef.current?.select();
+        });
+      } else if (e.key === "Escape" && findOpen) {
+        closeFind();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [findOpen, closeFind]);
+
+  // Move the "current" highlight to index i and scroll it into view.
+  const focusMatch = useCallback((i: number) => {
+    const marks = findMarksRef.current;
+    if (marks.length === 0) return;
+    const clamped = ((i % marks.length) + marks.length) % marks.length;
+    marks.forEach((m, j) => m.classList.toggle(FIND_CURRENT_CLASS, j === clamped));
+    marks[clamped]?.scrollIntoView({ block: "center", behavior: "smooth" });
+    setFindActive(clamped);
+  }, []);
+
+  const findNext = useCallback(() => focusMatch(findActive + 1), [focusMatch, findActive]);
+  const findPrev = useCallback(() => focusMatch(findActive - 1), [focusMatch, findActive]);
+
+  // (Re)apply highlights whenever the query, the rendered content, or a lazy
+  // grammar load changes. Runs post-commit so force-expanded rows are present
+  // in the DOM. The cleanup clears marks so a closed/edited query never leaves
+  // stale <mark> wrappers behind. Autoscroll-stick is disabled while finding so
+  // jumping to an older match isn't yanked back to the bottom.
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    clearFindMarks(el);
+    if (!findOpen || !findQuery) {
+      findMarksRef.current = [];
+      setFindCount(0);
+      return;
+    }
+    const marks = applyFindMarks(el, findQuery);
+    findMarksRef.current = marks;
+    setFindCount(marks.length);
+    if (marks.length > 0) {
+      // Reading a match → pause stick-to-bottom so the jump survives.
+      stickRef.current = false;
+      const start = Math.min(findActive, marks.length - 1);
+      const clamped = start < 0 ? 0 : start;
+      marks.forEach((m, j) =>
+        m.classList.toggle(FIND_CURRENT_CLASS, j === clamped),
+      );
+      marks[clamped]?.scrollIntoView({ block: "center", behavior: "auto" });
+      setFindActive(clamped);
+    } else {
+      setFindActive(0);
+    }
+    return () => clearFindMarks(el);
+    // `findActive` is intentionally excluded — nav updates it + scrolls directly
+    // via focusMatch without needing a full re-highlight pass. `streaming` is
+    // also excluded on purpose: re-marking the whole conversation DOM on every
+    // streamed token would thrash; matches in a just-finished reply are picked
+    // up when it persists into `messages`. Stale marks inside the live bubble
+    // self-heal on the next messages/query change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findOpen, findQuery, messages, grammarVersion]);
+
   return (
     <div className="message-list" ref={listRef} onClick={onListClick}>
+      {findOpen && (
+        <FindBar
+          query={findQuery}
+          onQueryChange={(q) => {
+            setFindQuery(q);
+            setFindActive(0);
+          }}
+          current={findActive}
+          total={findCount}
+          onNext={findNext}
+          onPrev={findPrev}
+          onClose={closeFind}
+          inputRef={findInputRef}
+        />
+      )}
       {plan && <PlanChecklist plan={plan} />}
       <MessageHistory
         messages={messages}
         conversationId={conversationId}
         workspaceRoot={workspaceRoot}
         scrollContainerRef={listRef}
+        forceExpand={findOpen}
         onRegenerate={onRegenerate}
         onEditUser={onEditUser}
         onFork={onFork}

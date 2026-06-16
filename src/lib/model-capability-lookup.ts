@@ -1,5 +1,6 @@
 import type { ServerStatus } from "../types";
 import { modelSupportsVision } from "./model-capabilities";
+import { api } from "./tauri-api";
 import { logDiag } from "./diagnostics";
 
 /**
@@ -13,10 +14,13 @@ import { logDiag } from "./diagnostics";
  * happens to contain "vision" gets a button that does nothing. When
  * the active backend reports the truth we cache + trust it.
  *
- * Today only Ollama's `/api/show` exposes capabilities cleanly (a
- * `capabilities: string[]` array containing "vision" for multimodal
- * models). MLX and the in-process native backend fall through to the
- * heuristic — both are TODOs pending a uniform capability endpoint.
+ * Resolution order (item 2):
+ *   1. Rust `model_metadata` — authoritative for ALL local backends
+ *      (Ollama capabilities array, plus MLX/native via their HF config's
+ *      `vision_config` / multimodal `model_type`).
+ *   2. Direct Ollama `/api/show` fetch — fallback when the Rust command
+ *      is unavailable but the daemon is reachable.
+ *   3. The name heuristic from `model-capabilities.ts`.
  */
 
 /** Cache: `${backend}:${modelId}` -> vision-capable bool. */
@@ -59,6 +63,21 @@ export async function prefetchVisionSupport(
   const k = key(model, status.backend);
   const existing = visionCache.get(k);
   if (existing !== undefined) return existing;
+
+  // 1. Authoritative Rust command — works for ollama AND mlx/native. Only a
+  //    definite boolean is cached/returned; a null (undeterminable) falls
+  //    through so the heuristic keeps covering and a later retry can resolve.
+  try {
+    const meta = await api.modelMetadata(model, status.backend);
+    if (meta && typeof meta.vision === "boolean") {
+      visionCache.set(k, meta.vision);
+      return meta.vision;
+    }
+  } catch {
+    /* fall through to the direct fetch below */
+  }
+
+  // 2. Direct Ollama /api/show — only meaningful for the ollama backend.
   if (status.backend !== "ollama") return null;
 
   try {

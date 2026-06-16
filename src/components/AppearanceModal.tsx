@@ -1,11 +1,12 @@
-import { useRef, useState } from "react";
-import { X, Sun, Moon } from "lucide-react";
+import { useRef, useState, type ReactNode } from "react";
+import { X, Sun, Moon, Monitor } from "lucide-react";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import {
   SYNTAX_THEMES,
   type SyntaxThemeId,
   type UiFont,
   type TranscriptSize,
+  type ThemePref,
   getCodeTheme,
   setCodeTheme,
   getCodeFont,
@@ -26,10 +27,14 @@ import {
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** Current app theme + toggle, owned by App so the moon button + this
-   *  modal stay in sync. */
+  /** Resolved concrete app theme (light | dark) — drives the high-contrast
+   *  copy + which surfaces preview light/dark. */
   theme: "dark" | "light";
-  onToggleTheme: () => void;
+  /** User's theme PREFERENCE (light | dark | system), owned by App so the
+   *  selector here + the topbar moon button stay in sync. */
+  themePref: ThemePref;
+  /** Set an explicit theme preference (System follows the OS, live). */
+  onSetThemePref: (pref: ThemePref) => void;
 }
 
 /** A tiny syntax-highlighted snippet so each palette is previewed live. The
@@ -80,7 +85,8 @@ export function AppearanceModal({
   open,
   onClose,
   theme,
-  onToggleTheme,
+  themePref,
+  onSetThemePref,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   useModalA11y({ open, onClose, containerRef: ref });
@@ -196,16 +202,17 @@ export function AppearanceModal({
 
           <div className="appr-row">
             <div className="appr-row-text">
-              <span className="appr-row-title">High-contrast dark theme</span>
+              <span className="appr-row-title">High contrast</span>
               <span className="appr-row-desc">
-                Use a darker, near-black background when dark mode is on.
+                Stronger surface and border separation — a near-black background
+                in dark mode, crisper borders in light mode.
               </span>
             </div>
             <button
               type="button"
               role="switch"
               aria-checked={highContrast}
-              aria-label="High-contrast dark theme"
+              aria-label="High contrast"
               className={`appr-switch${highContrast ? " on" : ""}`}
               onClick={() => {
                 const next = !highContrast;
@@ -284,25 +291,35 @@ export function AppearanceModal({
             <div className="appr-row-text">
               <span className="appr-row-title">App theme</span>
               <span className="appr-row-desc">
-                Switch the whole interface between light and dark.
+                Light, dark, or follow the system —{" "}
+                {themePref === "system"
+                  ? `currently ${theme}`
+                  : "System tracks your OS appearance live"}
+                .
               </span>
             </div>
-            <button
-              className="agent-settings-btn"
-              onClick={onToggleTheme}
-              style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-            >
-              {theme === "dark" ? (
-                <>
-                  <Moon size={14} /> Dark
-                </>
-              ) : (
-                <>
-                  <Sun size={14} /> Light
-                </>
-              )}{" "}
-              — switch to {theme === "dark" ? "light" : "dark"}
-            </button>
+            <div className="appr-seg" role="radiogroup" aria-label="App theme">
+              {(
+                [
+                  { id: "system", label: "System", icon: <Monitor size={13} /> },
+                  { id: "light", label: "Light", icon: <Sun size={13} /> },
+                  { id: "dark", label: "Dark", icon: <Moon size={13} /> },
+                ] as { id: ThemePref; label: string; icon: ReactNode }[]
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={themePref === opt.id}
+                  className={`appr-seg-btn${themePref === opt.id ? " on" : ""}`}
+                  onClick={() => onSetThemePref(opt.id)}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
+                >
+                  {opt.icon}
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="appr-row">

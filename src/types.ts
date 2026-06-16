@@ -391,7 +391,10 @@ export interface AppSettings {
   embedding_model?: string | null;
   recall_threshold?: number | null;
   window?: WindowGeometry | null;
-  theme?: "dark" | "light" | null;
+  /** Persisted theme preference. "system" follows the OS appearance and
+   *  live-updates; "dark"/"light" pin a concrete theme. Legacy files store the
+   *  resolved concrete value, which still validates. */
+  theme?: "system" | "dark" | "light" | null;
   custom_backends?: CustomBackend[] | null;
   mcp_servers?: McpServerConfig[] | null;
   /** First-run setup wizard completion flag. Absent on legacy installs. */
@@ -731,6 +734,16 @@ export interface RagCorpusInfo {
   chunk_count: number;
   created_at: number;
   updated_at: number;
+  /**
+   * Whether the corpus's source folder has drifted since its last ingest.
+   *
+   * W4-RAG3 (2026-06-15): the cheap `rag_list_corpora` payload OMITS this
+   * field (computing it walks + stats every file under each corpus root, far
+   * too heavy per-list), so it arrives `undefined` from the list call. The
+   * RagPanel fills it in lazily, one corpus at a time, via the on-demand
+   * `rag_corpus_stale` command, then renders a "Stale" badge when `true`.
+   */
+  stale?: boolean | null;
 }
 
 export interface RagIngestReport {

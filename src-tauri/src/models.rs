@@ -44,7 +44,84 @@ pub fn list_mlx_models() -> Result<Vec<ModelEntry>> {
     Ok(out)
 }
 
+/// Ollama daemon address for the local HTTP API. Mirrors the constants in
+/// `backend_process` but kept local so this module has no cross-dep on the
+/// process layer for a plain discovery call.
+const OLLAMA_API_BASE: &str = "http://127.0.0.1:11434";
+
+/// Discover installed Ollama models. Prefers the daemon's HTTP API
+/// (`GET /api/tags`) — it's more robust than parsing `ollama list`'s
+/// space-aligned columns, returns exact `size` in bytes, and (via
+/// `/api/show`) exposes family/capability metadata. Falls back to the
+/// `ollama list` shell-out when the daemon isn't reachable (not started yet),
+/// so a user who has the CLI but no running `ollama serve` still sees their
+/// models.
 pub fn list_ollama_models() -> Result<Vec<ModelEntry>> {
+    match list_ollama_models_http() {
+        Ok(v) => Ok(v),
+        Err(http_err) => {
+            // Daemon unreachable (common: not started). Fall back to the CLI;
+            // if THAT also fails, surface the more actionable HTTP error so the
+            // UI hint points at the daemon rather than a confusing parse error.
+            list_ollama_models_cli().map_err(|cli_err| {
+                anyhow::anyhow!("{http_err}; CLI fallback also failed: {cli_err}")
+            })
+        }
+    }
+}
+
+/// `GET /api/tags` against the local daemon. Returns each model with its exact
+/// on-disk byte size. A short timeout keeps a wedged daemon from stalling the
+/// model-list call (the same budget the old CLI path used).
+fn list_ollama_models_http() -> Result<Vec<ModelEntry>> {
+    use std::time::Duration;
+
+    #[derive(serde::Deserialize)]
+    struct TagsResponse {
+        #[serde(default)]
+        models: Vec<TagModel>,
+    }
+    #[derive(serde::Deserialize)]
+    struct TagModel {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        size: u64,
+    }
+
+    // Blocking reqwest client (the `blocking` feature is already enabled in
+    // Cargo.toml). list_ollama_models runs inside a `blocking(...)` task, so a
+    // synchronous client is correct here and avoids spinning up a runtime.
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .context("failed to build ollama http client")?;
+    let resp = client
+        .get(format!("{OLLAMA_API_BASE}/api/tags"))
+        .send()
+        .context("ollama daemon not reachable at /api/tags")?;
+    if !resp.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "ollama /api/tags returned HTTP {}",
+            resp.status()
+        ));
+    }
+    let parsed: TagsResponse = resp.json().context("invalid /api/tags JSON")?;
+    let mut out: Vec<ModelEntry> = parsed
+        .models
+        .into_iter()
+        .filter(|m| !m.name.is_empty())
+        .map(|m| ModelEntry {
+            id: m.name,
+            size_bytes: m.size,
+            backend: "ollama".into(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
+}
+
+fn list_ollama_models_cli() -> Result<Vec<ModelEntry>> {
     // Run `ollama list` with a 5s timeout. The child handle is kept on the
     // outer thread so we can kill it on timeout — the reader thread then
     // exits naturally because stdout closes. This prevents zombie ollama
@@ -127,6 +204,222 @@ pub struct ModelLists {
     pub ollama: Vec<ModelEntry>,
     pub mlx_error: Option<String>,
     pub ollama_error: Option<String>,
+}
+
+/// Authoritative, backend-reported model facts (item 2). All fields optional:
+/// the caller falls back to the name heuristic for anything we couldn't learn.
+#[derive(Serialize, Clone, Default)]
+pub struct ModelMetadata {
+    /// True context window in tokens (Ollama `/api/show` arch context_length,
+    /// or HF `config.json` `max_position_embeddings`), or None if unknown.
+    pub context_length: Option<u64>,
+    /// Whether the model accepts images, when the backend declares it
+    /// (Ollama capabilities array contains "vision", or the HF config has a
+    /// vision sub-config / multimodal model_type). None = couldn't determine.
+    pub vision: Option<bool>,
+    /// Which authority answered: "ollama", "mlx-config", "native-config",
+    /// or "none". Diagnostic only.
+    pub source: String,
+}
+
+/// Resolve a model's real context length + vision capability from the backend
+/// itself rather than a name regex (item 2). `backend` is "ollama", "mlx", or
+/// "native". Best-effort: returns `Default` (all-None) when nothing is knowable
+/// so the frontend keeps its heuristic. Never errors — an unreachable daemon or
+/// missing config just yields None.
+pub fn model_metadata(model: &str, backend: &str) -> ModelMetadata {
+    match backend {
+        "ollama" => ollama_show_metadata(model).unwrap_or_default(),
+        "mlx" => hf_config_metadata(model)
+            .map(|mut m| {
+                m.source = "mlx-config".into();
+                m
+            })
+            .unwrap_or_default(),
+        "native" => hf_config_metadata(model)
+            .map(|mut m| {
+                m.source = "native-config".into();
+                m
+            })
+            .unwrap_or_default(),
+        _ => ModelMetadata::default(),
+    }
+}
+
+/// Query Ollama's `/api/show` for the authoritative context length + vision
+/// capability of one model. The arch-prefixed `<arch>.context_length` key in
+/// `model_info` is the architectural window; a Modelfile `num_ctx` parameter
+/// (if present) is what the model is actually RUN with, so it wins. The
+/// top-level `capabilities` array carries "vision" for multimodal models.
+fn ollama_show_metadata(model: &str) -> Option<ModelMetadata> {
+    use std::time::Duration;
+
+    #[derive(serde::Deserialize)]
+    struct ShowResponse {
+        #[serde(default)]
+        model_info: serde_json::Map<String, serde_json::Value>,
+        #[serde(default)]
+        parameters: Option<String>,
+        #[serde(default)]
+        capabilities: Option<Vec<String>>,
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let resp = client
+        .post(format!("{OLLAMA_API_BASE}/api/show"))
+        .json(&serde_json::json!({ "name": model }))
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let parsed: ShowResponse = resp.json().ok()?;
+
+    // Context: prefer the Modelfile `num_ctx` (the active window), else the
+    // architectural `*.context_length`.
+    let mut context_length: Option<u64> = None;
+    if let Some(params) = parsed.parameters.as_deref() {
+        for line in params.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("num_ctx") {
+                if let Ok(n) = rest.trim().parse::<u64>() {
+                    if n > 0 {
+                        context_length = Some(n);
+                    }
+                }
+            }
+        }
+    }
+    if context_length.is_none() {
+        for (k, v) in &parsed.model_info {
+            if k.ends_with(".context_length") {
+                if let Some(n) = v.as_u64() {
+                    if n > 0 {
+                        context_length = Some(n);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let vision = parsed
+        .capabilities
+        .map(|caps| caps.iter().any(|c| c.eq_ignore_ascii_case("vision")));
+
+    Some(ModelMetadata {
+        context_length,
+        vision,
+        source: "ollama".into(),
+    })
+}
+
+/// Read an MLX/native model's `config.json` from the HF hub cache and extract
+/// the real context window + a vision hint. `max_position_embeddings` is the
+/// canonical context field; a `vision_config` sub-object or a multimodal
+/// `model_type` flags vision support. Returns None when the model isn't a
+/// cached HF repo (e.g. a bare GGUF path) or has no readable config.
+fn hf_config_metadata(repo_id: &str) -> Option<ModelMetadata> {
+    let config = read_hf_config(repo_id)?;
+    Some(metadata_from_hf_config(&config))
+}
+
+/// Pure transform: derive context length + vision from a parsed HF
+/// `config.json` object. Split out from the fs read so it's unit-testable.
+fn metadata_from_hf_config(
+    config: &serde_json::Map<String, serde_json::Value>,
+) -> ModelMetadata {
+    // Context: `max_position_embeddings` at the top level, or nested under a
+    // `text_config` for multimodal models (their language tower holds it).
+    let context_length = config
+        .get("max_position_embeddings")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            config
+                .get("text_config")
+                .and_then(|t| t.get("max_position_embeddings"))
+                .and_then(serde_json::Value::as_u64)
+        })
+        .filter(|n| *n > 0);
+
+    // Vision: a `vision_config` sub-object, or a model_type / architectures
+    // entry that names a known multimodal family.
+    let has_vision_config = config.get("vision_config").is_some();
+    let model_type = config
+        .get("model_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let arch_str = config
+        .get("architectures")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase()
+        })
+        .unwrap_or_default();
+    let multimodal_marker = ["vl", "vision", "llava", "image", "multimodal"]
+        .iter()
+        .any(|m| model_type.contains(m) || arch_str.contains(m));
+    // We report a definite boolean because we actually parsed a real config:
+    // a positive signal => true, otherwise false (so a text model's image
+    // button is correctly hidden rather than left to the name heuristic).
+    let vision = Some(has_vision_config || multimodal_marker);
+
+    ModelMetadata {
+        context_length,
+        vision,
+        source: String::new(), // set by caller (mlx-config / native-config)
+    }
+}
+
+/// Locate and parse a cached HF repo's `config.json`. The repo lives at
+/// `<hub>/models--<org>--<name>/snapshots/<rev>/config.json`; there may be
+/// several snapshot revisions, so pick the most recently modified. Returns the
+/// parsed JSON object, or None if the repo/config isn't present.
+fn read_hf_config(repo_id: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    // Reject anything that isn't a clean org/name HF repo so we never build a
+    // traversal path from a hostile id (defense in depth — ids are validated
+    // upstream, but this fn is reachable from the metadata command).
+    if repo_id.is_empty() || repo_id.contains("..") || repo_id.contains('\0') {
+        return None;
+    }
+    let parts: Vec<&str> = repo_id.split('/').collect();
+    if parts.len() != 2 || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let hub = hf_hub_dir();
+    let encoded = format!("models--{}", repo_id.replace('/', "--"));
+    let snapshots = hub.join(&encoded).join("snapshots");
+
+    // Newest snapshot dir wins (a re-pull adds a new revision).
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(&snapshots).ok()?.flatten() {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
+            best = Some((mtime, p));
+        }
+    }
+    let snapshot = best?.1;
+    let config_path = snapshot.join("config.json");
+    let bytes = std::fs::read(&config_path).ok()?;
+    match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(serde_json::Value::Object(map)) => Some(map),
+        _ => None,
+    }
 }
 
 pub fn delete_mlx_model(repo_id: &str) -> Result<()> {
@@ -310,5 +603,70 @@ mod tests {
         for malicious in ["..//..//etc", "a/..", ".."] {
             assert!(delete_mlx_model(malicious).is_err());
         }
+    }
+
+    fn obj(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        match v {
+            serde_json::Value::Object(m) => m,
+            _ => panic!("expected object"),
+        }
+    }
+
+    #[test]
+    fn hf_config_reads_context_and_vision() {
+        // Plain text model: context from max_position_embeddings, no vision.
+        let m = metadata_from_hf_config(&obj(serde_json::json!({
+            "model_type": "llama",
+            "max_position_embeddings": 131072,
+            "architectures": ["LlamaForCausalLM"],
+        })));
+        assert_eq!(m.context_length, Some(131072));
+        assert_eq!(m.vision, Some(false));
+
+        // Multimodal via vision_config sub-object → vision true; context can
+        // live under text_config.
+        let mm = metadata_from_hf_config(&obj(serde_json::json!({
+            "model_type": "qwen2_vl",
+            "vision_config": { "depth": 32 },
+            "text_config": { "max_position_embeddings": 32768 },
+        })));
+        assert_eq!(mm.context_length, Some(32768));
+        assert_eq!(mm.vision, Some(true));
+
+        // Vision flagged purely by model_type marker.
+        let llava = metadata_from_hf_config(&obj(serde_json::json!({
+            "model_type": "llava",
+            "max_position_embeddings": 4096,
+        })));
+        assert_eq!(llava.vision, Some(true));
+    }
+
+    #[test]
+    fn hf_config_zero_context_is_none() {
+        // A 0 / missing window must report None, never a budget of 0.
+        let z = metadata_from_hf_config(&obj(serde_json::json!({
+            "model_type": "phi3",
+            "max_position_embeddings": 0,
+        })));
+        assert_eq!(z.context_length, None);
+        let empty = metadata_from_hf_config(&obj(serde_json::json!({})));
+        assert_eq!(empty.context_length, None);
+        assert_eq!(empty.vision, Some(false));
+    }
+
+    #[test]
+    fn read_hf_config_rejects_bad_repo_ids() {
+        // Traversal / non-repo ids must never build an fs path.
+        for bad in ["", "noslash", "..", "../escape", "org/../name", "org/name\0"] {
+            assert!(read_hf_config(bad).is_none(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn model_metadata_unknown_backend_is_empty() {
+        let m = model_metadata("whatever", "openrouter");
+        assert_eq!(m.context_length, None);
+        assert_eq!(m.vision, None);
+        assert_eq!(m.source, "");
     }
 }

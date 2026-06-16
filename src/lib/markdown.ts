@@ -1,6 +1,13 @@
 import { marked, type Tokens } from "marked";
 import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js/lib/core";
+import type { LanguageFn } from "highlight.js";
+// `plaintext` is the universal fallback for not-yet-loaded / unknown languages
+// AND for fences with no info string. It is NOT bundled in highlight.js/lib/
+// core, and it's a 300-byte no-op grammar, so we register it eagerly (rather
+// than lazily) — every fenced block needs SOME registered language to escape
+// against, and lazy-loading the fallback would race the very first render.
+import plaintext from "highlight.js/lib/languages/plaintext";
 import createDOMPurify from "dompurify";
 import katex from "katex";
 // KaTeX layout stylesheet (+ bundled fonts). Imported here — not via the
@@ -20,63 +27,169 @@ import "katex/dist/katex.min.css";
 const DOMPurify =
   typeof window !== "undefined" ? createDOMPurify(window) : createDOMPurify;
 
-// Register a focused set — keeps bundle small.
-import javascript from "highlight.js/lib/languages/javascript";
-import typescript from "highlight.js/lib/languages/typescript";
-import python from "highlight.js/lib/languages/python";
-import rust from "highlight.js/lib/languages/rust";
-import bash from "highlight.js/lib/languages/bash";
-import json from "highlight.js/lib/languages/json";
-import css from "highlight.js/lib/languages/css";
-import xml from "highlight.js/lib/languages/xml";
-import sql from "highlight.js/lib/languages/sql";
-import yaml from "highlight.js/lib/languages/yaml";
-import markdown from "highlight.js/lib/languages/markdown";
-import go from "highlight.js/lib/languages/go";
-import java from "highlight.js/lib/languages/java";
-import csharp from "highlight.js/lib/languages/csharp";
-import cpp from "highlight.js/lib/languages/cpp";
-import shell from "highlight.js/lib/languages/shell";
-import dockerfile from "highlight.js/lib/languages/dockerfile";
-import diff from "highlight.js/lib/languages/diff";
+/* ── Lazy highlight.js grammar registration (perf) ──────────────────────── */
+//
+// We used to STATICALLY import ~18 grammar modules at module top, dragging
+// every one of them into the synchronous `highlight` chunk that loads the
+// moment a chat view mounts — even for a session that never shows a single
+// fenced code block, or only ever shows `ts`. Each grammar is its own async
+// chunk now (via `import.meta.glob` with `eager:false`), so the boot graph
+// ships only highlight.js core; a grammar's bytes arrive the FIRST time a code
+// block actually uses that language.
+//
+// The wrinkle: `renderMarkdown` (and `marked-highlight`'s `highlight`
+// callback) are SYNCHRONOUS, but dynamic `import()` is async. So the first
+// render of a not-yet-loaded language falls back to a plaintext highlight
+// (still tagged `language-<lang>` by `langPrefix`, so the label/copy chrome
+// and tests are unaffected) and kicks off the async grammar load. When the
+// grammar lands we register it, drop any memoized HTML that was rendered
+// against the plaintext fallback, and notify subscribers so the chat view can
+// re-render the now-highlightable blocks. Unknown / unsupported languages stay
+// permanently on the plaintext fallback — exactly hljs's own behavior.
 
-hljs.registerLanguage("javascript", javascript);
-hljs.registerLanguage("js", javascript);
-hljs.registerLanguage("typescript", typescript);
-hljs.registerLanguage("ts", typescript);
-hljs.registerLanguage("tsx", typescript);
-hljs.registerLanguage("python", python);
-hljs.registerLanguage("py", python);
-hljs.registerLanguage("rust", rust);
-hljs.registerLanguage("rs", rust);
-hljs.registerLanguage("bash", bash);
-hljs.registerLanguage("sh", bash);
-hljs.registerLanguage("zsh", bash);
-hljs.registerLanguage("shell", shell);
-hljs.registerLanguage("json", json);
-hljs.registerLanguage("css", css);
-hljs.registerLanguage("html", xml);
-hljs.registerLanguage("xml", xml);
-hljs.registerLanguage("sql", sql);
-hljs.registerLanguage("yaml", yaml);
-hljs.registerLanguage("yml", yaml);
-hljs.registerLanguage("markdown", markdown);
-hljs.registerLanguage("md", markdown);
-hljs.registerLanguage("go", go);
-hljs.registerLanguage("java", java);
-hljs.registerLanguage("csharp", csharp);
-hljs.registerLanguage("cs", csharp);
-hljs.registerLanguage("cpp", cpp);
-hljs.registerLanguage("c", cpp);
-hljs.registerLanguage("dockerfile", dockerfile);
-hljs.registerLanguage("diff", diff);
+// Canonical grammar name → its lazy module loader. Each dynamic `import()` of a
+// `highlight.js/lib/languages/*` subpath is code-split by Rollup/Vite into its
+// own async chunk, so NONE of these grammars ship in the boot graph — a
+// grammar's bytes are fetched only the first time a code block uses it. (We use
+// an explicit map rather than `import.meta.glob` so the bundler sees concrete
+// bare-specifier imports and we never glob across the node_modules boundary.)
+type GrammarLoader = () => Promise<{ default: LanguageFn }>;
+const loaderByName = new Map<string, GrammarLoader>([
+  ["javascript", () => import("highlight.js/lib/languages/javascript")],
+  ["typescript", () => import("highlight.js/lib/languages/typescript")],
+  ["python", () => import("highlight.js/lib/languages/python")],
+  ["rust", () => import("highlight.js/lib/languages/rust")],
+  ["bash", () => import("highlight.js/lib/languages/bash")],
+  ["shell", () => import("highlight.js/lib/languages/shell")],
+  ["json", () => import("highlight.js/lib/languages/json")],
+  ["css", () => import("highlight.js/lib/languages/css")],
+  ["xml", () => import("highlight.js/lib/languages/xml")],
+  ["sql", () => import("highlight.js/lib/languages/sql")],
+  ["yaml", () => import("highlight.js/lib/languages/yaml")],
+  ["markdown", () => import("highlight.js/lib/languages/markdown")],
+  ["go", () => import("highlight.js/lib/languages/go")],
+  ["java", () => import("highlight.js/lib/languages/java")],
+  ["csharp", () => import("highlight.js/lib/languages/csharp")],
+  ["cpp", () => import("highlight.js/lib/languages/cpp")],
+  ["dockerfile", () => import("highlight.js/lib/languages/dockerfile")],
+  ["diff", () => import("highlight.js/lib/languages/diff")],
+]);
+
+// Alias → canonical grammar name. Mirrors the old explicit registerLanguage
+// alias calls (js→javascript, html→xml, sh/zsh→bash, …). Anything not listed
+// is assumed to already BE a canonical grammar name (e.g. "python", "rust").
+const GRAMMAR_ALIASES: Record<string, string> = {
+  js: "javascript",
+  ts: "typescript",
+  tsx: "typescript",
+  py: "python",
+  rs: "rust",
+  sh: "bash",
+  zsh: "bash",
+  html: "xml",
+  yml: "yaml",
+  md: "markdown",
+  cs: "csharp",
+  c: "cpp",
+};
+
+function canonicalGrammar(lang: string): string {
+  return GRAMMAR_ALIASES[lang] ?? lang;
+}
+
+// Names we've already kicked off (or completed) a load for — so a code-heavy
+// reply doesn't fire N concurrent imports of the same grammar.
+const grammarLoadStarted = new Set<string>();
+
+// Re-render subscribers. When a grammar finishes loading we bump a version and
+// notify, letting the chat view (MessageList) invalidate its markdown memo and
+// re-render so the previously-plaintext block highlights for real.
+let grammarVersion = 0;
+const grammarSubscribers = new Set<() => void>();
+
+/**
+ * Subscribe to "a new grammar just registered" events. Returns an unsubscribe
+ * fn. Used by MessageList to re-render blocks that first rendered against the
+ * plaintext fallback before their grammar finished loading.
+ */
+export function subscribeGrammarLoad(cb: () => void): () => void {
+  grammarSubscribers.add(cb);
+  return () => grammarSubscribers.delete(cb);
+}
+
+/** Monotonic counter bumped each time a grammar registers (for useSyncExternalStore). */
+export function getGrammarVersion(): number {
+  return grammarVersion;
+}
+
+/**
+ * Hook invoked AFTER a grammar registers. Set by MessageList so markdown.ts can
+ * drop the per-message + per-prefix HTML memos that were produced against the
+ * plaintext fallback. Kept as an injectable callback to avoid an import cycle
+ * (markdown.ts must not import the React component that consumes it).
+ */
+let onGrammarRegistered: (() => void) | null = null;
+export function setGrammarCacheInvalidator(fn: (() => void) | null): void {
+  onGrammarRegistered = fn;
+}
+
+/**
+ * Ensure a grammar is registered. If already registered (or in flight, or has
+ * no loader) this is a no-op. Otherwise it imports the grammar chunk, registers
+ * it under its canonical name, and notifies subscribers. Synchronous callers
+ * (the `highlight` callback) fire-and-forget this and use the plaintext
+ * fallback until the registration lands.
+ */
+function ensureGrammar(canonical: string): void {
+  if (hljs.getLanguage(canonical)) return;
+  if (grammarLoadStarted.has(canonical)) return;
+  const loader = loaderByName.get(canonical);
+  if (!loader) {
+    // No such grammar — mark started so we never retry; plaintext forever.
+    grammarLoadStarted.add(canonical);
+    return;
+  }
+  grammarLoadStarted.add(canonical);
+  void loader()
+    .then((mod) => {
+      // Guard against a duplicate registration from a racing caller.
+      if (!hljs.getLanguage(canonical)) {
+        hljs.registerLanguage(canonical, mod.default);
+      }
+      grammarVersion++;
+      // Drop memoized HTML built against the plaintext fallback so the next
+      // render re-highlights with the real grammar.
+      onGrammarRegistered?.();
+      for (const cb of grammarSubscribers) cb();
+    })
+    .catch(() => {
+      // Load failed (offline chunk fetch, etc.) — leave on plaintext. Keep it
+      // in grammarLoadStarted so we don't hammer a broken chunk every render.
+    });
+}
+
+// Eagerly register the universal fallback so the synchronous highlight path
+// always has a registered language to escape against (no throw, no warning).
+hljs.registerLanguage("plaintext", plaintext);
 
 marked.use(
   markedHighlight({
     emptyLangClass: "hljs",
     langPrefix: "hljs language-",
     highlight(code, lang) {
-      const language = hljs.getLanguage(lang) ? lang : "plaintext";
+      // Resolve aliases (ts→typescript) before checking registration so a
+      // first `ts` block triggers the typescript load, not a "ts" lookup miss.
+      const canonical = lang ? canonicalGrammar(lang) : "";
+      if (canonical && !hljs.getLanguage(canonical)) {
+        // Not registered yet — kick off the async grammar load (no-op if it's
+        // already in flight or unknown) and fall back to plaintext for THIS
+        // synchronous render. A re-render after the grammar lands highlights it
+        // for real (see ensureGrammar / subscribeGrammarLoad).
+        ensureGrammar(canonical);
+      }
+      // `plaintext` is registered eagerly above — always available, even with
+      // zero lazy grammars loaded — so the fallback escapes cleanly.
+      const language = hljs.getLanguage(canonical) ? canonical : "plaintext";
       try {
         return hljs.highlight(code, { language }).value;
       } catch {
@@ -730,4 +843,99 @@ export function renderMarkdown(md: string): string {
   wrapCodeBlocks(container);
   renderMathPlaceholders(container, segments);
   return container.innerHTML;
+}
+
+/* ── User-message code rendering ─────────────────────────────────────────── */
+//
+// User bubbles are otherwise PLAIN text — a human typed them, with no markdown
+// intent, so running the full marked pipeline would surprise them (a line that
+// starts with `#` becoming an <h1>, `*foo*` italicizing, a `1.` list, etc.).
+// But a user who PASTES code wants it to look like code: monospace, syntax
+// highlight, a copy button. So we render ONLY two markdown constructs in user
+// messages — fenced ``` blocks and inline `code` spans — and leave everything
+// else as the literal text it was typed as (newlines preserved by the bubble's
+// `white-space: pre-wrap`).
+//
+// `containsUserCode` lets the caller skip the whole machinery (and keep the
+// cheap plain-text path) for the common case of a message with no code.
+
+// A fenced block: opening fence of ≥3 backticks/tildes + optional info string,
+// content, closing fence. Tolerates an UNTERMINATED trailing fence (a half-
+// pasted block) by consuming to end-of-input — matching marked's behavior.
+const USER_FENCE_RE =
+  /(^|\n)([ \t]{0,3})(`{3,}|~{3,})([^\n`]*)\n([\s\S]*?)(?:\n\2?\3[ \t]*(?=\n|$)|$)/g;
+// Inline code span: one or more backticks, non-greedy content, matching run.
+const USER_INLINE_CODE_RE = /(`+)([^`]+?)\1(?!`)/g;
+
+/** Cheap predicate — does this user text contain a fenced or inline code span? */
+export function containsUserCode(text: string): boolean {
+  if (!text) return false;
+  // A fenced block needs ``` / ~~~ at a line start; an inline span needs a
+  // backtick pair. Both require at least one backtick or tilde-run.
+  if (/(^|\n)[ \t]{0,3}(`{3,}|~{3,})/.test(text)) return true;
+  USER_INLINE_CODE_RE.lastIndex = 0;
+  return USER_INLINE_CODE_RE.test(text);
+}
+
+// Render a single fenced block to a highlighted `<pre><code>` string via the
+// SAME marked-highlight pipeline (so lazy grammar loading + theming apply),
+// then wrap it in the standard code-block chrome.
+function renderUserFence(info: string, body: string): string {
+  const lang = info.trim().split(/\s+/)[0] ?? "";
+  // Build the minimal markdown for just this fence and reuse renderMarkdown so
+  // we inherit highlight + DOMPurify + wrapCodeBlocks. Strip a single trailing
+  // newline the splitter may have captured.
+  const fenceMd = "```" + lang + "\n" + body.replace(/\n$/, "") + "\n```";
+  return renderMarkdown(fenceMd);
+}
+
+// Render inline `code` spans inside a prose segment, escaping everything else.
+// Returns an HTML string with literal text escaped and spans wrapped in
+// <code> (the inline-code chrome from chat.css).
+function renderUserProse(text: string): string {
+  let out = "";
+  let last = 0;
+  USER_INLINE_CODE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = USER_INLINE_CODE_RE.exec(text)) !== null) {
+    if (m.index > last) out += escapeHtml(text.slice(last, m.index));
+    out += "<code>" + escapeHtml(m[2]) + "</code>";
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out += escapeHtml(text.slice(last));
+  return out;
+}
+
+/**
+ * Render a USER message: fenced + inline code get the code treatment, all
+ * other text stays literal (escaped). Returns an HTML string suitable for
+ * `dangerouslySetInnerHTML`. Prose newlines are preserved by the bubble's
+ * `white-space: pre-wrap` (the wrapping element keeps that), so we do NOT
+ * inject <br>. Callers should gate on `containsUserCode` first and fall back
+ * to a plain text node when it returns false.
+ *
+ * Exported for unit tests.
+ */
+export function renderUserContent(md: string): string {
+  if (!md) return "";
+  if (typeof document === "undefined") {
+    // No DOM (SSR/test) → can't run wrapCodeBlocks chrome; just escape so the
+    // output is still safe and shows the literal source.
+    return escapeHtml(md);
+  }
+  let out = "";
+  let last = 0;
+  USER_FENCE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = USER_FENCE_RE.exec(md)) !== null) {
+    // m[1] is the leading "" or "\n" the fence regex consumed before the
+    // fence — keep it as literal prose so spacing is preserved.
+    const lead = m[1] ?? "";
+    const proseEnd = m.index + lead.length;
+    if (proseEnd > last) out += renderUserProse(md.slice(last, proseEnd));
+    out += renderUserFence(m[4] ?? "", m[5] ?? "");
+    last = m.index + m[0].length;
+  }
+  if (last < md.length) out += renderUserProse(md.slice(last));
+  return out;
 }

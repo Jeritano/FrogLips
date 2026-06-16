@@ -41,6 +41,19 @@ pub async fn list_all_models() -> Result<AllModels, String> {
     .await
 }
 
+/// Authoritative per-model facts (item 2): real context window + vision
+/// capability sourced from the backend itself (Ollama `/api/show`, or the
+/// MLX/native HF `config.json`) instead of a name regex. Best-effort — fields
+/// are `None` when unknowable, and the frontend keeps its name heuristic as
+/// the fallback. `backend` is "ollama" | "mlx" | "native".
+#[tauri::command]
+pub async fn model_metadata(
+    model: String,
+    backend: String,
+) -> Result<models::ModelMetadata, String> {
+    blocking(move || Ok(models::model_metadata(&model, &backend))).await
+}
+
 #[tauri::command]
 pub async fn delete_ollama_model(name: String) -> Result<(), String> {
     validate_ollama_name(&name)?;

@@ -51,7 +51,7 @@ import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { usePlatformChrome } from "./hooks/usePlatformChrome";
 import { useWindowGeometry } from "./hooks/useWindowGeometry";
 import { useRamPressure } from "./hooks/useRamPressure";
-import { useAppearance } from "./hooks/useAppearance";
+import { useAppearance, isThemePref } from "./hooks/useAppearance";
 import { useConversations } from "./hooks/useConversations";
 import type { Conversation, ServerStatus } from "./types";
 import { ModelPicker } from "./components/ModelPicker";
@@ -211,6 +211,66 @@ const RoundtableView = lazy(() =>
   })),
 );
 
+/**
+ * Keyboard-shortcuts cheatsheet — a small, discoverable modal listing the
+ * global shortcuts. Opened by pressing "?" outside any text field (and via the
+ * command palette). Styled with the existing `.memories-*` modal classes so it
+ * needs no new owned CSS file; the `<kbd>` chrome reuses the shared `.kbd`
+ * style. The platform key glyph (⌘ vs Ctrl) is detected from the UA so the
+ * displayed shortcuts match the active modifier the handler accepts.
+ */
+function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y({ open: true, onClose, containerRef: ref });
+  // The keydown handler accepts metaKey OR ctrlKey, so show the glyph that
+  // matches the user's platform (⌘ on Apple, Ctrl elsewhere).
+  const mod =
+    typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform)
+      ? "⌘"
+      : "Ctrl";
+  const rows: { keys: string[]; label: string }[] = [
+    { keys: [mod, "N"], label: "New chat" },
+    { keys: [mod, "K"], label: "Command palette" },
+    { keys: [mod, "L"], label: "Browse & download models" },
+    { keys: [mod, ","], label: "Open Settings" },
+    { keys: ["?"], label: "Show this cheatsheet" },
+    { keys: ["Esc"], label: "Close dialogs & menus" },
+  ];
+  return (
+    <div
+      className="memories-overlay"
+      data-testid="shortcuts-overlay"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Keyboard shortcuts"
+    >
+      <div ref={ref} className="memories-modal shortcuts-modal">
+        <div className="memories-modal-header">
+          <span>Keyboard shortcuts</span>
+          <button onClick={onClose} aria-label="Close" className="memories-close">
+            <X size={16} />
+          </button>
+        </div>
+        <ul className="shortcuts-list">
+          {rows.map((r) => (
+            <li key={r.label} className="shortcuts-row">
+              <span className="shortcuts-label">{r.label}</span>
+              <span className="shortcuts-keys">
+                {r.keys.map((k) => (
+                  <Kbd key={k}>{k}</Kbd>
+                ))}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
   // Self-healing send (2026-06-11): ModelPicker registers its "start the
@@ -253,7 +313,8 @@ function App() {
     commitEdit,
     cancelEdit,
   } = useConversations({ current, setCurrent, setErr });
-  const { theme, toggleTheme, applyPersistedTheme } = useAppearance();
+  const { theme, themePref, toggleTheme, setThemePref, applyPersistedTheme } =
+    useAppearance();
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   // Subsystem degradation pill (item 6): non-empty when any backend/mcp/
@@ -276,6 +337,9 @@ function App() {
   const [dbNoticeDismissed, setDbNoticeDismissed] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Keyboard-shortcuts cheatsheet overlay — opened by pressing "?" outside any
+  // text field (discoverability for the Cmd+N/L/K/, shortcuts).
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // RAM-pressure chip (inference wave D): macOS memorystatus level, polled
   // every 5s while visible. Renders ONLY at warn/critical — the early
   // warning before swap turns decode speed to sludge, invisible otherwise.
@@ -408,7 +472,9 @@ function App() {
           embeddingModel: s.embedding_model,
           recallThreshold: s.recall_threshold,
         });
-        if (s.theme === "light" || s.theme === "dark") {
+        // `theme` is now a tri-state preference (light | dark | system); legacy
+        // files only ever stored a concrete value, which still validates here.
+        if (isThemePref(s.theme)) {
           applyPersistedTheme(s.theme);
         }
         // Apply all device-local appearance prefs (per-theme code palettes,
@@ -585,6 +651,20 @@ function App() {
   // Global keyboard shortcuts: Cmd+N new chat, Cmd+L library, Cmd+K model picker focus
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // "?" (no modifier) toggles the keyboard-shortcuts cheatsheet — but only
+      // outside a text field so typing a literal "?" still works. Checked BEFORE
+      // the modifier gate below since "?" carries no Cmd/Ctrl. Shift is implied
+      // on most US layouts (Shift+/), so we don't require a specific modifier.
+      const t = e.target as Element | null;
+      const inField =
+        t instanceof HTMLInputElement ||
+        t instanceof HTMLTextAreaElement ||
+        (t instanceof HTMLElement && t.isContentEditable);
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey && !inField) {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+        return;
+      }
       if (!(e.metaKey || e.ctrlKey)) return;
       // Don't hijack Cmd+N/L/K while the user is typing in a field — Cmd+N
       // inside the conv rename input or the workflow name input would
@@ -594,12 +674,7 @@ function App() {
       // `isContentEditable` is the inherited property — a nested child of a
       // contenteditable root reports true, unlike `matches('[contenteditable]')`
       // which only catches the element with the attribute itself.
-      const t = e.target as Element | null;
-      if (
-        t instanceof HTMLInputElement ||
-        t instanceof HTMLTextAreaElement ||
-        (t instanceof HTMLElement && t.isContentEditable)
-      ) {
+      if (inField) {
         return;
       }
       const key = e.key.toLowerCase();
@@ -797,6 +872,12 @@ function App() {
         label: "Open Settings",
         hint: "⌘,",
         run: () => setSettingsOpen(true),
+      },
+      {
+        id: "keyboard-shortcuts",
+        label: "Keyboard shortcuts",
+        hint: "?",
+        run: () => setShortcutsOpen(true),
       },
       {
         id: "rerun-wizard",
@@ -1587,7 +1668,8 @@ function App() {
             open={appearanceOpen}
             onClose={() => setAppearanceOpen(false)}
             theme={theme}
-            onToggleTheme={toggleTheme}
+            themePref={themePref}
+            onSetThemePref={setThemePref}
           />
         </Suspense>
       )}
@@ -1614,14 +1696,17 @@ function App() {
         conversations={conversations}
         onOpenConversation={onPaletteOpenConversation}
       />
+      {shortcutsOpen && (
+        <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+      )}
       {settingsOpen && (
         <Suspense fallback={null}>
           <SettingsModal
             open={settingsOpen}
             onClose={() => setSettingsOpen(false)}
             status={status}
-            theme={theme}
-            onToggleTheme={toggleTheme}
+            themePref={themePref}
+            onSetThemePref={setThemePref}
             onRerunWizard={() => setWizardOpen(true)}
           />
         </Suspense>

@@ -9,9 +9,23 @@
 //
 // The conversation id arrives in the query string (`?conversation_id=NN`); we
 // parse it here exactly as the legacy main.tsx branch did.
+// Theme applied synchronously before first paint, mirroring main.tsx. Resolves
+// the tri-state preference (light | dark | system); a System user resolves from
+// the OS appearance. Inlined (no import) so it runs before any module body.
+// Kept in sync with appearance.ts / main.tsx.
 try {
-  const t = localStorage.getItem("froglips-theme");
-  if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+  const pref = localStorage.getItem("froglips-theme-pref");
+  const mirror = localStorage.getItem("froglips-theme");
+  let resolved: "light" | "dark" | null = null;
+  if (pref === "light" || pref === "dark") resolved = pref;
+  else if (pref === "system" || (!pref && mirror == null))
+    resolved =
+      window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)")
+        .matches
+        ? "dark"
+        : "light";
+  else if (mirror === "light" || mirror === "dark") resolved = mirror;
+  if (resolved) document.documentElement.dataset.theme = resolved;
 } catch {
   /* localStorage unavailable — keep the dark default */
 }

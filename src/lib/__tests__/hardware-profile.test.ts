@@ -4,9 +4,17 @@ import {
   estimateModelRamGb,
   fmtGb,
   isProfileStale,
+  suggestSmallerModel,
 } from "../hardware-profile";
+import type { ModelEntry } from "../../types";
 
 const GB = 1024 * 1024 * 1024;
+
+const m = (id: string, gb: number): ModelEntry => ({
+  id,
+  size_bytes: gb * GB,
+  backend: "ollama",
+});
 
 describe("estimateModelRamGb", () => {
   it("is on-disk size × runtime overhead", () => {
@@ -86,5 +94,43 @@ describe("isProfileStale", () => {
   });
   it("missing timestamp is stale", () => {
     expect(isProfileStale(0, now)).toBe(true);
+  });
+});
+
+describe("suggestSmallerModel", () => {
+  const mac18 = { total_ram_gb: 18 };
+  // On 18 GB, "comfortable" = need ≤ 60% = 10.8 GB ⇒ on-disk ≤ ~8.3 GB.
+  const list = [
+    m("big:70b", 14), // failed model (too big)
+    m("mid:13b", 8), // comfortable (10.4 GB need) and smaller
+    m("small:7b", 4), // comfortable but smaller than mid
+    m("tiny:1b", 1),
+  ];
+
+  it("picks the largest comfortable model smaller than the one that failed", () => {
+    const s = suggestSmallerModel("big:70b", list, mac18);
+    expect(s?.id).toBe("mid:13b");
+  });
+
+  it("returns null when the machine is unknown", () => {
+    expect(suggestSmallerModel("big:70b", list, null)).toBeNull();
+    expect(suggestSmallerModel("big:70b", list, { total_ram_gb: 0 })).toBeNull();
+  });
+
+  it("returns null when nothing comfortable is smaller", () => {
+    // Only the failed model + larger ones present.
+    const onlyBig = [m("big:70b", 14), m("huge:120b", 24)];
+    expect(suggestSmallerModel("big:70b", onlyBig, mac18)).toBeNull();
+  });
+
+  it("skips candidates with unknown size (cloud/native rows)", () => {
+    const withCloud = [m("big:70b", 14), m("cloud", 0)];
+    expect(suggestSmallerModel("big:70b", withCloud, mac18)).toBeNull();
+  });
+
+  it("never suggests the failed model itself", () => {
+    const s = suggestSmallerModel("mid:13b", list, mac18);
+    expect(s?.id).not.toBe("mid:13b");
+    expect(s?.id).toBe("small:7b");
   });
 });

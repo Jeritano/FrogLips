@@ -171,6 +171,16 @@ export interface AgentRunOptions {
    * current turn belongs to the abandoned attempt — discard it.
    */
   onStreamReset?: () => void;
+  /**
+   * Mid-run steering (W4-SEND item 3). Called at each turn boundary (before the
+   * runner composes the next LLM request) to drain any user messages queued
+   * while the run is in flight. Returned strings are appended as `user` turns so
+   * the model sees the new guidance WITHOUT aborting the run. Returning an empty
+   * array (or omitting the callback entirely — the default) leaves the loop
+   * byte-identical to its prior behaviour. The caller owns the queue and is
+   * responsible for clearing it as it drains.
+   */
+  drainSteeringMessages?: () => string[];
   requestConfirmation: (
     toolName: string,
     args: Record<string, unknown>,

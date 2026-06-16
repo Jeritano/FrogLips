@@ -16,7 +16,102 @@ import { SYNTAX_THEMES, type SyntaxThemeId } from "./syntax-theme";
 
 export { SYNTAX_THEMES };
 export type { SyntaxThemeId };
+/** The CONCRETE app theme actually applied to `<html data-theme>` and keyed by
+ *  every CSS rule. Always one of these two — `"system"` is a *preference* that
+ *  resolves to one of these via `matchMedia`. */
 export type Mode = "light" | "dark";
+/** The user's theme PREFERENCE. `"system"` follows the OS appearance and live-
+ *  updates; the other two pin a concrete theme. Persisted in settings.json
+ *  (`theme`) + mirrored to localStorage for the synchronous pre-render read. */
+export type ThemePref = "light" | "dark" | "system";
+
+/* ── System-theme resolution ───────────────────────────────────────────────
+ *
+ * The app's CSS keys entirely off `:root[data-theme="light"|"dark"]`, so the
+ * concrete theme on `<html>` must always be one of those two. `"system"` is a
+ * preference layered on top: it resolves to light/dark from the OS via
+ * `matchMedia('(prefers-color-scheme: dark)')` and live-updates when the OS
+ * appearance flips. We persist the PREFERENCE (so a System user stays System
+ * across launches) but mirror the RESOLVED concrete theme into the legacy
+ * `froglips-theme` key the three entry points already read synchronously
+ * before first paint — keeping the no-flash boot path working unchanged.
+ */
+
+/** Legacy mirror key holding the RESOLVED concrete theme (light|dark) for the
+ *  synchronous pre-render read in the entry points. Kept for back-compat. */
+const THEME_MIRROR_KEY = "froglips-theme";
+/** New key holding the user's PREFERENCE (light|dark|system) so a System user
+ *  is restored as System (not as whatever concrete value we last resolved). */
+const THEME_PREF_KEY = "froglips-theme-pref";
+
+const DARK_MQ = "(prefers-color-scheme: dark)";
+
+/** Resolve a preference to a concrete light/dark theme. `"system"` reads the
+ *  OS appearance; SSR / no-matchMedia falls back to dark (the app default). */
+export function resolveTheme(pref: ThemePref): Mode {
+  if (pref === "light" || pref === "dark") return pref;
+  if (typeof window === "undefined" || !window.matchMedia) return "dark";
+  return window.matchMedia(DARK_MQ).matches ? "dark" : "light";
+}
+
+/** Validate an arbitrary value as a ThemePref (settings/localStorage strings). */
+export function isThemePref(v: unknown): v is ThemePref {
+  return v === "light" || v === "dark" || v === "system";
+}
+
+/** Read the persisted preference (localStorage mirror). Defaults to "system" so
+ *  a fresh install follows the OS; legacy installs that only stored a concrete
+ *  `froglips-theme` fall back to that value (preserving their explicit choice). */
+export function getThemePref(): ThemePref {
+  try {
+    const p = localStorage.getItem(THEME_PREF_KEY);
+    if (isThemePref(p)) return p;
+    // Legacy: a concrete value was mirrored before System existed — honor it as
+    // an explicit pin rather than silently switching the user to System.
+    const legacy = localStorage.getItem(THEME_MIRROR_KEY);
+    if (legacy === "light" || legacy === "dark") return legacy;
+  } catch {
+    /* localStorage unavailable */
+  }
+  return "system";
+}
+
+/** Persist the preference + mirror the resolved concrete theme for pre-render. */
+export function writeThemePref(pref: ThemePref): void {
+  try {
+    localStorage.setItem(THEME_PREF_KEY, pref);
+    localStorage.setItem(THEME_MIRROR_KEY, resolveTheme(pref));
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Apply a preference to `<html data-theme>` (resolving System → light/dark)
+ *  and return the concrete theme applied. Does NOT persist. */
+export function applyThemePref(pref: ThemePref): Mode {
+  const resolved = resolveTheme(pref);
+  if (typeof document !== "undefined") {
+    document.documentElement.dataset.theme = resolved;
+  }
+  return resolved;
+}
+
+/**
+ * Subscribe to OS appearance changes while the preference is "system". Calls
+ * `onChange(resolved)` whenever the OS flips light↔dark. Returns an unsubscribe
+ * fn (no-op when matchMedia is unavailable). The caller is responsible for only
+ * subscribing while the preference is actually "system".
+ */
+export function watchSystemTheme(onChange: (resolved: Mode) => void): () => void {
+  if (typeof window === "undefined" || !window.matchMedia) return () => {};
+  const mq = window.matchMedia(DARK_MQ);
+  const handler = (e: MediaQueryListEvent) =>
+    onChange(e.matches ? "dark" : "light");
+  // addEventListener is supported on every browser we target; the legacy
+  // addListener fallback is unnecessary for a modern WKWebView.
+  mq.addEventListener("change", handler);
+  return () => mq.removeEventListener("change", handler);
+}
 
 const lsKey = (k: string) => `froglips.${k}`;
 function read(k: string): string | null {

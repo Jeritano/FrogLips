@@ -177,8 +177,43 @@ jobs:
           find all-artifacts -type f -exec cp {} release-assets/ \;
           ls -la release-assets
 
+      # Extract this version's section from CHANGELOG.md for the GitHub release
+      # body. The file uses Keep-a-Changelog headers: `## [0.14.4] — 2026-06-15`.
+      # We slice from the matching `## [<version>]` header to the next `## [`
+      # header (exclusive). If the version has no section (forgot to add one),
+      # fall back to a stable placeholder rather than failing the release.
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF##*/v}"
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          if [ -f CHANGELOG.md ]; then
+            # awk: start printing at the `## [VERSION]` line, stop at the next
+            # top-level `## [` section header. Anchored to the line start so a
+            # `## [x]` inside body prose can't trip it.
+            awk -v ver="$VERSION" '
+              $0 ~ "^## \\[" ver "\\]" { grab=1; next }
+              grab && /^## \[/        { exit }
+              grab                     { print }
+            ' CHANGELOG.md > "$NOTES_FILE"
+          else
+            : > "$NOTES_FILE"
+          fi
+          # Strip leading/trailing blank lines; if empty, use a placeholder.
+          if ! grep -q '[^[:space:]]' "$NOTES_FILE"; then
+            printf 'See CHANGELOG.md and the release assets below.\n' > "$NOTES_FILE"
+            echo "No CHANGELOG section for v${VERSION} — using placeholder body."
+          fi
+          echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+          echo "--- release notes (v${VERSION}) ---"
+          cat "$NOTES_FILE"
+
       # Updater manifest — macOS Apple Silicon only (darwin-aarch64).
       - name: Build latest.json
+        env:
+          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
         shell: bash
         run: |
           set -e
@@ -210,6 +245,15 @@ jobs:
           base = os.environ["BASE_URL"]
           p = os.environ.get("MAC_ARM", "")
           s = os.environ.get("MAC_ARM_SIG", "")
+          # Notes shown by the in-app "update available" affordance. Reuse the
+          # CHANGELOG section extracted earlier; fall back to the prior
+          # placeholder if the file is missing/empty.
+          notes = "See release notes on GitHub."
+          nf = os.environ.get("NOTES_FILE", "")
+          if nf and os.path.isfile(nf):
+              body = open(nf, encoding="utf-8").read().strip()
+              if body:
+                  notes = body
           plats = {}
           if p and s and os.path.isfile(s):
               plats["darwin-aarch64"] = {
@@ -218,7 +262,7 @@ jobs:
               }
           print(json.dumps({
               "version": os.environ["VERSION"],
-              "notes": "See release notes on GitHub.",
+              "notes": notes,
               "pub_date": os.environ["PUB_DATE"],
               "platforms": plats,
           }, indent=2))
@@ -293,7 +337,22 @@ jobs:
       - name: Attach artifacts to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
         shell: bash
         run: |
+          set -euo pipefail
           TAG="${GITHUB_REF##*/}"
-          gh release upload "$TAG" release-assets/* --clobber --repo "${{ github.repository }}"
+          REPO="${{ github.repository }}"
+          # The release may or may not already exist (a tag push doesn't create
+          # one on its own). Create it with the CHANGELOG-derived body if absent,
+          # otherwise refresh the body so a re-run keeps notes in sync. We only
+          # set --notes on edit (not --title) so a maintainer-set title isn't
+          # clobbered back to the bare tag; on create we seed the title from the
+          # tag. Either way the artifacts are uploaded with --clobber.
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$REPO" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" --repo "$REPO" \
+              --title "$TAG" --notes-file "$NOTES_FILE"
+          fi
+          gh release upload "$TAG" release-assets/* --clobber --repo "$REPO"

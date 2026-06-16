@@ -92,6 +92,37 @@
   overflow-wrap: anywhere;
 }
 
+/* ── User-message pasted code ────────────────────────────────────────────────
+   User bubbles are white-on-accent prose; when a user PASTES code we render it
+   through the same code-block + inline-code chrome (see renderUserContent in
+   lib/markdown.ts). The bubble's `white-space: pre-wrap` already preserves the
+   prose newlines we emit as literal text. Re-assert a readable surface for the
+   code chrome so it doesn't inherit the accent bubble background, and undo the
+   bubble's forced #fff on the highlighted tokens. */
+.message.user .content.user-code {
+  white-space: normal;
+}
+/* Inline `code` spans inside a user bubble: a translucent dark chip so they
+   read against the accent fill instead of vanishing into it. */
+.message.user .content.user-code code:not(pre code) {
+  background: var(--overlay-strong, rgba(0, 0, 0, 0.28));
+  color: #fff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+/* Fenced blocks inside a user bubble use the standard app code surface (not the
+   accent fill) and the normal token colors. The code-block chrome already
+   carries its own borders/background; just neutralize the inherited #fff. */
+.message.user .content.user-code .code-block {
+  color: var(--text);
+}
+.message.user .content.user-code pre {
+  background: var(--surface);
+  color: var(--text);
+}
+
 /* ── KaTeX ──────────────────────────────────────────────────────────────── */
 /* Display math gets breathing room plus horizontal scroll so a wide
    equation scrolls instead of blowing out the bubble. Inline math inherits

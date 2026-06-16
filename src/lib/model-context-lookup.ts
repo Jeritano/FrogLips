@@ -1,5 +1,6 @@
 import type { ServerStatus } from "../types";
 import { modelContextTokens } from "./agent-loop/context-manager";
+import { api } from "./tauri-api";
 import { logDiag } from "./diagnostics";
 
 /**
@@ -9,11 +10,15 @@ import { logDiag } from "./diagnostics";
  * The heuristic — regex on the model id — is fast but lies often: a model
  * named `qwen3.5:latest` may actually be a long-context fine-tune, an Ollama
  * Modelfile may have set `PARAMETER num_ctx 65536`, etc. So when the active
- * backend exposes the value over IPC we cache it and report it instead.
+ * backend exposes the value we cache it and report it instead.
  *
- * Today only Ollama's `/api/show` exposes this cleanly (under
- * `model_info["{arch}.context_length"]`). MLX and the in-process native
- * backend currently fall through to the heuristic; both are TODOs.
+ * Resolution order (item 2):
+ *   1. Rust `model_metadata` command — authoritative for ALL local backends
+ *      (Ollama `/api/show`, plus MLX/native via their HF `config.json`
+ *      `max_position_embeddings`).
+ *   2. Direct Ollama `/api/show` fetch — fallback when the Rust command is
+ *      unavailable (older build) but the daemon is reachable.
+ *   3. The name heuristic from `context-manager.ts`.
  */
 
 /** Cache: `${backend}:${modelId}` -> resolved tokens. */
@@ -51,6 +56,22 @@ export async function prefetchContextLength(
   const k = key(model, status.backend);
   const existing = cache.get(k);
   if (existing && existing > 0) return existing;
+
+  // 1. Authoritative Rust command — works for ollama AND mlx/native. Failures
+  //    (older build without the command, unreachable daemon, no HF config)
+  //    fall through to the legacy direct fetch / heuristic below.
+  try {
+    const meta = await api.modelMetadata(model, status.backend);
+    const n = meta?.context_length;
+    if (typeof n === "number" && n > 0) {
+      cache.set(k, n);
+      return n;
+    }
+  } catch {
+    /* fall through to the direct fetch below */
+  }
+
+  // 2. Direct Ollama /api/show — only meaningful for the ollama backend.
   if (status.backend !== "ollama") return null;
 
   try {

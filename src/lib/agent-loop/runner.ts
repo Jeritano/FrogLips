@@ -676,6 +676,7 @@ export async function runAgentLoop(
     onCheckpoint,
     onAssistantDelta,
     onStreamReset,
+    drainSteeringMessages,
     requestConfirmation,
     signal,
     workspaceRoot,
@@ -1042,6 +1043,30 @@ export async function runAgentLoop(
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       if (signal.aborted) return null;
       metrics.iterations = i + 1;
+
+      // Mid-run steering (W4-SEND item 3): drain any user messages queued while
+      // the run was in flight and append them as user turns BEFORE composing the
+      // next request, so the model sees the new guidance without an abort. Done
+      // at the turn boundary (the message array is fully paired here — between
+      // turns, never mid-tool) so the OpenAI tool-call/result invariant holds.
+      // ABSENT callback = no-op (default), keeping the loop byte-identical for
+      // subagents / flows / tests.
+      if (drainSteeringMessages) {
+        const steer = drainSteeringMessages();
+        if (steer.length > 0) {
+          for (const text of steer) {
+            if (typeof text === "string" && text.trim()) {
+              msgs.push({
+                _tmpKey: makeTmpKey(),
+                conversation_id: opts.conversationId,
+                role: "user",
+                content: text,
+              });
+            }
+          }
+          onUpdate([...msgs]);
+        }
+      }
 
       const llmStart = performance.now();
 

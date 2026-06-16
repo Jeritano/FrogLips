@@ -33,6 +33,7 @@ import type {
   Memory,
   Message,
   ProjectPolicy,
+  RagHit,
   ServerStatus,
 } from "../types";
 import {
@@ -41,6 +42,9 @@ import {
   formatRecallBlock,
   extractFacts,
   saveMemory,
+  getRagContextEnabled,
+  retrieveRagContext,
+  formatRagContextBlock,
 } from "../lib/memory-client";
 import { logDiag } from "../lib/diagnostics";
 import { buildReplyStat, setReplyStat } from "../lib/reply-stats";
@@ -215,6 +219,13 @@ export interface ChatSend {
   resend: (text: string, priorHistory: Message[]) => Promise<void>;
   /** Abort the in-flight stream / agent run + any active shell. */
   abort: () => void;
+  /**
+   * Mid-run steering (item 3): queue a user message to be appended at the next
+   * agent turn boundary WITHOUT aborting the run. No-op (returns false) when no
+   * agent run is in flight — the composer should fall back to a normal send.
+   * Returns true when the message was queued.
+   */
+  injectSteering: (text: string) => boolean;
 }
 
 /**
@@ -228,6 +239,12 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
   // Per-conversation sticky route id (anti-thrash: bias the classifier toward
   // the route already in use so it doesn't flip models turn-to-turn).
   const stickyRouteRef = useRef<Map<number, string | null>>(new Map());
+  // Mid-run steering (item 3): user messages queued while an agent run is in
+  // flight, drained by the runner at each turn boundary. `agentRunActiveRef`
+  // gates the composer affordance — steering only makes sense during an agent
+  // run (plain streaming has no turn boundary to inject at).
+  const steeringQueueRef = useRef<string[]>([]);
+  const agentRunActiveRef = useRef<boolean>(false);
 
   /**
    * Core send: persist the user turn, recall memories, stream the response
@@ -361,7 +378,31 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             })
           : Promise.resolve(null);
 
-      const [recallHits, routeDecision] = await Promise.all([recallP, routeP]);
+      // Item 2: auto-retrieve indexed RAG corpora for PLAIN chat. Runs on the
+      // same concurrent pre-first-token critical path as recall/routing so it
+      // adds no serial latency. Behind the per-machine toggle (default off);
+      // agent mode already has the `search_project_knowledge` tool, so this is
+      // gated to non-agent sends. Failures resolve to [] and never sink the send.
+      const ragEnabled =
+        getRagContextEnabled() && !(agentMode && agentAvailable);
+      const ragP: Promise<Array<RagHit & { corpus: string }>> = ragEnabled
+          ? retrieveRagContext(text, 4).catch((err) => {
+              logDiag({
+                level: "warn",
+                source: "rag-context",
+                message:
+                  "retrieveRagContext threw — proceeding without RAG context",
+                detail: err,
+              });
+              return [];
+            })
+          : Promise.resolve([]);
+
+      const [recallHits, routeDecision, ragHits] = await Promise.all([
+        recallP,
+        routeP,
+        ragP,
+      ]);
 
       // Recall side-effects
       let recallBlock: string | null = null;
@@ -511,6 +552,17 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           content: recallBlock,
         });
       }
+      // Item 2: prepend retrieved RAG context (plain chat only; ragHits is
+      // empty when the toggle is off, in agent mode, or no corpus matched).
+      const ragBlock = formatRagContextBlock(ragHits);
+      if (ragBlock) {
+        systemPreamble.push({
+          _tmpKey: tmpKey(),
+          conversation_id: conv.id,
+          role: "system",
+          content: ragBlock,
+        });
+      }
       const historyForApi: Message[] = [...systemPreamble, ...baseHistory];
 
       // 2026-05-25 user-reported "model doesn't see history across a stop/start"
@@ -579,6 +631,11 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
       /* ── Agent mode ── */
       if (agentMode && agentAvailable) {
         if (isStreamConvActive()) setAgentStatus("thinking");
+        // Item 3: this run owns the steering queue. Clear any residue from a
+        // prior aborted run so stale guidance can't leak into the new one, then
+        // mark a run in flight so the composer's steering affordance lights up.
+        steeringQueueRef.current = [];
+        agentRunActiveRef.current = true;
         // Perf review C1 (2026-06-09): in-flight agent text renders through
         // the same plain-text StreamingMessage path as regular chat. The old
         // design pushed a placeholder Message mutated in place through
@@ -720,6 +777,10 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
               if (!ctrl.signal.aborted && isStreamConvActive())
                 setStreaming("");
             },
+            // Item 3: hand the runner any user messages queued mid-run. Drained
+            // (splice to empty) so each is appended exactly once at the next
+            // turn boundary. Returns [] when nothing is queued — a no-op turn.
+            drainSteeringMessages: () => steeringQueueRef.current.splice(0),
             onStatusChange: (s) => {
               if (isStreamConvActive()) setAgentStatus(s);
             },
@@ -881,6 +942,15 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             );
           }
         } finally {
+          // Item 3 (steering): this run is no longer in flight. Only clear the
+          // active flag when THIS send's controller is the live one — a second
+          // send that already installed its own controller (and re-armed the
+          // queue) must keep steering enabled. Drop any undrained queued
+          // messages so they don't leak into an unrelated later run.
+          if (abortRef.current === ctrl) {
+            agentRunActiveRef.current = false;
+            steeringQueueRef.current = [];
+          }
           // Item 3: end the run bracket on every exit path so the active-run
           // count + pinned root are released. Best-effort + idempotent-guarded.
           if (runBracketed) {
@@ -1285,6 +1355,15 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
     void loadAgentLoop().then((m) => m.cancelActiveShell(sig));
     abortRef.current?.abort();
   }, []);
+  // Item 3: queue a steering message for the in-flight agent run. Refuses (false)
+  // when no agent run is active so the caller can fall back to a normal send.
+  const injectSteering = useCallback((text: string): boolean => {
+    if (!agentRunActiveRef.current) return false;
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    steeringQueueRef.current.push(trimmed);
+    return true;
+  }, []);
 
-  return { send, resend, abort };
+  return { send, resend, abort, injectSteering };
 }

@@ -144,6 +144,17 @@ pub struct CorpusInfo {
     pub chunk_count: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Whether the corpus's source folder has drifted since its last ingest.
+    ///
+    /// W4-RAG3 (2026-06-15): DELIBERATELY not populated by `list_corpora` —
+    /// computing it walks + stats every file under each corpus root, which is
+    /// far too heavy to do for every corpus on every list call. It is computed
+    /// on demand by `corpus_stale` (exposed via the `rag_corpus_stale` command,
+    /// which the RagPanel calls lazily per row). `skip_serializing_if` keeps the
+    /// field absent from the cheap list payload so the TS side sees `undefined`
+    /// rather than a misleading `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -1365,6 +1376,9 @@ pub fn list_corpora() -> Result<Vec<CorpusInfo>> {
                 chunk_count: r.get(3)?,
                 created_at: r.get(4)?,
                 updated_at: r.get(5)?,
+                // Staleness is NOT computed here — see the `stale` field doc.
+                // Callers that need it use `corpus_stale` per corpus on demand.
+                stale: None,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;

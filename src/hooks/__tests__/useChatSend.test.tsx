@@ -36,6 +36,11 @@ vi.mock("../../lib/memory-client", () => ({
   formatRecallBlock: () => null,
   extractFacts: vi.fn(async () => []),
   saveMemory: vi.fn(async () => ({ deduped: false })),
+  // W4-SEND item 2: plain-chat RAG auto-retrieve. Default off so the send path
+  // is unchanged in these tests.
+  getRagContextEnabled: () => false,
+  retrieveRagContext: vi.fn(async () => []),
+  formatRagContextBlock: () => null,
 }));
 
 import { useChatSend, type ChatSendConfig } from "../useChatSend";

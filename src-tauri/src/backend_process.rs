@@ -118,12 +118,31 @@ pub struct ServerState {
     /// (ready flip, model change, last_error update), so suppressing
     /// identical payloads loses nothing.
     last_emitted: PLMutex<Option<ServerStatus>>,
+    /// Model id most recently started (item 3). `dead_status()` clears the live
+    /// model, so by the time the watcher reaches `emit_gave_up` the running
+    /// model is gone — we keep the last-started id here so the recovery payload
+    /// can name the model that failed (and the UI can suggest a smaller one).
+    last_crashed_model: PLMutex<Option<String>>,
 }
 
 struct RunningServer {
     child: Option<Child>, // None for ollama (already running)
     model: String,
     backend: String,
+}
+
+/// Structured terminal-failure payload (item 3) emitted as `backend-gave-up`
+/// once auto-restart is exhausted. The frontend turns this into an actionable
+/// recovery panel: the captured stderr tail, a Retry button, and a
+/// hardware-aware "try a smaller model" suggestion.
+#[derive(Serialize, Clone)]
+pub struct BackendGaveUp {
+    pub model: String,
+    pub backend: String,
+    pub attempts: u32,
+    /// Raw (unfiltered) tail of the model server's stderr ring — the real
+    /// traceback / OOM / "model not found" lines, for display.
+    pub stderr_tail: String,
 }
 
 #[derive(Serialize, Clone, PartialEq)]
@@ -212,6 +231,10 @@ impl ServerState {
         // Label the (about-to-be-populated) stderr ring with the backend being
         // started so last_error()/dead_status() can attribute it.
         *self.ring_backend.lock() = Some(backend.clone());
+        // Remember the model being started so the terminal `backend-gave-up`
+        // recovery payload (item 3) can name it after dead_status() has cleared
+        // the live model field.
+        *self.last_crashed_model.lock() = Some(model.clone());
         self.ready.store(false, Ordering::Release);
         // Fresh backend → fresh liveness streak.
         self.unresponsive_streak.store(0, Ordering::Release);
@@ -778,6 +801,12 @@ impl ServerState {
     }
 
     /// Emit a terminal "gave up" status after exhausting restart attempts.
+    ///
+    /// In addition to the existing `server-status` (so older UI keeps working)
+    /// this emits a structured `backend-gave-up` event carrying the crashed
+    /// model, the attempt count, and the captured stderr tail so the picker can
+    /// offer actionable recovery (smaller-model suggestion, retry, log view)
+    /// instead of a dead-end (item 3).
     pub fn emit_gave_up(&self, attempts: u32) {
         let mut s = self.dead_status();
         let detail = s
@@ -788,7 +817,40 @@ impl ServerState {
         s.last_error = Some(format!(
             "model server crashed {attempts} times, giving up{detail}"
         ));
+        // Capture model/backend BEFORE emitting the dead status (the ring's
+        // attribution + the recovery payload share the same source).
+        let model = self
+            .last_crashed_model
+            .lock()
+            .clone()
+            .unwrap_or_default();
+        let backend = self
+            .ring_backend
+            .lock()
+            .clone()
+            .unwrap_or_else(|| "mlx".to_string());
+        let stderr_tail = self.stderr_tail();
         self.emit(&s);
+        if let Some(app) = self.app.lock().clone() {
+            let _ = app.emit(
+                "backend-gave-up",
+                BackendGaveUp {
+                    model,
+                    backend,
+                    attempts,
+                    stderr_tail,
+                },
+            );
+        }
+    }
+
+    /// Join the captured stderr ring into a single string for the recovery
+    /// payload. Unfiltered (unlike `last_error`) so the user sees the real
+    /// tail — the actual Python traceback / OOM line, not just lines matching
+    /// the error keyword filter.
+    fn stderr_tail(&self) -> String {
+        let ring = self.stderr_ring.lock();
+        ring.iter().cloned().collect::<Vec<_>>().join("\n")
     }
 
     pub async fn status(&self) -> ServerStatus {

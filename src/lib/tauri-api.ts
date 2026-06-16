@@ -208,8 +208,32 @@ export interface MaintenanceReport {
   vacuumed: boolean;
 }
 
+/**
+ * Authoritative per-model facts (item 2) returned by `model_metadata` —
+ * mirrors `ModelMetadata` in `src-tauri/src/models.rs`. All fields are
+ * best-effort: `null` means the backend didn't expose the value and the
+ * caller should keep its name-based heuristic.
+ */
+export interface ModelMetadata {
+  /** Real context window in tokens, or null when unknown. */
+  context_length: number | null;
+  /** Whether the model accepts images, or null when undeterminable. */
+  vision: boolean | null;
+  /** Which authority answered: "ollama" | "mlx-config" | "native-config" | "none". */
+  source: string;
+}
+
 export const api = {
   listAllModels: () => invoke<AllModels>("list_all_models"),
+  /**
+   * Authoritative context window + vision capability for one model, sourced
+   * from the backend itself (Ollama `/api/show`, or the MLX/native HF
+   * `config.json`) instead of a name regex. `backend` is "ollama" | "mlx" |
+   * "native". Never throws meaningfully — returns all-null on an unreachable
+   * daemon / missing config so callers fall back to the heuristic.
+   */
+  modelMetadata: (model: string, backend: string) =>
+    invoke<ModelMetadata>("model_metadata", { model, backend }),
   startServer: (model: string, backend: string) =>
     invoke<ServerStatus>("start_server", { model, backend }),
   stopServer: () => invoke<void>("stop_server"),
@@ -1046,6 +1070,7 @@ export const api = {
       topK: topK ?? null,
     }),
   ragListCorpora: () => invoke<RagCorpusInfo[]>("rag_list_corpora"),
+  ragCorpusStale: (name: string) => invoke<boolean>("rag_corpus_stale", { name }),
   ragDeleteCorpus: (name: string) =>
     invoke<void>("rag_delete_corpus", { name }),
   /**

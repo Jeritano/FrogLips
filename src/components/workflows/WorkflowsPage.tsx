@@ -1371,6 +1371,9 @@ function RunSurface({
           state: cardStates[c.id] ?? "idle",
           output: snapshot[c.id]?.output ?? "",
           error: snapshot[c.id]?.error,
+          // Thread the node type so the RunPanel can surface composite-node
+          // sub-steps (critic/cascade/router/consistency/moa/budget).
+          nodeType: c.nodeType,
         })),
     [cards, cardStates, snapshot],
   );

@@ -4,9 +4,25 @@
 // launch while that round-trip resolved. App.tsx mirrors every theme change
 // into localStorage; this read is best-effort (falls back to the dark
 // default) and the settings value still wins once it arrives.
+//
+// Theme is now a tri-state PREFERENCE (light | dark | system). For a System
+// user we resolve from the OS appearance here so the first frame already
+// matches it; the resolved concrete value is also kept mirrored in
+// `froglips-theme` by useAppearance. Inlined (no import) so it runs before any
+// module body and adds zero round-trips. Kept in sync with appearance.ts.
 try {
-  const t = localStorage.getItem("froglips-theme");
-  if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+  const pref = localStorage.getItem("froglips-theme-pref");
+  const mirror = localStorage.getItem("froglips-theme");
+  let resolved: "light" | "dark" | null = null;
+  if (pref === "light" || pref === "dark") resolved = pref;
+  else if (pref === "system" || (!pref && mirror == null))
+    resolved =
+      window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)")
+        .matches
+        ? "dark"
+        : "light";
+  else if (mirror === "light" || mirror === "dark") resolved = mirror;
+  if (resolved) document.documentElement.dataset.theme = resolved;
 } catch {
   /* localStorage unavailable — keep the dark default */
 }

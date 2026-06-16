@@ -148,13 +148,24 @@ const ALL_TOOLS = [
 
 /**
  * Schedule grammar the Rust scheduler accepts: `every <n>m` / `every <n>h`
- * (interval), `daily HH:MM` (clock time), or `at YYYY-MM-DDTHH:MM` (a one-shot
- * at a specific local wall-clock time). Blank = manual run only. The friendly
- * picker below emits these strings; the raw escape hatch lets power users type
- * them directly.
+ * (interval), `daily HH:MM` (clock time), `weekly <days> HH:MM` (selected
+ * weekdays at a time, e.g. `weekly mon,wed,fri 09:00`), or
+ * `at YYYY-MM-DDTHH:MM` (a one-shot at a specific local wall-clock time). Blank
+ * = manual run only. The friendly picker below emits these strings; the raw
+ * escape hatch lets power users type them directly.
  */
 const HINT =
-  "Use 'every 30m', 'every 2h', 'daily 09:00', or 'at 2026-06-12T09:00'.";
+  "Use 'every 30m', 'every 2h', 'daily 09:00', 'weekly mon,fri 09:00', or 'at 2026-06-12T09:00'.";
+
+/**
+ * Lowercase 3-letter weekday tokens, indexed `0 = Sunday … 6 = Saturday` to
+ * match the Rust scheduler's `tm_wday` bitmask (see `parse_weekday_mask` in
+ * workflows.rs) AND JavaScript's `Date#getDay()`. The picker emits these
+ * tokens; `nextFireFor` interprets them.
+ */
+const WEEKDAY_TOKENS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+/** Short display labels for the day-of-week toggle buttons. */
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /**
  * Soft warning shown — but NOT a save block — when an `at` datetime is in the
@@ -201,6 +212,19 @@ function scheduleError(value: string): string | null {
     const hh = Number(daily[1]);
     const mm = Number(daily[2]);
     return hh < 24 && mm < 60 ? null : HINT;
+  }
+  // Weekly `weekly <days> HH:MM`. Mirror the Rust parser (workflows.rs
+  // `parse_schedule` weekly branch): it splits the day list from the time on
+  // the LAST whitespace, requires at least one valid weekday token, and
+  // range-checks the time. Tolerate the same trailing/extra comma the Rust
+  // `parse_weekday_mask` tolerates so the form never blocks an edit the
+  // scheduler would accept.
+  const weekly = v.match(/^weekly[ \t]+(\S[^]*?)[ \t]+(\d{1,2}):(\d{2})$/);
+  if (weekly) {
+    const days = parseWeekdayList(weekly[1]);
+    const hh = Number(weekly[2]);
+    const mm = Number(weekly[3]);
+    return days.length > 0 && hh < 24 && mm < 60 ? null : HINT;
   }
   // One-shot `at <iso-local>` — `at YYYY-MM-DDTHH:MM` with an optional
   // `:SS`. Matches what an HTML datetime-local input emits (the seconds
@@ -279,8 +303,92 @@ function schedulePastWarning(value: string): string | null {
   return dt.getTime() < Date.now() ? PAST_AT_WARNING : null;
 }
 
+/**
+ * Parse a comma-separated weekday list (the day field of a `weekly` schedule)
+ * into the sorted, de-duplicated set of day indices (`0 = Sunday`). Mirrors the
+ * Rust `parse_weekday_mask`: case-insensitive, whitespace-tolerant, ignores
+ * empty tokens (so a trailing comma is fine), and an unknown token poisons the
+ * whole list (returns `[]`) so the form/scheduler agree it never fires.
+ */
+function parseWeekdayList(list: string): number[] {
+  const set = new Set<number>();
+  for (const rawTok of list.split(",")) {
+    const tok = rawTok.trim().toLowerCase();
+    if (tok === "") continue;
+    const idx = WEEKDAY_TOKENS.indexOf(tok);
+    if (idx < 0) return []; // unknown day → poison the whole list
+    set.add(idx);
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
+/**
+ * Compute the next local wall-clock fire time for a schedule string, or `null`
+ * when there is no upcoming fire (manual, a past one-shot, an unparseable
+ * string, or a weekly with no days). Pure date math in the browser's local
+ * timezone — the same wall clock the Rust scheduler uses for daily/weekly — so
+ * the picker can show "next: <time>" without a round-trip. `now` is injected for
+ * testability; defaults to the current instant.
+ *
+ * NOTE: this answers "when is the next scheduled instant", NOT "when will it
+ * next actually run given the dedup state" — and (like the in-app scheduler) it
+ * only fires while Froglips is open, surfaced separately in the picker.
+ */
+function nextFireFor(schedule: string | null, now: Date = new Date()): Date | null {
+  if (!schedule) return null;
+  const v = schedule.trim().toLowerCase();
+  if (v === "") return null;
+
+  const every = v.match(/^every[ \t]+(\d+)[ \t]*([mh])$/);
+  if (every) {
+    const n = Number(every[1]);
+    if (!(n > 0)) return null;
+    const unitMs = every[2] === "h" ? 3_600_000 : 60_000;
+    // The scheduler seeds last_fired=now on first sight, so the soonest an
+    // interval card fires is one full window from now.
+    return new Date(now.getTime() + n * unitMs);
+  }
+
+  const daily = v.match(/^daily[ \t]+(\d{1,2}):(\d{2})$/);
+  if (daily) {
+    const hh = Number(daily[1]);
+    const mm = Number(daily[2]);
+    if (hh >= 24 || mm >= 60) return null;
+    const target = new Date(now);
+    target.setHours(hh, mm, 0, 0);
+    if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
+    return target;
+  }
+
+  const weekly = v.match(/^weekly[ \t]+(\S[^]*?)[ \t]+(\d{1,2}):(\d{2})$/);
+  if (weekly) {
+    const days = parseWeekdayList(weekly[1]);
+    const hh = Number(weekly[2]);
+    const mm = Number(weekly[3]);
+    if (days.length === 0 || hh >= 24 || mm >= 60) return null;
+    // Scan today + the next 7 days for the soonest selected weekday whose
+    // target time is still in the future.
+    for (let ahead = 0; ahead <= 7; ahead++) {
+      const candidate = new Date(now);
+      candidate.setDate(candidate.getDate() + ahead);
+      if (!days.includes(candidate.getDay())) continue;
+      candidate.setHours(hh, mm, 0, 0);
+      if (candidate.getTime() > now.getTime()) return candidate;
+    }
+    return null;
+  }
+
+  const at = matchAtSchedule(v);
+  if (at) {
+    const dt = new Date(at.year, at.month - 1, at.day, at.hour, at.minute, at.second);
+    if (Number.isNaN(dt.getTime())) return null;
+    return dt.getTime() > now.getTime() ? dt : null;
+  }
+  return null;
+}
+
 /** The mode the friendly schedule picker is in. `raw` is the escape hatch. */
-type ScheduleMode = "manual" | "every" | "daily" | "at" | "raw";
+type ScheduleMode = "manual" | "every" | "daily" | "weekly" | "at" | "raw";
 
 /**
  * Decode a stored schedule string into the picker's `(mode, parts)` so opening
@@ -294,6 +402,10 @@ function decodeSchedule(schedule: string | null): {
   everyN: string;
   everyUnit: "m" | "h";
   dailyTime: string;
+  /** weekly: selected day indices (0 = Sunday). */
+  weeklyDays: number[];
+  /** weekly: time-of-day (shares the daily `HH:MM` shape). */
+  weeklyTime: string;
   atLocal: string;
 } {
   const fallback = {
@@ -301,6 +413,8 @@ function decodeSchedule(schedule: string | null): {
     everyN: "30",
     everyUnit: "m" as "m" | "h",
     dailyTime: "09:00",
+    weeklyDays: [1, 2, 3, 4, 5], // default Mon–Fri
+    weeklyTime: "09:00",
     atLocal: "",
   };
   if (!schedule || schedule.trim() === "") return fallback;
@@ -318,6 +432,22 @@ function decodeSchedule(schedule: string | null): {
   if (daily) {
     const hh = daily[1].padStart(2, "0");
     return { ...fallback, mode: "daily", dailyTime: `${hh}:${daily[2]}` };
+  }
+  const weekly = v.toLowerCase().match(/^weekly[ \t]+(\S[^]*?)[ \t]+(\d{1,2}):(\d{2})$/);
+  if (weekly) {
+    const days = parseWeekdayList(weekly[1]);
+    if (days.length > 0) {
+      const hh = weekly[2].padStart(2, "0");
+      return {
+        ...fallback,
+        mode: "weekly",
+        weeklyDays: days,
+        weeklyTime: `${hh}:${weekly[3]}`,
+      };
+    }
+    // Recognized prefix but no valid days → fall through to the raw escape hatch
+    // so the user's exact (broken) string round-trips for hand-editing.
+    return { ...fallback, mode: "raw" };
   }
   const at = matchAtSchedule(v);
   if (at) {
@@ -1300,6 +1430,18 @@ const SchedulePicker = memo(function SchedulePicker({
       case "daily":
         push(`daily ${p.dailyTime || "00:00"}`);
         break;
+      case "weekly": {
+        // Emit days in Sun→Sat order as the canonical token list the Rust
+        // parser accepts. No selected day → emit a recognizable-but-invalid
+        // string the validator flags, so Save stays gated rather than silently
+        // dropping to a different mode.
+        const tokens = [...p.weeklyDays]
+          .sort((a, b) => a - b)
+          .map((d) => WEEKDAY_TOKENS[d])
+          .join(",");
+        push(`weekly ${tokens || "none"} ${p.weeklyTime || "00:00"}`);
+        break;
+      }
       case "at":
         push(p.atLocal ? `at ${p.atLocal}` : null);
         break;
@@ -1315,6 +1457,21 @@ const SchedulePicker = memo(function SchedulePicker({
     emit(merged);
   };
 
+  // Toggle one weekday in/out of the weekly selection, then re-emit.
+  const toggleDay = (day: number) => {
+    const has = parts.weeklyDays.includes(day);
+    const next = has
+      ? parts.weeklyDays.filter((d) => d !== day)
+      : [...parts.weeklyDays, day].sort((a, b) => a - b);
+    emit(update({ weeklyDays: next }));
+  };
+
+  // Computed next-fire instant for the CURRENT schedule string, recomputed when
+  // it changes. Shown beneath the picker so the user can confirm a daily/weekly/
+  // interval/one-shot fires when they expect. Pure local-time math (mirrors the
+  // Rust scheduler's wall clock); null = manual / past one-shot / nothing to show.
+  const nextFire = useMemo(() => nextFireFor(schedule), [schedule]);
+
   return (
     <div className="wf-field">
       <span>Schedule (blank = manual)</span>
@@ -1328,6 +1485,7 @@ const SchedulePicker = memo(function SchedulePicker({
             ["manual", "Manual"],
             ["every", "Every"],
             ["daily", "Daily"],
+            ["weekly", "Weekly"],
             ["at", "On a date"],
             ["raw", "Advanced"],
           ] as Array<[ScheduleMode, string]>
@@ -1379,6 +1537,41 @@ const SchedulePicker = memo(function SchedulePicker({
         </div>
       )}
 
+      {parts.mode === "weekly" && (
+        <>
+          <div
+            className="wf-sched-days"
+            role="group"
+            aria-label="Days of the week"
+          >
+            {WEEKDAY_LABELS.map((label, day) => {
+              const selected = parts.weeklyDays.includes(day);
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  role="checkbox"
+                  aria-checked={selected}
+                  aria-label={label}
+                  className={`wf-sched-day${selected ? " selected" : ""}`}
+                  onClick={() => toggleDay(day)}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="wf-sched-row">
+            <input
+              type="time"
+              aria-label="Weekly time"
+              value={parts.weeklyTime}
+              onChange={(e) => emit(update({ weeklyTime: e.target.value }))}
+            />
+          </div>
+        </>
+      )}
+
       {parts.mode === "at" && (
         <div className="wf-sched-row">
           <input
@@ -1403,7 +1596,7 @@ const SchedulePicker = memo(function SchedulePicker({
             lastEmitted.current = next;
             onChange(next);
           }}
-          placeholder="every 30m  ·  daily 09:00  ·  at 2026-06-12T09:00"
+          placeholder="every 30m · daily 09:00 · weekly mon,fri 09:00 · at 2026-06-12T09:00"
           aria-invalid={error != null}
         />
       )}
@@ -1415,6 +1608,15 @@ const SchedulePicker = memo(function SchedulePicker({
       )}
       {!error && warning && (
         <p className="wf-field-hint wf-sched-warn">{warning}</p>
+      )}
+      {/* Computed next-fire instant — shown for any valid non-manual schedule so
+          the user can confirm the daily/weekly/interval/one-shot fires when they
+          expect. Suppressed while there's a validation error (the value is
+          meaningless then). */}
+      {!error && parts.mode !== "manual" && nextFire && (
+        <p className="wf-field-hint wf-sched-next" data-testid="wf-sched-next">
+          Next run: <strong>{nextFire.toLocaleString()}</strong>
+        </p>
       )}
       {/* Scheduled runs are driven by an in-app timer (the Rust scheduler scans
           every ~30s while the process is alive) — there is no background

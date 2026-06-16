@@ -1,6 +1,17 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { Zap, Clock, ShieldCheck, Shuffle } from "lucide-react";
+import {
+  Zap,
+  Clock,
+  ShieldCheck,
+  Shuffle,
+  ChevronDown,
+  ChevronRight,
+  ArrowDown,
+  X,
+  BookOpen,
+} from "lucide-react";
 import { api } from "../lib/tauri-api";
+import { demoteMemory, getRagContextEnabled, setRagContextEnabled } from "../lib/memory-client";
 import type { ConfirmDecision } from "../lib/agent-loop";
 import { summarizeToolCall } from "../lib/agent-loop/dispatch";
 import { buildConfirmDiff } from "../lib/agent-loop/diff";
@@ -198,6 +209,19 @@ export function ChatWindow({
   }, []);
   const [err, setErr] = useState<string | null>(null);
   const [recalled, setRecalled] = useState<Memory[]>([]);
+  // Item 1: expand the recall pill to inspect + correct the memories pulled for
+  // this turn. `recallBusy` disables a row's buttons while its mutation runs.
+  const [recallOpen, setRecallOpen] = useState(false);
+  const [recallBusy, setRecallBusy] = useState<number | null>(null);
+  // Item 2: auto-retrieve indexed RAG corpora in plain chat. Persisted per
+  // machine in localStorage (read once on mount).
+  const [ragContext, setRagContext] = useState<boolean>(() =>
+    getRagContextEnabled(),
+  );
+  // Item 3: mid-run steering composer. `steerText` is the draft; `steerSent`
+  // briefly confirms a queued message so the user sees it landed.
+  const [steerText, setSteerText] = useState("");
+  const [steerSent, setSteerSent] = useState(false);
   const [agentMode, setAgentMode] = useState(false);
   // Multi-model auto-routing (plain chat). Persisted across sessions.
   const [autoRoute, setAutoRoute] = useState<boolean>(
@@ -311,6 +335,7 @@ export function ChatWindow({
       setMessages([]);
     }
     setRecalled([]);
+    setRecallOpen(false); // collapse the recall pill on conversation switch
     setRoutedNotice(null); // clear the previous chat's route chip on switch
     setConvParams(parseConversationParams(conversation?.params));
     setShowParamsPanel(false);
@@ -528,7 +553,7 @@ export function ChatWindow({
   // selected model (via ModelPicker's exposed start) and then dispatches.
   // The composer is never disabled behind the Start ceremony.
   const [warming, setWarming] = useState(false);
-  const { send, resend, abort } = useChatSend({
+  const { send, resend, abort, injectSteering } = useChatSend({
     status,
     agentMode,
     agentAvailable,
@@ -560,6 +585,66 @@ export function ChatWindow({
       return next;
     });
   }, []);
+
+  // Item 2: persist the plain-chat RAG auto-retrieve toggle.
+  const toggleRagContext = useCallback(() => {
+    setRagContext((on) => {
+      const next = !on;
+      setRagContextEnabled(next);
+      return next;
+    });
+  }, []);
+
+  // Item 1: drop a recalled memory from THIS turn's pill — either by demoting
+  // its scope one step (conversation ← project ← global) or deleting it
+  // outright. Both update the live pill list optimistically and notify the host
+  // so the Memories panel count refreshes.
+  const recallDemote = useCallback(
+    async (m: Memory) => {
+      setRecallBusy(m.id);
+      try {
+        await demoteMemory(m.id);
+        // Demote can move a memory out of this conversation's recall scope;
+        // drop it from the pill either way so the user sees the correction land.
+        setRecalled((prev) => prev.filter((r) => r.id !== m.id));
+        onMemoriesChanged?.();
+      } catch (e) {
+        setErr(`Demote failed: ${e}`);
+      } finally {
+        setRecallBusy(null);
+      }
+    },
+    [onMemoriesChanged],
+  );
+  const recallDelete = useCallback(
+    async (m: Memory) => {
+      setRecallBusy(m.id);
+      try {
+        await api.deleteMemory(m.id);
+        setRecalled((prev) => prev.filter((r) => r.id !== m.id));
+        onMemoriesChanged?.();
+      } catch (e) {
+        setErr(`Delete failed: ${e}`);
+      } finally {
+        setRecallBusy(null);
+      }
+    },
+    [onMemoriesChanged],
+  );
+
+  // Item 3: queue the steering draft into the in-flight agent run. Clears the
+  // draft + flashes a confirmation on success. injectSteering returns false if
+  // no run is active (race: the run finished between render and click) — leave
+  // the text so the user can fall back to a normal send.
+  const submitSteering = useCallback(() => {
+    const t = steerText.trim();
+    if (!t) return;
+    if (injectSteering(t)) {
+      setSteerText("");
+      setSteerSent(true);
+      window.setTimeout(() => setSteerSent(false), 2500);
+    }
+  }, [steerText, injectSteering]);
 
   /**
    * Persist per-conversation params. Optimistically updates local state so
@@ -656,6 +741,18 @@ export function ChatWindow({
   // the whole pane blank on first run.
   const showLanding = messages.length === 0 && !isWorking;
 
+  // Item 4: surface the backend auto-restart as transient inline state instead
+  // of only the one-shot error bar. The restart-watcher emits a `server-status`
+  // with `last_error` of "model server crashed — restarting (attempt N/M)"
+  // (see backend_process.rs emit_restarting) while it backs off and relaunches;
+  // detect that exact shape so a generic "model crashed, giving up" terminal
+  // error still goes through the normal error bar.
+  const restartingNotice = (() => {
+    const le = status?.last_error;
+    if (!le) return null;
+    return /restarting \(attempt/i.test(le) ? le : null;
+  })();
+
   return (
     <div className="chat-window" onClick={citation.onCitationClick}>
       {agentMode && agent.dryRun && (
@@ -684,12 +781,112 @@ export function ChatWindow({
       )}
       <div className="chat-input-wrap">
         {recalled.length > 0 && (
-          <div className="recall-pill">
-            <span className="recall-icon">
-              <Zap size={16} />
-            </span>
-            Recalled {recalled.length} memor
-            {recalled.length === 1 ? "y" : "ies"} for this turn
+          <div className="recall-pill-wrap" data-testid="recall-pill-wrap">
+            {/* `.recall-pill` is owned by W4-CHAT2 (chat.css). The button reuses
+                it for the pill look; minimal inline resets here keep the new
+                expandable affordance usable before W4-CHAT2 adds dedicated CSS
+                for .recall-pill-toggle / .recall-list / .recall-item-*. */}
+            <button
+              type="button"
+              className="recall-pill recall-pill-toggle"
+              aria-expanded={recallOpen}
+              data-testid="recall-pill-toggle"
+              onClick={() => setRecallOpen((o) => !o)}
+              title="Show the memories recalled for this turn"
+              style={{ cursor: "pointer", font: "inherit" }}
+            >
+              <span className="recall-icon">
+                <Zap size={16} />
+              </span>
+              Recalled {recalled.length} memor
+              {recalled.length === 1 ? "y" : "ies"} for this turn
+              {recallOpen ? (
+                <ChevronDown size={13} />
+              ) : (
+                <ChevronRight size={13} />
+              )}
+            </button>
+            {recallOpen && (
+              <ul
+                className="recall-list"
+                data-testid="recall-list"
+                style={{
+                  listStyle: "none",
+                  margin: "4px 0 6px",
+                  padding: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                }}
+              >
+                {recalled.map((m) => (
+                  <li
+                    key={m.id}
+                    className="recall-list-item"
+                    data-testid={`recall-item-${m.id}`}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 12,
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    <span
+                      className="recall-item-text"
+                      style={{ flex: 1, wordBreak: "break-word" }}
+                    >
+                      {m.content}
+                    </span>
+                    <span
+                      className="recall-item-actions"
+                      style={{ display: "inline-flex", gap: 4 }}
+                    >
+                      <button
+                        type="button"
+                        className="recall-item-btn"
+                        disabled={recallBusy === m.id}
+                        title="Demote this memory one scope (it likely shouldn't have surfaced here)"
+                        aria-label="Demote recalled memory"
+                        data-testid={`recall-demote-${m.id}`}
+                        onClick={() => void recallDemote(m)}
+                        style={{
+                          cursor: recallBusy === m.id ? "default" : "pointer",
+                          background: "var(--surface)",
+                          color: "var(--text)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 4,
+                          padding: "2px 4px",
+                          display: "inline-flex",
+                        }}
+                      >
+                        <ArrowDown size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="recall-item-btn recall-item-delete"
+                        disabled={recallBusy === m.id}
+                        title="Delete this memory"
+                        aria-label="Delete recalled memory"
+                        data-testid={`recall-delete-${m.id}`}
+                        onClick={() => void recallDelete(m)}
+                        style={{
+                          cursor: recallBusy === m.id ? "default" : "pointer",
+                          background: "var(--surface)",
+                          color: "var(--danger-fg, #fca5a5)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 4,
+                          padding: "2px 4px",
+                          display: "inline-flex",
+                        }}
+                      >
+                        <X size={13} />
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
         <ErrorBar
@@ -743,6 +940,23 @@ export function ChatWindow({
               <span className="route-method"> · {routedNotice.method}</span>
             </span>
           )}
+          {/* Item 2: auto-retrieve indexed RAG corpora for plain chat. Disabled
+              in agent mode (the model already has the search_project_knowledge
+              tool there). */}
+          <button
+            type="button"
+            className={`route-toggle${ragContext ? " on" : ""}`}
+            onClick={toggleRagContext}
+            disabled={agentMode}
+            data-testid="rag-context-toggle"
+            title={
+              agentMode
+                ? "Doc retrieval applies to plain chat (agent mode uses the search tool instead)"
+                : "Auto-retrieve relevant chunks from your indexed documents and add them as context"
+            }
+          >
+            <BookOpen size={14} /> Use docs {ragContext ? "on" : "off"}
+          </button>
         </div>
 
         {showRoutes && (
@@ -803,6 +1017,117 @@ export function ChatWindow({
           conversation={conversation}
           onContinued={(newId) => onForked?.(newId)}
         />
+
+        {/* Item 4: backend auto-restart inline progress. The watcher cycles the
+            backend behind the scenes; show a transient "restarting" chip with a
+            spinner so the user understands the pause instead of seeing only a
+            one-shot error and a frozen composer. */}
+        {restartingNotice && (
+          <div
+            className="backend-restart-notice"
+            data-testid="backend-restart-notice"
+            role="status"
+            aria-live="polite"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 12,
+              color: "var(--text-muted)",
+              padding: "6px 8px",
+              marginBottom: 6,
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+            }}
+          >
+            <span
+              className="backend-restart-spinner"
+              aria-hidden="true"
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: "50%",
+                border: "2px solid var(--border)",
+                borderTopColor: "var(--accent)",
+                display: "inline-block",
+                // `spin` is the app-global 360° keyframe (styles/panels.css).
+                animation: "spin 0.8s linear infinite",
+              }}
+            />
+            <span>Restarting model… {restartingNotice}</span>
+          </div>
+        )}
+
+        {/* Item 3: mid-run steering. While an agent run is in flight, let the
+            user inject extra guidance that the runner appends at the next turn
+            boundary — without aborting. Shown only during an agent run; plain
+            streaming has no turn boundary to inject at. */}
+        {agentMode && agentAvailable && isWorking && (
+          <div
+            className="steering-row"
+            data-testid="steering-row"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginBottom: 6,
+            }}
+          >
+            <input
+              type="text"
+              className="steering-input"
+              data-testid="steering-input"
+              value={steerText}
+              onChange={(e) => setSteerText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitSteering();
+                }
+              }}
+              placeholder="Steer the running agent (added at the next step, no interrupt)…"
+              style={{
+                flex: 1,
+                boxSizing: "border-box",
+                background: "var(--surface)",
+                color: "var(--text)",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                padding: "5px 8px",
+                fontSize: 12,
+                fontFamily: "inherit",
+              }}
+            />
+            <button
+              type="button"
+              className="steering-send"
+              data-testid="steering-send"
+              onClick={submitSteering}
+              disabled={!steerText.trim()}
+              title="Queue this guidance for the next agent step"
+              style={{
+                fontSize: 12,
+                padding: "5px 10px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                cursor: steerText.trim() ? "pointer" : "default",
+              }}
+            >
+              Steer
+            </button>
+            {steerSent && (
+              <span
+                data-testid="steering-confirm"
+                style={{ fontSize: 11, color: "var(--accent)" }}
+              >
+                Queued ✓
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="composer-row">
           <ChatInput

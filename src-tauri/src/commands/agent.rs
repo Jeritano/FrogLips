@@ -1246,6 +1246,16 @@ pub async fn rag_list_corpora() -> Result<Vec<rag::CorpusInfo>, String> {
     blocking(rag::list_corpora).await
 }
 
+/// Lazy, on-demand staleness check for one corpus (cheap stat-only mtime/size
+/// diff vs ingest time). Kept out of `list_corpora` so the corpus list call
+/// never walks the filesystem; the RAG panel calls this per row off the render
+/// path. `rag::corpus_stale` self-validates the name and returns `Ok(false)`
+/// for unknown/missing-root corpora.
+#[tauri::command]
+pub async fn rag_corpus_stale(name: String) -> Result<bool, String> {
+    blocking(move || rag::corpus_stale(&name)).await
+}
+
 #[tauri::command]
 pub async fn rag_delete_corpus(name: String) -> Result<(), String> {
     blocking(move || rag::delete_corpus(&name)).await

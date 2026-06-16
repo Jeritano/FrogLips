@@ -11,6 +11,7 @@ import {
   useUpdateSettings,
 } from "../contexts/SettingsContext";
 import pkg from "../../package.json";
+import type { ThemePref } from "../lib/appearance";
 import type { ModelEntry, ServerStatus } from "../types";
 
 /*
@@ -29,8 +30,10 @@ interface Props {
   open: boolean;
   onClose: () => void;
   status: ServerStatus | null;
-  theme: "dark" | "light";
-  onToggleTheme: () => void;
+  /** User's theme preference (light | dark | system), owned by App. */
+  themePref: ThemePref;
+  /** Set an explicit theme preference (System follows the OS, live). */
+  onSetThemePref: (pref: ThemePref) => void;
   onRerunWizard: () => void;
   /** Fires after backend config changes so hosts can refresh pickers. */
   onBackendsChanged?: () => void;
@@ -201,8 +204,8 @@ export function SettingsModal({
   open,
   onClose,
   status,
-  theme,
-  onToggleTheme,
+  themePref,
+  onSetThemePref,
   onRerunWizard,
   onBackendsChanged,
 }: Props) {
@@ -213,6 +216,11 @@ export function SettingsModal({
   // Auto-update is ON BY DEFAULT — only an explicit `false` opts out, so absent/
   // null reads as checked. See useUpdateCheck for the matching gate semantics.
   const [autoUpdate, setAutoUpdate] = useState(true);
+  // Backend admission controls (item 5). Permits default to 1 (serialize local
+  // inference); liveness probe defaults ON (only an explicit `false` opts out,
+  // matching the Rust `Option<bool>` semantics).
+  const [permitsInit, setPermitsInit] = useState("1");
+  const [livenessProbe, setLivenessProbe] = useState(true);
   const getSettings = useSettingsGetter();
   const updateSettings = useUpdateSettings();
   useEffect(() => {
@@ -221,6 +229,8 @@ export function SettingsModal({
         setKeepAliveInit(s.ollama_keep_alive ?? "30m");
         setMaxIterInit(String(s.agent_max_iterations ?? 80));
         setAutoUpdate(s.auto_update_check !== false);
+        setPermitsInit(String(s.inference_permits ?? 1));
+        setLivenessProbe(s.backend_liveness_probe !== false);
       })
       .catch(() => {});
   }, [getSettings]);
@@ -295,9 +305,18 @@ export function SettingsModal({
               <div className="settings-general">
                 <div className="settings-row">
                   <span>Theme</span>
-                  <button type="button" onClick={onToggleTheme}>
-                    Switch to {theme === "dark" ? "light" : "dark"}
-                  </button>
+                  <select
+                    data-testid="settings-theme-pref"
+                    value={themePref}
+                    aria-label="App theme"
+                    onChange={(e) =>
+                      onSetThemePref(e.target.value as ThemePref)
+                    }
+                  >
+                    <option value="system">System (follow OS)</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
                 </div>
                 <div className="settings-row">
                   <span>Updates</span>
@@ -392,6 +411,70 @@ export function SettingsModal({
             )}
             {pane === "backends" && (
               <>
+                <div
+                  className="settings-tuning-card"
+                  data-testid="inference-admission-card"
+                >
+                  <div className="settings-tuning-title">
+                    Inference admission
+                  </div>
+                  <div className="settings-tuning-row">
+                    <span>Concurrent local inference</span>
+                    <input
+                      // Keyed on the loaded value so the persisted count becomes
+                      // the default once the async settings read resolves.
+                      key={`permits-${permitsInit}`}
+                      data-testid="settings-inference-permits"
+                      type="number"
+                      min={1}
+                      max={8}
+                      defaultValue={permitsInit}
+                      style={{ width: 80 }}
+                      onChange={(e) => {
+                        const n = Math.min(
+                          8,
+                          Math.max(1, Math.floor(Number(e.target.value) || 1)),
+                        );
+                        void updateSettings({ inference_permits: n }).catch(
+                          () => {},
+                        );
+                      }}
+                    />
+                  </div>
+                  <div className="settings-tuning-row settings-hint">
+                    How many local inference calls may run at once. 1 (default)
+                    serializes them so a flow / subagent fan-out doesn&apos;t
+                    thrash one GPU. Raise only if your hardware comfortably runs
+                    several models in parallel. Cloud routes always bypass this.
+                  </div>
+                  <div className="settings-tuning-row">
+                    <span>Backend liveness probe</span>
+                    <label>
+                      <input
+                        data-testid="settings-liveness-probe"
+                        type="checkbox"
+                        checked={livenessProbe}
+                        onChange={(e) => {
+                          const next = e.target.checked;
+                          setLivenessProbe(next);
+                          void updateSettings({
+                            backend_liveness_probe: next,
+                          }).catch(() => {
+                            // Persist failed — revert the optimistic toggle.
+                            setLivenessProbe(!next);
+                          });
+                        }}
+                      />{" "}
+                      Periodically check a running backend still responds
+                    </label>
+                  </div>
+                  <div className="settings-tuning-row settings-hint">
+                    When on (default), the watcher pings a ready backend each
+                    tick; a wedged MLX server is auto-restarted and a stuck
+                    Ollama daemon is surfaced as degraded. Turn off only if the
+                    probe is noisy on your setup.
+                  </div>
+                </div>
                 <OllamaTuningCard />
                 <MlxTuningCard />
                 <CustomBackendsSettings onChanged={onBackendsChanged} />

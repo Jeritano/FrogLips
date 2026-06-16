@@ -610,7 +610,9 @@ pub fn list_runs(workflow_id: i64) -> Result<Vec<WorkflowRun>> {
 /// A parsed, tolerant interpretation of a card `schedule` string. The frontend
 /// owns the format; the backend only understands enough to decide due-ness:
 ///   * `"every Nm"` / `"every Nh"` — fixed interval in seconds.
-///   * `"daily HH:MM"` — once per day at the given UTC minute-of-day.
+///   * `"daily HH:MM"` — once per day at the given (local) minute-of-day.
+///   * `"weekly <days> HH:MM"` — once per selected weekday at a (local) time,
+///     e.g. `"weekly mon,wed,fri 09:00"`.
 ///   * `"at YYYY-MM-DDTHH:MM"` — one-shot at a specific local wall-clock time.
 ///
 /// Anything else parses to `None` and is never triggered.
@@ -618,11 +620,48 @@ pub fn list_runs(workflow_id: i64) -> Result<Vec<WorkflowRun>> {
 pub enum Schedule {
     /// Fixed interval, in seconds (always > 0).
     Every(i64),
-    /// Daily at this minute-of-day (0..1440), interpreted in UTC.
+    /// Daily at this minute-of-day (0..1440), interpreted in local time.
     Daily(i64),
+    /// Weekly on the selected weekday(s) at this minute-of-day (0..1440),
+    /// interpreted in local time. `days` is a bitmask where bit `n` (0..=6)
+    /// is set when the schedule fires on weekday `n` — `0 = Sunday` through
+    /// `6 = Saturday`, matching libc `tm_wday`. At least one bit is always set
+    /// (the parser rejects an empty day set).
+    Weekly { days: u8, minute_of_day: i64 },
     /// One-shot absolute unix timestamp (seconds, UTC). Fires exactly once when
     /// `now >= ts`, then never again.
     At(i64),
+}
+
+/// Lowercase 3-letter weekday abbreviations, indexed by libc `tm_wday`
+/// (`0 = Sunday` … `6 = Saturday`). Used to parse a `weekly <days> HH:MM`
+/// schedule's day list into the [`Schedule::Weekly`] bitmask.
+const WEEKDAY_ABBR: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+/// Parse a comma-separated weekday list (`"mon,wed,fri"`, case-insensitive,
+/// tolerant of surrounding whitespace) into a bitmask matching [`Schedule::Weekly`].
+/// Returns `None` if the list is empty or contains an unrecognised token, so a
+/// malformed weekly schedule never fires rather than firing on the wrong day.
+fn parse_weekday_mask(list: &str) -> Option<u8> {
+    let mut mask: u8 = 0;
+    let mut any = false;
+    for tok in list.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            // A trailing/double comma is tolerated only if other tokens are
+            // valid; a list that is ALL empties (e.g. ",," ) yields no bits and
+            // is rejected below.
+            continue;
+        }
+        let idx = WEEKDAY_ABBR.iter().position(|&d| d == tok)?;
+        mask |= 1 << idx;
+        any = true;
+    }
+    if any {
+        Some(mask)
+    } else {
+        None
+    }
 }
 
 /// Parse a card `schedule` string. Tolerant: case-insensitive, trims, returns
@@ -667,6 +706,25 @@ pub fn parse_schedule(raw: &str) -> Option<Schedule> {
             return None;
         }
         return Some(Schedule::Daily(hh * 60 + mm));
+    }
+    if let Some(rest) = s.strip_prefix("weekly ") {
+        // `weekly <days> HH:MM` — the day list and the time are separated by
+        // the LAST whitespace run, so a (future) multi-word day spec wouldn't
+        // break the split. Today the day list has no spaces, so `rsplit_once`
+        // on ASCII whitespace cleanly peels the trailing `HH:MM`.
+        let rest = rest.trim();
+        let (days_part, time_part) = rest.rsplit_once([' ', '\t'])?;
+        let days = parse_weekday_mask(days_part)?;
+        let (hh, mm) = time_part.trim().split_once(':')?;
+        let hh: i64 = hh.trim().parse().ok()?;
+        let mm: i64 = mm.trim().parse().ok()?;
+        if !(0..24).contains(&hh) || !(0..60).contains(&mm) {
+            return None;
+        }
+        return Some(Schedule::Weekly {
+            days,
+            minute_of_day: hh * 60 + mm,
+        });
     }
     if let Some(rest) = s.strip_prefix("at ") {
         // `at YYYY-MM-DDTHH:MM` (optionally `:SS`) — a LOCAL wall-clock instant.
@@ -737,6 +795,16 @@ fn civil_to_local_unix(year: i64, month: i64, day: i64, hh: i64, mm: i64, ss: i6
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     let days = era * 146_097 + doe - 719_468;
     Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
+}
+
+/// Local weekday (`0 = Sunday` … `6 = Saturday`, matching libc `tm_wday`) for a
+/// timestamp expressed in LOCAL seconds (i.e. unix-seconds already shifted by
+/// the UTC offset). 1970-01-01 was a Thursday (`tm_wday == 4`), so the weekday
+/// is `(days_since_epoch + 4) mod 7`. `rem_euclid` keeps the result in `0..7`
+/// even for pre-epoch instants. Used by [`Schedule::Weekly`].
+fn local_weekday(local_secs: i64) -> u8 {
+    let days = local_secs.div_euclid(86_400);
+    (days + 4).rem_euclid(7) as u8
 }
 
 /// Decide whether a schedule is due at `now` (unix seconds), given the unix
@@ -811,6 +879,30 @@ pub fn schedule_is_due_at_offset(
                 return false;
             }
             // Due if we haven't already fired at/after today's target time.
+            match last_fired {
+                Some(last) => last < target,
+                None => true,
+            }
+        }
+        Schedule::Weekly {
+            days,
+            minute_of_day,
+        } => {
+            // Same once-per-window logic as `Daily`, additionally gated on the
+            // current LOCAL weekday being in the selected set. The `last_fired <
+            // target` guard makes it fire at most once on each selected day even
+            // across restarts (the persisted last-fired survives), and the
+            // weekday gate keeps it from firing on unselected days.
+            let local_now = now + offset_secs;
+            let local_day_start = local_now - local_now.rem_euclid(86_400);
+            let weekday = local_weekday(local_day_start);
+            if (days & (1u8 << weekday)) == 0 {
+                return false;
+            }
+            let target = (local_day_start + minute_of_day * 60) - offset_secs;
+            if now < target {
+                return false;
+            }
             match last_fired {
                 Some(last) => last < target,
                 None => true,
@@ -1607,6 +1699,112 @@ mod tests {
         // Sanity: with offset 0 the same 08:00 UTC instant is NOT yet due
         // (target is 09:00 UTC) — proves the offset is what shifted the fire.
         assert!(!schedule_is_due_at_offset(nine, day + 8 * 3600, None, 0));
+    }
+
+    #[test]
+    fn parse_schedule_handles_weekly() {
+        // bit 1 = Mon, bit 3 = Wed, bit 5 = Fri → 0b0101010 = 42.
+        assert_eq!(
+            parse_schedule("weekly mon,wed,fri 09:00"),
+            Some(Schedule::Weekly {
+                days: 0b0101010,
+                minute_of_day: 540,
+            })
+        );
+        // Case-insensitive (whole string is lowercased), trims, single day.
+        assert_eq!(
+            parse_schedule("  WEEKLY SUN 23:30  "),
+            Some(Schedule::Weekly {
+                days: 0b0000001, // bit 0 = Sun
+                minute_of_day: 23 * 60 + 30,
+            })
+        );
+        // All seven days.
+        assert_eq!(
+            parse_schedule("weekly sun,mon,tue,wed,thu,fri,sat 00:00"),
+            Some(Schedule::Weekly {
+                days: 0b1111111,
+                minute_of_day: 0,
+            })
+        );
+        // Tolerates an extra/trailing comma as long as a valid day remains.
+        assert_eq!(
+            parse_schedule("weekly mon, 08:15"),
+            Some(Schedule::Weekly {
+                days: 0b0000010,
+                minute_of_day: 8 * 60 + 15,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_schedule_rejects_malformed_weekly() {
+        assert_eq!(parse_schedule("weekly"), None); // no day/time
+        assert_eq!(parse_schedule("weekly 09:00"), None); // no day list (split has no space-separated day part)
+        assert_eq!(parse_schedule("weekly mon,wed"), None); // no time
+        assert_eq!(parse_schedule("weekly funday 09:00"), None); // bad day token
+        assert_eq!(parse_schedule("weekly mon 25:00"), None); // bad hour
+        assert_eq!(parse_schedule("weekly mon 09:60"), None); // bad minute
+        assert_eq!(parse_schedule("weekly , 09:00"), None); // empty day set
+    }
+
+    #[test]
+    fn weekly_schedule_is_due_on_selected_weekday_only() {
+        // 1970-01-01 was a Thursday (tm_wday 4). Use UTC (offset 0) for exact math.
+        // Build a known Sunday: day index where (days + 4) % 7 == 0 → days % 7 == 3.
+        // 1970-01-04 is day 3 → Sunday. Its midnight = 3 * 86400.
+        let sunday_midnight = 3 * 86_400_i64;
+        assert_eq!(local_weekday(sunday_midnight), 0, "1970-01-04 is Sunday");
+        let monday_midnight = sunday_midnight + 86_400;
+        assert_eq!(local_weekday(monday_midnight), 1, "1970-01-05 is Monday");
+
+        // Weekly Mon+Fri at 09:00 (540).
+        let s = Schedule::Weekly {
+            days: 0b0100010, // Mon (bit1) + Fri (bit5)
+            minute_of_day: 540,
+        };
+        // On Sunday at 09:00 → NOT a selected day, never due.
+        assert!(!schedule_is_due_at_offset(
+            s,
+            sunday_midnight + 540 * 60,
+            None,
+            0
+        ));
+        // On Monday before 09:00 → not yet due.
+        assert!(!schedule_is_due_at_offset(
+            s,
+            monday_midnight + 8 * 3600,
+            None,
+            0
+        ));
+        // On Monday at/after 09:00, never fired → due.
+        assert!(schedule_is_due_at_offset(
+            s,
+            monday_midnight + 540 * 60,
+            None,
+            0
+        ));
+        // Already fired at today's Monday target → not due again today.
+        assert!(!schedule_is_due_at_offset(
+            s,
+            monday_midnight + 10 * 3600,
+            Some(monday_midnight + 540 * 60),
+            0
+        ));
+    }
+
+    #[test]
+    fn parse_weekday_mask_round_trips() {
+        assert_eq!(parse_weekday_mask("sun"), Some(0b0000001));
+        assert_eq!(parse_weekday_mask("sat"), Some(0b1000000));
+        assert_eq!(parse_weekday_mask("mon,tue"), Some(0b0000110));
+        // Caller (`parse_schedule`) lowercases the whole string first, so the
+        // helper only ever sees lowercase tokens; whitespace around tokens is
+        // still tolerated.
+        assert_eq!(parse_weekday_mask("mon, fri "), Some(0b0100010));
+        assert_eq!(parse_weekday_mask(""), None);
+        assert_eq!(parse_weekday_mask(",,"), None);
+        assert_eq!(parse_weekday_mask("xyz"), None);
     }
 
     #[test]

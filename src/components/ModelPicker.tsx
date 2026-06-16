@@ -12,6 +12,7 @@ import { useTauriEvent } from "../hooks/useTauriEvent";
 import { useSettingsField } from "../contexts/SettingsContext";
 import { useHardwareProfile } from "../hooks/useHardwareProfile";
 import type { HeadroomTier } from "../lib/hardware-profile";
+import { suggestSmallerModel } from "../lib/hardware-profile";
 import { HardwareWarningBanner } from "./HardwareWarningBanner";
 import {
   classifyToolFitness,
@@ -43,6 +44,19 @@ function optionCapabilitySuffix(modelId: string): string {
   if (modelSupportsVision(modelId)) parts.push("vision");
   if (classifyToolFitness(modelId) === "weak") parts.push("weak tools");
   return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
+
+/**
+ * Payload of the `backend-gave-up` Tauri event (item 3) — mirrors
+ * `BackendGaveUp` in `src-tauri/src/backend_process.rs`. Emitted once
+ * auto-restart is exhausted so the picker can offer actionable recovery
+ * instead of a dead-end terminal status.
+ */
+interface BackendGaveUp {
+  model: string;
+  backend: string;
+  attempts: number;
+  stderr_tail: string;
 }
 
 /** Compact label for the inline headroom badge (full verdict on hover). */
@@ -93,6 +107,11 @@ export function ModelPicker({
   // Native models load in-process (no host:port), so their progress only
   // surfaces via Tauri events rather than the polled ServerStatus.
   const [nativeLoading, setNativeLoading] = useState<string | null>(null);
+  // Item 3: terminal-failure recovery. Set from the `backend-gave-up` event
+  // emitted after auto-restart is exhausted; drives the actionable recovery
+  // panel (stderr tail + Retry + a smaller-model suggestion). Cleared on the
+  // next successful start / stop.
+  const [gaveUp, setGaveUp] = useState<BackendGaveUp | null>(null);
   // Configured custom OpenAI-compatible cloud backends (OpenRouter/Groq/…).
   // Sourced from the central settings store; selecting one synthesizes a
   // status (no local process) and routes chat through `streamCustomChat`. The
@@ -105,7 +124,8 @@ export function ModelPicker({
 
   // Hardware-aware sizing: classify the picked model against this Mac's RAM so
   // the user sees an honest "fits / tight / too big" verdict BEFORE Start.
-  const { headroomFor } = useHardwareProfile();
+  // `profile` also drives the post-crash "try a smaller model" suggestion.
+  const { headroomFor, profile } = useHardwareProfile();
 
   // Timestamp of the last successful model-list fetch. The dropdown's
   // onFocus + onMouseDown both fire `loadModels` (so the list is fresh
@@ -139,6 +159,15 @@ export function ModelPicker({
       setNativeLoading(null);
       if (e.payload?.error)
         setErr(`Could not load native model: ${e.payload.error}`);
+    }, []),
+  );
+  // Item 3: auto-restart exhausted. Surface the structured recovery payload so
+  // the user gets the captured stderr tail, a Retry, and a fitting-model
+  // suggestion instead of a silent dead status.
+  useTauriEvent<BackendGaveUp>(
+    "backend-gave-up",
+    useCallback((e) => {
+      if (e.payload?.model) setGaveUp(e.payload);
     }, []),
   );
 
@@ -279,6 +308,8 @@ export function ModelPicker({
     if (!entry) return false;
     setBusy(true);
     setErr(null);
+    // A fresh start attempt supersedes any prior gave-up recovery panel.
+    setGaveUp(null);
     try {
       if (entry.backend === "native") {
         await api.nativeLoadModel(entry.id);
@@ -327,6 +358,7 @@ export function ModelPicker({
 
   async function stop() {
     setBusy(true);
+    setGaveUp(null);
     try {
       if (status?.backend === "custom" || status?.backend === "openrouter") {
         // No local process — just clear the synthesized status.
@@ -370,6 +402,24 @@ export function ModelPicker({
 
   // Headroom verdict for the picked local model (cloud/custom have no size).
   const headroom = selected ? headroomFor(selected) : null;
+
+  // Item 3 recovery: after auto-restart gives up, suggest the largest installed
+  // model that comfortably fits this Mac and is smaller than the one that
+  // failed (a likely OOM/too-big cause). Null when nothing better fits.
+  const recoverySuggestion = gaveUp
+    ? suggestSmallerModel(
+        gaveUp.model,
+        [...models.mlx, ...models.ollama],
+        profile,
+      )
+    : null;
+
+  /** Recovery action: pick + start the suggested smaller model. */
+  async function startSuggested(entry: ModelEntry) {
+    setSelected(entry);
+    setSelectedCustom(null);
+    await start(entry);
+  }
 
   // Capability badges for the currently-selected pick (item 1). Cloud/custom
   // backends carry their model id in `selectedCustom`; resolve from whichever
@@ -533,6 +583,65 @@ export function ModelPicker({
           </div>
         )}
       </div>
+
+      {gaveUp && (
+        <div className="backend-recovery" role="alert">
+          <div className="backend-recovery-head">
+            <strong>
+              {gaveUp.model} ({gaveUp.backend}) kept crashing — auto-restart
+              gave up after {gaveUp.attempts}{" "}
+              {gaveUp.attempts === 1 ? "attempt" : "attempts"}.
+            </strong>
+            <button
+              type="button"
+              className="backend-recovery-dismiss"
+              aria-label="Dismiss"
+              onClick={() => setGaveUp(null)}
+            >
+              ✕
+            </button>
+          </div>
+          <div className="backend-recovery-actions">
+            <button
+              type="button"
+              className="start-btn"
+              disabled={busy}
+              onClick={() => {
+                const entry = [...models.mlx, ...models.ollama].find(
+                  (m) => m.id === gaveUp.model && m.backend === gaveUp.backend,
+                );
+                if (entry) void startSuggested(entry);
+                else void start();
+              }}
+            >
+              Retry {gaveUp.model}
+            </button>
+            {recoverySuggestion && (
+              <button
+                type="button"
+                disabled={busy}
+                title={`Switch to a model that fits this Mac comfortably (${formatSize(
+                  recoverySuggestion.size_bytes,
+                ).trim()})`}
+                onClick={() => void startSuggested(recoverySuggestion)}
+              >
+                Try smaller: {recoverySuggestion.id}
+              </button>
+            )}
+          </div>
+          <p className="backend-recovery-hint">
+            {recoverySuggestion
+              ? "The model likely needs more memory than this Mac can give it. Try the smaller model above, or lower its context window."
+              : "The model likely needs more memory than this Mac can give it, or its files are incomplete. Try re-downloading it or picking a smaller model."}
+          </p>
+          {gaveUp.stderr_tail.trim() && (
+            <details className="backend-recovery-log">
+              <summary>Show the last backend log lines</summary>
+              <pre>{gaveUp.stderr_tail}</pre>
+            </details>
+          )}
+        </div>
+      )}
 
       {!status?.running && <HardwareWarningBanner headroom={headroom} />}
 

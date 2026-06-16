@@ -283,8 +283,12 @@
   font-size: 16px;
 }
 
-/* High-contrast dark — a near-black background when dark mode is on. Only the
- * surface tokens are darkened; text/accent tokens stay readable. */
+/* High-contrast — boosts the surface/border separation in whichever theme is
+ * active. Only surface + border tokens are touched; text/accent (and therefore
+ * the --accent-derived focus ring) stay untouched so the :focus-visible outline
+ * survives at full strength in both themes. */
+
+/* Dark: a near-black background with crisper borders. */
 :root[data-theme="dark"][data-high-contrast="1"] {
   --bg: #000000;
   --surface: #0b0b0d;
@@ -292,4 +296,53 @@
   --surface-hover: #1c1c1f;
   --border: #2a2a2e;
   --border-subtle: #1c1c20;
+}
+
+/* Light: a pure-white background and darker, more present borders so panel
+ * edges and dividers read clearly on a bright surface. Text stays #18181b
+ * (≈16:1 on white) and the accent (and focus ring) is unchanged. */
+:root[data-theme="light"][data-high-contrast="1"] {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f2f2f4;
+  --surface-hover: #e9e9ec;
+  --border: #a1a1aa;
+  --border-subtle: #c4c4ca;
+}
+
+/* ── Keyboard-shortcuts cheatsheet (opened via "?" or the command palette) ──
+ * Reuses the shared `.memories-overlay` / `.memories-modal` chrome (defined in
+ * modals.css); only the body list layout is bespoke. */
+.shortcuts-modal {
+  min-width: 360px;
+  max-width: 440px;
+  width: min(440px, 92vw);
+}
+.shortcuts-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 2px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.shortcuts-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 8px;
+  border-radius: var(--radius-sm);
+}
+.shortcuts-row:nth-child(odd) {
+  background: var(--overlay-softer);
+}
+.shortcuts-label {
+  font-size: 13.5px;
+  color: var(--text);
+}
+.shortcuts-keys {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
 }

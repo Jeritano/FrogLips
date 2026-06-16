@@ -4,10 +4,65 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Froglips</title>
+    <!--
+      Boot skeleton (Wave 2 parity): the detached conversation window loads
+      App.css via its JS entry (main-detached.tsx static-imports "./App.css", no
+      render-blocking <link>), so without this it would flash a blank white
+      frame on every open while the chunk + ChatWindow tree load. Inline a tiny
+      theme-aware spinner that paints on the first frame; main-detached.tsx sets
+      `data-theme` synchronously before its body runs, so the `[data-theme]`
+      selectors resolve, with the dark default + `prefers-color-scheme`
+      fallback. React replaces #root's children on mount, removing the
+      skeleton. No layout shift — it fills the window with the same base
+      background the app paints. Mirrors index.html / quick.html.
+    -->
+    <style>
+      #boot-skeleton {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #09090b;
+      }
+      @media (prefers-color-scheme: light) {
+        #boot-skeleton {
+          background: #ffffff;
+        }
+      }
+      :root[data-theme="dark"] #boot-skeleton {
+        background: #09090b;
+      }
+      :root[data-theme="light"] #boot-skeleton {
+        background: #ffffff;
+      }
+      #boot-skeleton .boot-spinner {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 3px solid rgba(99, 102, 241, 0.25);
+        border-top-color: #6366f1;
+        animation: boot-spin 0.7s linear infinite;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-skeleton .boot-spinner {
+          animation-duration: 1.6s;
+        }
+      }
+    </style>
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-skeleton" aria-hidden="true">
+        <div class="boot-spinner"></div>
+      </div>
+    </div>
     <script type="module" src="/src/main-detached.tsx"></script>
   </body>
 </html>

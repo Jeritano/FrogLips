@@ -510,6 +510,53 @@
 .wf-run-item-name {
   font-size: var(--fs-sm);
   font-weight: 500;
+  /* Take the slack so the copy/expand actions sit flush at the right. */
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Per-card inspect controls (copy / expand) — quiet icon buttons. */
+.wf-run-item-actions {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+.wf-run-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.wf-run-icon-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.wf-run-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Composite-node sub-step list (which internal steps ran). A compact ordered
+   list under the card name, distinct from the streamed output block below. */
+.wf-run-substeps {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  list-style: decimal;
+}
+.wf-run-substep {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  line-height: 1.35;
+  word-break: break-word;
 }
 .wf-run-icon-idle {
   color: var(--text-2);
@@ -534,6 +581,11 @@
   word-break: break-word;
   max-height: 160px;
   overflow-y: auto;
+}
+/* Expanded output pane (the per-card "expand" toggle). Taller so the user can
+   read a long card's full streamed text without the 160px clip. */
+.wf-run-output-expanded {
+  max-height: 70vh;
 }
 .wf-run-error {
   color: var(--danger-fg);
@@ -842,6 +894,42 @@
    field error, so it reads as advisory rather than a save block. */
 .wf-sched-warn {
   color: var(--warn-fg);
+}
+/* Weekly day-of-week toggles. A compact row of seven pill buttons, mirroring
+   the `.wf-sched-mode` chip styling so the schedule section reads as one unit. */
+.wf-sched-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+.wf-sched-day {
+  padding: var(--space-1) var(--space-2);
+  min-width: 38px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-family: inherit;
+  cursor: pointer;
+}
+.wf-sched-day:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.wf-sched-day.selected {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+.wf-sched-day:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Computed next-fire line. Quiet hint tone; the bold value carries the eye. */
+.wf-sched-next {
+  color: var(--text-muted);
 }
 
 /* ── needsReview Arm banner ──

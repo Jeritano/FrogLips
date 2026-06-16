@@ -101,17 +101,86 @@ git commit -m "v${VERSION}: <summary>"
 git tag -a v${VERSION} -m "v${VERSION} — <summary>"
 git push origin main v${VERSION}
 
-# 3. Create the GitHub release with all four assets
+# 3. Create the GitHub release with all four assets.
+#    --notes-file CHANGELOG-derived notes keeps this consistent with the tagged
+#    CI path (see "Release notes" below). To mirror CI exactly, extract just
+#    this version's section first:
+#      awk -v ver="$VERSION" '$0 ~ "^## \\[" ver "\\]"{g=1;next} g&&/^## \[/{exit} g' CHANGELOG.md > /tmp/notes.md
 gh release create v${VERSION} \
   --title "v${VERSION} — <summary>" \
-  --notes "<detailed notes>" \
+  --notes-file /tmp/notes.md \
   src-tauri/target/release/bundle/macos/Froglips.app.tar.gz \
   src-tauri/target/release/bundle/macos/Froglips.app.tar.gz.sig \
   src-tauri/target/release/bundle/dmg/Froglips_${VERSION}_aarch64.dmg \
   /tmp/latest.json
 ```
 
+### Release notes (auto-derived from CHANGELOG)
+
+The tagged-CI workflow (`.github/workflows/release.yml`) no longer ships a
+"See release notes on GitHub" placeholder. Its `publish` job extracts this
+version's section from `CHANGELOG.md` — slicing from the
+`## [<version>] — <date>` header to the next `## [` header — and uses it for
+**both** the GitHub release body (`gh release create/edit --notes-file`) **and**
+the `notes` field of `latest.json` (shown by the in-app "update available"
+affordance). If `CHANGELOG.md` has no section for the tagged version, the
+workflow falls back to a stable placeholder instead of failing the release.
+
+**Consequence:** add the version's `CHANGELOG.md` section *before* you push the
+tag, or the release body and in-app notes will show the fallback. The
+release checklist's "CHANGELOG entry added" item is now load-bearing for CI,
+not just hygiene.
+
 The auto-updater queries `https://github.com/Jeritano/FrogLips/releases/latest/download/latest.json`. GitHub redirects `latest/download/<filename>` to the asset on the most-recent release — so as long as you upload `latest.json` to every release, the URL stays stable.
+
+### Updater endpoint resilience (single-host risk)
+
+`tauri.conf.json` → `plugins.updater.endpoints` currently lists **one**
+endpoint (the GitHub `latest/download/latest.json` URL above). A GitHub
+release-download outage therefore stalls the auto-updater until GitHub
+recovers. This is a deliberate, documented limitation rather than an
+oversight — there is no second host that *actually serves the updater
+manifest today*, and Tauri tries endpoints in order, so listing a dead
+mirror would only add a guaranteed-failing request to every check.
+
+Why a naive "second endpoint" does not help here:
+
+- **Versioned-tag fallback** (`releases/download/v<next>/latest.json`) is not
+  expressible. Tauri only interpolates `{{current_version}}` (the *installed*
+  version), `{{target}}`, and `{{arch}}` — none of which can name the *next*
+  release's tag. A static tag URL would go stale every release.
+- **A second copy of the manifest** (e.g. on the GitHub Pages site at
+  `https://jeritano.github.io/FrogLips/`, which is served from Pages infra
+  independent of release-asset object storage) only rescues the narrow case
+  where the *manifest fetch* fails but the *asset download* still works — the
+  `url`/`signature` inside `latest.json` still point at
+  `github.com/.../releases/download/...`, so a github.com release-asset outage
+  breaks the actual download regardless of which host served the manifest.
+
+**Mitigation in place today:**
+
+1. The updater is **best-effort and non-blocking** — a failed check is logged
+   to diagnostics and surfaced on the manual *Settings → Check for updates*
+   button ("Update failed: …"); the background poll retries on its next
+   interval (`src/lib/updater.ts`, `src/hooks/useUpdateCheck.ts`). A host
+   hiccup never wedges the app, and the next successful check picks the update
+   up.
+2. **Manual install is always available** as the out-of-band path: download
+   the DMG from the releases page and verify it with the signed
+   `SHA256SUMS` / `SHA256SUMS.minisig` (see *Verifying a downloaded release*).
+   This is the same recovery path used for the key-rotation and
+   redaction cases.
+
+**If a true second host is ever wanted** (full redundancy, not just
+manifest redundancy), the complete fix is to mirror *both* `latest.json`
+**and** the `.app.tar.gz` updater asset to an independent origin (GitHub
+Pages, an R2/S3 bucket, etc.), rewrite the manifest's `url` to that origin
+for the mirrored copy, and add that origin as the second
+`plugins.updater.endpoints` entry. That mirror must be published on every
+release (a deploy job in `release.yml`) or it goes stale and starts handing
+out an old version — which is why it is intentionally **not** wired up for a
+sole-maintainer cadence. Until that mirror exists, do not add a second
+endpoint to `tauri.conf.json`.
 
 ### Downgrade prevention (known limitation)
 

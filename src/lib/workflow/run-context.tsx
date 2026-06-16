@@ -74,12 +74,25 @@ interface WorkflowRunControlCtx {
   stop(): void;
   /**
    * Stop a SPECIFIC running card. Today the runner executes cards through a
-   * single shared abort signal, so stopping the active card stops the run as a
-   * whole (downstream cards are marked skipped) — there is no per-card signal
-   * to abort one card and resume the chain. This is therefore a no-op unless
-   * `cardId` is the card that is currently running, which keeps the affordance
-   * honest: clicking Stop on the active card does exactly what whole-run Stop
-   * does, and clicking it on any other (idle/done) card does nothing.
+   * single shared abort signal (`runWorkflow` threads ONE `AbortSignal` through
+   * every card's `buildCardOptions` — see runner.ts), so stopping the active
+   * card stops the run as a whole (downstream cards are marked skipped) — there
+   * is no per-card signal to abort one card and resume the chain. This is
+   * therefore a no-op unless `cardId` is the card that is currently running,
+   * which keeps the affordance honest: clicking Stop on the active card does
+   * exactly what whole-run Stop does, and clicking it on any other (idle/done)
+   * card does nothing.
+   *
+   * MID-CHAIN LIMITATION (deliberate): true "abort just card N and continue
+   * with N+1" would require a per-card `AbortController` array in the runner's
+   * loop plus a way to splice the chain — invasive, and the handoff contract
+   * (each card consumes the previous card's output) makes "continue after a
+   * stopped card" semantically murky (the next card would have no upstream
+   * output). We instead ship the two honest primitives: stop-the-run-from-this-
+   * card (this method) and re-run-FROM-a-card (`startCardId`, surfaced as
+   * RunPanel's "Re-run from here" for done/failed cards). Re-running a single
+   * card in isolation is also available from the canvas node's Run button
+   * (WorkflowsPage `runSingleCard`).
    */
   stopCard(cardId: string): void;
   clearSummary(): void;
