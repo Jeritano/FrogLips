@@ -13,6 +13,7 @@ import {
   Users,
   Zap,
   Wrench,
+  Blocks,
   BarChart3,
   Star,
   User,
@@ -96,7 +97,11 @@ const NAV_ITEMS: { id: ViewId; label: string; icon: React.ReactNode }[] = [
   // hamburger menu next to "Re-run setup wizard", making the pillar
   // undiscoverable in session one (product review 2026-06-10, IA #4).
   { id: "knowledge", label: "Knowledge", icon: <BookOpen size={17} /> },
-  { id: "mcp", label: "Tools", icon: <Wrench size={17} /> },
+  // The ViewId stays "mcp" (renaming the union/event-contract/topbar-slot id
+  // would be invasive and risk breaking the froglips:navigate contract); only
+  // the label, icon, and rendered component change. The hub renders
+  // <SkillsToolsView/>, which embeds McpView for the registry browse flow.
+  { id: "mcp", label: "Skills & Tools", icon: <Blocks size={17} /> },
 ];
 
 /**
@@ -203,8 +208,14 @@ const KnowledgeView = lazy(() =>
     default: m.KnowledgeView,
   })),
 );
-const McpView = lazy(() =>
-  import("./components/McpView").then((m) => ({ default: m.McpView })),
+// Skills & Tools hub — unified Skills | Toolsets surface. Lazy-split like the
+// other main-pane views; its chunk only fetches when the user opens the hub.
+// It statically imports McpView, so the registry browse flow rides along in
+// this chunk rather than a separate McpView lazy import.
+const SkillsToolsView = lazy(() =>
+  import("./components/SkillsToolsView").then((m) => ({
+    default: m.SkillsToolsView,
+  })),
 );
 const RoundtableView = lazy(() =>
   import("./components/RoundtableView").then((m) => ({
@@ -824,7 +835,7 @@ function App() {
       },
       {
         id: "view-tools",
-        label: "Go to Tools (MCP)",
+        label: "Go to Skills & Tools",
         hint: "view",
         icon: paletteIcons.tools,
         run: () => setView("mcp"),
@@ -1603,9 +1614,9 @@ function App() {
             </Suspense>
           </ErrorBoundary>
         ) : view === "mcp" ? (
-          <ErrorBoundary label="Tools">
+          <ErrorBoundary label="Skills & Tools">
             <Suspense fallback={null}>
-              <McpView />
+              <SkillsToolsView />
             </Suspense>
           </ErrorBoundary>
         ) : view === "roundtable" ? (

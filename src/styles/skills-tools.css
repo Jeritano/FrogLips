@@ -1,0 +1,371 @@
+/* Skills & Tools hub — a unified main-pane destination modeled on the Hermes
+ * "Skills & Tools" surface: top tabs (Skills | Toolsets), a right-aligned
+ * search box, wrapping category chips with counts, then category-grouped rows
+ * with a per-item toggle. Reuses existing tokens; the tab bar portals into the
+ * shared App header slot (`#mcp-topbar-slot`) the same way McpView does. */
+
+.st-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ── Tab bar (portaled into the App header row) ─────────────────────────── */
+
+.st-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.st-tabs.in-topbar {
+  padding: 0;
+  border-bottom: none;
+  flex: 1;
+}
+.st-tab {
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.st-tab.sel {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.st-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.st-tabspacer {
+  flex: 1;
+}
+
+/* ── Toolbar row inside the pane: search + import ───────────────────────── */
+
+.st-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 8px;
+  flex-shrink: 0;
+}
+.st-search {
+  margin-left: auto;
+  min-width: 220px;
+  max-width: 320px;
+}
+
+/* ── Category chips ─────────────────────────────────────────────────────── */
+
+.st-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 16px 10px;
+  flex-shrink: 0;
+}
+.st-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+.st-chip:hover {
+  background: var(--surface-hover);
+}
+.st-chip.sel {
+  background: var(--accent-bg);
+  border-color: var(--accent-strong);
+  color: var(--accent);
+}
+.st-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.st-chip-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-3);
+}
+.st-chip.sel .st-chip-count {
+  color: var(--accent);
+}
+
+/* ── Scrolling body ─────────────────────────────────────────────────────── */
+
+.st-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 16px 24px;
+}
+
+.st-section {
+  margin-top: 14px;
+}
+.st-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 8px 2px 6px;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 1;
+}
+.st-section-toggle-all {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.st-section-toggle-all:hover {
+  background: var(--surface-hover);
+}
+.st-section-toggle-all:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── Rows ───────────────────────────────────────────────────────────────── */
+
+.st-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.st-row:last-child {
+  border-bottom: none;
+}
+.st-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.st-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.st-row-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.st-row-desc {
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin-top: 2px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.st-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Small status / meta badges riding on a row title. */
+.st-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+.st-badge-pinned {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.st-badge-status {
+  background: var(--surface-2);
+  color: var(--text-3);
+  border: 1px solid var(--border);
+}
+.st-badge-status.running {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+  border-color: transparent;
+}
+.st-badge-status.danger {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.st-iconbtn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.st-iconbtn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.st-iconbtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.st-iconbtn.is-on {
+  color: var(--warn-fg);
+}
+.st-iconbtn.danger:hover {
+  color: var(--danger-fg);
+}
+
+/* ── Toggle switch (button-based, role=switch) ──────────────────────────── */
+
+.st-switch {
+  flex-shrink: 0;
+  width: 38px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.st-switch::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-full);
+  background: var(--text-2);
+  transform: translate(0, -50%);
+  transition:
+    transform 0.12s ease,
+    background 0.12s ease;
+}
+.st-switch[aria-checked="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.st-switch[aria-checked="true"]::after {
+  transform: translate(16px, -50%);
+  background: #fff;
+}
+.st-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.st-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Notes / empties / errors ───────────────────────────────────────────── */
+
+.st-note {
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 6px 4px 0;
+  line-height: 1.4;
+}
+.st-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: 14px;
+  padding: 40px 16px;
+  text-align: center;
+}
+.st-err {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.st-err-x {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+}
+
+/* Browse-servers affordance row at the foot of the MCP section. */
+.st-browse-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 4px 4px;
+}
+.st-browse-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.st-browse-btn:hover {
+  background: var(--surface-hover);
+}
+.st-browse-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
