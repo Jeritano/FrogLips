@@ -758,11 +758,14 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
           const runId = resume ? resume.runId : `run:${crypto.randomUUID()}`;
           const agentLoop = await loadAgentLoop();
           const { runAgentLoop } = agentLoop;
+          // Single settings snapshot reused below (cached IPC) for the
+          // concurrency budget, the turn cap, and the Skills & Tools hub gating
+          // (disabled_tools + per-server MCP enable state).
+          const cfg = await getCachedSettings().catch(() => null);
           // Item 2: apply the configured global subagent concurrency budget
           // before the run starts. Best-effort — a missing/invalid setting
           // leaves the module default in place.
           {
-            const cfg = await getCachedSettings().catch(() => null);
             const cap = cfg?.max_concurrent_subagents;
             if (typeof cap === "number" && Number.isFinite(cap)) {
               agentLoop.setMaxConcurrentSubagents(cap);
@@ -780,9 +783,11 @@ export function useChatSend(config: ChatSendConfig): ChatSend {
             workspaceRoot,
             // Agent turn-budget override from settings (raise for long
             // multi-file builds); undefined → runner default.
-            maxIterations:
-              (await getCachedSettings().catch(() => null))
-                ?.agent_max_iterations ?? undefined,
+            maxIterations: cfg?.agent_max_iterations ?? undefined,
+            // Skills & Tools hub gating (settings-driven). Both default to
+            // "nothing gated" = today's behavior when the keys are absent.
+            disabledTools: cfg?.disabled_tools ?? [],
+            mcpServerConfigs: cfg?.mcp_servers ?? [],
             // Resolved agent backend. Routing is disabled in agent mode, so the
             // active `status.backend` is the target. mlx/native/custom/openrouter
             // pass through; anything else (incl. plain ollama + `:cloud`) is the

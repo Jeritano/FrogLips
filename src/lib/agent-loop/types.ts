@@ -1,4 +1,9 @@
-import type { Message, ProjectPolicy, ServerStatus } from "../../types";
+import type {
+  McpServerConfig,
+  Message,
+  ProjectPolicy,
+  ServerStatus,
+} from "../../types";
 import type { CheckpointTurn } from "../tauri-api";
 
 export type AgentStatus = "idle" | "thinking" | "tool" | "done" | "error";
@@ -244,6 +249,20 @@ export interface AgentRunOptions {
    * byte-identical to today.
    */
   resumeFromTurns?: CheckpointTurn[];
+  /**
+   * GLOBAL list of built-in tool names the user switched OFF in the Skills &
+   * Tools hub (settings.disabled_tools). Excluded from the system prompt's
+   * advertised tools, ON TOP of `toolAllowlist` (only ever further restricts).
+   * Absent/empty (the default) = nothing disabled = today's behavior.
+   */
+  disabledTools?: string[];
+  /**
+   * MCP server configs (settings.mcp_servers). Tools from any server whose
+   * config `enabled === false` are excluded from the system prompt's advertised
+   * tools. `enabled === undefined`/`true` (and unknown servers) stay available
+   * — today's behavior. Absent/empty (the default) = no server gated.
+   */
+  mcpServerConfigs?: McpServerConfig[];
 }
 
 /**

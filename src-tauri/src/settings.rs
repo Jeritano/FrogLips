@@ -99,6 +99,14 @@ pub struct Settings {
     /// enabled, archive-not-delete, no auto-VACUUM). Rides settings.json via
     /// serde(default); no DB migration. Old files load unchanged.
     pub maintenance: Option<MaintenanceConfig>,
+    /// Built-in tools the user has switched OFF in the Skills & Tools hub. A
+    /// GLOBAL list of tool names (e.g. "run_shell", "delete_path") that the
+    /// agent-loop excludes from the system prompt's available-tools section, on
+    /// top of the per-preset allowlist (this only ever FURTHER restricts).
+    /// `None`/absent (legacy files, fresh installs) → empty → all tools enabled,
+    /// i.e. today's behavior. Rides settings.json via serde(default); no DB
+    /// migration.
+    pub disabled_tools: Option<Vec<String>>,
     /// HIGH-2 (2026-05-29): forward-compatibility capture. Any top-level key
     /// this build doesn't recognise (because it was written by a NEWER build)
     /// is parked here and re-serialized verbatim on save, so opening an old

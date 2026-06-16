@@ -3959,7 +3959,7 @@ dependencies = [
 
 [[package]]
 name = "local-llm-app"
-version = "0.14.5"
+version = "0.14.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

@@ -1,6 +1,7 @@
 import { TOOLS } from "./tools";
-import type { OpenAIToolDef } from "./mcp-tools";
+import { parseMcpToolName, type OpenAIToolDef } from "./mcp-tools";
 import type { ToolFitness } from "../model-capabilities";
+import type { McpServerConfig } from "../../types";
 
 /* ── Dynamic system prompt ── */
 
@@ -43,6 +44,16 @@ export function buildSystemPrompt(
   modelFitness?: ToolFitness,
   savedApiNames: string[] = [],
   ragCorpora: string[] = [],
+  /** GLOBAL list of built-in tool names the user switched OFF in the Skills &
+   *  Tools hub (settings.disabled_tools). Excluded from the advertised tools
+   *  ON TOP of `allowlist` (only ever further restricts). Default `[]` =
+   *  nothing disabled = today's behavior. */
+  disabledTools: string[] = [],
+  /** MCP server configs (settings.mcp_servers). Tools whose server config has
+   *  `enabled === false` are excluded from the advertised tools. `undefined`
+   *  or `true` enabled = available (today's behavior). Default `[]` = no config
+   *  known → no server gated. */
+  mcpServerConfigs: McpServerConfig[] = [],
 ): string {
   // Weak tool-callers (small/abliterated models) tend to narrate or emit
   // near-JSON. A short, explicit format reminder measurably lifts their
@@ -51,23 +62,45 @@ export function buildSystemPrompt(
     modelFitness === "weak"
       ? "\n\nTOOL-CALL FORMAT (important for this model): when you act, CALL the tool — do not describe the call in prose. Emit `arguments` as ONE valid JSON object: double quotes on every key and string value, no trailing commas, no markdown ``` fences, no text before or after the JSON."
       : "";
-  // Built-in tools the model may call, filtered by the active allowlist.
-  const builtIn = allowlist.length
-    ? TOOLS.filter((t) => allowlist.includes(t.function.name)).map(
-        (t) => t.function.name,
-      )
-    : TOOLS.map((t) => t.function.name);
+  // Built-in tools the model may call, filtered by the active allowlist AND the
+  // global hub off-switch (`disabledTools`). The disabled set composes with the
+  // allowlist: it only ever FURTHER restricts. Empty set (the default) = today's
+  // behavior (allowlist alone decides).
+  const disabledSet = disabledTools.length ? new Set(disabledTools) : null;
+  const builtIn = (
+    allowlist.length
+      ? TOOLS.filter((t) => allowlist.includes(t.function.name))
+      : TOOLS
+  )
+    .map((t) => t.function.name)
+    .filter((name) => !disabledSet || !disabledSet.has(name));
+  // MCP server gate: drop tools from any server whose config `enabled === false`.
+  // `undefined`/`true` enabled (and any server with no config row) stays
+  // available — today's behavior. Built once as a name set for O(1) lookup.
+  const disabledMcpServers = new Set(
+    mcpServerConfigs
+      .filter((s) => s.enabled === false)
+      .map((s) => s.name),
+  );
   // MCP tools are subject to the same allowlist; when one is callable the
   // model must be told it exists, with a one-line description so it knows
-  // when to reach for it.
+  // when to reach for it. Tools from a disabled server are excluded.
   const mcp = (
     allowlist.length
       ? mcpTools.filter((t) => allowlist.includes(t.function.name))
       : mcpTools
-  ).map(
-    (t) =>
-      `${t.function.name} — ${sanitizeMcpDescription(t.function.description ?? "")}`,
-  );
+  )
+    .filter((t) => {
+      if (disabledMcpServers.size === 0) return true;
+      const parsed = parseMcpToolName(t.function.name);
+      // Unparseable names can't be attributed to a server — leave them in
+      // rather than silently dropping (fail open, matches prior behavior).
+      return !parsed || !disabledMcpServers.has(parsed.server);
+    })
+    .map(
+      (t) =>
+        `${t.function.name} — ${sanitizeMcpDescription(t.function.description ?? "")}`,
+    );
   const ws = workspaceRoot
     ? `Workspace root: ${workspaceRoot} — all file access is confined to this directory.`
     : "No workspace root set — you have full filesystem access (within OS permissions).";

@@ -5,7 +5,7 @@
 //! Errors flatten to `String` (the Tauri convention) but the message embeds
 //! the `kind:` tag from `claude_skills::SkillError` so the frontend can
 //! branch on `bad_skill_md`, `bad_name`, `bad_description`, `body_too_large`,
-//! or `name_collision`.
+//! `bad_category`, or `name_collision`.
 
 use std::path::PathBuf;
 

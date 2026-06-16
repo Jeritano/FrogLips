@@ -1095,6 +1095,17 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v31 — Skills & Tools hub: a free-text `category` on `claude_skills` so the
+    // hub can group imported skills. Forward-only + nullable: every existing row
+    // keeps it NULL, which readers COALESCE to "General"; new/overwritten
+    // imports persist the parsed `category:` frontmatter. The rung is idempotent
+    // (column_exists-guarded ADD COLUMN) and re-runnable against a fresh DB whose
+    // `ensure_claude_skills_tables` already created the column. No stored data is
+    // rewritten or destroyed.
+    Migration {
+        version: 31,
+        apply: crate::claude_skills::ensure_claude_skills_category_column,
+    },
 ];
 
 /// Add the additive `conv_id INTEGER` sibling column to `table`, preferring an
@@ -3370,6 +3381,21 @@ mod tests {
             assert!(
                 cols("model_perf_samples").contains(&c.to_string()),
                 "model_perf_samples.{c}"
+            );
+        }
+        // v31 — Skills & Tools hub: claude_skills.category.
+        for c in [
+            "id",
+            "name",
+            "description",
+            "body_md",
+            "enabled",
+            "pinned",
+            "category",
+        ] {
+            assert!(
+                cols("claude_skills").contains(&c.to_string()),
+                "claude_skills.{c}"
             );
         }
         // v29 — UNIQUE checkpoint-upsert index.

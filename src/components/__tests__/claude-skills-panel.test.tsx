@@ -35,6 +35,7 @@ const fixtures: ClaudeSkillSummary[] = [
     source_path: "/Users/joseph/skills/pdf-fill",
     enabled: true,
     pinned: true,
+    category: "Documents",
   },
   {
     id: 2,
@@ -43,6 +44,7 @@ const fixtures: ClaudeSkillSummary[] = [
     source_path: "/Users/joseph/skills/docx-report",
     enabled: false,
     pinned: false,
+    category: "General",
   },
 ];
 

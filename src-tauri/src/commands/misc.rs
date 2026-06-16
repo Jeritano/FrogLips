@@ -606,6 +606,10 @@ const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     // settings_set carrying it would be silently rejected and the toggle would
     // never persist.
     "simple_mode",
+    // Skills & Tools hub (2026-06-16): GLOBAL list of built-in tool names the
+    // user switched off in the hub. Without this key the settings_set carrying
+    // it would be silently rejected and the toggles would never persist.
+    "disabled_tools",
 ];
 
 /// Per-field byte caps for the "About You" profile. Keeps a hostile or

@@ -436,6 +436,12 @@ export interface AppSettings {
    *  (legacy installs / fresh users) and `false` both mean OFF — today's full
    *  advanced UI. Toggled from a visible Simple/Advanced control. */
   simple_mode?: boolean | null;
+  /** Built-in tools the user has switched OFF in the Skills & Tools hub. A
+   *  GLOBAL list of tool names that the agent-loop excludes from the system
+   *  prompt's available-tools section, ON TOP of the per-preset allowlist (only
+   *  ever further restricts). Absent/`null`/`[]` (legacy installs / fresh users)
+   *  = nothing disabled = all tools enabled, i.e. today's behavior. */
+  disabled_tools?: string[] | null;
 }
 
 /**
@@ -1463,6 +1469,10 @@ export interface ClaudeSkillSummary {
   source_path: string;
   enabled: boolean;
   pinned: boolean;
+  /** Free-text grouping label for the Skills & Tools hub. Parsed from the
+   *  optional `category:` SKILL.md frontmatter; "General" when absent or for
+   *  rows imported before the column existed. */
+  category: string;
 }
 
 /**

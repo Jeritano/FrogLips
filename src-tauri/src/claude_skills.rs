@@ -9,7 +9,13 @@
 //!   * `pinned`  — when true, the full `body_md` is prepended to the system
 //!     prompt at chat start. Defaults to false.
 //!
-//! Schema (created by the v15 migration; see `ensure_claude_skills_tables`):
+//! Each row also carries a free-text `category` (parsed from the optional
+//! `category:` frontmatter key) used by the Skills & Tools hub to group
+//! skills. Absent / blank → "General".
+//!
+//! Schema (created by the v15 migration; see `ensure_claude_skills_tables`).
+//! The `category` column is added by the forward-only v31 migration rung
+//! (`ensure_claude_skills_category_column`) for DBs that predate it:
 //!
 //! ```sql
 //! CREATE TABLE claude_skills (
@@ -21,7 +27,8 @@
 //!     source_path        TEXT NOT NULL,
 //!     imported_at        INTEGER NOT NULL,
 //!     enabled            INTEGER NOT NULL DEFAULT 1,
-//!     pinned             INTEGER NOT NULL DEFAULT 0
+//!     pinned             INTEGER NOT NULL DEFAULT 0,
+//!     category           TEXT
 //! );
 //! ```
 //!
@@ -55,6 +62,11 @@ pub const MAX_DESCRIPTION_LEN: usize = 512;
 /// skills, bounded so a malformed import can't blow the SQLite row budget or
 /// later balloon the system prompt when the skill is pinned.
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
+/// Hard cap on `category` length (chars). Generous for a grouping label.
+pub const MAX_CATEGORY_LEN: usize = 64;
+/// Category used when a SKILL.md omits `category:` (or leaves it blank) and
+/// for rows imported before the column existed (stored NULL → read as this).
+pub const DEFAULT_CATEGORY: &str = "General";
 
 static NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]+$").unwrap());
 
@@ -69,6 +81,9 @@ pub struct ClaudeSkillRow {
     pub imported_at: i64,
     pub enabled: bool,
     pub pinned: bool,
+    /// Free-text grouping label for the Skills & Tools hub. "General" when the
+    /// SKILL.md omits `category:` or the row predates the column.
+    pub category: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,6 +94,9 @@ pub struct ClaudeSkillSummary {
     pub source_path: String,
     pub enabled: bool,
     pub pinned: bool,
+    /// Free-text grouping label for the Skills & Tools hub. "General" when the
+    /// SKILL.md omits `category:` or the row predates the column.
+    pub category: String,
 }
 
 /// Structured error carried inside `anyhow::Error`. The IPC layer downcasts
@@ -119,13 +137,27 @@ pub(crate) fn ensure_claude_skills_tables(conn: &Connection) -> Result<()> {
             source_path        TEXT NOT NULL,
             imported_at        INTEGER NOT NULL,
             enabled            INTEGER NOT NULL DEFAULT 1,
-            pinned             INTEGER NOT NULL DEFAULT 0
+            pinned             INTEGER NOT NULL DEFAULT 0,
+            category           TEXT
          );
          CREATE INDEX IF NOT EXISTS idx_claude_skills_enabled
             ON claude_skills(enabled);
          CREATE INDEX IF NOT EXISTS idx_claude_skills_pinned
             ON claude_skills(pinned);",
     )?;
+    Ok(())
+}
+
+/// Forward-only, idempotent migration that adds the `category` column to an
+/// existing `claude_skills` table. Guarded by a `column_exists` check (SQLite
+/// has no `ADD COLUMN IF NOT EXISTS`) so re-running is safe; the column is
+/// nullable, so old rows simply read back as NULL → `DEFAULT_CATEGORY`. Run
+/// from the v31 ladder rung; safe to call against a schema that already has
+/// the column (e.g. a fresh DB created by `ensure_claude_skills_tables`).
+pub(crate) fn ensure_claude_skills_category_column(conn: &Connection) -> Result<()> {
+    if !crate::history::column_exists(conn, "claude_skills", "category")? {
+        conn.execute("ALTER TABLE claude_skills ADD COLUMN category TEXT", [])?;
+    }
     Ok(())
 }
 
@@ -138,6 +170,9 @@ struct ParsedSkill {
     description: String,
     allowed_tools: Option<Vec<String>>,
     body_md: String,
+    /// Parsed `category:` frontmatter, normalized to `DEFAULT_CATEGORY` when
+    /// absent or blank.
+    category: String,
 }
 
 /// State machine for the frontmatter walk. Easier to reason about than two
@@ -247,6 +282,7 @@ fn parse_skill_md(source: &str) -> Result<ParsedSkill> {
         description: Option<String>,
         #[serde(rename = "allowed-tools")]
         allowed_tools: Option<Vec<String>>,
+        category: Option<String>,
     }
 
     // Slice the YAML block straight from the source (offsets captured during
@@ -264,11 +300,20 @@ fn parse_skill_md(source: &str) -> Result<ParsedSkill> {
         )
     })?;
 
+    // Optional grouping label. Trim and fall back to the default so a blank
+    // (`category: ""` or `category:   `) never persists as an empty bucket.
+    let category = raw
+        .category
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| DEFAULT_CATEGORY.to_string());
+
     Ok(ParsedSkill {
         name,
         description,
         allowed_tools: raw.allowed_tools,
         body_md,
+        category,
     })
 }
 
@@ -314,6 +359,18 @@ fn validate_body(body: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_category(category: &str) -> Result<()> {
+    // `category` is already normalized to a non-empty default by the parser;
+    // the only bound left to enforce is length (chars; may contain spaces).
+    if category.chars().count() > MAX_CATEGORY_LEN {
+        return Err(err(
+            "bad_category",
+            format!("category exceeds {MAX_CATEGORY_LEN} chars"),
+        ));
+    }
+    Ok(())
+}
+
 /// Import a Claude Skill from a folder on disk.
 ///
 /// Steps:
@@ -352,6 +409,7 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
     validate_name(&parsed.name)?;
     validate_description(&parsed.description)?;
     validate_body(&parsed.body_md)?;
+    validate_category(&parsed.category)?;
 
     let allowed_tools_json = match &parsed.allowed_tools {
         Some(tools) => Some(
@@ -385,8 +443,8 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
                 tx.execute(
                     "INSERT INTO claude_skills
                         (name, description, body_md, allowed_tools_json,
-                         source_path, imported_at, enabled, pinned)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0)",
+                         source_path, imported_at, enabled, pinned, category)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, ?7)",
                     params![
                         parsed.name,
                         parsed.description,
@@ -394,6 +452,7 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
                         allowed_tools_json,
                         source_path,
                         now,
+                        parsed.category,
                     ],
                 )?;
                 (tx.last_insert_rowid(), true, false)
@@ -405,22 +464,26 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
                         format!("claude skill '{}' already exists", parsed.name),
                     ));
                 }
-                // Update body / metadata / source_path in place; preserve the
-                // user's enabled+pinned toggles.
+                // Update body / metadata / source_path / category in place;
+                // preserve the user's enabled+pinned toggles. `category` rides
+                // the SKILL.md on disk like `description`, so an overwrite
+                // refreshes it.
                 tx.execute(
                     "UPDATE claude_skills
                      SET description = ?1,
                          body_md = ?2,
                          allowed_tools_json = ?3,
                          source_path = ?4,
-                         imported_at = ?5
-                     WHERE id = ?6",
+                         imported_at = ?5,
+                         category = ?6
+                     WHERE id = ?7",
                     params![
                         parsed.description,
                         parsed.body_md,
                         allowed_tools_json,
                         source_path,
                         now,
+                        parsed.category,
                         existing_id,
                     ],
                 )?;
@@ -440,6 +503,7 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
         imported_at: now,
         enabled,
         pinned,
+        category: parsed.category,
     })
 }
 
@@ -448,11 +512,15 @@ pub fn import_from_folder(folder: &Path, overwrite: bool) -> Result<ClaudeSkillR
 /// returned — used by the agent loop's stub catalog.
 pub fn list(enabled_only: bool) -> Result<Vec<ClaudeSkillSummary>> {
     let conn = get_db()?;
+    // COALESCE so rows written before the `category` column existed (NULL) read
+    // back as DEFAULT_CATEGORY rather than an empty bucket.
     let sql = if enabled_only {
-        "SELECT id, name, description, source_path, enabled, pinned
+        "SELECT id, name, description, source_path, enabled, pinned,
+                COALESCE(category, 'General')
          FROM claude_skills WHERE enabled = 1 ORDER BY name ASC"
     } else {
-        "SELECT id, name, description, source_path, enabled, pinned
+        "SELECT id, name, description, source_path, enabled, pinned,
+                COALESCE(category, 'General')
          FROM claude_skills ORDER BY name ASC"
     };
     let mut stmt = conn.prepare(sql)?;
@@ -465,6 +533,7 @@ pub fn list(enabled_only: bool) -> Result<Vec<ClaudeSkillSummary>> {
                 source_path: r.get(3)?,
                 enabled: r.get::<_, i64>(4)? != 0,
                 pinned: r.get::<_, i64>(5)? != 0,
+                category: r.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -478,7 +547,8 @@ pub fn get(name: &str) -> Result<Option<ClaudeSkillRow>> {
     let row = conn
         .query_row(
             "SELECT id, name, description, body_md, allowed_tools_json,
-                    source_path, imported_at, enabled, pinned
+                    source_path, imported_at, enabled, pinned,
+                    COALESCE(category, 'General')
              FROM claude_skills WHERE name = ?1",
             params![name],
             |r| {
@@ -492,6 +562,7 @@ pub fn get(name: &str) -> Result<Option<ClaudeSkillRow>> {
                     imported_at: r.get(6)?,
                     enabled: r.get::<_, i64>(7)? != 0,
                     pinned: r.get::<_, i64>(8)? != 0,
+                    category: r.get(9)?,
                 })
             },
         )
@@ -579,6 +650,7 @@ mod tests {
         validate_name(&parsed.name)?;
         validate_description(&parsed.description)?;
         validate_body(&parsed.body_md)?;
+        validate_category(&parsed.category)?;
         let allowed_tools_json = match &parsed.allowed_tools {
             Some(tools) => Some(serde_json::to_string(tools)?),
             None => None,
@@ -603,8 +675,8 @@ mod tests {
                 tx.execute(
                     "INSERT INTO claude_skills
                         (name, description, body_md, allowed_tools_json,
-                         source_path, imported_at, enabled, pinned)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0)",
+                         source_path, imported_at, enabled, pinned, category)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, ?7)",
                     params![
                         parsed.name,
                         parsed.description,
@@ -612,6 +684,7 @@ mod tests {
                         allowed_tools_json,
                         source_path,
                         now,
+                        parsed.category,
                     ],
                 )?;
                 (tx.last_insert_rowid(), true, false)
@@ -627,14 +700,15 @@ mod tests {
                 tx.execute(
                     "UPDATE claude_skills
                      SET description = ?1, body_md = ?2, allowed_tools_json = ?3,
-                         source_path = ?4, imported_at = ?5
-                     WHERE id = ?6",
+                         source_path = ?4, imported_at = ?5, category = ?6
+                     WHERE id = ?7",
                     params![
                         parsed.description,
                         parsed.body_md,
                         allowed_tools_json,
                         source_path,
                         now,
+                        parsed.category,
                         existing_id,
                     ],
                 )?;
@@ -652,6 +726,7 @@ mod tests {
             imported_at: now,
             enabled,
             pinned,
+            category: parsed.category,
         })
     }
 
@@ -754,6 +829,84 @@ mod tests {
         let src = "---\nname: x\ndescription: d\n---\n\nbody\n";
         let parsed = parse_skill_md(src).unwrap();
         assert!(parsed.allowed_tools.is_none());
+    }
+
+    #[test]
+    fn parse_category_defaults_and_explicit() {
+        // No category → DEFAULT_CATEGORY.
+        let parsed = parse_skill_md(HAPPY_PATH_SKILL).unwrap();
+        assert_eq!(parsed.category, DEFAULT_CATEGORY);
+        // Explicit category survives.
+        let src = "---\nname: x\ndescription: d\ncategory: Research\n---\n\nbody\n";
+        let parsed = parse_skill_md(src).unwrap();
+        assert_eq!(parsed.category, "Research");
+        // Blank / whitespace-only category falls back to the default.
+        let src = "---\nname: x\ndescription: d\ncategory: \"   \"\n---\n\nbody\n";
+        let parsed = parse_skill_md(src).unwrap();
+        assert_eq!(parsed.category, DEFAULT_CATEGORY);
+    }
+
+    #[test]
+    fn category_migration_is_idempotent_and_persists() {
+        // Simulate a REAL pre-category DB: create the table WITHOUT the column,
+        // insert a row, then run the forward-only migration twice.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE claude_skills (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                name               TEXT NOT NULL UNIQUE,
+                description        TEXT NOT NULL,
+                body_md            TEXT NOT NULL,
+                allowed_tools_json TEXT,
+                source_path        TEXT NOT NULL,
+                imported_at        INTEGER NOT NULL,
+                enabled            INTEGER NOT NULL DEFAULT 1,
+                pinned             INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO claude_skills
+                (name, description, body_md, allowed_tools_json,
+                 source_path, imported_at, enabled, pinned)
+             VALUES ('old', 'd', '', NULL, '/x', 1, 1, 0)",
+            [],
+        )
+        .unwrap();
+        assert!(!crate::history::column_exists(&conn, "claude_skills", "category").unwrap());
+        ensure_claude_skills_category_column(&conn).expect("first add");
+        ensure_claude_skills_category_column(&conn).expect("second must be a no-op");
+        assert!(crate::history::column_exists(&conn, "claude_skills", "category").unwrap());
+        // The pre-existing row's category is NULL; the COALESCE-style read must
+        // surface it as the default.
+        let cat: String = conn
+            .query_row(
+                "SELECT COALESCE(category, 'General') FROM claude_skills WHERE name='old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cat, DEFAULT_CATEGORY);
+    }
+
+    #[test]
+    fn import_persists_category() {
+        let mut conn = fresh_db();
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(
+            &dir,
+            "---\nname: cat-skill\ndescription: d\ncategory: Web\n---\n\nbody\n",
+        );
+        let row = import_into(&mut conn, dir.path(), false, 100).unwrap();
+        assert_eq!(row.category, "Web");
+        let stored: String = conn
+            .query_row(
+                "SELECT category FROM claude_skills WHERE name='cat-skill'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "Web");
     }
 
     #[test]

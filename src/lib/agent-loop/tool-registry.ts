@@ -91,9 +91,31 @@ export interface ToolHandler {
   ) => Promise<string>;
 }
 
+/** Human-facing grouping bucket for the Skills & Tools hub. Purely
+ *  presentational — it does NOT influence dispatch, security, or the preset
+ *  allowlist. Distinct from `flow.presetCategory` (which curates the Flow
+ *  picker); this is the hub's "what does this tool DO" grouping. */
+export type ToolCategory =
+  | "Filesystem"
+  | "Git"
+  | "Shell"
+  | "Web"
+  | "Code"
+  | "macOS"
+  | "Browser"
+  | "Tasks"
+  | "Watchers"
+  | "Memory/RAG"
+  | "Agent"
+  | "Workflow"
+  | "Skills";
+
 export interface ToolDescriptor {
   name: string;
   schema: ToolSchema;
+  /** Human-facing grouping bucket for the Skills & Tools hub (purely
+   *  presentational; never affects dispatch, security, or the allowlist). */
+  category: ToolCategory;
   sideEffect: SideEffect;
   /** Membership in DANGEROUS_TOOLS — the confirmation-modal gate. */
   dangerous: boolean;
@@ -144,6 +166,7 @@ const redactDiagDetail = redactDiagDetailForRegistry;
 export const TOOL_REGISTRY: ToolDescriptor[] = [
   {
     name: "read_file",
+    category: "Filesystem",
     schema: {
       description:
         "Read text contents of a file. Default reads up to 65536 bytes — DO NOT pass a small limit (anything under 8192 is auto-raised). Only paginate when total_bytes exceeds 65536: pass the returned `next_offset` as the next call's `offset`. To read SEVERAL files at once, prefer read_files (one call). Returns content, bytes_read, total_bytes, truncated, next_offset.",
@@ -197,6 +220,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "read_files",
+    category: "Filesystem",
     schema: {
       description:
         "Read MULTIPLE files in ONE call (read-only, no approval). Strongly preferred over many read_file calls when you need to inspect several files — saves turns. Returns {files: [{path, ok, content, total_bytes, truncated, next_offset} | {path, ok:false, error}]}. Max 32 files; each file capped at 65536 bytes (paginate large ones individually with read_file).",
@@ -242,6 +266,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "list_dir",
+    category: "Filesystem",
     schema: {
       description:
         "List directory entries (max 500). Returns {entries: [{name, kind, size}], truncated}.",
@@ -281,6 +306,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "search_files",
+    category: "Filesystem",
     schema: {
       description:
         "Search for text across files under a directory (line-grep, recursive). Set regex=true for regex pattern matching. Pass context=N (1-5) to get N surrounding lines per hit (before/after) — avoids a follow-up read_file just to see around a match. Skips .git/node_modules/target/etc.",
@@ -338,6 +364,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "multi_edit",
+    category: "Filesystem",
     schema: {
       description:
         "Apply multiple find-and-replace edits to a single file atomically — either all succeed or none do. Edits are applied sequentially. Requires user approval.",
@@ -392,6 +419,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "git_status",
+    category: "Git",
     schema: {
       description:
         "Run `git status --short --branch` in the workspace (or given path). Returns stdout, stderr, exit_code.",
@@ -433,6 +461,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "git_diff",
+    category: "Git",
     schema: {
       description:
         "Run `git diff` in the workspace (or given path). Set staged=true for `--staged`.",
@@ -472,6 +501,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "file_exists",
+    category: "Filesystem",
     schema: {
       description: "Check whether a path exists; returns {exists, kind, size}.",
       parameters: {
@@ -505,6 +535,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "run_shell",
+    category: "Shell",
     schema: {
       description:
         "Execute a shell command via sh -c. Optional cwd + per-call timeout. Default timeout 30s; pass timeout_secs (clamped 1-600) for slow builds, test suites, or downloads. ALWAYS requires user approval. Returns stdout, stderr, exit_code, duration_ms, timed_out. Do NOT use run_shell to write or create files — use write_file / write_files / edit_file. run_shell is for builds, tests, git, and other CLI tasks only.",
@@ -591,6 +622,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "run_code",
+    category: "Shell",
     schema: {
       description:
         "Run a snippet of code in a throwaway interpreter and capture its output. Supported languages: python, node (javascript), bash, sh, ruby. The code is written to a temp file and executed directly (no shell re-parsing). Default timeout 30s; pass timeout_secs (clamped 1-600). ALWAYS requires user approval — this is arbitrary code execution. Returns stdout, stderr, exit_code, duration_ms, timed_out. Prefer this over run_shell for multi-line logic, data processing, or math beyond `calculate`.",
@@ -656,6 +688,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "calculate",
+    category: "Code",
     schema: {
       description:
         "Evaluate an arithmetic expression exactly (no LLM guessing). Supports + - * / % ^, parentheses, unary minus, and functions sqrt/abs/sin/cos/tan/asin/acos/atan/ln/log/log2/exp/floor/ceil/round/sign plus constants pi/e/tau. Safe — never executes code. Use this for any non-trivial number crunching. Returns { ok, result } or { ok:false, error }.",
@@ -693,6 +726,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "remember",
+    category: "Memory/RAG",
     schema: {
       description:
         "Save a durable fact to long-term memory so it can be recalled in future runs/conversations. Auto-embeds + de-duplicates. Scope: 'global' (default, everywhere), 'project' (this workspace only), or 'conversation' (this chat only). Use for stable preferences, decisions, or facts — NOT transient task state (use the workflow scratchpad for that).",
@@ -758,6 +792,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "recall_memory",
+    category: "Memory/RAG",
     schema: {
       description:
         "Search long-term memory for facts relevant to a query (vector search with keyword fallback). Returns up to k matching memories with their content, tags, scope, and similarity score. Call this before answering when prior context might help.",
@@ -826,6 +861,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "write_file",
+    category: "Filesystem",
     schema: {
       description:
         "PREFERRED tool for creating or overwriting a file. Pass the full content directly. Do NOT write files with run_shell (no `cat`/heredocs/`echo >`/`tee`/redirection, no generated scripts) — that hits the shell command-length limit, scatters files OUTSIDE the workspace (shell isn't confined), and forces a separate approval per file. Write text content to a file, creating parents. ALWAYS requires user approval. Prefer edit_file for changes to existing files.",
@@ -865,6 +901,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "write_files",
+    category: "Filesystem",
     schema: {
       description:
         "Create or overwrite MULTIPLE files in ONE call (one approval). Strongly preferred over many write_file calls when scaffolding several files — saves approvals and iterations.",
@@ -929,6 +966,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "apply_patch",
+    category: "Filesystem",
     schema: {
       description:
         "Apply a unified diff across ONE OR MORE files in a single approval — the best tool for a coordinated change (e.g. a rename touching several call sites). Atomic: if any hunk fails to match, NOTHING is written. Use standard unified-diff format with `--- a/path`, `+++ b/path`, `@@` hunks; create a new file with `--- /dev/null`. Context + removed lines must match the file EXACTLY (no fuzz). Does not delete files (use delete_path). Requires user approval.",
@@ -973,6 +1011,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "update_plan",
+    category: "Code",
     schema: {
       description:
         "Maintain a short, pinned task checklist for a multi-step job. Call it once early with your plan, then again to flip a step's status as you progress — instead of re-typing the whole plan in prose each turn. Keeps you on track and saves tokens. Statuses: pending | in_progress | done. Keep it to the few real milestones (max 30 steps), not every tool call.",
@@ -1044,6 +1083,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "edit_file",
+    category: "Filesystem",
     schema: {
       description:
         "Find-and-replace edit on an existing file. old_string must appear exactly once unless replace_all=true. Returns {replacements, new_size}. Requires user approval.",
@@ -1087,6 +1127,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "git_log",
+    category: "Git",
     schema: {
       description:
         "Run `git log --oneline --decorate -n <limit>` (default 20, max 200).",
@@ -1123,6 +1164,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "git_show",
+    category: "Git",
     schema: {
       description:
         "Run `git show <ref>` — view commit details + diff. Ref must be alphanumeric + ./_/-/slash.",
@@ -1163,6 +1205,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "git_branches",
+    category: "Git",
     schema: {
       description: "Run `git branch -a` — list local + remote branches.",
       parameters: { type: "object", properties: { path: { type: "string" } } },
@@ -1194,6 +1237,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "git_commit",
+    category: "Git",
     schema: {
       description:
         "Commit already-staged changes with a message. Requires user approval. Does NOT stage files — use run_shell `git add` first.",
@@ -1233,6 +1277,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "web_fetch",
+    category: "Web",
     schema: {
       description:
         "GET a URL and return its text content (HTML auto-stripped). Blocks loopback/private/link-local hosts (SSRF defense). 15s timeout, 1 MiB response cap.",
@@ -1266,6 +1311,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "web_search",
+    category: "Web",
     schema: {
       description:
         "Search the web via DuckDuckGo. Returns up to 20 hits with title/url/snippet.",
@@ -1305,6 +1351,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "read_pdf",
+    category: "Filesystem",
     schema: {
       description:
         "Extract text from a PDF file at the given path. Optional byte-cap on output.",
@@ -1342,6 +1389,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "screenshot",
+    category: "macOS",
     schema: {
       description:
         "Capture the screen via macOS `screencapture -x`. Saves to /tmp if no out_path. Returns the file path.",
@@ -1375,6 +1423,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "clipboard_get",
+    category: "macOS",
     schema: {
       description:
         "Read the user's macOS clipboard. Returns text only; large content truncated.",
@@ -1404,6 +1453,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "clipboard_set",
+    category: "macOS",
     schema: {
       description:
         "Write text to the user's macOS clipboard. Requires approval — clipboard may hold sensitive data.",
@@ -1440,6 +1490,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "open_app",
+    category: "macOS",
     schema: {
       description:
         'Launch a macOS app by name via `open -a` (e.g. "Safari", "Visual Studio Code"). Requires approval.',
@@ -1473,6 +1524,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "show_notification",
+    category: "macOS",
     schema: {
       description: "Display a native macOS notification.",
       parameters: {
@@ -1513,6 +1565,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "applescript_run",
+    category: "macOS",
     schema: {
       description:
         "Execute an AppleScript via osascript. Powerful — can drive any scriptable app. ALWAYS requires user approval. 30s timeout.",
@@ -1549,6 +1602,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "http_request",
+    category: "Web",
     schema: {
       description:
         "Generic HTTP request (GET/POST/PUT/PATCH/DELETE/HEAD). SSRF-protected. Body capped at 1 MiB. Requires user approval — can exfil data or write to external services.",
@@ -1608,6 +1662,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "call_api",
+    category: "Web",
     schema: {
       description:
         "Call one of the user's REGISTERED APIs by name. The auth key is injected automatically server-side — never include it. `path` is relative to the API's base URL (e.g. \"/repos/owner/name\"). Registered API names are listed in the system prompt; pass one as `api`. SSRF-protected, approval-gated. Prefer this over http_request whenever the user has a saved API for the service.",
@@ -1676,6 +1731,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "find_definition",
+    category: "Code",
     schema: {
       description:
         "Locate the definition of a symbol (function/class/struct/etc.) via heuristic regex across the workspace. Symbol must be [A-Za-z0-9_]+.",
@@ -1715,6 +1771,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "find_references",
+    category: "Code",
     schema: {
       description:
         "Locate all references to a symbol via word-boundary regex across the workspace.",
@@ -1754,6 +1811,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "format_code",
+    category: "Code",
     schema: {
       description:
         "Format a code file via the right formatter for its extension (prettier for ts/js/json/css/md/yaml, rustfmt for .rs, black for .py, gofmt for .go, swift-format for .swift).",
@@ -1786,6 +1844,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "task_create",
+    category: "Tasks",
     schema: {
       description:
         "Start a long-running shell command in the background. Returns a task_id immediately. Use task_status to check progress and read output, task_list to see all tasks, and task_cancel to stop one.",
@@ -1824,6 +1883,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "task_status",
+    category: "Tasks",
     schema: {
       description:
         "Get the current status + result (if finished) of a background task.",
@@ -1856,6 +1916,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "task_list",
+    category: "Tasks",
     schema: {
       description:
         "List all background tasks the agent has started this session.",
@@ -1884,6 +1945,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "task_cancel",
+    category: "Tasks",
     schema: {
       description:
         "Cancel a running background task. Idempotent on terminal-state tasks.",
@@ -1913,6 +1975,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "ask_user",
+    category: "Agent",
     schema: {
       description:
         "Pause the agent and prompt the user for an answer. Use when you genuinely need info you can't get from tools (preference, missing parameter, ambiguity). Returns the user's typed text.",
@@ -1954,6 +2017,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "watch_path",
+    category: "Watchers",
     schema: {
       description:
         "Start watching a file or directory for changes. Returns {watch_id: 'w_xxx', path, glob}. Use poll_watch repeatedly to drain events. Pair this with run_shell/task_create for build-watch or test-watch loops. Cross-platform (FSEvents/inotify/ReadDirectoryChangesW).",
@@ -2006,6 +2070,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "poll_watch",
+    category: "Watchers",
     schema: {
       description:
         "Drain filesystem events accumulated by a watcher since `since_ms` (or all if unset). Returns {events: [{kind, path, ts}], next_ts, dropped}. Pass next_ts back as since_ms on the next call. `dropped` reports events elided by the per-call max (ring-buffer overflow is in list_watches).",
@@ -2057,6 +2122,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "stop_watch",
+    category: "Watchers",
     schema: {
       description:
         "Stop a filesystem watcher and release its OS-level watch handle.",
@@ -2091,6 +2157,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "list_watches",
+    category: "Watchers",
     schema: {
       description:
         "List active filesystem watchers — id, path, glob, started_at, events_seen, buffered, dropped.",
@@ -2119,6 +2186,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "browser_navigate",
+    category: "Browser",
     schema: {
       description:
         "Open a URL in a controlled Chrome/Chromium instance and return the page title + URL + a base64 PNG screenshot. SSRF-protected (no loopback/private/link-local hosts; no file://, chrome://). One persistent browser session per app run — subsequent browser_* calls reuse the same tab. Requires a Chrome/Chromium binary installed on the user's machine. The browser_ prefix means actions are visible to the user — there are no silent navigations.",
@@ -2157,6 +2225,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "browser_click",
+    category: "Browser",
     schema: {
       description:
         "Click an element in the current browser session. Selector is a CSS selector. Fails if no browser session is open or the selector matches nothing.",
@@ -2191,6 +2260,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "browser_fill",
+    category: "Browser",
     schema: {
       description:
         "Focus an input via CSS selector and type a value into it. Fails if no browser session is open or the selector matches nothing.",
@@ -2232,6 +2302,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "browser_screenshot",
+    category: "Browser",
     schema: {
       description:
         "Capture a PNG screenshot of the current browser tab. Returns {base64}. Fails if no browser session is open.",
@@ -2260,6 +2331,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "browser_get_text",
+    category: "Browser",
     schema: {
       description:
         "Return innerText for the matched element (defaults to body). Output capped at 64 KiB. Fails if no browser session is open.",
@@ -2298,6 +2370,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "browser_close",
+    category: "Browser",
     schema: {
       description:
         "Close the persistent browser session. Idempotent — safe to call when no session exists.",
@@ -2326,6 +2399,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "search_project_knowledge",
+    category: "Memory/RAG",
     schema: {
       description:
         "Semantic search over an indexed local folder (RAG). Returns top-K matching chunks with file paths and snippets. Index folders first via the RAG panel in agent settings; this tool only reads.",
@@ -2375,6 +2449,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "spawn_subagent",
+    category: "Agent",
     schema: {
       description:
         "Run a fresh agent in an isolated context to handle a sub-task. Default mode 'sync' awaits the sub-agent and returns its final text. Pass mode='async' for parallel fan-out — returns {subagent_id, status:'running'} immediately; join with await_subagents. Max recursion depth 3.",
@@ -2410,6 +2485,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "await_subagents",
+    category: "Agent",
     schema: {
       description:
         "Block until all listed subagent_ids finish (or timeout). Returns per-id {id, status, result}. Finished subagents include their full answer; timed-out ones keep running in the background.",
@@ -2443,6 +2519,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "list_subagents",
+    category: "Agent",
     schema: {
       description:
         "List currently-tracked subagents (running, plus recently-completed within ~60s). Returns [{id, status, started_at, prompt_preview, depth}].",
@@ -2462,6 +2539,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "move_path",
+    category: "Filesystem",
     schema: {
       description:
         "Move or rename a file or directory within the workspace. Refuses to clobber an existing destination unless overwrite=true. ALWAYS requires user approval. Cheaper than run_shell mv.",
@@ -2508,6 +2586,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "copy_path",
+    category: "Filesystem",
     schema: {
       description:
         "Copy a single file (not a directory) within the workspace. Source ≤ 256 MiB. Refuses to clobber existing destination unless overwrite=true. ALWAYS requires user approval.",
@@ -2554,6 +2633,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "delete_path",
+    category: "Filesystem",
     schema: {
       description:
         "Delete a file or empty directory. Pass recursive=true for non-empty directories (capped at 1000 entries — bigger trees still need shell with approval). ALWAYS requires user approval.",
@@ -2594,6 +2674,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "make_dir",
+    category: "Filesystem",
     schema: {
       description:
         "Create a directory and any missing parents. Idempotent — returns created=false if it already existed. ALWAYS requires user approval.",
@@ -2628,6 +2709,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "hash_file",
+    category: "Filesystem",
     schema: {
       description:
         "Compute a SHA-2 hash of a file's contents (sha256 default; sha512 also supported). Source ≤ 1 GiB. Read-only — no approval needed.",
@@ -2668,6 +2750,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "diff_files",
+    category: "Filesystem",
     schema: {
       description:
         "Unified diff between two arbitrary files (works outside git repos via `git diff --no-index`). Each side ≤ 4 MiB. Returns {diff, identical}. Read-only — no approval needed.",
@@ -2706,6 +2789,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "list_processes",
+    category: "Shell",
     schema: {
       description:
         "List running processes (top 200 by CPU). Optional case-insensitive filter on the command name. Returns rows of {pid, ppid, cpu_pct, mem_mib, command}. Read-only.",
@@ -2744,6 +2828,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "kill_process",
+    category: "Shell",
     schema: {
       description:
         "Send a POSIX signal to a process. Default signal TERM; KILL/HUP/INT/QUIT/USR1/USR2 also allowed (other values fall back to TERM). Refuses pid<=1. ALWAYS requires user approval.",
@@ -2795,6 +2880,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "agent_undo",
+    category: "Agent",
     schema: {
       description:
         "Revert the most recent write_file / edit_file / multi_edit by restoring the file's prior contents (or deleting it if the snapshot recorded the file as new). Up to 50 edits are tracked in memory; the stack drops on app restart. ALWAYS requires user approval.",
@@ -2827,6 +2913,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "list_undo",
+    category: "Agent",
     schema: {
       description:
         "List the in-memory undo stack newest-first so you can see what agent_undo would revert. Returns rows of {path, kind, taken_at_ms, size_bytes, was_absent}. Read-only.",
@@ -2852,6 +2939,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "create_flow",
+    category: "Workflow",
     schema: {
       description:
         "Create a saved Flow — a linear multi-agent workflow — from a description. " +
@@ -3007,6 +3095,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "workflow_set",
+    category: "Workflow",
     schema: {
       description:
         "Write a value to the workflow scratchpad — a shared blob other cards in the same run can read. Use for structured state (counts, decisions, intermediate JSON) that doesn't belong in the user-facing prose handoff. Total scratchpad capped at 64 KiB across all keys. Value must be JSON-serializable.",
@@ -3050,6 +3139,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "workflow_get",
+    category: "Workflow",
     schema: {
       description:
         "Read a value the current workflow run previously stored via workflow_set. Returns {ok:true, value} on hit, {ok:false, kind:'missing_key'} when no such key exists in this run.",
@@ -3083,6 +3173,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "workflow_keys",
+    category: "Workflow",
     schema: {
       description:
         "List the keys currently in the workflow scratchpad for THIS run. Use to discover what an upstream card wrote without trial-and-error workflow_get calls.",
@@ -3112,6 +3203,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "workflow_get_prior_run",
+    category: "Workflow",
     schema: {
       description:
         "Read the recorded output of a card from a PRIOR run of the same workflow (i.e. last week's run of this card). Returns the most recent matching run by default. Use to chain a daily workflow off the previous day's findings.",
@@ -3213,6 +3305,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "workflow_save_skill",
+    category: "Workflow",
     schema: {
       description:
         "Save the just-completed sequence of tool calls as a reusable named skill scoped to this workflow. Steps are an array of {tool, args} entries replayed by workflow_invoke_skill on later runs.",
@@ -3340,6 +3433,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "workflow_list_skills",
+    category: "Workflow",
     schema: {
       description:
         "List skills saved for the current workflow. Returns summary rows (id, name, description, last_used_at, invocation_count) — use workflow_get_skill to fetch full step lists.",
@@ -3378,6 +3472,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "workflow_get_skill",
+    category: "Workflow",
     schema: {
       description:
         "Get a saved skill's full definition including its step list. Returns null when no skill with that name exists in the current workflow.",
@@ -3435,6 +3530,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "workflow_invoke_skill",
+    category: "Workflow",
     schema: {
       description:
         "Run a previously-saved skill. Each step is dispatched as a normal tool call honoring this card's allowlist + approval policy. Aborts on the first step that returns ok:false. Rate-limited to 10 invocations of the same skill per workflow run.",
@@ -3661,6 +3757,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "workflow_delete_skill",
+    category: "Workflow",
     schema: {
       description: "Delete a saved skill from the current workflow.",
       parameters: {
@@ -3710,6 +3807,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "list_claude_skills",
+    category: "Skills",
     schema: {
       description:
         "List the user's imported Claude Skills (name + description only). Call this if you need to see what skills are available before deciding which to load.",
@@ -3744,6 +3842,7 @@ export const TOOL_REGISTRY: ToolDescriptor[] = [
   },
   {
     name: "load_claude_skill",
+    category: "Skills",
     schema: {
       description:
         "Load a Claude Skill by name. Returns the full markdown instructions for the skill. The skill body may reference Anthropic-style tool names (Read, Write, Bash, etc.) — see the translation glossary in the chat system prompt.",

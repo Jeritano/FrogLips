@@ -1042,6 +1042,12 @@ export async function runAgentLoop(
       mcpTools,
       modelFitness,
       opts.savedApiNames ?? [],
+      // ragCorpora is resolved elsewhere; keep the chat default (none) here.
+      [],
+      // Skills & Tools hub gating: globally-disabled built-ins + per-server MCP
+      // enable state. Both default to "nothing gated" = today's behavior.
+      opts.disabledTools ?? [],
+      opts.mcpServerConfigs ?? [],
     ),
   };
   msgs.unshift(sysMsg);
