@@ -176,7 +176,12 @@ export function AgentSettingsPanel({
         </span>
       </div>
       <div className="agent-settings-row">
-        <span className="agent-settings-label">Workspace:</span>
+        <span
+          className="agent-settings-label"
+          title="The folder the agent reads and writes in (its file-access root) — not the app or project identity. Set… to change it; clear it to use your home folder."
+        >
+          Agent workspace:
+        </span>
         <code className="agent-settings-value">
           {workspaceRoot ?? "(home folder — default)"}
         </code>

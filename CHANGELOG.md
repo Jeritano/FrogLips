@@ -4,6 +4,21 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.8] — 2026-06-16
+
+### Fixed
+
+- **Advanced agent panel no longer clips its controls.** In a short window the
+  Advanced agent settings (the full tool allowlist + dry-run + session
+  approvals) overflowed past the bottom edge, so the last tools and the composer
+  became unreachable. The panel is now height-capped and scrolls internally —
+  every control + the message box stay reachable at any window size.
+- **Workspace label clarified.** The agent's working folder is now labeled
+  "Agent workspace" (in the toolbar chip and the settings panel) with a tooltip
+  explaining it's the folder the agent reads/writes in — not the app or project
+  identity — so a folder name like a prior project no longer looks like the app
+  switched. Set… changes it; clearing it uses your home folder.
+
 ## [0.14.7] — 2026-06-16
 
 ### Added

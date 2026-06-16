@@ -1542,6 +1542,13 @@ button.cancel {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 12px;
+  /* Advanced mode renders the full 46-tool allowlist grid + dry-run + session
+     approvals; in a short window that pushed the composer off-screen and the
+     last tools became unreachable. Cap the panel and scroll it INTERNALLY so
+     every control + the composer below stay reachable at any window height. */
+  max-height: 42vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .agent-settings-row {
   display: flex;

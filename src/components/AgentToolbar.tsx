@@ -437,11 +437,12 @@ export function AgentToolbar(props: Props) {
           className="agent-status-pill agent-workspace-chip"
           data-testid="agent-workspace-chip"
           title={
-            workspaceRoot ??
-            "No workspace set — the agent is confined to your home folder (system & credential paths are always blocked). Set a workspace to narrow it to one project."
+            workspaceRoot
+              ? `Agent workspace: ${workspaceRoot}\nThe folder the agent reads/writes in — not the app. Open Agent settings → Set… to change it.`
+              : "No workspace set — the agent is confined to your home folder (system & credential paths are always blocked). Set a workspace to narrow it to one project."
           }
         >
-          Workspace: {workspaceLabel}
+          Agent workspace: {workspaceLabel}
         </span>
       )}
       {toolFitnessWeak && (
