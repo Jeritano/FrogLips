@@ -39,10 +39,13 @@ import ReactDOM from "react-dom/client";
 import { QuickPrompt } from "./components/QuickPrompt";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { recordBootTiming } from "./lib/diagnostics";
-// Styles: the same aggregator the main window uses. It is pure CSS (only
-// @imports other stylesheets — no JS), so it carries no markdown payload; it
-// just provides the design tokens + `.quick-*` rules this popover needs.
-import "./App.css";
+// Styles: a LEAN sheet (tokens + the ~8 `.quick-*` rules) instead of the full
+// App.css aggregator (~173 KB of render-blocking CSS). The popover renders only
+// `.quick-*` classes (the boot skeleton in quick.html is self-contained inline
+// CSS), so loading the whole app stylesheet just delayed first paint with rules
+// this window never uses. quick.css @imports tokens.css for the design tokens
+// the rules reference. (2026-06-16, B2-lean-css.)
+import "./styles/quick.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

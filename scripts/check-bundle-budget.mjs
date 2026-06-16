@@ -58,12 +58,18 @@ const KB = 1024;
 //     index.html               ~151 KB  → cap 160 KB   ← the full app legitimately render-blocks App.css (preloaded; no FOUC)
 //     quick.html               ~151 KB  → cap 170 KB   ← App.css aggregator; trim toward a lean quick.css (follow-up)
 //     detached.html            ~182 KB  → cap 210 KB   (katex + ChatWindow + App.css)
+//
+// quick.html CSS cap 170→30 KB (2026-06-16, B2-lean-css): the follow-up landed —
+// main-quick.tsx now imports a lean src/styles/quick.css (tokens.css + the ~8
+// `.quick-*` rules) instead of the full App.css aggregator. The popover's
+// render-blocking CSS drops from ~151 KB to ~15 KB; the 30 KB cap locks the win
+// in and trips loudly if App.css ever gets re-welded onto this window.
 const WINDOW_BUDGETS = [
   // main App CSS cap 160→168 KB in v0.14.5: +~4 KB of render-blocking App.css
   // from the new chat surfaces (side-by-side compare, in-chat find bar, recall-
   // pill list, plan checklist) + appearance (light high-contrast, ui-scale).
   { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 172 * KB },
-  { html: "quick.html", label: "Quick Prompt popover", maxBytes: 240 * KB, cssMaxBytes: 170 * KB },
+  { html: "quick.html", label: "Quick Prompt popover", maxBytes: 240 * KB, cssMaxBytes: 30 * KB },
   // detached boot graph 940→955 KB in v0.14.5: +~5 KB from the Compare toggle +
   // resume-affordance code now in the ChatWindow chunk the detached window loads.
   { html: "detached.html", label: "detached conversation", maxBytes: 955 * KB, cssMaxBytes: 210 * KB },
@@ -80,9 +86,22 @@ const MIN_BOOT_GRAPH_BYTES = 50 * KB; // smallest real window (quick) is ~198 KB
 // Individual chunk ceilings — guard the pieces most likely to balloon.
 //   markdown (marked+dompurify) ~67 KB → cap 100 KB  (base renderer; keep lean)
 //   vendor   (react/react-dom)  ~188 KB → cap 230 KB  (shared by every window)
+//
+// App-* and ChatWindow-* added 2026-06-16 (B2-lean-css): the WINDOW_BUDGETS only
+// measure each HTML's BOOT GRAPH (entry script + modulepreloads). These two are
+// LAZY chunks — index.html dynamic-imports <App> and <App> dynamic-imports
+// <ChatWindow> — so they're NOT in any boot graph and were previously ungated.
+// ChatWindow (~334 KB: the whole chat tree + message rendering) is the single
+// heaviest lazy chunk and the most likely to balloon, so gate it explicitly.
+//   App        ~75 KB  → cap 100 KB  (lazy App shell: sidebar/settings/workflows wiring)
+//   ChatWindow ~334 KB → cap 360 KB  (lazy chat tree + composer + message list)
+// NOTE: prefix match is case-sensitive `startsWith`, so "App-" matches only the
+// PascalCase App chunk, not a lowercase "app-*" entry chunk.
 const CHUNK_BUDGETS = [
   { prefix: "markdown-", label: "markdown base renderer", maxBytes: 100 * KB },
   { prefix: "vendor-", label: "react vendor", maxBytes: 230 * KB },
+  { prefix: "App-", label: "lazy App shell", maxBytes: 100 * KB },
+  { prefix: "ChatWindow-", label: "lazy chat window", maxBytes: 360 * KB },
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

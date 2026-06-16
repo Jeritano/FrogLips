@@ -1,7 +1,7 @@
 use anyhow::Result;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -212,6 +212,31 @@ fn with_cache<R>(f: impl FnOnce(&EmbeddingMap) -> R) -> Result<R> {
     Ok(f(map))
 }
 
+/// Cheaply read the embedding dim of existing ACTIVE memories without decoding
+/// the whole cache. Used by `add_memory`'s dim-guard on the vec0 path so an
+/// insert no longer warms ~60 MB of BLOBs just to compare a single length.
+///
+/// Reads one active row's `length(embedding) / 4`. Returns `None` when there is
+/// no active embedding yet — the dim is then unknown and the caller skips the
+/// guard, EXACTLY matching the cache path's `values().next() == None` (the cache
+/// only ever holds ACTIVE rows, so the guard is scoped to active rows here too;
+/// we deliberately do NOT shortcut via the vec0 memo, whose declared dim can
+/// reflect a pending/inactive-only table where the cache path would have found
+/// no active dim and skipped).
+fn existing_active_dim() -> Result<Option<usize>> {
+    let conn = get_db()?;
+    let dim: Option<i64> = conn
+        .query_row(
+            "SELECT length(embedding) / 4 FROM memories
+             WHERE status = 'active' AND embedding IS NOT NULL
+             LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(dim.map(|d| d as usize))
+}
+
 use crate::util::{blob_to_vec as blob_to_embedding, vec_to_blob as embedding_to_blob};
 
 /// Cosine similarity for arbitrary (not necessarily normalized) vectors.
@@ -354,13 +379,26 @@ pub fn add_memory(
         // Reject DB-level dim mismatch: lets the cache warm with a consistent
         // dim across restarts. Different embedding model → user must clear
         // memories first.
+        //
+        // PERF (2026-06): the cache-backed dim check used to force `warm_cache`
+        // here on EVERY active insert — decoding up to MAX_CACHE_ENTRIES (~20k)
+        // embedding BLOBs (~60 MB at 768d) into a resident HashMap that the vec0
+        // recall/dedup paths never read. When vec0 is active, derive the existing
+        // dim cheaply from the schema/DB instead of warming the whole cache; only
+        // the linear-fallback path still pays the warm. Semantics are preserved:
+        // an unknown existing dim (no active embeddings yet) skips the guard, and
+        // a mismatch is rejected, exactly as the cache path did.
         if status == "active" {
-            warm_cache()?;
-            let dim_ok = EMB_CACHE
-                .read()
-                .as_ref()
-                .and_then(|m| m.values().next().map(|v| v.len()))
-                .is_none_or(|existing_dim| existing_dim == emb.len());
+            let existing_dim = if crate::history::vec0_available() {
+                existing_active_dim()?
+            } else {
+                warm_cache()?;
+                EMB_CACHE
+                    .read()
+                    .as_ref()
+                    .and_then(|m| m.values().next().map(|v| v.len()))
+            };
+            let dim_ok = existing_dim.is_none_or(|d| d == emb.len());
             if !dim_ok {
                 return Err(anyhow::anyhow!(
                     "embedding dimension mismatch with existing memories (changing models requires clearing memories)"

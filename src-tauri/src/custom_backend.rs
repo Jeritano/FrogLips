@@ -556,6 +556,11 @@ async fn chat_stream_inner(
     let mut buf = String::new();
     let mut decoder = crate::sse_decode::Utf8StreamDecoder::default();
     tokio::pin!(stream);
+    // Hoist the per-op event names once — both are invariant for the whole
+    // stream. (Were re-formatted via `format!` on every per-token / per-frame
+    // emit.) PERF: IPC coalesce 2026-06-16.
+    let chunk_event = format!("custom-chunk:{op_id}");
+    let toolcall_event = format!("custom-toolcall:{op_id}");
     loop {
         // Race the SSE body against the cancel token so a user Stop ends the
         // stream promptly instead of draining to the client timeout.
@@ -601,34 +606,37 @@ async fn chat_stream_inner(
                 return Ok(());
             }
             acc_len += tc_len;
-            let _ = app.emit(
-                &format!("custom-toolcall:{op_id}"),
-                CustomToolCallChunk { tool_calls: tc },
-            );
+            let _ = app.emit(&toolcall_event, CustomToolCallChunk { tool_calls: tc });
         }
-        for delta in progress.deltas {
+        // Coalesce this network chunk's content deltas into ONE IPC event
+        // instead of one event per token. ORDER is preserved (concat in
+        // arrival order) and the body cap is applied to the JOINED string with
+        // the same char-boundary-safe truncation as before. PERF: IPC coalesce
+        // 2026-06-16.
+        if !progress.deltas.is_empty() {
             any_content = true;
+            let joined: String = progress.deltas.concat();
             // Body cap — bail (gracefully) if the stream would blow past the
             // ceiling. Respect char boundaries so we never emit half a
             // codepoint.
-            if acc_len + delta.len() > REPLY_MAX_BYTES {
+            if acc_len + joined.len() > REPLY_MAX_BYTES {
                 let remaining = REPLY_MAX_BYTES.saturating_sub(acc_len);
-                let mut take = delta.len().min(remaining);
-                while take > 0 && !delta.is_char_boundary(take) {
+                let mut take = joined.len().min(remaining);
+                while take > 0 && !joined.is_char_boundary(take) {
                     take -= 1;
                 }
                 if take > 0 {
                     let _ = app.emit(
-                        &format!("custom-chunk:{op_id}"),
+                        &chunk_event,
                         CustomChunk {
-                            delta: delta[..take].to_string(),
+                            delta: joined[..take].to_string(),
                         },
                     );
                 }
                 return Ok(());
             }
-            acc_len += delta.len();
-            let _ = app.emit(&format!("custom-chunk:{op_id}"), CustomChunk { delta });
+            acc_len += joined.len();
+            let _ = app.emit(&chunk_event, CustomChunk { delta: joined });
         }
         // Stash reasoning (capped) while no content has arrived — fallback only.
         if !any_content && reasoning_acc.len() < REPLY_MAX_BYTES {
@@ -653,7 +661,7 @@ async fn chat_stream_inner(
         }
         if take > 0 {
             let _ = app.emit(
-                &format!("custom-chunk:{op_id}"),
+                &chunk_event,
                 CustomChunk {
                     delta: reasoning_acc[..take].to_string(),
                 },

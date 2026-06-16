@@ -20,9 +20,60 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::history::{get_db, now_unix};
+
+/* ───────────────────────────────────────────────────────────────────────────
+Memoized `vec_rag_chunks` declared dimension. Mirrors `memory::VEC_MEM_DIM_MEMO`.
+`history::vec0_usable_for` runs TWO sqlite_master metadata queries (table_exists
++ a CREATE-SQL fetch + parse) on EVERY RAG search, but the shared vec0 table's
+dim is process-stable: it only changes when the table is dropped (embedder switch
+→ `vec_drop_table` at the re-ingest drop site, which resets this memo) or first
+created (lazy `flush_pending`, picked up by the re-probe on a still-UNKNOWN
+value). Caching the resolved dim turns the hot search path into a single
+in-memory load + integer compare. Perf finding (2026-06).
+
+State: `UNKNOWN` (-1) = not yet learned → probe + cache on success; a positive
+value = the table's declared dim. We only ever cache a *positive* dim (a table
+that exists), so a not-yet-created table stays UNKNOWN and a later create is
+detected; a drop is handled by the explicit reset at the embedder-switch site.
+─────────────────────────────────────────────────────────────────────── */
+const RAG_MEMO_UNKNOWN: i64 = -1;
+static VEC_RAG_DIM_MEMO: AtomicI64 = AtomicI64::new(RAG_MEMO_UNKNOWN);
+
+/// Reset the memoized vec_rag_chunks dim so the next search re-probes the schema.
+/// Called whenever the shared vec0 table may have been dropped/recreated at a new
+/// dim (embedder switch on re-ingest).
+fn reset_vec_rag_dim_memo() {
+    VEC_RAG_DIM_MEMO.store(RAG_MEMO_UNKNOWN, Ordering::Relaxed);
+}
+
+/// Can vec0 KNN serve a query of `query_dim` against `vec_rag_chunks`, using the
+/// memoized declared dim to skip the per-search sqlite_master probes once known?
+/// On a cache miss, falls back to the authoritative `vec0_usable_for` probe and
+/// caches the table's dim (when it resolves to a positive value).
+fn vec0_rag_usable(conn: &rusqlite::Connection, query_dim: usize) -> bool {
+    if query_dim == 0 || !crate::history::vec0_available() {
+        return false;
+    }
+    let cached = VEC_RAG_DIM_MEMO.load(Ordering::Relaxed);
+    if cached > 0 {
+        return cached as usize == query_dim;
+    }
+    // Unknown: read the table's declared dim once (the single schema probe the
+    // memo amortizes). `vec_table_dim` returns None when the table is absent →
+    // leave the memo UNKNOWN so a later lazy-create is picked up; otherwise cache
+    // the dim so subsequent searches skip the probe entirely.
+    match crate::history::vec_table_dim(conn, crate::history::VEC_RAG_CHUNKS) {
+        Some(dim) => {
+            VEC_RAG_DIM_MEMO.store(dim as i64, Ordering::Relaxed);
+            dim == query_dim
+        }
+        None => false,
+    }
+}
 
 /// Per-corpus-name mutex registry. Two concurrent ingest calls for the
 /// same corpus name would otherwise race the wipe + insert: the
@@ -1036,6 +1087,16 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
         Ok((id, wm, force, chosen))
     })?;
 
+    // Embedder switch just dropped the shared vec0 table (it lazily recreates at
+    // the new model's dim in flush_pending). Drop the memoized dim so the next
+    // search re-probes the schema instead of trusting the old model's dim —
+    // mirrors `memory::invalidate_cache`'s reset after its vec0 drop. Only the
+    // `force_reembed` branch dropped the table; a non-force re-ingest leaves the
+    // dim unchanged.
+    if force_reembed {
+        reset_vec_rag_dim_memo();
+    }
+
     let mut files_indexed = 0usize;
     let mut chunks_created = 0usize;
     let mut total_bytes: u64 = 0;
@@ -1544,11 +1605,7 @@ pub fn search(corpus_name: &str, query: &str, top_k: u32) -> Result<Vec<RagHit>>
     // candidates to fuse with the sparse leg (a doc that's #k+3 dense but #1
     // sparse should still surface). Bounded so a huge corpus can't blow up.
     let dense_k = (k.saturating_mul(4)).clamp(k, 100);
-    let dense: Vec<(f32, i64)> = if crate::history::vec0_usable_for(
-        &conn,
-        crate::history::VEC_RAG_CHUNKS,
-        q_emb.len(),
-    ) {
+    let dense: Vec<(f32, i64)> = if vec0_rag_usable(&conn, q_emb.len()) {
         match search_vec_rag(&conn, corpus_id, &q_emb, dense_k) {
             // Recall guard (review 2026-06-14): all corpora share ONE global
             // vec0 table, so `search_vec_rag` resolves the KNN GLOBALLY first

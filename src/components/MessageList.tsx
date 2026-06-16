@@ -678,6 +678,74 @@ function ReplyStatFooter({ msg }: { msg: Message }) {
 
 const MessageRow = memo(MessageRowImpl);
 
+const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+
+// Line-by-line scan state, carried across streaming frames so each frame only
+// scans the lines that COMPLETED since the last frame (O(delta)) instead of
+// re-scanning the whole growing answer from byte 0 (O(n) per frame → O(n²) over
+// a reply). All fields describe the scan AS OF `scannedLen` bytes consumed —
+// i.e. covering every COMPLETE line (terminated by "\n") up to that offset. The
+// trailing partial line after the last "\n" is never folded in here because it
+// keeps changing; it's replayed onto a copy each frame.
+interface FenceScanState {
+  /** Bytes of `answer` already folded into this state (start of the next
+   *  unscanned complete line). The answer text is append-only during a stream,
+   *  so everything before this offset is frozen and safe to skip. */
+  scannedLen: number;
+  fenceOpen: boolean;
+  fenceChar: string;
+  fenceLen: number;
+  /** Byte offset of the currently-open fence's opening line, or -1. */
+  fenceLineStart: number;
+  /** Byte offset just past the last blank line outside a fence. */
+  lastSafeBoundary: number;
+  /** Whether the last consumed complete line was blank. */
+  prevBlank: boolean;
+}
+
+function freshScanState(): FenceScanState {
+  return {
+    scannedLen: 0,
+    fenceOpen: false,
+    fenceChar: "",
+    fenceLen: 0,
+    fenceLineStart: -1,
+    lastSafeBoundary: 0,
+    prevBlank: false,
+  };
+}
+
+// Fold one line (without its trailing "\n") that starts at byte offset `pos`
+// into `s`. `consumedNl` is 1 when the line was terminated by a real "\n"
+// (a complete line) and 0 for the trailing partial line. Mirrors the original
+// per-line body exactly so the computed boundary is byte-for-byte identical.
+function foldLine(s: FenceScanState, line: string, pos: number, consumedNl: 0 | 1) {
+  const fence = FENCE_RE.exec(line);
+  if (fence) {
+    const run = fence[1];
+    if (!s.fenceOpen) {
+      s.fenceOpen = true;
+      s.fenceChar = run[0];
+      s.fenceLen = run.length;
+      s.fenceLineStart = pos;
+    } else if (run[0] === s.fenceChar && run.length >= s.fenceLen) {
+      s.fenceOpen = false;
+      s.fenceLineStart = -1;
+    }
+  }
+  // A blank line outside any open fence is a block boundary — record the offset
+  // just past it (start of the next line). Note the original always added +1
+  // here even for the final (newline-less) segment; the trailing partial only
+  // contributes a boundary when it is the empty string left by a text that ends
+  // in "\n", so the +1 reproduces that exactly.
+  const isBlank = line.trim() === "";
+  if (isBlank && !s.fenceOpen && !s.prevBlank) {
+    s.lastSafeBoundary = pos + line.length + 1;
+  }
+  s.prevBlank = isBlank;
+  return pos + line.length + consumedNl;
+}
+
 // Progressive-markdown split point. During streaming we render the already-
 // COMPLETE prefix as cached markdown (so finished paragraphs + closed code
 // fences highlight live) and keep only the trailing in-flight tail as plain
@@ -689,45 +757,56 @@ const MessageRow = memo(MessageRowImpl);
 // markdown would syntax-highlight an incomplete block and re-highlight every
 // frame). Keying the prefix on the stable `\n\n` boundary keeps cachedMarkdown
 // hits bounded — the key only advances when a new block completes, not per token.
-function splitStreamingPrefix(text: string): { prefix: string; tail: string } {
-  // Track fence state line-by-line. A fence opens/closes on a line that begins
-  // (after ≤3 spaces) with ≥3 backticks or tildes.
-  let fenceOpen = false;
-  let fenceChar = "";
-  let fenceLen = 0;
-  let fenceLineStart = -1; // byte offset of the currently-open fence's opening line
-  let lastSafeBoundary = 0; // byte offset just past the last blank line outside a fence
-  let pos = 0;
-  let prevBlank = false;
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (fence) {
-      const run = fence[1];
-      if (!fenceOpen) {
-        fenceOpen = true;
-        fenceChar = run[0];
-        fenceLen = run.length;
-        fenceLineStart = pos;
-      } else if (run[0] === fenceChar && run.length >= fenceLen) {
-        fenceOpen = false;
-        fenceLineStart = -1;
-      }
-    }
-    // A blank line outside any open fence is a block boundary — record the
-    // offset just past it (start of the next line).
-    const isBlank = line.trim() === "";
-    if (isBlank && !fenceOpen && !prevBlank) {
-      lastSafeBoundary = pos + line.length + 1;
-    }
-    prevBlank = isBlank;
-    pos += line.length + 1; // +1 for the consumed "\n"
+//
+// `cache` (a per-bubble ref) lets a streaming frame RESUME the scan from the
+// last completed line boundary rather than re-scanning the whole answer from
+// byte 0 every frame. The answer is append-only during a stream, so the bytes
+// before `cache.scannedLen` are frozen; if a caller passes a text that is no
+// longer an extension of what we scanned (conversation switch, edit), the cache
+// resets and we full-rescan. Output is byte-identical to the original.
+function splitStreamingPrefix(
+  text: string,
+  cache?: FenceScanState,
+): { prefix: string; tail: string } {
+  // Decide whether the cached scan state can be resumed. It can iff the text is
+  // still an extension of what we scanned: `scannedLen` within bounds AND the
+  // byte just before the resume point is the "\n" we consumed (every complete
+  // line we fold ends in one). If it isn't, the text was rewritten upstream
+  // (conversation switch / edit) — reset the cache and full-rescan from byte 0.
+  let s: FenceScanState;
+  if (
+    cache &&
+    cache.scannedLen <= text.length &&
+    (cache.scannedLen === 0 || text.charCodeAt(cache.scannedLen - 1) === 10)
+  ) {
+    s = cache;
+  } else {
+    if (cache) Object.assign(cache, freshScanState());
+    s = cache ?? freshScanState();
   }
+
+  // Scan only the COMPLETE lines (those terminated by "\n") that are new since
+  // the last frame, advancing the cached state so the next frame starts here.
+  let pos = s.scannedLen;
+  let nl = text.indexOf("\n", pos);
+  while (nl !== -1) {
+    pos = foldLine(s, text.slice(pos, nl), pos, 1);
+    nl = text.indexOf("\n", pos);
+  }
+  s.scannedLen = pos; // start of the trailing partial line (after the last "\n")
+
+  // Replay the trailing partial line (the in-flight tail) onto a COPY — it isn't
+  // frozen yet, so it must never mutate the cached state. `text.split("\n")`
+  // always yields a trailing element after the last "\n" (empty when the text
+  // ends in "\n"), and the original folded it; reproduce that unconditionally so
+  // a text ending in a blank line records its boundary identically.
+  const work: FenceScanState = { ...s };
+  foldLine(work, text.slice(pos), pos, 0);
+
   // An open fence caps the prefix at the fence's opening line, never past it.
-  let cut = lastSafeBoundary;
-  if (fenceOpen && fenceLineStart >= 0 && fenceLineStart < cut) {
-    cut = fenceLineStart;
+  let cut = work.lastSafeBoundary;
+  if (work.fenceOpen && work.fenceLineStart >= 0 && work.fenceLineStart < cut) {
+    cut = work.fenceLineStart;
   }
   if (cut <= 0) return { prefix: "", tail: text };
   return { prefix: text.slice(0, cut), tail: text.slice(cut) };
@@ -751,6 +830,13 @@ const StreamingMessage = memo(function StreamingMessage({
   const { thought, answer, open } = splitThought(text);
   // Re-highlight the streamed prefix's code blocks when a lazy grammar lands.
   useGrammarVersion();
+  // Per-bubble incremental fence-scan state so each streaming frame resumes the
+  // prefix scan from the last completed line boundary instead of re-scanning the
+  // whole (growing) answer from byte 0 — O(delta)/frame instead of O(n)/frame.
+  // The ref persists across this bubble's per-RAF re-renders and resets on
+  // unmount (conversation switch); a non-append text also self-heals via the
+  // divergence guard inside splitStreamingPrefix.
+  const scanCacheRef = useRef<FenceScanState>(freshScanState());
   // PROGRESSIVE MARKDOWN: render the completed prefix as cached markdown (closed
   // code fences highlight live, finished paragraphs format) and keep only the
   // in-flight tail as plain escaped text. `cachedMarkdown` is keyed on the stable
@@ -758,7 +844,7 @@ const StreamingMessage = memo(function StreamingMessage({
   // block completes — not per token — keeping the old O(n²)-per-frame regression
   // from coming back. The trailing `{tail}` is a JSX text child → React escapes
   // it, so the unfinished tail is never parsed/sanitized.
-  const { prefix, tail } = splitStreamingPrefix(answer);
+  const { prefix, tail } = splitStreamingPrefix(answer, scanCacheRef.current);
   const prefixHtml = prefix ? cachedMarkdown(prefix) : "";
   return (
     <div

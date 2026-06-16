@@ -267,6 +267,10 @@ async fn stream_mlx(
     let mut buf = String::new();
     let mut decoder = crate::sse_decode::Utf8StreamDecoder::default();
     tokio::pin!(stream);
+    // Hoist the per-op event name once — it's invariant for the whole stream.
+    // (Was re-formatted via `format!` on every per-token emit.) PERF: IPC
+    // coalesce 2026-06-16.
+    let event_name = format!("quick-prompt-response:{op_id}");
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read chunk")?;
         let text = decoder.push(&bytes);
@@ -276,25 +280,31 @@ async fn stream_mlx(
                 "stream line exceeded {QUICK_LINE_BUF_MAX} bytes without a delimiter"
             ));
         }
-        for delta in progress.deltas {
-            // Body cap: if appending this delta would exceed the per-reply
+        // Coalesce this network chunk's token deltas into ONE IPC event
+        // instead of one event per token. ORDER is preserved (concat in
+        // arrival order) and the per-reply byte cap is applied to the JOINED
+        // string with the same char-boundary-safe truncation as before. PERF:
+        // IPC coalesce 2026-06-16.
+        if !progress.deltas.is_empty() {
+            let joined: String = progress.deltas.concat();
+            // Body cap: if appending this chunk would exceed the per-reply
             // ceiling, append what fits and bail out — defends against a
             // hostile local server replying with unbounded bytes.
-            if acc.len() + delta.len() > QUICK_REPLY_MAX_BYTES {
+            if acc.len() + joined.len() > QUICK_REPLY_MAX_BYTES {
                 let remaining = QUICK_REPLY_MAX_BYTES.saturating_sub(acc.len());
                 // Respect char boundaries so we don't push half a codepoint.
-                let mut take = delta.len().min(remaining);
-                while take > 0 && !delta.is_char_boundary(take) {
+                let mut take = joined.len().min(remaining);
+                while take > 0 && !joined.is_char_boundary(take) {
                     take -= 1;
                 }
-                let truncated_delta = delta[..take].to_string();
-                if !truncated_delta.is_empty() {
-                    acc.push_str(&truncated_delta);
+                let truncated = joined[..take].to_string();
+                if !truncated.is_empty() {
+                    acc.push_str(&truncated);
                     let _ = app.emit(
-                        &format!("quick-prompt-response:{op_id}"),
+                        &event_name,
                         QuickPromptChunk {
                             op_id: op_id.clone(),
-                            delta: truncated_delta,
+                            delta: truncated,
                             done: false,
                             error: None,
                         },
@@ -302,12 +312,12 @@ async fn stream_mlx(
                 }
                 return Ok(acc);
             }
-            acc.push_str(&delta);
+            acc.push_str(&joined);
             let _ = app.emit(
-                &format!("quick-prompt-response:{op_id}"),
+                &event_name,
                 QuickPromptChunk {
                     op_id: op_id.clone(),
-                    delta,
+                    delta: joined,
                     done: false,
                     error: None,
                 },
@@ -358,6 +368,8 @@ async fn stream_ollama(
     let mut buf = String::new();
     let mut decoder = crate::sse_decode::Utf8StreamDecoder::default();
     tokio::pin!(stream);
+    // Hoist the per-op event name once (see stream_mlx). PERF: IPC coalesce.
+    let event_name = format!("quick-prompt-response:{op_id}");
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("read ollama chunk")?;
         let text = decoder.push(&bytes);
@@ -367,22 +379,26 @@ async fn stream_ollama(
                 "stream line exceeded {QUICK_LINE_BUF_MAX} bytes without a delimiter"
             ));
         }
-        for delta in progress.deltas {
+        // Coalesce this chunk's deltas into one IPC event — order-preserving,
+        // cap applied to the joined string. Same shape as the MLX path. PERF:
+        // IPC coalesce 2026-06-16.
+        if !progress.deltas.is_empty() {
+            let joined: String = progress.deltas.concat();
             // Same body cap as the MLX path — bail at QUICK_REPLY_MAX_BYTES.
-            if acc.len() + delta.len() > QUICK_REPLY_MAX_BYTES {
+            if acc.len() + joined.len() > QUICK_REPLY_MAX_BYTES {
                 let remaining = QUICK_REPLY_MAX_BYTES.saturating_sub(acc.len());
-                let mut take = delta.len().min(remaining);
-                while take > 0 && !delta.is_char_boundary(take) {
+                let mut take = joined.len().min(remaining);
+                while take > 0 && !joined.is_char_boundary(take) {
                     take -= 1;
                 }
-                let truncated_delta = delta[..take].to_string();
-                if !truncated_delta.is_empty() {
-                    acc.push_str(&truncated_delta);
+                let truncated = joined[..take].to_string();
+                if !truncated.is_empty() {
+                    acc.push_str(&truncated);
                     let _ = app.emit(
-                        &format!("quick-prompt-response:{op_id}"),
+                        &event_name,
                         QuickPromptChunk {
                             op_id: op_id.clone(),
-                            delta: truncated_delta,
+                            delta: truncated,
                             done: false,
                             error: None,
                         },
@@ -390,12 +406,12 @@ async fn stream_ollama(
                 }
                 return Ok(acc);
             }
-            acc.push_str(&delta);
+            acc.push_str(&joined);
             let _ = app.emit(
-                &format!("quick-prompt-response:{op_id}"),
+                &event_name,
                 QuickPromptChunk {
                     op_id: op_id.clone(),
-                    delta,
+                    delta: joined,
                     done: false,
                     error: None,
                 },

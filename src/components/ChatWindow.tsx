@@ -29,6 +29,7 @@ import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { AgentMetrics, AgentStatus } from "../lib/agent-loop";
 import type {
+  ChatImage,
   Conversation,
   ConversationParams,
   Memory,
@@ -809,10 +810,18 @@ export function ChatWindow({
   const [orToolsByModel, setOrToolsByModel] = useState<Record<string, boolean>>(
     {},
   );
+  // Mirror of the catalogue map read by the lazy-fetch effect's "already known?"
+  // guard. Reading it through a ref (instead of the state value) keeps the effect
+  // out of its own deps, so a fetch result no longer re-fires the effect — it now
+  // only runs when the active backend/model actually changes. The functional
+  // setOrToolsByModel updater already keeps the written value current; the ref
+  // only feeds the dedupe guard.
+  const orToolsByModelRef = useRef(orToolsByModel);
+  orToolsByModelRef.current = orToolsByModel;
   useEffect(() => {
     if (status?.backend !== "openrouter") return;
     const model = status.model;
-    if (!model || model in orToolsByModel) return;
+    if (!model || model in orToolsByModelRef.current) return;
     let cancelled = false;
     void api
       .openrouterListModels()
@@ -834,7 +843,7 @@ export function ChatWindow({
     return () => {
       cancelled = true;
     };
-  }, [status?.backend, status?.model, orToolsByModel]);
+  }, [status?.backend, status?.model]);
 
   // Agent mode (tool-calling loop) runs on Ollama, MLX, and the
   // OpenAI-compatible cloud backends (custom / OpenRouter). The native
@@ -877,6 +886,33 @@ export function ChatWindow({
     routingEnabled: autoRoute,
     onRouted: setRoutedNotice,
   });
+
+  // Stable onSend for the (now memoized) ChatInput. Was an inline arrow that
+  // recreated on every ChatWindow render (agentStatus transitions, the App-level
+  // 5s RAM/health polls cascading down via `status`), busting ChatInput's
+  // React.memo and re-rendering the whole composer per tick. `send`,
+  // `setWarming`, and `ensureModel` are all referentially stable, so the only
+  // churning dep is `status?.running` — which genuinely changes the branch taken.
+  const onSend = useCallback(
+    (text: string, images?: ChatImage[]) => {
+      if (status?.running || !ensureModel) {
+        send(text, images);
+        return;
+      }
+      // Warm the selected model, then dispatch. On failure the ModelPicker
+      // surfaces its own error; the message is not lost because ChatInput
+      // restores it when we report false.
+      setWarming(true);
+      return ensureModel()
+        .then((ok) => {
+          if (ok) send(text, images);
+          return ok;
+        })
+        .catch(() => false)
+        .finally(() => setWarming(false));
+    },
+    [status?.running, ensureModel, send],
+  );
 
   // Persist the auto-route toggle; clear the live notice when turned off.
   const toggleAutoRoute = useCallback(() => {
@@ -1566,23 +1602,7 @@ export function ChatWindow({
             // Without an ensureModel handle (detached windows) keep the old
             // disabled-until-running behavior.
             disabled={warming || (!status?.running && !ensureModel)}
-            onSend={(text, images) => {
-              if (status?.running || !ensureModel) {
-                send(text, images);
-                return;
-              }
-              // Warm the selected model, then dispatch. On failure the
-              // ModelPicker surfaces its own error; the message is not lost
-              // because ChatInput restores it when we report false.
-              setWarming(true);
-              return ensureModel()
-                .then((ok) => {
-                  if (ok) send(text, images);
-                  return ok;
-                })
-                .catch(() => false)
-                .finally(() => setWarming(false));
-            }}
+            onSend={onSend}
             warming={warming}
             onAbort={abortWithConfirm}
             streaming={isWorking}

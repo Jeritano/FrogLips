@@ -9,11 +9,13 @@ import type { LanguageFn } from "highlight.js";
 // against, and lazy-loading the fallback would race the very first render.
 import plaintext from "highlight.js/lib/languages/plaintext";
 import createDOMPurify from "dompurify";
-import katex from "katex";
-// KaTeX layout stylesheet (+ bundled fonts). Imported here — not via the
-// App.css aggregator — so the styles travel with the module that actually
-// emits `.katex` markup, matching the MessageList → syntax.css pattern.
-import "katex/dist/katex.min.css";
+// KaTeX (the ~260 KB typesetter + its ~270 KB of bundled fonts/CSS) is loaded
+// LAZILY — see the "Lazy KaTeX" section below. A static `import katex from
+// "katex"` here would drag the whole library + stylesheet into the synchronous
+// markdown chunk that loads the moment a chat view mounts, even for the common
+// reply that contains no math at all. We instead dynamic-`import()` katex (and
+// its stylesheet) the FIRST time a message actually contains a `$…$` / `$$…$$`
+// formula, mirroring the lazy highlight.js grammar plumbing further down.
 
 // Use a DEDICATED DOMPurify instance bound to the current window, instead of
 // mutating the library's default singleton. The `addHook` we register below
@@ -101,36 +103,55 @@ function canonicalGrammar(lang: string): string {
 // reply doesn't fire N concurrent imports of the same grammar.
 const grammarLoadStarted = new Set<string>();
 
-// Re-render subscribers. When a grammar finishes loading we bump a version and
-// notify, letting the chat view (MessageList) invalidate its markdown memo and
-// re-render so the previously-plaintext block highlights for real.
+// Re-render subscribers. When a lazily-loaded asset finishes (a highlight.js
+// grammar OR — see the Lazy KaTeX section below — the KaTeX typesetter) we bump
+// a version and notify, letting the chat view (MessageList) invalidate its
+// markdown memo and re-render so the previously-fallback block (plaintext code /
+// raw-TeX math) renders for real. The exported names keep the `grammar` prefix
+// for backward compat — MessageList already subscribes via them — but the
+// channel is shared by both lazy loaders so a KaTeX load reuses the SAME
+// subscription and needs no MessageList change.
 let grammarVersion = 0;
 const grammarSubscribers = new Set<() => void>();
 
 /**
- * Subscribe to "a new grammar just registered" events. Returns an unsubscribe
- * fn. Used by MessageList to re-render blocks that first rendered against the
- * plaintext fallback before their grammar finished loading.
+ * Subscribe to "a lazily-loaded render asset just landed" events (a grammar or
+ * the KaTeX typesetter). Returns an unsubscribe fn. Used by MessageList to
+ * re-render blocks that first rendered against a fallback (plaintext code, or
+ * raw-TeX math) before the real asset finished loading.
  */
 export function subscribeGrammarLoad(cb: () => void): () => void {
   grammarSubscribers.add(cb);
   return () => grammarSubscribers.delete(cb);
 }
 
-/** Monotonic counter bumped each time a grammar registers (for useSyncExternalStore). */
+/** Monotonic counter bumped each time a lazy render asset lands (for useSyncExternalStore). */
 export function getGrammarVersion(): number {
   return grammarVersion;
 }
 
 /**
- * Hook invoked AFTER a grammar registers. Set by MessageList so markdown.ts can
- * drop the per-message + per-prefix HTML memos that were produced against the
- * plaintext fallback. Kept as an injectable callback to avoid an import cycle
- * (markdown.ts must not import the React component that consumes it).
+ * Hook invoked AFTER a lazy render asset (grammar or KaTeX) lands. Set by
+ * MessageList so markdown.ts can drop the per-message + per-prefix HTML memos
+ * that were produced against a fallback. Kept as an injectable callback to
+ * avoid an import cycle (markdown.ts must not import the React component that
+ * consumes it).
  */
 let onGrammarRegistered: (() => void) | null = null;
 export function setGrammarCacheInvalidator(fn: (() => void) | null): void {
   onGrammarRegistered = fn;
+}
+
+/**
+ * Bump the shared version, drop the host's HTML memos, and notify React
+ * subscribers — called by BOTH the lazy grammar loader and the lazy KaTeX
+ * loader once their async chunk lands, so a stale fallback render re-runs
+ * against the real asset.
+ */
+function notifyLazyAssetLoaded(): void {
+  grammarVersion++;
+  onGrammarRegistered?.();
+  for (const cb of grammarSubscribers) cb();
 }
 
 /**
@@ -156,11 +177,9 @@ function ensureGrammar(canonical: string): void {
       if (!hljs.getLanguage(canonical)) {
         hljs.registerLanguage(canonical, mod.default);
       }
-      grammarVersion++;
-      // Drop memoized HTML built against the plaintext fallback so the next
-      // render re-highlights with the real grammar.
-      onGrammarRegistered?.();
-      for (const cb of grammarSubscribers) cb();
+      // Drop memoized HTML built against the plaintext fallback + re-render so
+      // the next pass re-highlights with the real grammar.
+      notifyLazyAssetLoaded();
     })
     .catch(() => {
       // Load failed (offline chunk fetch, etc.) — leave on plaintext. Keep it
@@ -619,15 +638,17 @@ export function wrapCodeBlocks(root: HTMLElement | DocumentFragment): void {
 // replaced by a placeholder built from Unicode private-use sentinels
 // (U+E000 <index> U+E001) that survives marked AND DOMPurify untouched as
 // plain text. After sanitization the placeholder text nodes are swapped for
-// katex.renderToString output.
+// rendered KaTeX output (or, before the lazy KaTeX chunk has landed, a raw-TeX
+// placeholder span that re-renders once it does — see the Lazy KaTeX section).
 //
 // Sanitizer note: KaTeX markup (<span class="katex">…, MathML <math>…) is
 // NOT in PURIFY_CONFIG's allowlist and must not be — widening the allowlist
 // for model-authored HTML would grow the XSS surface for every message. The
 // KaTeX HTML is instead injected AFTER DOMPurify, which is safe because it
-// is generated locally by katex.renderToString from a plain-text TeX string
+// is generated locally by KaTeX's renderToString from a plain-text TeX string
 // with throwOnError:false — KaTeX escapes its input, so the output cannot
-// carry attacker-controlled markup.
+// carry attacker-controlled markup. The raw-TeX placeholder shown pre-load is
+// likewise built by escaping the TeX string, so it carries no markup either.
 
 interface MathSegment {
   tex: string;
@@ -637,6 +658,68 @@ interface MathSegment {
 const MATH_OPEN = "\uE000";
 const MATH_CLOSE = "\uE001";
 const MATH_TOKEN_RE = /\uE000(\d+)\uE001/g;
+
+/* ── Lazy KaTeX loading (perf) ──────────────────────────────────────────── */
+//
+// KaTeX is dynamic-`import()`ed (along with its stylesheet) the FIRST time a
+// message actually contains a formula — so a no-math reply never pulls the
+// ~260 KB typesetter + ~270 KB of fonts/CSS into the chat boot graph. This
+// mirrors the lazy highlight.js grammar plumbing above: `renderTex` is
+// SYNCHRONOUS (it runs inside the post-sanitize DOM pass), but `import()` is
+// async, so the first render of a formula before KaTeX has landed emits a
+// readable raw-TeX placeholder and kicks off the load. When KaTeX lands we drop
+// the (placeholder-tainted) per-formula memo + the message HTML memos and
+// notify subscribers, so the chat view re-renders with real typesetting.
+
+// Resolved KaTeX module default (`null` until the first formula triggers the
+// load). We hold the MODULE OBJECT, not a bound `renderToString` reference, and
+// access `.renderToString` at call time — so a test that spies on
+// `katex.renderToString` still intercepts our calls. `import type` is erased at
+// compile time (zero runtime bytes), so the lazy-load win is intact while we
+// keep KaTeX's exact types.
+type KatexModule = typeof import("katex").default;
+let katexMod: KatexModule | null = null;
+let katexLoadStarted = false;
+
+// Kick off the one-time KaTeX (+ stylesheet) load. No-op once started/loaded.
+// On resolve we invalidate the placeholder-tainted caches and notify so any
+// already-rendered formula re-typesets for real.
+function ensureKatex(): void {
+  if (katexMod || katexLoadStarted) return;
+  katexLoadStarted = true;
+  // Load the JS and the layout stylesheet (+ bundled fonts) together so the
+  // glyphs are correctly positioned the instant `.katex` markup appears. The
+  // CSS import resolves to a side-effecting chunk under Vite. We don't gate the
+  // JS readiness on the CSS settling — the worst case is one frame of
+  // unstyled-but-present math, immediately corrected.
+  void import("katex/dist/katex.min.css").catch(() => {
+    // A failed stylesheet fetch shouldn't block typesetting — math still
+    // renders, just unstyled until a later load. Swallow.
+  });
+  void import("katex")
+    .then((mod) => {
+      katexMod = mod.default;
+      // Drop the per-formula memo: any entry created while KaTeX was loading is
+      // a placeholder, not real markup, and must not be served on re-render.
+      katexCache.clear();
+      // Drop the host HTML memos + re-render so placeholders become real math.
+      notifyLazyAssetLoaded();
+    })
+    .catch(() => {
+      // Load failed (offline chunk fetch, etc.). Allow a retry on the next
+      // formula sighting rather than permanently stranding math as raw TeX.
+      katexLoadStarted = false;
+    });
+}
+
+// Raw-TeX placeholder shown for ONE render while KaTeX loads. Escaped (it's
+// injected via innerHTML by renderMathPlaceholders) and tagged so it can be
+// styled/identified; the wrapper re-renders into real KaTeX once the module
+// lands (see ensureKatex → notifyLazyAssetLoaded).
+function texPlaceholder(tex: string, display: boolean): string {
+  const cls = display ? "katex-pending katex-pending-display" : "katex-pending";
+  return `<span class="${cls}">${escapeHtml(tex)}</span>`;
+}
 
 // Per-formula render memo. The message-level markdownCache in MessageList
 // caches whole renderMarkdown outputs, but during streaming the message text
@@ -650,7 +733,16 @@ function renderTex(tex: string, display: boolean): string {
   const key = (display ? "D:" : "I:") + tex;
   const hit = katexCache.get(key);
   if (hit !== undefined) return hit;
-  const html = katex.renderToString(tex, {
+  // KaTeX not loaded yet: emit a raw-TeX placeholder and trigger the lazy load.
+  // Deliberately NOT cached — a later render (after the module lands + the memo
+  // is cleared) must produce real typesetting, not a stale placeholder.
+  if (!katexMod) {
+    ensureKatex();
+    return texPlaceholder(tex, display);
+  }
+  // Access `.renderToString` at call time (not a captured reference) so a test
+  // spy on `katex.renderToString` still intercepts our calls.
+  const html = katexMod.renderToString(tex, {
     displayMode: display,
     throwOnError: false,
   });

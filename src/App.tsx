@@ -957,6 +957,16 @@ function App() {
     if (err) announce(`Error: ${err}`);
   }, [err]);
 
+  // Stable ChatWindow prop. Previously an inline arrow recreated on every App
+  // render (RAM/health 5s polls + every status flip); ChatWindow folds it into
+  // its `onSend` useCallback, so a fresh identity each render busted ChatInput's
+  // React.memo and re-rendered the composer per tick. Reads `ensureStartRef`
+  // (a ref) inside, so an empty dep list keeps it both stable AND current.
+  const ensureModel = useCallback(
+    () => ensureStartRef.current?.() ?? Promise.resolve(false),
+    [],
+  );
+
   const onForked = useCallback(async (newConvId: number) => {
     await refreshConversations();
     try {
@@ -1633,9 +1643,7 @@ function App() {
               onConversationCreated={onConvCreated}
               onMemoriesChanged={onMemoriesChanged}
               onForked={onForked}
-              ensureModel={() =>
-                ensureStartRef.current?.() ?? Promise.resolve(false)
-              }
+              ensureModel={ensureModel}
             />
           </ErrorBoundary>
         )}

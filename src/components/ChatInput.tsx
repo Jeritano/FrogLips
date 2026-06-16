@@ -1,4 +1,12 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { X, Mic, Square, ArrowUp } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
@@ -134,7 +142,7 @@ async function fileToScrubbedPng(
   return { base64, size_bytes };
 }
 
-export function ChatInput({
+function ChatInputImpl({
   disabled,
   onSend,
   warming,
@@ -943,3 +951,12 @@ export function ChatInput({
     </>
   );
 }
+
+// Memoized: ChatInput fully re-rendered on every ChatWindow render (agentStatus
+// transitions + the App-level 5s RAM/health polls cascading down via `status`),
+// re-running the auto-resize / slash-context / drop machinery each time even
+// though nothing it shows changed. All props are referentially stable (onSend is
+// a useCallback in ChatWindow; onAbort is useEvent-stable; the rest are
+// primitives or the shared `status` object), so the shallow-prop memo bails out
+// on those parent ticks. Behavior-preserving.
+export const ChatInput = memo(ChatInputImpl);

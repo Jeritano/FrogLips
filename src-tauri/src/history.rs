@@ -196,6 +196,13 @@ pub(crate) fn backfill_vec_memories(conn: &Connection, dim: usize) -> Result<()>
 /// table exists, and its declared dim equals the query dim (a 512-corpus query
 /// against a 768-dim table must NOT use vec0 — fall to linear). Any error
 /// reading the schema is treated as "not usable".
+///
+/// Production hot paths now use the per-table memoized wrappers
+/// (memory::vec0_memories_usable / rag::vec0_rag_usable, which cache the declared
+/// dim via `vec_table_dim` to skip the per-call sqlite_master probes). This
+/// authoritative non-memoized probe is retained as the reference oracle the
+/// memory/rag tests assert against, so it has no non-test caller in the lib build.
+#[allow(dead_code)]
 pub(crate) fn vec0_usable_for(conn: &Connection, table: &str, query_dim: usize) -> bool {
     if !vec0_available() || query_dim == 0 {
         return false;
