@@ -799,6 +799,91 @@ fn validate_settings_patch(
             }
         }
     }
+
+    // Messaging gateway (M3): the gateway runs the agent over chat platforms, so
+    // a misconfigured channel is a control-plane risk. Enforce that an *enabled*
+    // channel has a non-empty allowlist (an empty allowlist would let anyone who
+    // finds the bot drive the agent — start() fails closed, but we reject early)
+    // and the connection fields its connector requires. Disabled channels are
+    // left lenient so a half-filled draft can still be saved.
+    if let Some(msg) = patch.get("messaging") {
+        if !msg.is_null() {
+            let m = msg.as_object().ok_or("messaging must be an object")?;
+            // Connection fields each connector reads when enabled (file stem →
+            // required non-empty string keys). Telegram/discord/slack carry only
+            // a Keychain token, so they need no settings-side string here.
+            let required: &[(&str, &[&str])] = &[
+                ("matrix", &["homeserver"]),
+                ("mattermost", &["server_url"]),
+                ("email", &["imap_host", "smtp_host", "username"]),
+            ];
+            for (channel, chan) in m {
+                let c = chan
+                    .as_object()
+                    .ok_or_else(|| format!("messaging.{channel} must be an object"))?;
+                let enabled = c.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                // Ports must be sane whether or not the channel is enabled, so a
+                // bad value can't silently slip into a later enable.
+                for (k, v) in c {
+                    if k.ends_with("_port") && !v.is_null() {
+                        let ok = v
+                            .as_u64()
+                            .map(|n| n <= u64::from(u16::MAX))
+                            .or_else(|| {
+                                v.as_str()
+                                    .map(|s| s.trim().parse::<u16>().is_ok())
+                            })
+                            .unwrap_or(false);
+                        if !ok {
+                            return Err(format!(
+                                "messaging.{channel}.{k} must be a port in 0..=65535"
+                            ));
+                        }
+                    }
+                }
+                if !enabled {
+                    continue;
+                }
+                // allowed_user_ids: required non-empty array of non-empty strings.
+                let allowed = c
+                    .get("allowed_user_ids")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        format!(
+                            "messaging.{channel}: allowed_user_ids must be a non-empty array when enabled"
+                        )
+                    })?;
+                if allowed.is_empty() {
+                    return Err(format!(
+                        "messaging.{channel}: allowed_user_ids must be a non-empty array when enabled — an empty allowlist would let anyone control the agent"
+                    ));
+                }
+                for id in allowed {
+                    match id.as_str() {
+                        Some(s) if !s.trim().is_empty() => {}
+                        _ => {
+                            return Err(format!(
+                                "messaging.{channel}: allowed_user_ids must contain only non-empty strings"
+                            ))
+                        }
+                    }
+                }
+                // Connection fields the connector cannot run without.
+                if let Some((_, keys)) = required.iter().find(|(name, _)| name == channel) {
+                    for key in *keys {
+                        match c.get(*key).and_then(|v| v.as_str()) {
+                            Some(s) if !s.trim().is_empty() => {}
+                            _ => {
+                                return Err(format!(
+                                    "messaging.{channel}: '{key}' is required (non-empty) when enabled"
+                                ))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 

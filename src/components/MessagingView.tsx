@@ -147,6 +147,9 @@ export function MessagingView() {
   const [statuses, setStatuses] = useState<GatewayStatus[]>([]);
 
   const chan = CHANNELS.find((c) => c.id === selected) ?? CHANNELS[0];
+  // `chan` is recomputed every render; memoize its fields so callbacks that
+  // depend on them don't churn. Keyed on chan.id (the only thing that changes).
+  const chanFields = useMemo(() => chan.fields ?? [], [chan.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const cfg = ((settings?.messaging as Record<string, ChanCfg> | undefined)?.[
     selected
   ] ?? {}) as ChanCfg;
@@ -165,7 +168,7 @@ export function MessagingView() {
     setValidateMsg(null);
     setAllowedDraft((cfg.allowed_user_ids ?? []).join(", "));
     const fd: Record<string, string> = {};
-    for (const f of chan.fields ?? []) {
+    for (const f of chanFields) {
       const v = cfg[f.key];
       fd[f.key] = v == null ? "" : String(v);
     }
@@ -204,12 +207,12 @@ export function MessagingView() {
 
   const buildCfg = useCallback((): ChanCfg => {
     const out: ChanCfg = { ...cfg, allowed_user_ids: parsedAllowed() };
-    for (const f of chan.fields ?? []) {
+    for (const f of chanFields) {
       const raw = (fieldDraft[f.key] ?? "").trim();
       out[f.key] = f.numeric ? Number(raw) || 0 : raw;
     }
     return out;
-  }, [cfg, chan.fields, fieldDraft, parsedAllowed]);
+  }, [cfg, chanFields, fieldDraft, parsedAllowed]);
 
   const writeCfg = useCallback(
     async (next: ChanCfg) => {

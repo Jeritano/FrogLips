@@ -143,6 +143,12 @@ pub fn accept(ctx: &GwCtx, sender: &str) -> bool {
     let now = now_unix();
     let key = format!("{}:{}", ctx.channel, sender);
     let mut r = REG.lock();
+    // Bound the map: evict windows older than the rate window so it can't grow
+    // O(every sender ever) over the life of a long-running desktop process
+    // (review H1/H2). Only sweeps when the map is non-trivially large.
+    if r.rate.len() > 256 {
+        r.rate.retain(|_, (start, _)| now - *start < RATE_WINDOW_SECS);
+    }
     let e = r.rate.entry(key).or_insert((now, 0));
     if now - e.0 >= RATE_WINDOW_SECS {
         *e = (now, 0);
@@ -210,14 +216,6 @@ pub fn status() -> Vec<ChannelStatus> {
         .collect()
 }
 
-fn task_alive(channel: &str) -> bool {
-    REG.lock()
-        .tasks
-        .get(channel)
-        .map(|t| !t.is_finished())
-        .unwrap_or(false)
-}
-
 /// Pull (token, allowed, fields) for a channel from Keychain + settings.
 fn channel_config(channel: &str) -> Result<(String, HashSet<String>, Value), String> {
     let kc = format!("messaging:{channel}");
@@ -243,9 +241,7 @@ pub async fn start(app: AppHandle, channel: &str) -> Result<(), String> {
     if !CHANNELS.contains(&channel) {
         return Err(format!("unknown channel: {channel}"));
     }
-    if task_alive(channel) {
-        return Ok(());
-    }
+    // Read config + validate BEFORE taking the registry lock (no shared state).
     let (token, allowed, fields) = channel_config(channel)?;
     if allowed.is_empty() {
         return Err(format!(
@@ -260,21 +256,27 @@ pub async fn start(app: AppHandle, channel: &str) -> Result<(), String> {
         allowed,
         fields,
     };
-    // Pre-seed status so connectors can write errors immediately.
-    {
-        let mut r = REG.lock();
-        r.status.insert(
-            channel.to_string(),
-            ChannelStatus {
-                channel: channel.to_string(),
-                running: true,
-                started_at: now_unix(),
-                allowed_count,
-                ..Default::default()
-            },
-        );
-    }
     let ch = channel.to_string();
+    // ATOMIC (review C1/M1): hold the registry lock ONCE across the
+    // liveness re-check + status-insert + spawn + handle-insert, so two
+    // concurrent start()s (UI double-click) can't both pass the check and
+    // orphan a task, and no status() can observe running=true with no task.
+    // tokio::spawn is synchronous (schedules, doesn't await), so holding the
+    // parking_lot lock across it is safe — no await under the lock.
+    let mut r = REG.lock();
+    if r.tasks.get(channel).map(|t| !t.is_finished()).unwrap_or(false) {
+        return Ok(()); // already running
+    }
+    r.status.insert(
+        channel.to_string(),
+        ChannelStatus {
+            channel: channel.to_string(),
+            running: true,
+            started_at: now_unix(),
+            allowed_count,
+            ..Default::default()
+        },
+    );
     let handle = tokio::spawn(async move {
         match ch.as_str() {
             "telegram" => telegram::run(ctx).await,
@@ -286,8 +288,27 @@ pub async fn start(app: AppHandle, channel: &str) -> Result<(), String> {
             _ => {}
         }
     });
-    REG.lock().tasks.insert(channel.to_string(), handle);
+    r.tasks.insert(channel.to_string(), handle);
     Ok(())
+}
+
+/// Persist/load a connector's poll cursor (Matrix `since`, Telegram `offset`)
+/// so a task restart doesn't replay old history or reset to the beginning
+/// (review M6). Stored next to settings; best-effort (errors ignored).
+pub fn cursor_path(channel: &str) -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join(format!("Froglips/messaging-{channel}.cursor")))
+}
+pub fn load_cursor(channel: &str) -> Option<String> {
+    let p = cursor_path(channel)?;
+    std::fs::read_to_string(p).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+pub fn save_cursor(channel: &str, cursor: &str) {
+    if let Some(p) = cursor_path(channel) {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, cursor);
+    }
 }
 
 pub fn stop(channel: &str) {

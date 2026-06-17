@@ -2,7 +2,9 @@
 //!
 //! run(): long-polls `/_matrix/client/v3/sync` with a Bearer access token,
 //! tracks `next_batch`, and emits new `m.room.message`/`m.text` events through
-//! the shared accept()+emit() gate. The very first sync only records the cursor
+//! the shared accept()+emit() gate. The `next_batch` cursor is persisted via
+//! super::save_cursor/load_cursor so syncing resumes across restarts. On a
+//! fresh start (no saved cursor) the very first sync only records the cursor
 //! (filtered to zero timeline events) so old history is never replayed.
 //! send(): PUTs an `m.room.message` with a unique transaction id.
 //! validate(): `/account/whoami` -> the bot's user_id.
@@ -105,7 +107,9 @@ pub async fn run(ctx: GwCtx) {
     // Filter that drops all timeline/state/account events so the first sync is
     // cheap and only yields a next_batch cursor — we never replay old history.
     let initial_filter = "%7B%22room%22%3A%7B%22timeline%22%3A%7B%22limit%22%3A0%7D%7D%7D";
-    let mut since: Option<String> = None;
+    // Resume from a persisted cursor if one exists; only a fresh start (no saved
+    // cursor) goes through the first-sync history-skip path below.
+    let mut since: Option<String> = super::load_cursor("matrix");
 
     loop {
         let url = match &since {
@@ -145,9 +149,12 @@ pub async fn run(ctx: GwCtx) {
             .and_then(|s| s.as_str())
             .map(String::from);
 
-        // First sync only records the cursor; skip processing.
+        // First sync (no saved cursor) only records the cursor; skip processing.
+        // When resuming from a persisted cursor `since` is already Some, so
+        // `first` is false and we process this sync normally.
         let first = since.is_none();
         if let Some(nb) = next_batch {
+            super::save_cursor("matrix", &nb);
             since = Some(nb);
         }
         if first {

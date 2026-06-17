@@ -4,6 +4,37 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.15] — 2026-06-17
+
+Messaging-gateway hardening — remediation of a full multi-agent codebase review
+(45 agents; 24 findings confirmed, 13 false-positives dropped). The remote-run
+security model (safe-tools allowlist, Computer-Use kill-switch, deny-all gate)
+was independently verified correct; these fixes close robustness/leak/resilience
+gaps in the new connector code.
+
+### Fixed
+
+- **Concurrent `start()` race (Critical)** — two near-simultaneous channel starts
+  (e.g. a UI double-click) could orphan a tokio task `stop()` could never reach.
+  The liveness check + status-insert + spawn + handle-insert now happen under a
+  single registry lock (also fixes a transient stale "running" status).
+- **Rate-limit map leak (High)** — per-sender windows were reset but never
+  evicted; the map now sweeps expired entries so it can't grow unbounded.
+- **Email IMAP hangs (High)** — TCP/TLS connect and every IMAP op (login/select/
+  search/fetch/store) are now `tokio::time::timeout`-wrapped, so an unresponsive
+  server can't stall the channel forever.
+- **Silent inbound loss (High)** — the gateway hook now logs queued messages
+  dropped on unmount instead of losing them silently.
+- **Remote chat input is now fenced** as untrusted (`fenceUntrustedData`) before
+  reaching the agent — closes a prompt-injection hygiene gap.
+- WebSocket reads (Slack/Mattermost) gained a 60s read-timeout → reconnect;
+  Discord heartbeat aborts a stale task before respawn + detects heartbeat death
+  fast (no more ~45s blind window).
+- Matrix `since` + Telegram `offset` cursors persist across restarts (no replay /
+  reset-to-zero); shared HTTP clients reused instead of rebuilt per send.
+- Added semantic validation for the `messaging` settings patch; memoized a
+  MessagingView callback; trimmed unused brand-icon paths.
+
 ## [0.14.14] — 2026-06-16
 
 ### Added

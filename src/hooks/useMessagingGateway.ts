@@ -17,6 +17,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri-api";
 import { useSettingsField } from "../contexts/SettingsContext";
 import { SAFE_REMOTE_TOOLS, REMOTE_RUN_SYSTEM_NOTE } from "../lib/messaging-policy";
+import { fenceUntrustedData } from "../lib/agent-loop/untrusted-fence";
 import { logDiag } from "../lib/diagnostics";
 import type { Message, MessagingConfig, ServerStatus } from "../types";
 import type { AgentBackend } from "../lib/agent-loop/types";
@@ -131,7 +132,7 @@ export function useMessagingGateway(status: ServerStatus | null) {
       const userMsg: Message = {
         conversation_id: convId,
         role: "user",
-        content: m.text,
+        content: fenceUntrustedData(m.text, "remote-chat"),
       };
       const msgs = [...history, userMsg].slice(-HISTORY_CAP);
       try {
@@ -191,6 +192,14 @@ export function useMessagingGateway(status: ServerStatus | null) {
     return () => {
       disposed = true;
       unlisten?.();
+      const dropped = queueRef.current.length;
+      if (dropped > 0) {
+        logDiag({
+          level: "warn",
+          source: "messaging",
+          message: `${dropped} queued messaging messages will not be processed after unmount`,
+        });
+      }
     };
   }, []);
 }

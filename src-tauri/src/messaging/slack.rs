@@ -7,6 +7,7 @@
 use super::{accept, chunk, emit, set_error, GwCtx};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
+use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
 const MAX_CHARS: usize = 3500;
@@ -137,7 +138,19 @@ pub async fn run(ctx: GwCtx) {
         let (mut write, mut read) = ws.split();
 
         // 3) Pump frames until the socket drops, then reconnect.
-        while let Some(frame) = read.next().await {
+        // Bound each read so a stale-but-open socket can't hang the task
+        // forever; on timeout, break and let the loop re-establish the socket.
+        loop {
+            let frame = match tokio::time::timeout(Duration::from_secs(60), read.next()).await {
+                Ok(Some(frame)) => frame,
+                // Stream ended.
+                Ok(None) => break,
+                // No traffic for 60s — assume the socket is stale; reconnect.
+                Err(_) => {
+                    set_error("slack", Some("read timeout".into()));
+                    break;
+                }
+            };
             let msg = match frame {
                 Ok(m) => m,
                 Err(e) => {

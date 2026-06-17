@@ -81,13 +81,14 @@ async fn tls_connect(
     let connector = TlsConnector::from(config);
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|_| format!("invalid hostname: {host}"))?;
-    let tcp = TcpStream::connect((host, port))
+    let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect((host, port)))
         .await
+        .map_err(|_| format!("connect {host}:{port} timed out"))?
         .map_err(|e| format!("connect {host}:{port} failed: {e}"))?;
     let _ = tcp.set_nodelay(true);
-    connector
-        .connect(server_name, tcp)
+    tokio::time::timeout(Duration::from_secs(10), connector.connect(server_name, tcp))
         .await
+        .map_err(|_| format!("TLS handshake to {host} timed out"))?
         .map_err(|e| format!("TLS handshake to {host} failed: {e}"))
 }
 
@@ -107,10 +108,13 @@ async fn imap_login(
         .await
         .ok_or_else(|| "no IMAP greeting".to_string())?
         .map_err(|e| format!("IMAP greeting error: {e}"))?;
-    client
-        .login(username, password)
-        .await
-        .map_err(|(e, _client)| format!("IMAP login failed: {e}"))
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        client.login(username, password),
+    )
+    .await
+    .map_err(|_| "IMAP login timed out".to_string())?
+    .map_err(|(e, _client)| format!("IMAP login failed: {e}"))
 }
 
 pub async fn validate(token: &str, fields: &Value) -> Result<String, String> {
@@ -123,9 +127,9 @@ pub async fn validate(token: &str, fields: &Value) -> Result<String, String> {
 
     let mut session = imap_login(&host, port, &username, token).await?;
     // Verify we can actually open the mailbox before declaring success.
-    session
-        .select("INBOX")
+    tokio::time::timeout(Duration::from_secs(20), session.select("INBOX"))
         .await
+        .map_err(|_| "select INBOX timed out".to_string())?
         .map_err(|e| format!("select INBOX failed: {e}"))?;
     let _ = session.logout().await;
     Ok(format!("connected ({username})"))
@@ -187,14 +191,14 @@ async fn poll_once(
     parser: &MessageParser,
 ) -> Result<(), String> {
     let mut session = imap_login(host, port, username, &ctx.token).await?;
-    session
-        .select("INBOX")
+    tokio::time::timeout(Duration::from_secs(20), session.select("INBOX"))
         .await
+        .map_err(|_| "select INBOX timed out".to_string())?
         .map_err(|e| format!("select INBOX failed: {e}"))?;
 
-    let unseen = session
-        .search("UNSEEN")
+    let unseen = tokio::time::timeout(Duration::from_secs(20), session.search("UNSEEN"))
         .await
+        .map_err(|_| "search UNSEEN timed out".to_string())?
         .map_err(|e| format!("search UNSEEN failed: {e}"))?;
     if unseen.is_empty() {
         let _ = session.logout().await;
@@ -210,13 +214,16 @@ async fn poll_once(
         // an inner scope so the mutable borrow on `session` (held by the fetch
         // stream) is fully released before we issue the STORE below.
         let raw: Result<Option<Vec<u8>>, String> = async {
-            let stream = session
-                .fetch(seq.to_string(), "RFC822")
+            let stream = tokio::time::timeout(
+                Duration::from_secs(20),
+                session.fetch(seq.to_string(), "RFC822"),
+            )
+            .await
+            .map_err(|_| format!("fetch {seq} timed out"))?
+            .map_err(|e| format!("fetch {seq} failed: {e}"))?;
+            let fetches: Vec<_> = tokio::time::timeout(Duration::from_secs(20), stream.try_collect())
                 .await
-                .map_err(|e| format!("fetch {seq} failed: {e}"))?;
-            let fetches: Vec<_> = stream
-                .try_collect()
-                .await
+                .map_err(|_| format!("fetch {seq} collect timed out"))?
                 .map_err(|e| format!("fetch {seq} collect failed: {e}"))?;
             Ok(fetches.iter().find_map(|f| f.body().map(|b| b.to_vec())))
         }
@@ -278,8 +285,13 @@ async fn mark_seen<T>(session: &mut async_imap::Session<T>, seq: u32)
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + std::fmt::Debug + Send,
 {
-    if let Ok(stream) = session.store(seq.to_string(), "+FLAGS (\\Seen)").await {
-        let _ = stream.try_collect::<Vec<_>>().await;
+    if let Ok(Ok(stream)) = tokio::time::timeout(
+        Duration::from_secs(20),
+        session.store(seq.to_string(), "+FLAGS (\\Seen)"),
+    )
+    .await
+    {
+        let _ = tokio::time::timeout(Duration::from_secs(20), stream.try_collect::<Vec<_>>()).await;
     }
 }
 

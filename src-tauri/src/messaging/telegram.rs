@@ -1,9 +1,18 @@
 //! Telegram connector — Bot API long-poll (getUpdates), no public endpoint.
 
 use super::{accept, chunk, emit, set_error, GwCtx};
+use once_cell::sync::Lazy;
 use serde_json::Value;
 
 const MAX_CHARS: usize = 3800;
+
+/// Shared HTTP client, built once and reused across all calls.
+static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(40))
+        .build()
+        .expect("telegram reqwest client build")
+});
 
 pub async fn validate(token: &str) -> Result<String, String> {
     if token.trim().is_empty() {
@@ -39,18 +48,11 @@ pub async fn run(ctx: GwCtx) {
     if let Ok(name) = validate(&ctx.token).await {
         super::set_username("telegram", Some(name));
     }
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(40))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            set_error("telegram", Some(format!("client build failed: {e}")));
-            return;
-        }
-    };
+    let client = &*CLIENT;
     let token = ctx.token.clone();
-    let mut offset: i64 = 0;
+    let mut offset: i64 = super::load_cursor("telegram")
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
     loop {
         let url = format!(
             "https://api.telegram.org/bot{token}/getUpdates?timeout=25&offset={offset}&allowed_updates=%5B%22message%22%5D"
@@ -82,6 +84,7 @@ pub async fn run(ctx: GwCtx) {
         let Some(updates) = v.get("result").and_then(|r| r.as_array()) else {
             continue;
         };
+        let offset_before = offset;
         for upd in updates {
             if let Some(uid) = upd.get("update_id").and_then(|n| n.as_i64()) {
                 offset = uid + 1;
@@ -110,15 +113,15 @@ pub async fn run(ctx: GwCtx) {
                 .unwrap_or("user");
             emit(&ctx, &chat, &sender, name, text);
         }
+        if offset != offset_before {
+            super::save_cursor("telegram", &offset.to_string());
+        }
     }
 }
 
 pub async fn send(token: &str, _fields: &Value, target: &str, text: &str) -> Result<(), String> {
     let chat_id: i64 = target.parse().map_err(|_| "bad chat id".to_string())?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = &*CLIENT;
     let url = format!("https://api.telegram.org/bot{token}/sendMessage");
     for part in chunk(text, MAX_CHARS) {
         let resp = client

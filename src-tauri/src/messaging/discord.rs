@@ -2,7 +2,9 @@
 
 use super::{accept, chunk, emit, set_error, set_username, GwCtx};
 use futures::{SinkExt, StreamExt};
+use once_cell::sync::Lazy;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_tungstenite::connect_async;
@@ -12,6 +14,14 @@ const MAX_CHARS: usize = 1900;
 const API: &str = "https://discord.com/api/v10";
 // GUILD_MESSAGES (512) | DIRECT_MESSAGES (4096) | MESSAGE_CONTENT (32768) = 37376
 const INTENTS: u64 = 37376;
+
+// Shared REST client for send() — built once and reused across calls.
+static SEND_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("failed to build discord send client")
+});
 
 pub async fn validate(token: &str) -> Result<String, String> {
     let token = token.trim();
@@ -85,11 +95,23 @@ async fn run_once(ctx: &GwCtx) -> Result<(), String> {
     // Shared last-seen sequence number; the heartbeat task sends it in op 1.
     let last_seq: Arc<AsyncMutex<Option<i64>>> = Arc::new(AsyncMutex::new(None));
     let mut hb_task: Option<tokio::task::JoinHandle<()>> = None;
+    // Liveness flag for the heartbeat task: it flips this to false when it exits
+    // (send failure, break, or panic) so the read loop can reconnect immediately
+    // instead of waiting ~45s for the server's close frame.
+    let hb_alive: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
     let mut identified = false;
 
     set_error("discord", None);
 
     while let Some(frame) = read.next().await {
+        // If the heartbeat task has died, the connection is effectively dead —
+        // reconnect now rather than waiting for the server's close frame.
+        if !hb_alive.load(Ordering::Relaxed) {
+            if let Some(h) = hb_task.take() {
+                h.abort();
+            }
+            return Err("heartbeat task stopped".to_string());
+        }
         let msg = match frame {
             Ok(m) => m,
             Err(e) => {
@@ -134,9 +156,24 @@ async fn run_once(ctx: &GwCtx) -> Result<(), String> {
                     .pointer("/d/heartbeat_interval")
                     .and_then(|n| n.as_u64())
                     .unwrap_or(41250);
+                // Drop any prior heartbeat task before starting a new one.
+                if let Some(h) = hb_task.take() {
+                    h.abort();
+                }
                 let hb_writer = writer.clone();
                 let hb_seq = last_seq.clone();
+                let hb_flag = hb_alive.clone();
+                hb_alive.store(true, Ordering::Relaxed);
                 hb_task = Some(tokio::spawn(async move {
+                    // Guard flips the liveness flag false on ANY exit (break or panic)
+                    // so the read loop notices the dead connection promptly.
+                    struct AliveGuard(Arc<AtomicBool>);
+                    impl Drop for AliveGuard {
+                        fn drop(&mut self) {
+                            self.0.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    let _guard = AliveGuard(hb_flag);
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(interval)).await;
                         let seq = *hb_seq.lock().await;
@@ -236,10 +273,7 @@ pub async fn send(token: &str, _fields: &Value, target: &str, text: &str) -> Res
     if target.is_empty() {
         return Err("bad channel id".into());
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = &*SEND_CLIENT;
     let url = format!("{API}/channels/{target}/messages");
     for part in chunk(text, MAX_CHARS) {
         let resp = client
