@@ -119,6 +119,13 @@ pub struct Settings {
     /// is parked here and re-serialized verbatim on save, so opening an old
     /// build can't silently destroy a newer build's settings. Skipped when
     /// empty so it never appears in a fresh file.
+    /// Messaging gateway config (2026-06-16): per-channel enable + allowed-sender
+    /// allowlist for running the agent over chat platforms. Bot tokens live in the
+    /// Keychain (key `messaging:<channel>`), NOT here. Absent (legacy/fresh) →
+    /// gateway off. Declared before the flatten `extra` so serde captures it as a
+    /// real key, not into the forward-compat bag.
+    #[serde(default)]
+    pub messaging: MessagingConfig,
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -134,6 +141,26 @@ pub struct HardwareProfile {
     pub performance_cores: u32,
     pub cpu_brand: String,
     pub detected_at: i64,
+}
+
+/// Messaging gateway config. One entry per chat platform; v1 ships Telegram.
+/// Bot tokens are NOT stored here (Keychain `messaging:<channel>`); this holds
+/// only the enable flag + the allowed-sender allowlist.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct MessagingConfig {
+    pub telegram: TelegramChannel,
+}
+
+/// Telegram channel settings. `allowed_user_ids` is a SAFETY gate: the gateway
+/// refuses to start with an empty allowlist (an empty list would let anyone who
+/// finds the bot drive the agent). IDs are the numeric Telegram user IDs from
+/// @userinfobot, stored as strings to avoid i64/JSON precision issues.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct TelegramChannel {
+    pub enabled: bool,
+    pub allowed_user_ids: Vec<String>,
 }
 
 /// DB/storage maintenance policy (WS4). All fields carry conservative

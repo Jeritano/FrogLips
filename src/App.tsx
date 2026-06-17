@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   MessageSquare,
+  Send,
   Users,
   Zap,
   Wrench,
@@ -57,6 +58,7 @@ import { useRamPressure } from "./hooks/useRamPressure";
 import { useAppearance, isThemePref } from "./hooks/useAppearance";
 import { useConversations } from "./hooks/useConversations";
 import type { Conversation, ServerStatus } from "./types";
+import { useMessagingGateway } from "./hooks/useMessagingGateway";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
@@ -75,7 +77,13 @@ import {
 } from "./lib/roundtable/run-context";
 import { SettingsProvider } from "./contexts/SettingsContext";
 
-type ViewId = "chat" | "workflows" | "knowledge" | "mcp" | "roundtable";
+type ViewId =
+  | "chat"
+  | "workflows"
+  | "knowledge"
+  | "mcp"
+  | "roundtable"
+  | "messaging";
 
 /**
  * Top-of-sidebar nav for the primary surfaces: Chat, Table
@@ -103,6 +111,8 @@ const NAV_ITEMS: { id: ViewId; label: string; icon: React.ReactNode }[] = [
   // the label, icon, and rendered component change. The hub renders
   // <SkillsToolsView/>, which embeds McpView for the registry browse flow.
   { id: "mcp", label: "Skills & Tools", icon: <Blocks size={17} /> },
+  // Run the agent over chat platforms (Telegram v1). Mirrors Hermes' Messaging.
+  { id: "messaging", label: "Messaging", icon: <Send size={17} /> },
 ];
 
 /**
@@ -223,6 +233,11 @@ const RoundtableView = lazy(() =>
     default: m.RoundtableView,
   })),
 );
+const MessagingView = lazy(() =>
+  import("./components/MessagingView").then((m) => ({
+    default: m.MessagingView,
+  })),
+);
 
 /**
  * Keyboard-shortcuts cheatsheet — a small, discoverable modal listing the
@@ -286,6 +301,9 @@ function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
 
 function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  // Messaging gateway: bridges Telegram inbound -> agent (safe-tools-only) ->
+  // reply. Mounted once; reacts to the channel toggle in settings.
+  useMessagingGateway(status);
   // Self-healing send (2026-06-11): ModelPicker registers its "start the
   // current selection" handle here so ChatWindow can warm the model on
   // first send instead of gating the composer behind the Start button.
@@ -753,6 +771,7 @@ function App() {
       "knowledge",
       "mcp",
       "roundtable",
+      "messaging",
     ];
     const handler = (e: Event) => {
       const v = (e as CustomEvent<{ view?: string }>).detail?.view as
@@ -1643,6 +1662,12 @@ function App() {
           <ErrorBoundary label="Roundtable">
             <Suspense fallback={null}>
               <RoundtableView />
+            </Suspense>
+          </ErrorBoundary>
+        ) : view === "messaging" ? (
+          <ErrorBoundary label="Messaging">
+            <Suspense fallback={null}>
+              <MessagingView />
             </Suspense>
           </ErrorBoundary>
         ) : (

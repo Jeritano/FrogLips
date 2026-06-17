@@ -4,6 +4,36 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.12] — 2026-06-16
+
+### Added
+
+- **Messaging gateway — run the agent from Telegram (v1).** A new **Messaging**
+  view connects Froglips to a Telegram bot: DM the bot and it runs the agent and
+  replies. Background gateway long-polls Telegram (no public endpoint/tunnel
+  needed), filters by an allowed-sender allowlist, and streams replies back.
+  - Bot token stored in the macOS Keychain (`messaging:telegram`), never in
+    settings or the renderer.
+  - Other platforms (Discord, Slack, Signal, iMessage, email, SMS, Matrix) are
+    listed as "coming soon".
+
+### Safety
+
+- Remote (chat) input is untrusted, and there's no desktop confirm modal over
+  chat — so remote runs are **double-locked**: a read-only **safe-tools-only**
+  allowlist (no shell/code/writes/Computer-Use/MCP/external-mutating calls) **and**
+  an unattended deny-all confirmation. Runs are bounded (short iteration cap,
+  rolling per-chat history) and serialized.
+- The gateway **refuses to start with an empty allowed-sender list** (fail closed
+  — an empty allowlist would let anyone who finds the bot drive the agent), plus
+  a per-sender rate limit. The gateway runs only while Froglips is open.
+
+### Fixed
+
+- `computer_use_enabled` was missing from the settings-key allowlist, so the
+  Computer Use toggle (v0.14.10) never persisted across restarts. Added it (and
+  the new `messaging` key) to the allowlist.
+
 ## [0.14.11] — 2026-06-16
 
 ### Changed

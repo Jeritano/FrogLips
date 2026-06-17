@@ -148,6 +148,7 @@ import type {
   ReadResult,
   ScreenshotResult,
   CuScreenshotResult,
+  GatewayStatus,
   SearchResult,
   RawWorkflow,
   RoundtableRunSummary,
@@ -883,6 +884,22 @@ export const api = {
     }),
   agentCuCursorPosition: () =>
     invoke<unknown>("agent_cu_cursor_position"),
+
+  /* ── Messaging gateway (run the agent over chat platforms; v1 Telegram) ──
+   * Bot token stored Keychain-side via messagingSetToken; the renderer never
+   * holds it. The gateway long-polls in Rust + emits "messaging://inbound";
+   * the frontend hook runs the agent (safe-tools-only) + replies via
+   * messagingSend. */
+  messagingSetToken: (token: string) =>
+    invoke<void>("messaging_set_token", { token }),
+  messagingHasToken: () => invoke<boolean>("messaging_has_token"),
+  messagingValidateToken: (token?: string) =>
+    invoke<string>("messaging_validate_token", { token: token ?? null }),
+  messagingStart: () => invoke<void>("messaging_start"),
+  messagingStop: () => invoke<void>("messaging_stop"),
+  messagingStatus: () => invoke<GatewayStatus>("messaging_status"),
+  messagingSend: (chatId: number, text: string) =>
+    invoke<void>("messaging_send", { chatId, text }),
 
   agentClipboardGet: () => invoke<string>("agent_clipboard_get"),
   agentClipboardSet: async (text: string) =>

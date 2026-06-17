@@ -464,6 +464,33 @@ export interface AppSettings {
    *  disabled; an explicit per-machine opt-in on top of the per-call
    *  confirmation modal and macOS Accessibility permission. */
   computer_use_enabled?: boolean | null;
+  /** Messaging gateway config (run the agent over chat platforms; v1 Telegram).
+   *  Bot token lives in the Keychain, never here — this holds only the enable
+   *  flag + allowed-sender allowlist. Absent (legacy/fresh) → gateway off. */
+  messaging?: MessagingConfig | null;
+}
+
+/** Per-channel messaging gateway config. */
+export interface MessagingConfig {
+  telegram?: TelegramChannelConfig;
+}
+export interface TelegramChannelConfig {
+  enabled?: boolean;
+  /** Numeric Telegram user IDs (as strings) allowed to drive the agent. The
+   *  gateway refuses to start with an empty allowlist (safety). */
+  allowed_user_ids?: string[];
+}
+
+/** Live status of the messaging gateway (mirrors Rust GatewayStatus). */
+export interface GatewayStatus {
+  running: boolean;
+  channel: string;
+  bot_username: string | null;
+  last_error: string | null;
+  started_at: number;
+  messages_accepted: number;
+  messages_blocked: number;
+  allowed_count: number;
 }
 
 /**

@@ -19,6 +19,7 @@ mod logging;
 mod maintenance;
 mod mcp;
 mod memory;
+mod messaging;
 mod models;
 mod native_inference;
 mod ollama_library;
@@ -637,6 +638,13 @@ pub fn run() {
             commands::misc::ram_pressure,
             commands::misc::dictation_start,
             commands::misc::dictation_stop,
+            commands::messaging::messaging_set_token,
+            commands::messaging::messaging_has_token,
+            commands::messaging::messaging_validate_token,
+            commands::messaging::messaging_start,
+            commands::messaging::messaging_stop,
+            commands::messaging::messaging_status,
+            commands::messaging::messaging_send,
             commands::memory::add_memory,
             commands::memory::list_memories,
             commands::memory::delete_memory,

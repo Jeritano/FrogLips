@@ -610,6 +610,12 @@ const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     // user switched off in the hub. Without this key the settings_set carrying
     // it would be silently rejected and the toggles would never persist.
     "disabled_tools",
+    // Computer Use (2026-06-16): gated desktop-control opt-in. (Bugfix: this was
+    // omitted when the feature landed, so the toggle never persisted.)
+    "computer_use_enabled",
+    // Messaging gateway (2026-06-16): per-channel enable + allowed-sender list
+    // for running the agent over chat platforms (Telegram v1).
+    "messaging",
 ];
 
 /// Per-field byte caps for the "About You" profile. Keeps a hostile or
