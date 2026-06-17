@@ -209,7 +209,16 @@ export function MessagingView() {
     const out: ChanCfg = { ...cfg, allowed_user_ids: parsedAllowed() };
     for (const f of chanFields) {
       const raw = (fieldDraft[f.key] ?? "").trim();
-      out[f.key] = f.numeric ? Number(raw) || 0 : raw;
+      if (f.numeric) {
+        // Only persist a valid positive port. An empty/garbage value is left
+        // unset so the connector default applies — never coerced to 0, which
+        // both layers now reject (review M9).
+        const n = Number(raw);
+        if (raw !== "" && Number.isInteger(n) && n > 0) out[f.key] = n;
+        else delete out[f.key];
+      } else {
+        out[f.key] = raw;
+      }
     }
     return out;
   }, [cfg, chanFields, fieldDraft, parsedAllowed]);
@@ -250,7 +259,14 @@ export function MessagingView() {
 
   const toggleEnabled = useCallback(
     async (on: boolean) => {
-      await writeCfg({ ...buildCfg(), enabled: on });
+      setValidateMsg(null);
+      try {
+        await writeCfg({ ...buildCfg(), enabled: on });
+      } catch (e) {
+        // Surface a rejected enable (e.g. validator refuses an incomplete
+        // config) instead of silently reverting with no explanation.
+        setValidateMsg(`✗ ${e}`);
+      }
     },
     [writeCfg, buildCfg],
   );

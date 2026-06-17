@@ -50,6 +50,7 @@ pub async fn run(ctx: GwCtx) {
     }
     let client = &*CLIENT;
     let token = ctx.token.clone();
+    let mut backoff = super::Backoff::new();
     let mut offset: i64 = super::load_cursor("telegram")
         .and_then(|c| c.parse().ok())
         .unwrap_or(0);
@@ -62,13 +63,13 @@ pub async fn run(ctx: GwCtx) {
                 Ok(v) => v,
                 Err(e) => {
                     set_error("telegram", Some(format!("decode error: {e}")));
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    backoff.sleep().await;
                     continue;
                 }
             },
             Err(e) => {
                 set_error("telegram", Some(format!("poll error: {e}")));
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                backoff.sleep().await;
                 continue;
             }
         };
@@ -77,13 +78,17 @@ pub async fn run(ctx: GwCtx) {
                 "telegram",
                 v.get("description").and_then(|s| s.as_str()).map(String::from),
             );
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            backoff.sleep().await;
             continue;
         }
         set_error("telegram", None);
+        // A well-formed `ok:true` always carries `result`; if it's missing
+        // (proxy/API quirk), back off instead of spinning the loop (review M3).
         let Some(updates) = v.get("result").and_then(|r| r.as_array()) else {
+            backoff.sleep().await;
             continue;
         };
+        backoff.reset();
         let offset_before = offset;
         for upd in updates {
             if let Some(uid) = upd.get("update_id").and_then(|n| n.as_i64()) {

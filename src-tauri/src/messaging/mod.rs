@@ -58,6 +58,7 @@ struct Registry {
     status: HashMap<String, ChannelStatus>,
     tasks: HashMap<String, JoinHandle<()>>,
     rate: HashMap<String, (i64, u32)>, // key "channel:sender" -> (window_start, count)
+    cfg_fp: HashMap<String, String>,   // channel -> config fingerprint (for hot-reload)
 }
 
 static REG: Lazy<Mutex<Registry>> = Lazy::new(|| {
@@ -65,8 +66,100 @@ static REG: Lazy<Mutex<Registry>> = Lazy::new(|| {
         status: HashMap::new(),
         tasks: HashMap::new(),
         rate: HashMap::new(),
+        cfg_fp: HashMap::new(),
     })
 });
+
+/// Exponential backoff with jitter for connector reconnect loops. Starts at 1s,
+/// doubles per failure up to a 60s cap, with ±20% jitter so connectors (or
+/// multiple app instances) don't reconnect in lockstep and hammer an endpoint
+/// during an outage (review M2). Call `reset()` after a successful cycle.
+pub struct Backoff {
+    attempt: u32,
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Backoff {
+    pub fn new() -> Self {
+        Self { attempt: 0 }
+    }
+
+    pub fn reset(&mut self) {
+        self.attempt = 0;
+    }
+
+    /// Sleep for the current backoff interval, then advance toward the cap.
+    pub async fn sleep(&mut self) {
+        const BASE_MS: u64 = 1000;
+        const CAP_MS: u64 = 60_000;
+        let shift = self.attempt.min(6);
+        let capped = BASE_MS.saturating_mul(1u64 << shift).min(CAP_MS);
+        // ±20% jitter via a single best-effort random byte.
+        let mut b = [0u8; 1];
+        let frac = if getrandom::getrandom(&mut b).is_ok() {
+            b[0] as u64
+        } else {
+            128
+        };
+        let span = capped / 5; // 20%
+        let delay = capped.saturating_sub(span) + (span * 2 * frac / 255);
+        if self.attempt < 6 {
+            self.attempt += 1;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
+}
+
+/// Validate + normalize a user-configured server base URL (Matrix homeserver,
+/// Mattermost server). Rejects plaintext `http://` to a non-localhost host —
+/// that would send the bearer token in clear and invites trivial SSRF to
+/// internal services (review M7). A bare host with no scheme is assumed https.
+/// Returns the trimmed base with any trailing '/' removed.
+pub fn normalize_base_url(raw: &str) -> Result<String, String> {
+    let t = raw.trim().trim_end_matches('/');
+    if t.is_empty() {
+        return Err("empty server url".into());
+    }
+    let lower = t.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("http://") {
+        let host = rest.split(['/', ':']).next().unwrap_or("");
+        let is_local = host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host.ends_with(".localhost");
+        if !is_local {
+            return Err(format!(
+                "refusing plaintext http:// to '{host}' — use https:// (http is only allowed to localhost)"
+            ));
+        }
+    }
+    Ok(t.to_string())
+}
+
+/// Fingerprint a channel's effective config (token + allowlist + non-secret
+/// fields) so `start()` can detect that a running channel's settings changed and
+/// respawn it with the new config instead of no-oping (review M1 — an edited
+/// allowlist must take effect without a manual stop/start). The token is
+/// SHA-256'd, never retained in the clear.
+fn cfg_fingerprint(token: &str, allowed: &HashSet<String>, fields: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let mut ids: Vec<&str> = allowed.iter().map(String::as_str).collect();
+    ids.sort_unstable();
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    h.update([0u8]);
+    for id in ids {
+        h.update(id.as_bytes());
+        h.update([0u8]);
+    }
+    h.update(serde_json::to_vec(fields).unwrap_or_default());
+    format!("{:x}", h.finalize())
+}
 
 /// Split text into <=`max`-char chunks on char boundaries (prefer newline).
 /// Shared by connectors whose platforms cap message length.
@@ -249,6 +342,7 @@ pub async fn start(app: AppHandle, channel: &str) -> Result<(), String> {
         ));
     }
     let allowed_count = allowed.len();
+    let fp = cfg_fingerprint(&token, &allowed, &fields);
     let ctx = GwCtx {
         app: app.clone(),
         channel: channel.to_string(),
@@ -264,9 +358,23 @@ pub async fn start(app: AppHandle, channel: &str) -> Result<(), String> {
     // tokio::spawn is synchronous (schedules, doesn't await), so holding the
     // parking_lot lock across it is safe — no await under the lock.
     let mut r = REG.lock();
-    if r.tasks.get(channel).map(|t| !t.is_finished()).unwrap_or(false) {
-        return Ok(()); // already running
+    let alive = r
+        .tasks
+        .get(channel)
+        .map(|t| !t.is_finished())
+        .unwrap_or(false);
+    if alive {
+        if r.cfg_fp.get(channel).map(|f| f == &fp).unwrap_or(false) {
+            return Ok(()); // already running with the same config
+        }
+        // Config changed (allowlist / token / fields edited) — abort the stale
+        // task so the new config takes effect (review M1). The frontend re-calls
+        // start() whenever settings change, so this is the hot-reload path.
+        if let Some(t) = r.tasks.remove(channel) {
+            t.abort();
+        }
     }
+    r.cfg_fp.insert(channel.to_string(), fp);
     r.status.insert(
         channel.to_string(),
         ChannelStatus {
@@ -316,6 +424,7 @@ pub fn stop(channel: &str) {
     if let Some(t) = r.tasks.remove(channel) {
         t.abort();
     }
+    r.cfg_fp.remove(channel);
     if let Some(s) = r.status.get_mut(channel) {
         s.running = false;
     }
@@ -357,5 +466,56 @@ pub async fn send(channel: &str, target: &str, text: &str) -> Result<(), String>
         "mattermost" => mattermost::send(&token, &fields, target, text).await,
         "email" => email::send(&token, &fields, target, text).await,
         _ => Err(format!("unknown channel: {channel}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_base_url_rejects_plaintext_to_remote() {
+        // https + bare host (assumed https) are fine.
+        assert_eq!(
+            normalize_base_url("https://matrix.org/").unwrap(),
+            "https://matrix.org"
+        );
+        assert_eq!(
+            normalize_base_url("chat.example.com").unwrap(),
+            "chat.example.com"
+        );
+        // http to a non-localhost host is refused (token would go in clear).
+        assert!(normalize_base_url("http://matrix.example.com").is_err());
+        assert!(normalize_base_url("http://10.0.0.5:8065").is_err());
+        // http to localhost is allowed (dev / self-hosted on the same box).
+        assert!(normalize_base_url("http://localhost:8065").is_ok());
+        assert!(normalize_base_url("http://127.0.0.1:8008").is_ok());
+        assert!(normalize_base_url("   ").is_err());
+    }
+
+    #[test]
+    fn cfg_fingerprint_changes_when_allowlist_changes() {
+        let fields = Value::Null;
+        let a: HashSet<String> = ["123".to_string()].into_iter().collect();
+        let b: HashSet<String> = ["123".to_string(), "456".to_string()].into_iter().collect();
+        let fp_a = cfg_fingerprint("tok", &a, &fields);
+        let fp_b = cfg_fingerprint("tok", &b, &fields);
+        assert_ne!(fp_a, fp_b, "adding an allowed sender must change the fingerprint");
+        // Stable across set ordering / re-computation.
+        let a2: HashSet<String> = ["123".to_string()].into_iter().collect();
+        assert_eq!(fp_a, cfg_fingerprint("tok", &a2, &fields));
+        // Token change is detected too.
+        assert_ne!(fp_a, cfg_fingerprint("tok2", &a, &fields));
+    }
+
+    #[test]
+    fn chunk_splits_on_char_boundaries_within_limit() {
+        // Short text is one chunk.
+        assert_eq!(chunk("hello", 10), vec!["hello".to_string()]);
+        // Multibyte chars never exceed the char limit and round-trip intact.
+        let s = "héllo wörld ".repeat(20);
+        let parts = chunk(&s, 8);
+        assert!(parts.iter().all(|p| p.chars().count() <= 8));
+        assert_eq!(parts.concat(), s);
     }
 }

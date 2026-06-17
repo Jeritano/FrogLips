@@ -38,7 +38,8 @@ fn base(fields: &Value) -> Result<String, String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "no homeserver configured".to_string())?;
-    Ok(hs.trim_end_matches('/').to_string())
+    // Reject plaintext http:// to a non-localhost homeserver (review M7).
+    super::normalize_base_url(hs)
 }
 
 pub async fn validate(token: &str, fields: &Value) -> Result<String, String> {
@@ -83,8 +84,13 @@ pub async fn run(ctx: GwCtx) {
             }
         }
     };
-    if let Ok(uid) = validate(&ctx.token, &ctx.fields).await {
-        super::set_username("matrix", Some(uid));
+    // Authoritative self-id from /account/whoami — used to suppress the bot's
+    // own messages so it can't get into an echo loop (review H1). This is the
+    // reliable source; the optional `bot_user_id` config field is only a
+    // fallback for when whoami can't be reached at startup.
+    let self_id: Option<String> = validate(&ctx.token, &ctx.fields).await.ok();
+    if let Some(uid) = &self_id {
+        super::set_username("matrix", Some(uid.clone()));
     }
     let bot_id = ctx
         .fields
@@ -110,6 +116,7 @@ pub async fn run(ctx: GwCtx) {
     // Resume from a persisted cursor if one exists; only a fresh start (no saved
     // cursor) goes through the first-sync history-skip path below.
     let mut since: Option<String> = super::load_cursor("matrix");
+    let mut backoff = super::Backoff::new();
 
     loop {
         let url = match &since {
@@ -123,7 +130,7 @@ pub async fn run(ctx: GwCtx) {
             Ok(r) => r,
             Err(e) => {
                 set_error("matrix", Some(format!("sync error: {e}")));
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                backoff.sleep().await;
                 continue;
             }
         };
@@ -131,32 +138,38 @@ pub async fn run(ctx: GwCtx) {
             let code = resp.status();
             let body = resp.text().await.unwrap_or_default();
             set_error("matrix", Some(format!("sync {code}: {body}")));
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            backoff.sleep().await;
             continue;
         }
         let v: Value = match resp.json().await {
             Ok(v) => v,
             Err(e) => {
                 set_error("matrix", Some(format!("decode error: {e}")));
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                backoff.sleep().await;
                 continue;
             }
         };
         set_error("matrix", None);
+        backoff.reset();
 
         let next_batch = v
             .get("next_batch")
             .and_then(|s| s.as_str())
             .map(String::from);
 
+        // No cursor to advance — a `timeout=0` initial sync would otherwise
+        // re-issue instantly in a tight loop (review M4). Back off and retry.
+        let Some(nb) = next_batch else {
+            backoff.sleep().await;
+            continue;
+        };
+
         // First sync (no saved cursor) only records the cursor; skip processing.
         // When resuming from a persisted cursor `since` is already Some, so
         // `first` is false and we process this sync normally.
         let first = since.is_none();
-        if let Some(nb) = next_batch {
-            super::save_cursor("matrix", &nb);
-            since = Some(nb);
-        }
+        super::save_cursor("matrix", &nb);
+        since = Some(nb);
         if first {
             continue;
         }
@@ -178,7 +191,11 @@ pub async fn run(ctx: GwCtx) {
                 let Some(sender) = ev.get("sender").and_then(|s| s.as_str()) else {
                     continue;
                 };
-                if !bot_id.is_empty() && sender == bot_id {
+                // Suppress the bot's own messages (echo loop, review H1): prefer
+                // the authoritative whoami id, fall back to the configured one.
+                let is_self = self_id.as_deref() == Some(sender)
+                    || (!bot_id.is_empty() && sender == bot_id);
+                if is_self {
                     continue;
                 }
                 let Some(body) = ev.pointer("/content/body").and_then(|s| s.as_str()) else {

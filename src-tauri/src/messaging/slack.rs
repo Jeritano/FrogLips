@@ -114,13 +114,16 @@ pub async fn run(ctx: GwCtx) {
         }
     };
 
+    let mut backoff = super::Backoff::new();
     loop {
-        // 1) Negotiate a Socket Mode WSS URL.
+        // 1) Negotiate a Socket Mode WSS URL. `apps.connections.open` is rate
+        // limited, so a persistent failure must back off (review M2) rather than
+        // hammer the endpoint every 5s and risk a throttle/ban.
         let url = match open_connection(&client, &app_token).await {
             Ok(u) => u,
             Err(e) => {
                 set_error("slack", Some(e));
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                backoff.sleep().await;
                 continue;
             }
         };
@@ -130,11 +133,12 @@ pub async fn run(ctx: GwCtx) {
             Ok((ws, _resp)) => ws,
             Err(e) => {
                 set_error("slack", Some(format!("ws connect failed: {e}")));
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                backoff.sleep().await;
                 continue;
             }
         };
         set_error("slack", None);
+        backoff.reset();
         let (mut write, mut read) = ws.split();
 
         // 3) Pump frames until the socket drops, then reconnect.
@@ -187,6 +191,14 @@ pub async fn run(ctx: GwCtx) {
                         if let Some(event) = v.pointer("/payload/event") {
                             handle_event(&ctx, event);
                         }
+                    } else if v.get("envelope_id").is_some() {
+                        // Enveloped but not an Events API event (slash command /
+                        // interactivity). We ACK above so Slack won't redeliver,
+                        // but don't silently drop it without a trace (review M8).
+                        tracing::debug!(
+                            target: "messaging",
+                            "slack: unsupported enveloped frame type '{typ}' (ACKed, not handled)"
+                        );
                     }
                 }
                 Message::Ping(p) => {
@@ -201,7 +213,7 @@ pub async fn run(ctx: GwCtx) {
 
         // Socket dropped or asked us to reconnect; loop and re-open.
         set_error("slack", Some("reconnecting".into()));
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        backoff.sleep().await;
     }
 }
 

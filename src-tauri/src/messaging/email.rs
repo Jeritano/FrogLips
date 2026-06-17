@@ -30,8 +30,6 @@ use super::{accept, chunk, emit, set_error, set_username, GwCtx};
 const MAX_CHARS: usize = 50_000;
 /// How long to wait between IMAP polls.
 const POLL_SECS: u64 = 20;
-/// Backoff after a transient IMAP/connect failure.
-const RETRY_SECS: u64 = 8;
 
 fn field_str(fields: &Value, key: &str) -> Option<String> {
     fields
@@ -135,7 +133,49 @@ pub async fn validate(token: &str, fields: &Value) -> Result<String, String> {
     Ok(format!("connected ({username})"))
 }
 
-pub async fn run(ctx: GwCtx) {
+/// True if a message looks machine-generated (autoresponder, mailing list,
+/// bounce, no-reply sender). Replying to such mail risks an infinite ping-pong
+/// loop that bills agent tokens every cycle (review H3), so we never act on it.
+fn is_automated(parsed: &mail_parser::Message, from_addr_lc: &str) -> bool {
+    // RFC 3834: anything not "no" is an automatic message.
+    if let Some(v) = parsed.header_raw("Auto-Submitted") {
+        if !v.trim().eq_ignore_ascii_case("no") {
+            return true;
+        }
+    }
+    // Mailing lists / bulk senders.
+    if parsed.header_raw("List-Id").is_some()
+        || parsed.header_raw("List-Unsubscribe").is_some()
+        || parsed.header_raw("X-Auto-Response-Suppress").is_some()
+    {
+        return true;
+    }
+    if let Some(v) = parsed.header_raw("Precedence") {
+        let v = v.trim().to_ascii_lowercase();
+        if v == "bulk" || v == "list" || v == "junk" || v == "auto_reply" {
+            return true;
+        }
+    }
+    // no-reply / daemon style local-parts.
+    let local = from_addr_lc.split('@').next().unwrap_or("");
+    const BLOCK: &[&str] = &[
+        "no-reply",
+        "noreply",
+        "do-not-reply",
+        "donotreply",
+        "mailer-daemon",
+        "postmaster",
+        "bounce",
+        "bounces",
+        "daemon",
+    ];
+    BLOCK.iter().any(|p| local == *p || local.contains(p))
+}
+
+pub async fn run(mut ctx: GwCtx) {
+    // Email addresses are case-insensitive in practice; normalize the allowlist
+    // so a case difference can't silently drop a permitted sender (review H4).
+    ctx.allowed = ctx.allowed.iter().map(|s| s.to_lowercase()).collect();
     let host = match field_str(&ctx.fields, "imap_host") {
         Some(h) => h,
         None => {
@@ -166,16 +206,20 @@ pub async fn run(ctx: GwCtx) {
     set_username("email", Some(username.clone()));
     let username_lc = username.to_lowercase();
     let parser = MessageParser::default();
+    let mut backoff = super::Backoff::new();
 
     loop {
         match poll_once(&ctx, &host, port, &username, &username_lc, &parser).await {
             Ok(()) => {
                 set_error("email", None);
+                backoff.reset();
                 tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
             }
             Err(e) => {
                 set_error("email", Some(e));
-                tokio::time::sleep(Duration::from_secs(RETRY_SECS)).await;
+                // Exponential backoff on transient IMAP/connect failures
+                // (review M2) instead of a flat retry that hammers a down server.
+                backoff.sleep().await;
             }
         }
     }
@@ -196,7 +240,9 @@ async fn poll_once(
         .map_err(|_| "select INBOX timed out".to_string())?
         .map_err(|e| format!("select INBOX failed: {e}"))?;
 
-    let unseen = tokio::time::timeout(Duration::from_secs(20), session.search("UNSEEN"))
+    // UID search/fetch/store: UIDs are stable identifiers, whereas sequence
+    // numbers renumber when another client expunges mid-poll (review M6).
+    let unseen = tokio::time::timeout(Duration::from_secs(20), session.uid_search("UNSEEN"))
         .await
         .map_err(|_| "search UNSEEN timed out".to_string())?
         .map_err(|e| format!("search UNSEEN failed: {e}"))?;
@@ -205,26 +251,26 @@ async fn poll_once(
         return Ok(());
     }
 
-    // Stable, ascending order so we process oldest first.
-    let mut seqs: Vec<u32> = unseen.into_iter().collect();
-    seqs.sort_unstable();
+    // Ascending UID so we process oldest first.
+    let mut uids: Vec<u32> = unseen.into_iter().collect();
+    uids.sort_unstable();
 
-    for seq in seqs {
+    for uid in uids {
         // Fetch the raw RFC822 body. Collect the stream into owned Fetches inside
         // an inner scope so the mutable borrow on `session` (held by the fetch
         // stream) is fully released before we issue the STORE below.
         let raw: Result<Option<Vec<u8>>, String> = async {
             let stream = tokio::time::timeout(
                 Duration::from_secs(20),
-                session.fetch(seq.to_string(), "RFC822"),
+                session.uid_fetch(uid.to_string(), "RFC822"),
             )
             .await
-            .map_err(|_| format!("fetch {seq} timed out"))?
-            .map_err(|e| format!("fetch {seq} failed: {e}"))?;
+            .map_err(|_| format!("fetch {uid} timed out"))?
+            .map_err(|e| format!("fetch {uid} failed: {e}"))?;
             let fetches: Vec<_> = tokio::time::timeout(Duration::from_secs(20), stream.try_collect())
                 .await
-                .map_err(|_| format!("fetch {seq} collect timed out"))?
-                .map_err(|e| format!("fetch {seq} collect failed: {e}"))?;
+                .map_err(|_| format!("fetch {uid} collect timed out"))?
+                .map_err(|e| format!("fetch {uid} collect failed: {e}"))?;
             Ok(fetches.iter().find_map(|f| f.body().map(|b| b.to_vec())))
         }
         .await;
@@ -233,61 +279,71 @@ async fn poll_once(
             Err(e) => return Err(e),
         };
 
-        let Some(bytes) = raw else {
-            // Nothing to parse; still mark it seen so we don't loop on it.
-            mark_seen(&mut session, seq).await;
+        // Mark \Seen BEFORE emitting so a crash/disconnect mid-handoff can't make
+        // us re-emit — and re-reply to — the same message on the next poll
+        // (review M6). At-most-once beats a duplicate-reply storm.
+        mark_seen(&mut session, uid).await;
+
+        let Some(bytes) = raw else { continue };
+        let Some(parsed) = parser.parse(&bytes[..]) else {
             continue;
         };
 
-        if let Some(parsed) = parser.parse(&bytes[..]) {
-            let from_addr = parsed
-                .from()
-                .and_then(|a| a.first())
-                .and_then(|addr| addr.address())
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default();
-            let from_name = parsed
-                .from()
-                .and_then(|a| a.first())
-                .and_then(|addr| addr.name())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| from_addr.clone());
+        let from_addr = parsed
+            .from()
+            .and_then(|a| a.first())
+            .and_then(|addr| addr.address())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if from_addr.is_empty() {
+            continue;
+        }
+        let from_addr_lc = from_addr.to_lowercase();
+        let from_name = parsed
+            .from()
+            .and_then(|a| a.first())
+            .and_then(|addr| addr.name())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| from_addr.clone());
 
-            // Never act on mail the bot sent to itself.
-            let is_self = from_addr.eq_ignore_ascii_case(username_lc);
-
-            if !from_addr.is_empty() && !is_self && accept(ctx, &from_addr) {
-                let subject = parsed.subject().unwrap_or("(no subject)").trim().to_string();
-                let body = parsed
-                    .body_text(0)
-                    .map(|c| c.into_owned())
-                    .unwrap_or_default();
-                let body = body.trim();
-                let text = format!("Subject: {subject}\n\n{body}");
-                // target == reply address so send() routes the answer back.
-                emit(ctx, &from_addr, &from_addr, &from_name, &text);
-            }
+        // Never act on our own mail (self-loop) or machine-generated mail
+        // (autoresponder / list / bounce — review H3): either can start an
+        // infinite reply loop.
+        if from_addr_lc == username_lc || is_automated(&parsed, &from_addr_lc) {
+            continue;
+        }
+        // Allowlist match is case-insensitive (review H4): the allowlist was
+        // lowercased at start, so compare the lowercased sender address.
+        if !accept(ctx, &from_addr_lc) {
+            continue;
         }
 
-        // Mark processed regardless so a parse failure / blocked sender doesn't
-        // make us re-process the same message every cycle.
-        mark_seen(&mut session, seq).await;
+        let subject = parsed.subject().unwrap_or("(no subject)").trim().to_string();
+        let body = parsed
+            .body_text(0)
+            .map(|c| c.into_owned())
+            .unwrap_or_default();
+        let body = body.trim();
+        let text = format!("Subject: {subject}\n\n{body}");
+        // target == original-case reply address so send() routes the answer back.
+        emit(ctx, &from_addr, &from_addr, &from_name, &text);
     }
 
     let _ = session.logout().await;
     Ok(())
 }
 
-/// Best-effort `STORE <seq> +FLAGS (\Seen)`; drains the response stream so the
-/// session stays in sync. Errors are swallowed (next poll will retry the flag).
-async fn mark_seen<T>(session: &mut async_imap::Session<T>, seq: u32)
+/// Best-effort `UID STORE <uid> +FLAGS (\Seen)`; drains the response stream so
+/// the session stays in sync. Errors are swallowed (next poll re-fetches if the
+/// flag didn't stick).
+async fn mark_seen<T>(session: &mut async_imap::Session<T>, uid: u32)
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + std::fmt::Debug + Send,
 {
     if let Ok(Ok(stream)) = tokio::time::timeout(
         Duration::from_secs(20),
-        session.store(seq.to_string(), "+FLAGS (\\Seen)"),
+        session.uid_store(uid.to_string(), "+FLAGS (\\Seen)"),
     )
     .await
     {
@@ -328,12 +384,17 @@ pub async fn send(token: &str, fields: &Value, target: &str, text: &str) -> Resu
         AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_host)
             .map_err(|e| format!("smtp starttls setup failed: {e}"))?
     };
-    let mailer: AsyncSmtpTransport<Tokio1Executor> =
-        builder.port(smtp_port).credentials(creds).build();
+    // Bound the SMTP handshake/transmit so a slow/half-open relay can't stall the
+    // reply path (review M5 — the IMAP side already times out every op).
+    let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
+        .port(smtp_port)
+        .timeout(Some(Duration::from_secs(30)))
+        .credentials(creds)
+        .build();
 
-    mailer
-        .send(email)
+    tokio::time::timeout(Duration::from_secs(45), mailer.send(email))
         .await
+        .map_err(|_| "smtp send timed out".to_string())?
         .map_err(|e| format!("smtp send failed: {e}"))?;
     Ok(())
 }

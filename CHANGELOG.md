@@ -4,6 +4,55 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.16] — 2026-06-17
+
+Messaging-layer review remediation (round 2) — a focused full review of the
+messaging gateway (core registry + all six connectors + frontend/settings). The
+remote-run security boundary (accept-before-emit allowlist gate, read-only
+safe-tools policy, deny-all unattended confirm, Keychain-only secrets, no-XSS
+rendering) was re-verified correct end-to-end; these fixes close echo-loop,
+mail-storm, resilience, and hot-reload gaps in the connector code.
+
+### Fixed
+
+- **Matrix / Mattermost echo loops (High)** — the bot's own-message suppression
+  no longer depends on an optional, manually-typed user-id field. Matrix now uses
+  the authoritative `/account/whoami` id; Mattermost fails closed (skips all
+  messages) until it has resolved its own id, so a misconfigured channel can't
+  loop the agent against itself.
+- **Email auto-responder storm (High)** — inbound mail that looks
+  machine-generated (`Auto-Submitted`, `List-Id`/`List-Unsubscribe`,
+  `Precedence: bulk|list|junk|auto_reply`, `X-Auto-Response-Suppress`, or a
+  no-reply/daemon sender) is now ignored, preventing an infinite reply ping-pong
+  with an allowlisted autoresponder.
+- **Email allowlist case-sensitivity (High)** — the From address and the
+  allowlist are now compared case-insensitively, so a permitted sender is no
+  longer silently dropped on a capitalization mismatch.
+- **Allowlist hot-reload (Medium)** — editing a running channel's allowed-sender
+  list (or token / connection fields) now takes effect immediately. The gateway
+  fingerprints each channel's config and respawns the task on change instead of
+  no-oping until a manual stop/start.
+- **Reconnect backoff (Medium)** — all six connectors now use shared exponential
+  backoff with jitter (1s→60s) instead of a flat retry, so an outage or a revoked
+  token can't hammer (and get throttled/banned by) the platform endpoint. Telegram
+  and Matrix no longer tight-loop on a missing `result` / absent `next_batch`.
+- **Email duplicate processing (Medium)** — switched to stable IMAP UIDs (sequence
+  numbers renumber on expunge) and now marks a message `\Seen` before handing it
+  off, so a crash mid-handoff can't re-emit and re-reply to it.
+- **Email SMTP timeout (Medium)** — the SMTP send path is now bounded (transport
+  timeout + an outer `tokio::time::timeout`), matching the IMAP side.
+- **Plaintext server URLs (Medium)** — Matrix homeserver and Mattermost server
+  URLs reject `http://` to a non-localhost host (would send the bearer token in
+  the clear / allow SSRF to internal services).
+- **Port validation (Medium)** — the settings UI no longer coerces a bad email
+  port to `0`, and the validator rejects `0` (`1..=65535`).
+- **Discord zombie sockets (Low)** — a 90s read timeout detects a silent-but-open
+  gateway socket; the reconnect loop also uses exponential backoff.
+- **Slack enveloped frames (Low)** — non–Events-API envelopes (slash command /
+  interactivity) are now traced instead of silently dropped after the ACK.
+- **Enable-toggle errors (Low)** — a rejected channel-enable now surfaces the
+  validator's reason instead of silently reverting.
+
 ## [0.14.15] — 2026-06-17
 
 Messaging-gateway hardening — remediation of a full multi-agent codebase review

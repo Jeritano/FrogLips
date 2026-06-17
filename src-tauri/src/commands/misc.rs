@@ -826,17 +826,20 @@ fn validate_settings_patch(
                 // bad value can't silently slip into a later enable.
                 for (k, v) in c {
                     if k.ends_with("_port") && !v.is_null() {
+                        // Require a real port (1..=65535). 0 is what a bad/empty
+                        // UI field coerces to; accepting it would silently save a
+                        // broken config that only fails at connect time (M9).
                         let ok = v
                             .as_u64()
-                            .map(|n| n <= u64::from(u16::MAX))
+                            .map(|n| n >= 1 && n <= u64::from(u16::MAX))
                             .or_else(|| {
                                 v.as_str()
-                                    .map(|s| s.trim().parse::<u16>().is_ok())
+                                    .map(|s| s.trim().parse::<u16>().map(|p| p > 0).unwrap_or(false))
                             })
                             .unwrap_or(false);
                         if !ok {
                             return Err(format!(
-                                "messaging.{channel}.{k} must be a port in 0..=65535"
+                                "messaging.{channel}.{k} must be a port in 1..=65535"
                             ));
                         }
                     }

@@ -22,7 +22,8 @@ fn server_base(fields: &Value) -> Result<String, String> {
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "no server_url configured".to_string())?;
-    Ok(raw.trim_end_matches('/').to_string())
+    // Reject plaintext http:// to a non-localhost server (review M7).
+    super::normalize_base_url(raw)
 }
 
 /// Derive the WebSocket URL (`/api/v4/websocket`) from the HTTP server base.
@@ -105,6 +106,7 @@ pub async fn run(ctx: GwCtx) {
     // Per-process monotonic sequence id for outgoing WS actions (not reset per
     // connection). A u64 at this rate is not expected to wrap.
     let mut seq: u64 = 1;
+    let mut backoff = super::Backoff::new();
 
     loop {
         // Refresh identity if we still don't have a bot id.
@@ -123,7 +125,7 @@ pub async fn run(ctx: GwCtx) {
             Ok((s, _resp)) => s,
             Err(e) => {
                 set_error("mattermost", Some(format!("connect failed: {e}")));
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                backoff.sleep().await;
                 continue;
             }
         };
@@ -137,11 +139,12 @@ pub async fn run(ctx: GwCtx) {
         seq += 1;
         if let Err(e) = stream.send(Message::Text(auth.to_string())).await {
             set_error("mattermost", Some(format!("auth send failed: {e}")));
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            backoff.sleep().await;
             continue;
         }
 
         set_error("mattermost", None);
+        backoff.reset();
 
         // Read events until the socket drops, then reconnect.
         // Bound each read so a stale-but-open socket can't hang the task
@@ -217,8 +220,9 @@ pub async fn run(ctx: GwCtx) {
             if user_id.is_empty() || channel_id.is_empty() || message.is_empty() {
                 continue;
             }
-            // Never act on the bot's own posts.
-            if !bot_user_id.is_empty() && user_id == bot_user_id {
+            // Fail closed (review H2): if we never resolved our own user id we
+            // can't rule out an echo loop, so don't act. Also skip own posts.
+            if bot_user_id.is_empty() || user_id == bot_user_id {
                 continue;
             }
             if !accept(&ctx, &user_id) {
@@ -227,8 +231,8 @@ pub async fn run(ctx: GwCtx) {
             emit(&ctx, &channel_id, &user_id, &user_id, message);
         }
 
-        // Socket closed — back off briefly and reconnect.
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        // Socket closed — back off (exponential, review M2) and reconnect.
+        backoff.sleep().await;
     }
 }
 

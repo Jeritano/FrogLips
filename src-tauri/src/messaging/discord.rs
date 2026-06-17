@@ -57,11 +57,19 @@ pub async fn run(ctx: GwCtx) {
         set_username("discord", Some(name));
     }
     // Reconnect loop: re-run the entire connect/identify on any socket close.
+    let mut backoff = super::Backoff::new();
     loop {
+        let started = std::time::Instant::now();
         if let Err(e) = run_once(&ctx).await {
             set_error("discord", Some(e));
         }
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        // A connection that lasted a while was healthy — reset so a later
+        // transient drop reconnects fast; otherwise grow the delay so a revoked
+        // token / persistent failure can't hammer the gateway (review M2).
+        if started.elapsed() >= std::time::Duration::from_secs(60) {
+            backoff.reset();
+        }
+        backoff.sleep().await;
     }
 }
 
@@ -103,7 +111,25 @@ async fn run_once(ctx: &GwCtx) -> Result<(), String> {
 
     set_error("discord", None);
 
-    while let Some(frame) = read.next().await {
+    loop {
+        // Bound the read so a silent-but-open (zombie) socket that stops sending
+        // events AND heartbeat ACKs is detected instead of parking forever; the
+        // gateway heartbeats well under this window in normal operation.
+        let frame = match tokio::time::timeout(
+            std::time::Duration::from_secs(90),
+            read.next(),
+        )
+        .await
+        {
+            Ok(Some(f)) => f,
+            Ok(None) => break, // stream ended
+            Err(_) => {
+                if let Some(h) = hb_task.take() {
+                    h.abort();
+                }
+                return Err("read timeout (no gateway traffic)".to_string());
+            }
+        };
         // If the heartbeat task has died, the connection is effectively dead —
         // reconnect now rather than waiting for the server's close frame.
         if !hb_alive.load(Ordering::Relaxed) {
