@@ -1,14 +1,15 @@
 /* ── useMessagingGateway ─────────────────────────────────────────────────────
  *
- * Mounted once (in App). Bridges the Rust messaging gateway to the agent loop:
- *   • starts/stops the Rust gateway when the Telegram channel is enabled/disabled
- *   • listens for `messaging://inbound` events
+ * Mounted once (in App). Bridges the Rust multi-channel messaging gateway to the
+ * agent loop:
+ *   • starts/stops each channel's Rust gateway as its enable flag toggles
+ *   • listens for `messaging://inbound` events from any channel
  *   • runs the agent for each accepted message under the SAFE_REMOTE_TOOLS policy
  *     (read-only tools, unattended-deny confirmation) and replies via messagingSend
  *
- * Remote input is untrusted: the run is double-locked (allowlist + deny-all
- * confirm) and bounded (short iteration cap, per-chat rolling history). Messages
- * are processed serially so concurrent inbound traffic can't interleave runs.
+ * Remote input is untrusted: runs are double-locked (allowlist enforced Rust-side
+ * + safe-tools allowlist + deny-all confirm) and bounded (short iteration cap,
+ * rolling per-conversation history). Messages are processed serially.
  */
 
 import { useEffect, useRef } from "react";
@@ -17,20 +18,27 @@ import { api } from "../lib/tauri-api";
 import { useSettingsField } from "../contexts/SettingsContext";
 import { SAFE_REMOTE_TOOLS, REMOTE_RUN_SYSTEM_NOTE } from "../lib/messaging-policy";
 import { logDiag } from "../lib/diagnostics";
-import type { Message, ServerStatus } from "../types";
+import type { Message, MessagingConfig, ServerStatus } from "../types";
 import type { AgentBackend } from "../lib/agent-loop/types";
 
 interface Inbound {
   channel: string;
-  chatId: number;
-  messageId: number;
-  senderId: number;
+  target: string;
+  sender: string;
   senderName: string;
   text: string;
 }
 
-const HISTORY_CAP = 20; // rolling per-chat context (messages), bounds prompt size
-const MAX_ITERS = 12; // bound a remote run's tool turns
+const HISTORY_CAP = 20;
+const MAX_ITERS = 12;
+const CHANNELS = [
+  "telegram",
+  "matrix",
+  "discord",
+  "slack",
+  "mattermost",
+  "email",
+] as const;
 
 function resolveBackend(backend: string | null): AgentBackend {
   return backend === "mlx" ||
@@ -41,54 +49,52 @@ function resolveBackend(backend: string | null): AgentBackend {
     : "ollama";
 }
 
-/** Stable synthetic conversation id for a chat (negative → never collides with
- *  the positive autoincrement ids of real conversations). */
-function convIdFor(chatId: number): number {
-  return -(1_000_000 + (Math.abs(Math.trunc(chatId)) % 1_000_000));
+/** Stable negative synthetic conversation id from a "channel:target" key (never
+ *  collides with the positive autoincrement ids of real conversations). */
+function convIdFor(key: string): number {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
+  return -(1_000_000 + (Math.abs(h) % 100_000_000));
 }
 
 export function useMessagingGateway(status: ServerStatus | null) {
-  const telegramEnabled = useSettingsField(
-    (s) => s?.messaging?.telegram?.enabled === true,
+  const messaging = useSettingsField<MessagingConfig | null | undefined>(
+    (s) => s?.messaging,
   );
-  // Latest status in a ref so the (stable) inbound handler always sees current
-  // model/backend without re-subscribing the listener on every status change.
   const statusRef = useRef<ServerStatus | null>(status);
   statusRef.current = status;
-  const histRef = useRef<Map<number, Message[]>>(new Map());
+  const histRef = useRef<Map<string, Message[]>>(new Map());
   const queueRef = useRef<Inbound[]>([]);
   const drainingRef = useRef(false);
 
-  // Start / stop the Rust gateway as the channel toggles.
+  // Start / stop each channel as its enable flag changes.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        if (telegramEnabled && (await api.messagingHasToken())) {
-          await api.messagingStart();
+      for (const ch of CHANNELS) {
+        const cfg = (messaging as Record<string, { enabled?: boolean }> | null)?.[ch];
+        const enabled = cfg?.enabled === true;
+        try {
+          if (enabled && (await api.messagingHasToken(ch))) {
+            await api.messagingStart(ch);
+          } else {
+            await api.messagingStop(ch);
+          }
+        } catch (e) {
           if (!cancelled)
             logDiag({
-              level: "info",
+              level: "warn",
               source: "messaging",
-              message: "Telegram gateway started",
+              message: `gateway ${ch} start/stop failed`,
+              detail: String(e),
             });
-        } else {
-          await api.messagingStop();
         }
-      } catch (e) {
-        if (!cancelled)
-          logDiag({
-            level: "warn",
-            source: "messaging",
-            message: "gateway start/stop failed",
-            detail: String(e),
-          });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [telegramEnabled]);
+  }, [messaging]);
 
   // Subscribe to inbound messages once.
   useEffect(() => {
@@ -100,8 +106,7 @@ export function useMessagingGateway(status: ServerStatus | null) {
       drainingRef.current = true;
       try {
         while (queueRef.current.length > 0) {
-          const msg = queueRef.current.shift()!;
-          await handleInbound(msg);
+          await handleInbound(queueRef.current.shift()!);
         }
       } finally {
         drainingRef.current = false;
@@ -110,18 +115,21 @@ export function useMessagingGateway(status: ServerStatus | null) {
 
     const handleInbound = async (m: Inbound) => {
       const st = statusRef.current;
+      const key = `${m.channel}:${m.target}`;
       if (!st?.running || !st.model) {
         await api
           .messagingSend(
-            m.chatId,
+            m.channel,
+            m.target,
             "Froglips has no model loaded right now — open the app and load a model, then try again.",
           )
           .catch(() => undefined);
         return;
       }
-      const history = histRef.current.get(m.chatId) ?? [];
+      const history = histRef.current.get(key) ?? [];
+      const convId = convIdFor(key);
       const userMsg: Message = {
-        conversation_id: convIdFor(m.chatId),
+        conversation_id: convId,
         role: "user",
         content: m.text,
       };
@@ -132,11 +140,10 @@ export function useMessagingGateway(status: ServerStatus | null) {
         const finalText = await runAgentLoop({
           model: st.model,
           messages: msgs,
-          conversationId: convIdFor(m.chatId),
+          conversationId: convId,
           workspaceRoot: null,
           backend: resolveBackend(st.backend),
           serverStatus: st,
-          // SAFETY: remote runs are locked to read-only tools + deny-all confirm.
           toolAllowlist: [...SAFE_REMOTE_TOOLS],
           systemPromptOverride: REMOTE_RUN_SYSTEM_NOTE,
           maxIterations: MAX_ITERS,
@@ -151,17 +158,14 @@ export function useMessagingGateway(status: ServerStatus | null) {
           signal: ctrl.signal,
         });
         const reply = (finalText ?? "").trim() || "(no response)";
-        // Persist rolling history (user + assistant) for cross-message context.
-        const next = [
-          ...msgs,
-          {
-            conversation_id: convIdFor(m.chatId),
-            role: "assistant" as const,
-            content: reply,
-          },
-        ].slice(-HISTORY_CAP);
-        histRef.current.set(m.chatId, next);
-        await api.messagingSend(m.chatId, reply);
+        histRef.current.set(
+          key,
+          [
+            ...msgs,
+            { conversation_id: convId, role: "assistant" as const, content: reply },
+          ].slice(-HISTORY_CAP),
+        );
+        await api.messagingSend(m.channel, m.target, reply);
       } catch (e) {
         logDiag({
           level: "warn",
@@ -170,7 +174,7 @@ export function useMessagingGateway(status: ServerStatus | null) {
           detail: String(e),
         });
         await api
-          .messagingSend(m.chatId, "⚠️ Sorry — something went wrong handling that.")
+          .messagingSend(m.channel, m.target, "⚠️ Sorry — something went wrong handling that.")
           .catch(() => undefined);
       }
     };

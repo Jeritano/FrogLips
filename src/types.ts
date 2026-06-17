@@ -470,15 +470,54 @@ export interface AppSettings {
   messaging?: MessagingConfig | null;
 }
 
-/** Per-channel messaging gateway config. */
+/** Per-channel messaging gateway config. Secrets (tokens/passwords) live in the
+ *  Keychain, never here — these hold the enable flag, the allowed-sender
+ *  allowlist, and non-secret connection fields. */
 export interface MessagingConfig {
   telegram?: TelegramChannelConfig;
+  matrix?: MatrixChannelConfig;
+  discord?: DiscordChannelConfig;
+  slack?: SlackChannelConfig;
+  mattermost?: MattermostChannelConfig;
+  email?: EmailChannelConfig;
 }
 export interface TelegramChannelConfig {
   enabled?: boolean;
-  /** Numeric Telegram user IDs (as strings) allowed to drive the agent. The
-   *  gateway refuses to start with an empty allowlist (safety). */
+  /** Numeric Telegram user IDs (as strings). The gateway refuses to start with
+   *  an empty allowlist (safety). */
   allowed_user_ids?: string[];
+}
+export interface MatrixChannelConfig {
+  enabled?: boolean;
+  allowed_user_ids?: string[];
+  /** Homeserver base URL, e.g. https://matrix.org */
+  homeserver?: string;
+  /** The bot's own @user:server (used to skip its own messages). */
+  bot_user_id?: string;
+}
+export interface DiscordChannelConfig {
+  enabled?: boolean;
+  allowed_user_ids?: string[];
+}
+export interface SlackChannelConfig {
+  enabled?: boolean;
+  allowed_user_ids?: string[];
+}
+export interface MattermostChannelConfig {
+  enabled?: boolean;
+  allowed_user_ids?: string[];
+  /** Server base URL, e.g. https://your.mattermost.com */
+  server_url?: string;
+}
+export interface EmailChannelConfig {
+  enabled?: boolean;
+  /** Allowed sender email addresses. */
+  allowed_user_ids?: string[];
+  imap_host?: string;
+  imap_port?: number;
+  smtp_host?: string;
+  smtp_port?: number;
+  username?: string;
 }
 
 /** Live status of the messaging gateway (mirrors Rust GatewayStatus). */

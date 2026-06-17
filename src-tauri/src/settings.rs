@@ -150,17 +150,76 @@ pub struct HardwareProfile {
 #[serde(default)]
 pub struct MessagingConfig {
     pub telegram: TelegramChannel,
+    pub matrix: MatrixChannel,
+    pub discord: DiscordChannel,
+    pub slack: SlackChannel,
+    pub mattermost: MattermostChannel,
+    pub email: EmailChannel,
 }
 
-/// Telegram channel settings. `allowed_user_ids` is a SAFETY gate: the gateway
-/// refuses to start with an empty allowlist (an empty list would let anyone who
-/// finds the bot drive the agent). IDs are the numeric Telegram user IDs from
-/// @userinfobot, stored as strings to avoid i64/JSON precision issues.
+// `allowed_user_ids` is the SAFETY gate on every channel: the gateway refuses
+// to start with an empty allowlist (an empty list would let anyone who finds
+// the bot drive the agent). Secrets (tokens/passwords) live in the Keychain
+// (`messaging:<channel>`), never here — these structs hold only the enable
+// flag, the allowlist, and non-secret connection fields.
+
+/// Telegram: numeric user IDs from @userinfobot.
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct TelegramChannel {
     pub enabled: bool,
     pub allowed_user_ids: Vec<String>,
+}
+
+/// Matrix: `homeserver` base URL (e.g. https://matrix.org); access token in
+/// Keychain. `bot_user_id` (the bot's own @user:server) is used to skip echo.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct MatrixChannel {
+    pub enabled: bool,
+    pub allowed_user_ids: Vec<String>,
+    pub homeserver: String,
+    pub bot_user_id: String,
+}
+
+/// Discord: bot token in Keychain; allowlist is numeric user IDs.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct DiscordChannel {
+    pub enabled: bool,
+    pub allowed_user_ids: Vec<String>,
+}
+
+/// Slack: Socket Mode needs two secrets — store as `app_token|bot_token` in the
+/// Keychain (xapp- for the WS, xoxb- for postMessage). Allowlist = Slack user IDs.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct SlackChannel {
+    pub enabled: bool,
+    pub allowed_user_ids: Vec<String>,
+}
+
+/// Mattermost: `server_url` (https://your.server); bot token in Keychain.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct MattermostChannel {
+    pub enabled: bool,
+    pub allowed_user_ids: Vec<String>,
+    pub server_url: String,
+}
+
+/// Email: IMAP receive + SMTP send. Password in Keychain. Allowlist = sender
+/// addresses.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct EmailChannel {
+    pub enabled: bool,
+    pub allowed_user_ids: Vec<String>,
+    pub imap_host: String,
+    pub imap_port: u16,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub username: String,
 }
 
 /// DB/storage maintenance policy (WS4). All fields carry conservative

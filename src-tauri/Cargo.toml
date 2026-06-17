@@ -1,6 +1,6 @@
 [package]
 name = "local-llm-app"
-version = "0.14.12"
+version = "0.14.14"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["Joseph D Eritano"]
 edition = "2021"
@@ -102,6 +102,18 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 notify = "8"
 globset = "0.4"
 scraper = "0.20"
+# Messaging gateway connectors (2026-06-16). All rustls / pure-Rust — no OpenSSL
+# or C deps, so the notarized bundle is unaffected.
+#  • tokio-tungstenite: WebSocket client for the Discord/Slack/Mattermost gateways.
+#  • async-imap + tokio-rustls + webpki-roots: IMAP receive for the Email channel.
+#  • lettre: SMTP send for the Email channel.
+#  • mail-parser: parse fetched RFC822 messages.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
+mail-parser = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"

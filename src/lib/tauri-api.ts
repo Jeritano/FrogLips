@@ -890,16 +890,19 @@ export const api = {
    * holds it. The gateway long-polls in Rust + emits "messaging://inbound";
    * the frontend hook runs the agent (safe-tools-only) + replies via
    * messagingSend. */
-  messagingSetToken: (token: string) =>
-    invoke<void>("messaging_set_token", { token }),
-  messagingHasToken: () => invoke<boolean>("messaging_has_token"),
-  messagingValidateToken: (token?: string) =>
-    invoke<string>("messaging_validate_token", { token: token ?? null }),
-  messagingStart: () => invoke<void>("messaging_start"),
-  messagingStop: () => invoke<void>("messaging_stop"),
-  messagingStatus: () => invoke<GatewayStatus>("messaging_status"),
-  messagingSend: (chatId: number, text: string) =>
-    invoke<void>("messaging_send", { chatId, text }),
+  messagingSetToken: (channel: string, token: string) =>
+    invoke<void>("messaging_set_token", { channel, token }),
+  messagingHasToken: (channel: string) =>
+    invoke<boolean>("messaging_has_token", { channel }),
+  messagingValidate: (channel: string) =>
+    invoke<string>("messaging_validate", { channel }),
+  messagingStart: (channel: string) =>
+    invoke<void>("messaging_start", { channel }),
+  messagingStop: (channel: string) =>
+    invoke<void>("messaging_stop", { channel }),
+  messagingStatus: () => invoke<GatewayStatus[]>("messaging_status"),
+  messagingSend: (channel: string, target: string, text: string) =>
+    invoke<void>("messaging_send", { channel, target, text }),
 
   agentClipboardGet: () => invoke<string>("agent_clipboard_get"),
   agentClipboardSet: async (text: string) =>

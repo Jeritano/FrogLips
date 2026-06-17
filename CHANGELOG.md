@@ -4,6 +4,35 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.14] — 2026-06-16
+
+### Added
+
+- **Five more messaging channels — Matrix, Discord, Slack, Mattermost, Email** —
+  joining Telegram. Each is a real connector:
+  - **Matrix** — `/sync` long-poll (homeserver + access token).
+  - **Discord** — bot gateway (WebSocket + intents; needs Message Content intent).
+  - **Slack** — Socket Mode (app token + bot token).
+  - **Mattermost** — WebSocket events (server URL + bot token).
+  - **Email** — IMAP poll + SMTP send (host/port/user + password).
+  All on rustls/pure-Rust deps (tokio-tungstenite, async-imap, lettre) — no C
+  deps, notarization unaffected. Same safety model as Telegram: per-channel
+  allowed-sender allowlist (fail-closed on empty) + per-sender rate limit + the
+  read-only safe-tools remote run policy. Secrets per channel in the Keychain.
+
+### Changed
+
+- **Messaging rebuilt as a master-detail hub** (mirrors Hermes): a scrollable
+  channel rail with **real brand logos** (simple-icons) + live status dots, beside
+  a per-channel detail pane — header, status pills (Enabled/Ready/Gateway
+  running), a "Get your credentials" section + setup-guide link, channel-specific
+  fields, a safety note, an enable toggle, and Save changes. New
+  `styles/messaging.css` + `lib/brand-icons.ts`.
+
+> Note: Matrix/Mattermost/Email are HTTP/IMAP and well-exercised; Discord + Slack
+> are WebSocket gateway protocols implemented to spec but not yet verified against
+> live servers — they may need a tweak on first real connect.
+
 ## [0.14.12] — 2026-06-16
 
 ### Added

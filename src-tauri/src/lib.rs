@@ -640,7 +640,7 @@ pub fn run() {
             commands::misc::dictation_stop,
             commands::messaging::messaging_set_token,
             commands::messaging::messaging_has_token,
-            commands::messaging::messaging_validate_token,
+            commands::messaging::messaging_validate,
             commands::messaging::messaging_start,
             commands::messaging::messaging_stop,
             commands::messaging::messaging_status,
