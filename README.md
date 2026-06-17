@@ -4,6 +4,8 @@
 
 ![Froglips — local-LLM power workstation](assets/screenshot-app.png)
 
+![Froglips — home: pick a model, then a lane (Agent / Flows / Table / Knowledge)](assets/screenshot-home.png)
+
 **Froglips — the local-LLM power workstation.** A native macOS app that turns a model running entirely on your own machine into a real working environment.
 
 **The moat:** a visual multi-agent **Workflows** canvas wired straight to **in-process native inference**. You place agent cards on a table-top, chain them output→input, and run a multi-agent pipeline — and the models powering those cards run *inside the app process* on an embedded `mistralrs` + candle + Metal engine, with **zero install**: no daemon, no Python, no subprocess. No other desktop LLM app pairs orchestration this visual with inference this self-contained.
