@@ -2,8 +2,6 @@
 
 ![Froglips](assets/banner.png)
 
-![Froglips — local-LLM power workstation](assets/screenshot-app.png)
-
 ![Froglips — home: pick a model, then a lane (Agent / Flows / Table / Knowledge)](assets/screenshot-home.png)
 
 **Froglips — the local-LLM power workstation.** A native macOS app that turns a model running entirely on your own machine into a real working environment.
