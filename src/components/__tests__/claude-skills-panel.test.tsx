@@ -364,33 +364,11 @@ describe("ClaudeSkillsPanel", () => {
     await h.cleanup();
   });
 
-  it("calls claudeSkillDelete with the skill name after the destructive confirm", async () => {
-    const { api } = await import("../../lib/tauri-api");
+  it("no longer renders a delete control (delete option removed)", async () => {
     const h = await mount();
-
-    const delBtn = h.container.querySelector(
-      '[data-testid="claude-skills-delete-pdf-fill"]',
-    ) as HTMLButtonElement;
-    await act(async () => {
-      delBtn.click();
-    });
-    await flush();
-
-    const confirm = h.container.querySelector(
-      '[data-testid="claude-skills-delete-confirm"]',
-    );
-    expect(confirm).not.toBeNull();
-
-    const allow = h.container.querySelector(
-      '[data-testid="claude-skills-delete-confirm-allow"]',
-    ) as HTMLButtonElement;
-    await act(async () => {
-      allow.click();
-    });
-    await flush();
-
-    expect(api.claudeSkillDelete).toHaveBeenCalledWith("pdf-fill");
-
+    expect(
+      h.container.querySelector('[data-testid="claude-skills-delete-pdf-fill"]'),
+    ).toBeNull();
     await h.cleanup();
   });
 

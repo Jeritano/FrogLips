@@ -52,10 +52,6 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
     existingPath: string;
     skillName: string;
   } | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<ClaudeSkillSummary | null>(
-    null,
-  );
-  const [deleting, setDeleting] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!supported) return;
@@ -80,7 +76,6 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
   useEffect(() => {
     if (!open) return;
     setViewing(null);
-    setPendingDelete(null);
     setPendingOverwrite(null);
     void refresh();
   }, [open, refresh]);
@@ -242,23 +237,6 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
     }
   }
 
-  async function onConfirmDelete() {
-    if (!pendingDelete || !supported) return;
-    setDeleting(true);
-    setErr(null);
-    try {
-      await api.claudeSkillDelete(pendingDelete.name);
-      if (viewing?.name === pendingDelete.name) setViewing(null);
-      announce(`Deleted skill ${pendingDelete.name}`);
-      setPendingDelete(null);
-      await refresh();
-    } catch (e) {
-      setErr(`Delete failed: ${e}`);
-    } finally {
-      setDeleting(false);
-    }
-  }
-
   async function onReimport(skill: ClaudeSkillRow) {
     await runImport(skill.source_path, true);
     // Refresh the viewer with the latest row content after re-import.
@@ -278,7 +256,7 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
     // Skip autofocus while a sub-modal owns focus — ConfirmDialog and
     // the body viewer each install their own a11y kit and will fight
     // us for the active element otherwise.
-    autoFocus: !viewing && !pendingDelete && !pendingOverwrite,
+    autoFocus: !viewing && !pendingOverwrite,
   });
 
   if (!open) return null;
@@ -342,7 +320,6 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
               onView={onView}
               onToggleEnabled={onToggleEnabled}
               onTogglePinned={onTogglePinned}
-              onDelete={(s) => setPendingDelete(s)}
             />
           )}
         </div>
@@ -401,47 +378,6 @@ export function ClaudeSkillsPanel({ open, onClose }: Props) {
           </ConfirmDialog>
         )}
 
-        {pendingDelete && (
-          <ConfirmDialog
-            ariaLabel={`Delete skill ${pendingDelete.name}`}
-            data-testid="claude-skills-delete-confirm"
-            boxClassName="risk-destructive"
-            title={
-              <>
-                Delete skill <code>{pendingDelete.name}</code>?
-              </>
-            }
-            onDismiss={() => {
-              if (!deleting) setPendingDelete(null);
-            }}
-            actions={
-              <>
-                <button
-                  type="button"
-                  className="agent-confirm-deny"
-                  onClick={() => setPendingDelete(null)}
-                  disabled={deleting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="agent-confirm-allow"
-                  data-testid="claude-skills-delete-confirm-allow"
-                  onClick={() => void onConfirmDelete()}
-                  disabled={deleting}
-                >
-                  {deleting ? "Deleting…" : "Delete"}
-                </button>
-              </>
-            }
-          >
-            <div className="cs-confirm-body">
-              The skill will be removed from the global library. Chat agents
-              will no longer see it. This cannot be undone.
-            </div>
-          </ConfirmDialog>
-        )}
       </div>
     </div>
   );
@@ -455,7 +391,6 @@ interface TableProps {
   onView: (s: ClaudeSkillSummary) => void;
   onToggleEnabled: (s: ClaudeSkillSummary) => void;
   onTogglePinned: (s: ClaudeSkillSummary) => void;
-  onDelete: (s: ClaudeSkillSummary) => void;
 }
 
 function SkillsTable({
@@ -464,7 +399,6 @@ function SkillsTable({
   onView,
   onToggleEnabled,
   onTogglePinned,
-  onDelete,
 }: TableProps) {
   return (
     <div className="cs-table-wrap">
@@ -545,14 +479,6 @@ function SkillsTable({
                   data-testid={`claude-skills-toggle-pinned-${s.name}`}
                 >
                   {s.pinned ? "Unpin" : "Pin"}
-                </button>
-                <button
-                  type="button"
-                  className="cs-btn cs-btn-danger"
-                  onClick={() => onDelete(s)}
-                  data-testid={`claude-skills-delete-${s.name}`}
-                >
-                  Delete
                 </button>
               </td>
             </tr>

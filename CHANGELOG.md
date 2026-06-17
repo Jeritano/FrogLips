@@ -4,6 +4,16 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.11] — 2026-06-16
+
+### Changed
+
+- **Removed the delete control from the Skills library.** Imported skills can no
+  longer be deleted from the UI — the per-row Delete button and its destructive
+  confirm dialog are gone from both the Skills & Tools hub and the dedicated
+  Claude Skills panel. Skills remain manageable via the enable/disable toggle.
+  (Protects a populated library from accidental removal.)
+
 ## [0.14.10] — 2026-06-16
 
 Computer Use — gated, vision-driven macOS desktop control. The agent can now SEE

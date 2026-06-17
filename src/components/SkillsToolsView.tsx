@@ -9,7 +9,6 @@ import {
   Blocks,
   Eye,
   Pin,
-  Trash2,
   X,
   Plug,
   Puzzle,
@@ -28,7 +27,6 @@ import {
   persistConfigs,
 } from "../lib/mcp-servers";
 import { TOOL_REGISTRY, type ToolCategory } from "../lib/agent-loop/tool-registry";
-import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { McpView } from "./McpView";
 import type {
@@ -257,9 +255,6 @@ function SkillsTab({
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [viewing, setViewing] = useState<ClaudeSkillRow | null>(null);
-  const [pendingDelete, setPendingDelete] =
-    useState<ClaudeSkillSummary | null>(null);
-  const [deleting, setDeleting] = useState(false);
   // Per-skill optimistic toggle: name → pending bool. Reverts on failure.
   const [optimistic, setOptimistic] = useState<Record<string, boolean>>({});
 
@@ -344,20 +339,6 @@ function SkillsTab({
     [onError],
   );
 
-  const onConfirmDelete = useCallback(async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
-    try {
-      await api.claudeSkillDelete(pendingDelete.name);
-      announce(`Deleted skill ${pendingDelete.name}`);
-      setPendingDelete(null);
-      await refresh();
-    } catch (e) {
-      onError(`Delete failed: ${e}`);
-    } finally {
-      setDeleting(false);
-    }
-  }, [pendingDelete, refresh, onError]);
 
   // Import — reuse the directory picker + claude_skill_import flow.
   const onImport = useCallback(async () => {
@@ -522,16 +503,6 @@ function SkillsTab({
                       >
                         <Pin size={15} />
                       </button>
-                      <button
-                        type="button"
-                        className="st-iconbtn danger"
-                        onClick={() => setPendingDelete(s)}
-                        aria-label={`Delete ${s.name}`}
-                        title="Delete"
-                        data-testid={`st-skill-delete-${s.name}`}
-                      >
-                        <Trash2 size={15} />
-                      </button>
                       <Switch
                         on={on}
                         onToggle={() => void onToggle(s)}
@@ -549,48 +520,6 @@ function SkillsTab({
 
       {viewing && (
         <SkillBodyViewer skill={viewing} onClose={() => setViewing(null)} />
-      )}
-
-      {pendingDelete && (
-        <ConfirmDialog
-          ariaLabel={`Delete skill ${pendingDelete.name}`}
-          data-testid="st-skill-delete-confirm"
-          boxClassName="risk-destructive"
-          title={
-            <>
-              Delete skill <code>{pendingDelete.name}</code>?
-            </>
-          }
-          onDismiss={() => {
-            if (!deleting) setPendingDelete(null);
-          }}
-          actions={
-            <>
-              <button
-                type="button"
-                className="agent-confirm-deny"
-                onClick={() => setPendingDelete(null)}
-                disabled={deleting}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="agent-confirm-allow"
-                data-testid="st-skill-delete-confirm-allow"
-                onClick={() => void onConfirmDelete()}
-                disabled={deleting}
-              >
-                {deleting ? "Deleting…" : "Delete"}
-              </button>
-            </>
-          }
-        >
-          <div className="cs-confirm-body">
-            The skill will be removed from the global library. Chat agents will
-            no longer see it. This cannot be undone.
-          </div>
-        </ConfirmDialog>
       )}
     </>
   );
