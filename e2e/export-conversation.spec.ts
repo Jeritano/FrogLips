@@ -2,16 +2,14 @@ import { test, expect } from "./fixtures/tauri-mock";
 
 test("Export → Plain Markdown downloads a transcript containing both turns", async ({ page }) => {
   // Send + complete one round-trip so the Export button enables.
-  await page.route("**/v1/chat/completions", async (route) => {
-    const sse = [
-      'data: {"choices":[{"delta":{"content":"hi there"}}]}',
-      "data: [DONE]",
-      "",
-    ].join("\n\n");
+  // backend=ollama → plain chat uses native /api/chat (NDJSON), not /v1 SSE.
+  await page.route("**/api/chat", async (route) => {
+    const ndjson =
+      ['{"message":{"content":"hi there"},"done":false}', '{"done":true}'].join("\n") + "\n";
     await route.fulfill({
       status: 200,
-      headers: { "content-type": "text/event-stream" },
-      body: sse,
+      headers: { "content-type": "application/x-ndjson" },
+      body: ndjson,
     });
   });
 
@@ -43,16 +41,14 @@ test("Export → Plain Markdown downloads a transcript containing both turns", a
 });
 
 test("Export → Detailed Markdown uses -detailed filename suffix", async ({ page }) => {
-  await page.route("**/v1/chat/completions", async (route) => {
-    const sse = [
-      'data: {"choices":[{"delta":{"content":"hi there"}}]}',
-      "data: [DONE]",
-      "",
-    ].join("\n\n");
+  // backend=ollama → plain chat uses native /api/chat (NDJSON), not /v1 SSE.
+  await page.route("**/api/chat", async (route) => {
+    const ndjson =
+      ['{"message":{"content":"hi there"},"done":false}', '{"done":true}'].join("\n") + "\n";
     await route.fulfill({
       status: 200,
-      headers: { "content-type": "text/event-stream" },
-      body: sse,
+      headers: { "content-type": "application/x-ndjson" },
+      body: ndjson,
     });
   });
 

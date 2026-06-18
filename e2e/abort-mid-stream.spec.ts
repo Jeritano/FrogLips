@@ -8,7 +8,8 @@ test("Stop aborts the in-flight stream and returns the UI to idle", async ({ pag
   // Hold the chat request open until we abort. We never call `route.fulfill`;
   // the request hangs until the page's AbortController kills it (Stop click).
   // Playwright auto-cancels the handler when the page navigates / test ends.
-  await page.route("**/v1/chat/completions", async (_route) => {
+  // backend=ollama → plain chat streams from native /api/chat (NOT /v1).
+  await page.route("**/api/chat", async (_route) => {
     // intentionally never resolve — the client AbortController will fail it.
     await new Promise((r) => setTimeout(r, 30_000));
   });

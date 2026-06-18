@@ -68,9 +68,13 @@ test("user denies a dangerous tool mid-run; loop recovers and finishes", async (
 
   // The loop did NOT wedge — a follow-up assistant message is produced (tool
   // I/O now lives in the Tool History panel, not inline in the transcript).
-  await expect(page.getByText("Understood — I won't write that file.")).toBeVisible({
-    timeout: 8000,
-  });
+  // `.first()`: the mock returns the SAME canned text on every post-denial turn,
+  // and the runner's bounded narrate-without-acting nudge re-queries it a couple
+  // of times, so the identical bubble can render more than once — recovery is
+  // what we assert here (the dangerous write never running is asserted below).
+  await expect(
+    page.getByText("Understood — I won't write that file.").first(),
+  ).toBeVisible({ timeout: 8000 });
 
   // The dangerous write must never have actually run.
   const invs = await tauriInvocations(page);

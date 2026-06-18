@@ -1,20 +1,23 @@
 import { test, expect } from "./fixtures/tauri-mock";
 
-test("send message streams tokens progressively via Ollama /v1/chat/completions", async ({ page }) => {
-  // mlx-client.ts streams from `http://${status.host}:${status.port}/v1/chat/completions`.
-  // Our default server_status mock returns host=127.0.0.1 / port=11434 / backend=ollama.
-  await page.route("**/v1/chat/completions", async (route) => {
-    const sse = [
-      'data: {"choices":[{"delta":{"content":"Hello"}}]}',
-      'data: {"choices":[{"delta":{"content":" "}}]}',
-      'data: {"choices":[{"delta":{"content":"world"}}]}',
-      "data: [DONE]",
-      "",
-    ].join("\n\n");
+test("send message streams tokens progressively via Ollama /api/chat", async ({ page }) => {
+  // backend=ollama (the default server_status mock) → plain chat streams from the
+  // NATIVE `http://${host}:${port}/api/chat` endpoint (ollama-plain-client.ts),
+  // NOT the OpenAI-compat /v1 path (that's mlx/custom/openrouter). Frames are
+  // newline-delimited JSON: each {message:{content}} yields a delta, {done:true}
+  // ends the stream.
+  await page.route("**/api/chat", async (route) => {
+    const ndjson =
+      [
+        '{"message":{"role":"assistant","content":"Hello"},"done":false}',
+        '{"message":{"content":" "},"done":false}',
+        '{"message":{"content":"world"},"done":false}',
+        '{"done":true,"prompt_eval_count":3,"eval_count":3}',
+      ].join("\n") + "\n";
     await route.fulfill({
       status: 200,
-      headers: { "content-type": "text/event-stream" },
-      body: sse,
+      headers: { "content-type": "application/x-ndjson" },
+      body: ndjson,
     });
   });
 

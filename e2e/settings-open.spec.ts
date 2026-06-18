@@ -16,7 +16,7 @@ test("settings gear opens the agent settings panel with the expected sections", 
 
   const panel = page.getByTestId("agent-settings-panel");
   await expect(panel).toBeVisible();
-  await expect(panel).toContainText("Workspace");
+  await expect(panel).toContainText("Agent workspace");
   await expect(panel).toContainText("Allowed tools");
 
   // Tool grid renders the pre-defined tool pills (e.g. read_file)

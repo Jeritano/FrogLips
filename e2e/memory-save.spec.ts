@@ -13,16 +13,14 @@ test.fixme("pinning a message saves it via add_memory with the expected args", a
   // Short-circuit the embedding probe so saveMemory skips dedup quickly.
   await page.route("**/api/tags", (route) => route.fulfill({ status: 500, body: "" }));
 
-  await page.route("**/v1/chat/completions", async (route) => {
-    const sse = [
-      'data: {"choices":[{"delta":{"content":"got it"}}]}',
-      "data: [DONE]",
-      "",
-    ].join("\n\n");
+  // backend=ollama → plain chat uses native /api/chat (NDJSON), not /v1 SSE.
+  await page.route("**/api/chat", async (route) => {
+    const ndjson =
+      ['{"message":{"content":"got it"},"done":false}', '{"done":true}'].join("\n") + "\n";
     await route.fulfill({
       status: 200,
-      headers: { "content-type": "text/event-stream" },
-      body: sse,
+      headers: { "content-type": "application/x-ndjson" },
+      body: ndjson,
     });
   });
 
