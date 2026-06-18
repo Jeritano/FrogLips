@@ -39,6 +39,17 @@ export interface MockOptions {
 
 export async function installTauriMock(page: Page, opts: MockOptions = {}) {
   const overrideKeys = Object.keys(opts.handlers ?? {});
+  // Suppress the first-run tour in e2e: its modal `.tour-overlay` intercepts
+  // pointer events and blocks every interaction (send button, etc.). It is
+  // gated on the `froglips.tourSeen` localStorage flag (FirstRunTour
+  // TOUR_SEEN_KEY); seed it before the app boots so the tour never mounts.
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem("froglips.tourSeen", "true");
+    } catch {
+      /* private-mode / blocked storage — the tour treats that as "seen" too */
+    }
+  });
   await page.addInitScript(
     ({ overrideKeys: keys }) => {
       // Track invocations + per-command override registry. Tests set overrides
