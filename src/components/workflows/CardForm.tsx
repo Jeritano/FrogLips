@@ -1503,6 +1503,14 @@ const SchedulePicker = memo(function SchedulePicker({
         ))}
       </div>
 
+      {parts.mode !== "manual" && (
+        <small className="wf-field-hint">
+          Scheduled flows run only while Froglips is open and your Mac is awake —
+          there is no background service, so a flow won’t fire if the app is quit
+          or the Mac is asleep.
+        </small>
+      )}
+
       {parts.mode === "every" && (
         <div className="wf-sched-row">
           <input

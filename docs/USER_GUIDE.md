@@ -368,6 +368,11 @@ sidebar (the 🧩 Workflows entry).
 - **Schedule** — a card with a schedule triggers the workflow unattended. A
   card must explicitly opt into `unattended` for its declared tools to
   auto-approve on a scheduled run; everything else still hits the deny-all gate.
+  **Scheduling needs the app open + the Mac awake.** There is no background
+  service: the scheduler and the agent loop both live in the running app, so a
+  flow only fires while Froglips is open and the machine is awake — not if the
+  app is quit or the Mac is asleep. The trigger is handled at app scope, so it
+  no longer matters which view (Chat/Table/Flows) you happen to be on.
   Even with `unattended`, the curated never-auto list (`run_shell`,
   `applescript_run`, `delete_path`, `kill_process`, `agent_undo`,
   `http_request`, `spawn_subagent`, MCP tools) ALWAYS requires explicit

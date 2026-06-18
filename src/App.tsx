@@ -72,6 +72,7 @@ import {
   WorkflowRunProvider,
   useWorkflowRunControl,
 } from "./lib/workflow/run-context";
+import { ScheduledWorkflowRunner } from "./lib/workflow/use-scheduled-run";
 import {
   RoundtableRunProvider,
   useRoundtableRun,
@@ -1041,6 +1042,11 @@ function App() {
       data-sidebar-collapsed={sidebarCollapsed ? "true" : undefined}
       style={{ "--left-sidebar-w": `${leftSidebarWidth}px` } as React.CSSProperties}
     >
+      {/* App-level scheduler listener. Mounted regardless of the open view so a
+          flow scheduled to fire while you're on Chat/Table still runs (the
+          listener used to live in WorkflowsPage and unmounted off-view). Renders
+          nothing. Still requires the app to be open + awake — no headless run. */}
+      <ScheduledWorkflowRunner status={status} />
       {/* Window drag strip — sits at the very top of the window, behind
           everything else (low z-index, pointer-events transparent except
           on this element). titleBarStyle: Overlay strips the OS drag bar

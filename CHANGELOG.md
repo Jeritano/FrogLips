@@ -4,6 +4,28 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.20] — 2026-06-18
+
+Scheduled flows fire on any view, and the schedule editor stops over-promising.
+
+### Fixed
+
+- **Scheduled flows were silently dropped unless you were sitting on the Flows
+  tab.** The `workflow-trigger` listener lived inside the Flows page, which
+  unmounts when you switch to Chat/Table — so the Rust scheduler would emit a
+  due trigger (and mark it fired) with nothing listening. The listener now lives
+  at app scope (`ScheduledWorkflowRunner`), so a due flow runs regardless of
+  which view is open. Same Arm/needs-review gate, model-coverage gate, and
+  single-run guard as before.
+
+### Changed
+
+- **Honest scheduling note.** The schedule editor now states that scheduled
+  flows run only while Froglips is open and the Mac is awake — there is no
+  background service, so nothing fires if the app is quit or the machine is
+  asleep. (True headless execution is not implemented; this sets the right
+  expectation rather than implying a cron-style daemon.)
+
 ## [0.14.19] — 2026-06-17
 
 Decluttered Flows + Table, and a draggable shell.
