@@ -21,6 +21,7 @@ import { useTauriEvent } from "../../hooks/useTauriEvent";
 import { useSettingsGetter } from "../../contexts/SettingsContext";
 import { BUILTIN_PRESETS } from "../../lib/agent-presets";
 import { EmptyState } from "../EmptyState";
+import { CollapsibleSidebar } from "../CollapsibleSidebar";
 import {
   parseWorkflow,
   serializeWorkflowGraph,
@@ -1002,21 +1003,63 @@ export function WorkflowsPage({ status }: Props) {
       </>
     );
     return (
-      <div className="wf-page wf-picker" data-testid="workflows-page">
+      <div className="wf-page wf-picker wf-picker-split" data-testid="workflows-page">
         {topbarSlot && createPortal(pickerHeader, topbarSlot)}
-        {err && (
-          <div className="wf-error" onClick={() => setErr(null)}>
-            {err}
-          </div>
-        )}
 
-        <section className="wf-templates" data-testid="wf-templates">
-          <h2 className="wf-templates-title">Start from a template</h2>
+        {/* Middle column: the user's saved / ongoing Flows. */}
+        <div className="wf-picker-main">
+          {err && (
+            <div className="wf-error" onClick={() => setErr(null)}>
+              {err}
+            </div>
+          )}
+          <h2 className="wf-templates-title wf-your-flows">Your Flows</h2>
+          {list.length === 0 ? (
+            <EmptyState
+              icon={<Puzzle size={24} />}
+              heading="No Flows yet"
+              sub="Pick one from the Templates panel on the right, or use + New Flow to chain agents into a pipeline."
+            />
+          ) : (
+            <ul className="wf-list">
+              {list.map((w) => (
+                <li key={w.id} className="wf-list-item">
+                  <button
+                    type="button"
+                    className="wf-list-open"
+                    onClick={() => openWorkflow(w)}
+                  >
+                    <span className="wf-list-name">{w.name}</span>
+                    <span className="wf-list-meta">
+                      {w.graph.cards.length} cards
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="wf-list-del"
+                    onClick={() => deleteWorkflow(w.id)}
+                    aria-label={`Delete ${w.name}`}
+                  >
+                    <X size={16} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* Right rail: templates — scrollable, resizable, collapsible. */}
+        <CollapsibleSidebar
+          side="right"
+          storageKey="flows.templates"
+          title="Templates"
+          collapsedLabel="Templates"
+        >
           <p className="wf-templates-sub">
             Proven Flows that chain small local models into a result that beats
-            any single call. One click to drop one on the canvas and customize.
+            any single call. Click one to drop it on the canvas and customize.
           </p>
-          <div className="wf-template-grid">
+          <div className="wf-template-grid" data-testid="wf-templates">
             {FLOW_TEMPLATES.map((t) => (
               <button
                 key={t.id}
@@ -1034,43 +1077,7 @@ export function WorkflowsPage({ status }: Props) {
               </button>
             ))}
           </div>
-        </section>
-
-        {list.length > 0 && (
-          <h2 className="wf-templates-title wf-your-flows">Your Flows</h2>
-        )}
-        {list.length === 0 ? (
-          <EmptyState
-            icon={<Puzzle size={24} />}
-            heading="No Flows yet"
-            sub="Use a template above, or create a blank Flow to chain agents into a pipeline."
-          />
-        ) : (
-          <ul className="wf-list">
-            {list.map((w) => (
-              <li key={w.id} className="wf-list-item">
-                <button
-                  type="button"
-                  className="wf-list-open"
-                  onClick={() => openWorkflow(w)}
-                >
-                  <span className="wf-list-name">{w.name}</span>
-                  <span className="wf-list-meta">
-                    {w.graph.cards.length} cards
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="wf-list-del"
-                  onClick={() => deleteWorkflow(w.id)}
-                  aria-label={`Delete ${w.name}`}
-                >
-                  <X size={16} />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+        </CollapsibleSidebar>
 
         {importOpen && (
           <div

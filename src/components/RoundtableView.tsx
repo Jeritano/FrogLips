@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { EmptyState } from "./EmptyState";
+import { CollapsibleSidebar } from "./CollapsibleSidebar";
 import { api } from "../lib/tauri-api";
 import { Button, Input, Spinner, Badge } from "./ui";
 import { usePersistedState } from "../hooks/usePersistedState";
@@ -1653,20 +1654,63 @@ export function RoundtableView() {
       </>
     );
     return (
-      <div className="wf-page wf-picker" data-testid="roundtable-list">
+      <div
+        className="wf-page wf-picker wf-picker-split"
+        data-testid="roundtable-list"
+      >
         {topbarSlot ? (
           createPortal(listHead, topbarSlot)
         ) : (
           <div className="rt-setup-head">{listHead}</div>
         )}
 
-        <section className="rt-templates" data-testid="rt-templates">
-          <h2 className="rt-templates-title">Start from a template</h2>
+        {/* Middle column: the user's saved / ongoing roundtables. */}
+        <div className="wf-picker-main">
+          <h2 className="rt-templates-title rt-your-tables">Your roundtables</h2>
+          {savedTables.length === 0 ? (
+            <EmptyState
+              icon={<Users size={24} />}
+              heading="No saved roundtables yet"
+              sub="Pick one from the Templates panel on the right, or use + New roundtable to have several models debate or brainstorm a topic."
+            />
+          ) : (
+            <ul className="wf-list">
+              {savedTables.map((t) => (
+                <li key={t.id} className="wf-list-item">
+                  <button
+                    type="button"
+                    className="wf-list-open"
+                    onClick={() => openTable(t.id)}
+                  >
+                    <span className="wf-list-name">{t.name}</span>
+                    <span className="wf-list-meta">{t.seats.length} seats</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="wf-list-del"
+                    onClick={() => deleteTable(t.id)}
+                    aria-label={`Delete ${t.name}`}
+                  >
+                    <X size={16} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* Right rail: persona templates — scrollable, resizable, collapsible. */}
+        <CollapsibleSidebar
+          side="right"
+          storageKey="table.templates"
+          title="Templates"
+          collapsedLabel="Templates"
+        >
           <p className="rt-templates-sub">
             Drop a cast of personas onto the table and go. Pick one, assign
             models to the seats, and hit Start — tweak anything after.
           </p>
-          <div className="rt-template-grid">
+          <div className="rt-template-grid" data-testid="rt-templates">
             {PRESETS.map((p) => (
               <button
                 key={p.id}
@@ -1684,43 +1728,7 @@ export function RoundtableView() {
               </button>
             ))}
           </div>
-        </section>
-
-        {savedTables.length > 0 && (
-          <h2 className="rt-templates-title rt-your-tables">
-            Your roundtables
-          </h2>
-        )}
-        {savedTables.length === 0 ? (
-          <EmptyState
-            icon={<Users size={24} />}
-            heading="No saved roundtables yet"
-            sub="Use a template above, or start a blank one, to have several models debate or brainstorm a topic."
-          />
-        ) : (
-          <ul className="wf-list">
-            {savedTables.map((t) => (
-              <li key={t.id} className="wf-list-item">
-                <button
-                  type="button"
-                  className="wf-list-open"
-                  onClick={() => openTable(t.id)}
-                >
-                  <span className="wf-list-name">{t.name}</span>
-                  <span className="wf-list-meta">{t.seats.length} seats</span>
-                </button>
-                <button
-                  type="button"
-                  className="wf-list-del"
-                  onClick={() => deleteTable(t.id)}
-                  aria-label={`Delete ${t.name}`}
-                >
-                  <X size={16} />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+        </CollapsibleSidebar>
       </div>
     );
   }

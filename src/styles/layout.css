@@ -268,20 +268,23 @@ body {
 
 .app {
   display: grid;
-  /* Sidebar narrowed by 45px total (was 248–260, now 203–215) — extra
-     horizontal room for the main pane content. */
-  grid-template-columns: minmax(203px, 215px) 1fr;
+  /* Left nav width is user-resizable via the grab handle on its right edge
+     (App writes --left-sidebar-w, persisted + clamped in JS). Falls back to
+     208px (the old minmax(203,215) midpoint) on first run / before hydration. */
+  grid-template-columns: var(--left-sidebar-w, 208px) 1fr;
   /* height:100% (not 100vh) — in the macOS Overlay webview 100vh is
      ~44px taller than the real window, which made .app overflow and
      the body scroll, pushing the panel top off-screen. 100% chains
      html→body→#root→.app to the exact window height. */
   height: 100%;
   overflow: hidden;
-  /* Uniform 12px gap on all 4 sides. */
-  padding: 12px;
-  gap: 12px;
+  /* Tight 4px frame on all 4 sides (was 12px) — maximize usable surface. */
+  padding: 4px;
+  gap: 4px;
   background: var(--shell-bg);
   box-sizing: border-box;
+  /* Offset parent for the absolutely-positioned .sidebar-resize-handle. */
+  position: relative;
 }
 /* Collapsed sidebar — the grid track shrinks to 0 and the panel border
    is dropped. The hamburger + collapse buttons are position:fixed, so

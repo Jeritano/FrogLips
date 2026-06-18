@@ -4,6 +4,24 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.19] — 2026-06-17
+
+Decluttered Flows + Table, and a draggable shell.
+
+### Changed
+
+- **Templates moved to a collapsible right rail.** Both Flows and Table used to
+  open onto a wall of template cards with your own saved work pushed below the
+  fold. The templates now live in a right-hand sidebar that scrolls on its own,
+  drag-resizes by an inner-edge grab handle, and collapses to a thin reopen tab
+  — width and open/closed persist per view. The middle column leads with *your*
+  saved/ongoing Flows or roundtables.
+- **4px app perimeter.** The window chrome gap around the whole UI tightened to a
+  uniform 4px so the content fills the frame.
+- **Resizable global nav.** The left sidebar (Flows/Chat/Table/… + conversation
+  list) now has a drag handle on its outer edge; width persists. The collapse
+  button is unchanged.
+
 ## [0.14.18] — 2026-06-18
 
 Honesty + CI pass ahead of a wider launch.

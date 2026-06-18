@@ -70,7 +70,9 @@ const WINDOW_BUDGETS = [
   // token-driven classes that replaced inline styles (recall list, steering row,
   // resume banner, FirstRunTour), the unified .pill base, brand mark, frosted-
   // glass overlays, and the px→var(--fs-*) type-scale sweep across the sheets.
-  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 184 * KB },
+  // →192 KB (v0.14.19): +~3 KB for sidebars.css — the collapsible/resizable
+  // Templates rail + picker-split layout + left global-nav resize handle.
+  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 192 * KB },
   { html: "quick.html", label: "Quick Prompt popover", maxBytes: 240 * KB, cssMaxBytes: 30 * KB },
   // detached boot graph 940→955 KB in v0.14.5: +~5 KB from the Compare toggle +
   // resume-affordance code now in the ChatWindow chunk the detached window loads.

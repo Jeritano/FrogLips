@@ -59,6 +59,7 @@ import { useAppearance, isThemePref } from "./hooks/useAppearance";
 import { useConversations } from "./hooks/useConversations";
 import type { Conversation, ServerStatus } from "./types";
 import { useMessagingGateway } from "./hooks/useMessagingGateway";
+import { usePersistedState } from "./hooks/usePersistedState";
 import { ModelPicker } from "./components/ModelPicker";
 import { ChatWindow } from "./components/ChatWindow";
 import { MemoryPanel } from "./components/MemoryPanel";
@@ -390,6 +391,35 @@ function App() {
   // menu shut).
   const menuCloseTimer = useRef<number | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // User-resizable left-nav width (drag the handle on the sidebar's right edge),
+  // persisted + clamped. Drives the .app grid via the --left-sidebar-w var.
+  const [leftSidebarWidth, setLeftSidebarWidth] = usePersistedState<number>(
+    "ui.leftSidebarWidth",
+    208,
+    (v): v is number => typeof v === "number" && v >= 160 && v <= 420,
+  );
+  const startLeftResize = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = leftSidebarWidth;
+      const onMove = (ev: MouseEvent) => {
+        const next = Math.min(420, Math.max(160, startW + (ev.clientX - startX)));
+        setLeftSidebarWidth(next);
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [leftSidebarWidth, setLeftSidebarWidth],
+  );
   // Main-pane view: chat / workflow canvas / image-gen surface / knowledge library.
   const [view, setView] = useState<ViewId>("chat");
   // First-run setup wizard. `undefined` = haven't checked the flag yet, so we
@@ -1009,6 +1039,7 @@ function App() {
       className="app"
       data-testid="app-ready"
       data-sidebar-collapsed={sidebarCollapsed ? "true" : undefined}
+      style={{ "--left-sidebar-w": `${leftSidebarWidth}px` } as React.CSSProperties}
     >
       {/* Window drag strip — sits at the very top of the window, behind
           everything else (low z-index, pointer-events transparent except
@@ -1560,6 +1591,19 @@ function App() {
         )}
         <div className="sidebar-spacer-bottom" aria-hidden="true" />
       </aside>
+      {/* Drag-to-resize the nav. Lives at .app level (not inside the scrolling
+          sidebar) and is positioned over the sidebar↔main gap via the width var.
+          Hidden when the sidebar is collapsed. */}
+      {!sidebarCollapsed && (
+        <div
+          className="sidebar-resize-handle"
+          onMouseDown={startLeftResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          title="Drag to resize the sidebar"
+        />
+      )}
       <main className="main">
         <header>
           {view === "chat" && (
