@@ -4,6 +4,24 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.21] — 2026-06-18
+
+Chat toggles stop resetting when you leave Chat.
+
+### Fixed
+
+- **Agent mode (and Compare mode) turned themselves off when you navigated away
+  from Chat.** The Chat view unmounts on navigation, and both toggles were
+  local component state, so switching to Flows/Table and back reset them to off.
+  They now persist (`localStorage`, like Auto-route) and survive navigation, app
+  restart, and in-place model switches. The availability rule is bidirectional:
+  each toggle drops to off (in-memory only) when the active model can't support
+  it, and restores your saved choice the moment a capable / running model is
+  active again — your intent is never erased by a transient dip. Compare mode
+  also gained the missing availability guard so a saved "Compare on" no longer
+  force-opens the multi-model surface (hiding the composer) when no model is
+  running.
+
 ## [0.14.20] — 2026-06-18
 
 Scheduled flows fire on any view, and the schedule editor stops over-promising.

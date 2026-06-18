@@ -413,12 +413,24 @@ export function ChatWindow({
   // briefly confirms a queued message so the user sees it landed.
   const [steerText, setSteerText] = useState("");
   const [steerSent, setSteerSent] = useState(false);
-  const [agentMode, setAgentMode] = useState(false);
+  // Persisted intent (survives leaving + returning to the Chat view, and app
+  // restart). ChatWindow unmounts when you navigate to Flows/Table/etc., so a
+  // plain useState reset agent mode to off every time — the toggle "disabled
+  // itself" on navigation. Reading from localStorage on mount keeps it on. The
+  // availability effect below may flip the in-memory value off when the model
+  // can't agent, but it deliberately does NOT rewrite storage, so the choice
+  // returns once an agent-capable model is active again.
+  const [agentMode, setAgentMode] = useState<boolean>(
+    () => localStorage.getItem("chat.agentMode") === "1",
+  );
   // Side-by-side compare mode (W5B-COMPARE). Exploratory: a separate surface
   // that runs ONE prompt across 2–3 models concurrently and shows each reply in
-  // its own column. Default OFF (today's behavior). Nothing it streams is
-  // persisted, so the normal single-model history is never touched.
-  const [compareMode, setCompareMode] = useState(false);
+  // its own column. Persisted (like agent mode) so it survives navigation.
+  // Nothing it streams is saved, so the normal single-model history is never
+  // touched.
+  const [compareMode, setCompareMode] = useState<boolean>(
+    () => localStorage.getItem("chat.compareMode") === "1",
+  );
   // Multi-model auto-routing (plain chat). Persisted across sessions.
   const [autoRoute, setAutoRoute] = useState<boolean>(
     () => localStorage.getItem("chat.autoRoute") === "1",
@@ -1013,11 +1025,38 @@ export function ChatWindow({
     }
   }, []);
 
-  // When the backend changes to one that can't do agent mode, drop the
-  // agent toggle so send() never silently falls through to plain streaming.
+  // Keep agent mode in sync with model availability, BIDIRECTIONALLY:
+  //  - when the model can't agent, drop the toggle (in-memory) so send() never
+  //    silently falls through to plain streaming;
+  //  - when an agent-capable model is active again, restore the user's persisted
+  //    intent (`chat.agentMode` === "1").
+  // Both directions are needed because the active model can change WITHOUT a
+  // remount (the model picker swaps it in place), so a one-way off-switch would
+  // strand the toggle off after any availability dip even though the user asked
+  // for agent mode. Storage is the source of truth for intent and is only
+  // written by explicit user toggles, never here — so an availability dip can't
+  // erase the choice.
   useEffect(() => {
-    if (!agentAvailable && agentMode) setAgentMode(false);
+    if (!agentAvailable) {
+      if (agentMode) setAgentMode(false);
+    } else if (!agentMode && localStorage.getItem("chat.agentMode") === "1") {
+      setAgentMode(true);
+    }
   }, [agentAvailable, agentMode]);
+
+  // Same availability discipline for compare mode. A persisted "compare on"
+  // must NOT force-open the multi-model compare surface (which hides the
+  // single-model composer + toolbar) when no model is running — that strands
+  // the user with no usable composer on launch/navigation. Hold it off until a
+  // model is up, then restore the stored intent. In-memory only; storage keeps
+  // the choice (written only by the explicit toggle / close).
+  useEffect(() => {
+    if (!status?.running) {
+      if (compareMode) setCompareMode(false);
+    } else if (!compareMode && localStorage.getItem("chat.compareMode") === "1") {
+      setCompareMode(true);
+    }
+  }, [status?.running, compareMode]);
 
   // First-run handoff from the setup wizard (product review 2026-06-10,
   // onboarding #1). The wizard's sample prompts are agent-TOOL prompts —
@@ -1139,7 +1178,10 @@ export function ChatWindow({
               top_p: convParams.top_p,
               max_tokens: convParams.max_tokens,
             }}
-            onClose={() => setCompareMode(false)}
+            onClose={() => {
+              localStorage.setItem("chat.compareMode", "0");
+              setCompareMode(false);
+            }}
           />
         </Suspense>
       ) : showLanding ? (
@@ -1294,7 +1336,13 @@ export function ChatWindow({
           <button
             type="button"
             className={`route-toggle${compareMode ? " on" : ""}`}
-            onClick={() => setCompareMode((v) => !v)}
+            onClick={() =>
+              setCompareMode((v) => {
+                const next = !v;
+                localStorage.setItem("chat.compareMode", next ? "1" : "0");
+                return next;
+              })
+            }
             data-testid="compare-toggle"
             title="Run one prompt across 2–3 models side by side (exploratory — not saved to chat)"
           >
@@ -1328,7 +1376,13 @@ export function ChatWindow({
             showParamsPanel={showParamsPanel}
             showAgentSettings={showAgentSettings}
             showExportMenu={showExportMenu}
-            onToggleAgent={() => setAgentMode((v) => !v)}
+            onToggleAgent={() =>
+              setAgentMode((v) => {
+                const next = !v;
+                localStorage.setItem("chat.agentMode", next ? "1" : "0");
+                return next;
+              })
+            }
             onToggleParams={() => setShowParamsPanel((v) => !v)}
             onToggleAgentSettings={() => setShowAgentSettings((v) => !v)}
             onToggleToolHistory={() => setShowToolHistory((v) => !v)}
