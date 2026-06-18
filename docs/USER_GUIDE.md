@@ -308,6 +308,12 @@ While the agent is running, a small pill shows `i<iters>·t<tools>·llm<ms>·too
 Workflows turn single agents into multi-agent pipelines. Open it from the
 sidebar (the 🧩 Workflows entry).
 
+- **The landing** — the Flows landing leads with **Your Flows** (saved/ongoing
+  workflows) in the middle column. Ready-made **Templates** live in a
+  right-hand rail that scrolls on its own, drag-resizes by the grab handle on
+  its inner edge, and collapses to a thin reopen tab via the **✕** in its
+  header (width + open/closed persist per view). The Table landing works the
+  same way, with its persona templates in the rail.
 - **Create a workflow** — click **+ New workflow**, give it a name.
 - **The table-top** — the open canvas is your workspace. A **card deck** sits in
   the corner; the top card is the "new agent" affordance.
@@ -497,6 +503,7 @@ Shift+Enter) to step through hits; Esc closes the bar.
 - ☀/☾ in sidebar toggles **light/dark theme**. Persisted across restarts.
 - **System theme**: alongside Light and Dark there is a **System** option that follows your macOS appearance and live-updates the moment the OS flips light↔dark — no relaunch. A fresh install defaults to System; an explicit Light/Dark choice pins that theme.
 - **Sidebar collapse**: a collapse/expand toggle hides the conversation sidebar to give the chat full width. State is remembered.
+- **Resizable sidebars**: drag the grab handle on the left nav's outer edge to set its width, and the handle on a Templates rail's inner edge to set the rail's width. Both widths persist. The whole-app frame is a tight 4px perimeter.
 - **Markdown rendering**: assistant + user messages render Markdown with code-block syntax highlighting for 20+ languages.
 - **Citation chips**: when the agent references a workspace file, the chip is clickable — Froglips confirms the resolved path and opens it. Opens are confined to the workspace root; absolute or traversal paths are rejected.
 - **Scroll behavior**: the chat sticks to the bottom while a reply streams, but if you scroll up to read, autoscroll pauses so you aren't yanked back down — it resumes when you return to the bottom.
