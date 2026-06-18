@@ -595,7 +595,8 @@ fn keychain_get_cached(
     }
     let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if use_keychain_backend() {
-        if let Ok(bytes) = security_framework::passwords::get_generic_password(KC_SERVICE, account) {
+        if let Ok(bytes) = security_framework::passwords::get_generic_password(KC_SERVICE, account)
+        {
             // Real Keychain hit. Self-heal: opportunistically purge any stale
             // 0600-file copy left behind by a migration whose write_secrets()
             // failed (bug, low) — a BTreeMap lookup that's cheap on the common
@@ -733,10 +734,7 @@ pub fn load() -> Settings {
     // shares this snapshot; only Keychain round-trips and migration writes still
     // hit per entry, which is inherent. Snapshot under the same lock the helpers
     // use. Skipped entirely when there are no secret-bearing entries to resolve.
-    let needs_resolution = s
-        .custom_backends
-        .as_ref()
-        .is_some_and(|v| !v.is_empty())
+    let needs_resolution = s.custom_backends.as_ref().is_some_and(|v| !v.is_empty())
         || s.saved_apis.as_ref().is_some_and(|v| !v.is_empty());
     let file_cache = if needs_resolution {
         let _g = SECRETS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -910,6 +908,19 @@ pub fn redacted(mut s: Settings) -> Settings {
     if let Some(backends) = s.custom_backends.as_mut() {
         for b in backends.iter_mut() {
             b.api_key = match b.api_key.as_deref() {
+                Some(k) if !k.is_empty() => Some(REDACTED_MARKER.to_string()),
+                _ => Some(String::new()),
+            };
+        }
+    }
+    // saved_apis carry `call_api` registry keys (GitHub PATs, etc.). `load()`
+    // resolves these from the Keychain into plaintext, so they MUST be masked
+    // here too — otherwise `settings_get` would ship real credentials to the
+    // webview (sec review 2026-06 HIGH). save() treats REDACTED_MARKER as
+    // "unchanged", so the masked marker round-trips losslessly.
+    if let Some(apis) = s.saved_apis.as_mut() {
+        for a in apis.iter_mut() {
+            a.api_key = match a.api_key.as_deref() {
                 Some(k) if !k.is_empty() => Some(REDACTED_MARKER.to_string()),
                 _ => Some(String::new()),
             };

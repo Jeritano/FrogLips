@@ -193,8 +193,8 @@ pub async fn run(ctx: GwCtx) {
                 };
                 // Suppress the bot's own messages (echo loop, review H1): prefer
                 // the authoritative whoami id, fall back to the configured one.
-                let is_self = self_id.as_deref() == Some(sender)
-                    || (!bot_id.is_empty() && sender == bot_id);
+                let is_self =
+                    self_id.as_deref() == Some(sender) || (!bot_id.is_empty() && sender == bot_id);
                 if is_self {
                     continue;
                 }
@@ -221,7 +221,11 @@ pub async fn send(token: &str, fields: &Value, target: &str, text: &str) -> Resu
         .map_err(|e| e.to_string())?;
     let room = enc_path(target);
     for part in chunk(text, MAX_CHARS) {
-        let txn = format!("froglips{}{}", now_unix(), TXN.fetch_add(1, Ordering::Relaxed));
+        let txn = format!(
+            "froglips{}{}",
+            now_unix(),
+            TXN.fetch_add(1, Ordering::Relaxed)
+        );
         let url = format!(
             "{hs}/_matrix/client/v3/rooms/{room}/send/m.room.message/{}",
             enc_path(&txn)

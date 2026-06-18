@@ -212,10 +212,7 @@ pub async fn run(ctx: GwCtx) {
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string();
-            let message = post
-                .get("message")
-                .and_then(|s| s.as_str())
-                .unwrap_or("");
+            let message = post.get("message").and_then(|s| s.as_str()).unwrap_or("");
 
             if user_id.is_empty() || channel_id.is_empty() || message.is_empty() {
                 continue;

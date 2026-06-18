@@ -200,10 +200,8 @@ pub(crate) fn binding_for(tool: &str, p: &ApprovalPayload) -> Option<String> {
         // sharing the `cu` key namespace across actions can't enable cross-tool
         // replay. cu_screenshot takes no args → a fixed marker.
         "agent_cu_screenshot" => Some(sha256_hex(&kv(&[("op", "cu_screenshot")]))),
-        "agent_cu_move" | "agent_cu_click" | "agent_cu_drag" | "agent_cu_type"
-        | "agent_cu_key" | "agent_cu_scroll" => {
-            Some(sha256_hex(&kv(&[("cu", p.text.as_deref().unwrap_or(""))])))
-        }
+        "agent_cu_move" | "agent_cu_click" | "agent_cu_drag" | "agent_cu_type" | "agent_cu_key"
+        | "agent_cu_scroll" => Some(sha256_hex(&kv(&[("cu", p.text.as_deref().unwrap_or(""))]))),
         // HTTP + browser — URL-bound.
         "agent_http_request" | "agent_web_fetch" | "agent_browser_navigate" => {
             Some(sha256_hex(&kv(&[("url", p.url.as_deref().unwrap_or(""))])))
@@ -740,7 +738,9 @@ pub async fn agent_cu_drag(
     )?;
     #[cfg(target_os = "macos")]
     {
-        Ok(agent::computer::drag(x1 as f64, y1 as f64, x2 as f64, y2 as f64))
+        Ok(agent::computer::drag(
+            x1 as f64, y1 as f64, x2 as f64, y2 as f64,
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -766,7 +766,9 @@ pub async fn agent_cu_scroll(
     )?;
     #[cfg(target_os = "macos")]
     {
-        Ok(agent::computer::scroll(x as f64, y as f64, dx as i32, dy as i32))
+        Ok(agent::computer::scroll(
+            x as f64, y as f64, dx as i32, dy as i32,
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     {

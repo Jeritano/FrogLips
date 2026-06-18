@@ -62,6 +62,14 @@ export function useMessagingGateway(status: ServerStatus | null) {
   const messaging = useSettingsField<MessagingConfig | null | undefined>(
     (s) => s?.messaging,
   );
+  // Confine remote (unattended) runs to the configured agent workspace when one
+  // is set, so a remote read can't range across all of $HOME (sec audit 2026-06).
+  // Egress is already removed from SAFE_REMOTE_TOOLS, so this is defense-in-depth.
+  const workspaceRoot = useSettingsField<string | null | undefined>(
+    (s) => s?.workspace_root,
+  );
+  const workspaceRef = useRef<string | null>(workspaceRoot ?? null);
+  workspaceRef.current = workspaceRoot ?? null;
   const statusRef = useRef<ServerStatus | null>(status);
   statusRef.current = status;
   const histRef = useRef<Map<string, Message[]>>(new Map());
@@ -142,7 +150,7 @@ export function useMessagingGateway(status: ServerStatus | null) {
           model: st.model,
           messages: msgs,
           conversationId: convId,
-          workspaceRoot: null,
+          workspaceRoot: workspaceRef.current,
           backend: resolveBackend(st.backend),
           serverStatus: st,
           toolAllowlist: [...SAFE_REMOTE_TOOLS],

@@ -461,6 +461,12 @@ pub async fn download<R: tauri::Runtime>(
         .await
         .with_context(|| format!("open {} for write", part.display()))?;
 
+    // Disk-exhaustion ceiling: no legitimate single GGUF file approaches this,
+    // but a hostile/compromised endpoint (reachable via the HF→CDN redirect)
+    // could otherwise stream unbounded bytes to fill the disk (sec review 2026-06
+    // LOW). No credentials are attached to this request, so there's no key-leak
+    // dimension — this purely bounds the write.
+    const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024 * 1024; // 256 GiB
     let mut downloaded: u64 = if resuming { existing } else { 0 };
     let mut last_emit = std::time::Instant::now();
     let mut stream = resp.bytes_stream();
@@ -468,6 +474,11 @@ pub async fn download<R: tauri::Runtime>(
         let chunk = chunk.context("read body chunk failed")?;
         file.write_all(&chunk).await.context("write chunk failed")?;
         downloaded += chunk.len() as u64;
+        if downloaded > MAX_DOWNLOAD_BYTES {
+            return Err(anyhow!(
+                "download exceeded the {MAX_DOWNLOAD_BYTES}-byte ceiling — aborting (partial kept)"
+            ));
+        }
         // Throttle progress to ~10 Hz so we don't flood the IPC channel.
         if last_emit.elapsed() >= std::time::Duration::from_millis(100) {
             let _ = app.emit(

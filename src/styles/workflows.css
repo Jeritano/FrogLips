@@ -1684,7 +1684,7 @@
   overflow: hidden;
 }
 .wf-run-history-item[data-state="failed"] {
-  border-color: color-mix(in oklab, var(--red, #e5484d) 40%, var(--border));
+  border-color: color-mix(in oklab, var(--danger, #e5484d) 40%, var(--border));
 }
 .wf-run-history-head {
   display: flex;
@@ -1717,7 +1717,7 @@
   color: var(--green, #30a46c);
 }
 .wf-run-history-status-failed {
-  color: var(--red, #e5484d);
+  color: var(--danger, #e5484d);
 }
 .wf-run-history-when {
   color: var(--text-2);
@@ -1762,7 +1762,7 @@
   overflow: hidden;
 }
 .wf-run-history-card[data-state="error"] {
-  border-color: color-mix(in oklab, var(--red, #e5484d) 40%, var(--border));
+  border-color: color-mix(in oklab, var(--danger, #e5484d) 40%, var(--border));
 }
 .wf-run-history-card-head {
   display: flex;

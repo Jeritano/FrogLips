@@ -337,7 +337,12 @@ pub(super) fn within_workspace(p: &Path) -> bool {
     let root = workspace_root_clone().or_else(default_workspace_root);
     match root {
         None => false, // no home dir and no explicit root → refuse everything
-        Some(root) => p.starts_with(&root),
+        // Case-insensitive component match, consistent with the protected-path
+        // gates (`is_protected_for_*`). On case-insensitive APFS, canonicalize
+        // preserves the caller's case in non-symlink components, so a plain
+        // `starts_with` could disagree with the denylist about path identity —
+        // the kind of drift that has produced bypasses before (sec review 2026-06).
+        Some(root) => path_starts_with_ci(p, &root),
     }
 }
 
@@ -1055,7 +1060,9 @@ fn find_matches(haystack: &str, old: &str) -> FoundMatches {
     // 2+ matches (2 already consumed from the iterator). replace_all uses
     // `str::replace`'s own pass + this count; the single path errors out and
     // needs the EXACT count for its message, so don't cap it.
-    FoundMatches::Many { count: 2 + it.count() }
+    FoundMatches::Many {
+        count: 2 + it.count(),
+    }
 }
 
 #[derive(Serialize)]
@@ -1391,7 +1398,14 @@ pub async fn search_files(
     // Clamp surrounding-context request to a sane ceiling.
     let context = context.unwrap_or(0).min(MAX_SEARCH_CONTEXT);
     let matcher = if regex_mode.unwrap_or(false) {
-        match regex::Regex::new(&pattern) {
+        // The regex crate is linear-time (no catastrophic backtracking), but a
+        // small pattern can still compile to a large DFA. Cap the compiled size
+        // so an untrusted pattern can't force a big allocation (sec review 2026-06).
+        match regex::RegexBuilder::new(&pattern)
+            .size_limit(2 * 1024 * 1024)
+            .dfa_size_limit(2 * 1024 * 1024)
+            .build()
+        {
             Ok(re) => Matcher::Regex(re),
             Err(e) => return Err(err_string(ToolError::invalid(format!("regex: {e}")))),
         }
@@ -1756,7 +1770,11 @@ fn apply_file_hunks(orig: &[String], hunks: &[Hunk]) -> Result<Vec<String>, Stri
                 }
                 HunkLine::Del(s) => {
                     if orig.get(o) != Some(s) {
-                        return Err(format!("hunk #{} removed-line drift at line {}", hi + 1, o + 1));
+                        return Err(format!(
+                            "hunk #{} removed-line drift at line {}",
+                            hi + 1,
+                            o + 1
+                        ));
                     }
                     o += 1;
                 }
@@ -2020,10 +2038,9 @@ mod tests {
 
     #[test]
     fn apply_patch_creates_new_file_from_dev_null() {
-        let patches = parse_unified_diff(
-            "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
-        )
-        .unwrap();
+        let patches =
+            parse_unified_diff("--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n")
+                .unwrap();
         assert_eq!(patches[0].old_path, "/dev/null");
         let lines = apply_file_hunks(&split_lines(""), &patches[0].hunks).unwrap();
         assert_eq!(lines.join("\n"), "hello\nworld\n");
@@ -2032,10 +2049,9 @@ mod tests {
     #[test]
     fn apply_patch_rejects_context_mismatch() {
         let orig = "alpha\nbravo\n";
-        let patches = parse_unified_diff(
-            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n WRONG\n-bravo\n+BRAVO\n",
-        )
-        .unwrap();
+        let patches =
+            parse_unified_diff("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n WRONG\n-bravo\n+BRAVO\n")
+                .unwrap();
         assert!(apply_file_hunks(&split_lines(orig), &patches[0].hunks).is_err());
     }
 
@@ -2284,62 +2300,317 @@ mod tests {
 
     const SNAPSHOT_BATTERY: &[Row] = &[
         // ── credential dirs / files: blocked for BOTH read and write ──
-        Row { path: ".ssh/id_rsa", absolute: false, read_block: true, write_block: true },
-        Row { path: ".ssh/config", absolute: false, read_block: true, write_block: true },
-        Row { path: ".aws/config", absolute: false, read_block: true, write_block: true },
-        Row { path: ".aws/credentials", absolute: false, read_block: true, write_block: true },
-        Row { path: ".aws/sso/cache/tok.json", absolute: false, read_block: true, write_block: true },
-        Row { path: ".gnupg/secring.gpg", absolute: false, read_block: true, write_block: true },
-        Row { path: ".netrc", absolute: false, read_block: true, write_block: true },
-        Row { path: ".npmrc", absolute: false, read_block: true, write_block: true },
-        Row { path: ".pypirc", absolute: false, read_block: true, write_block: true },
-        Row { path: ".gitconfig", absolute: false, read_block: true, write_block: true },
-        Row { path: ".docker/config.json", absolute: false, read_block: true, write_block: true },
-        Row { path: ".kube/config", absolute: false, read_block: true, write_block: true },
-        Row { path: ".config/gh/hosts.yml", absolute: false, read_block: true, write_block: true },
-        Row { path: ".config/gcloud/creds.db", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Keychains/login.keychain-db", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Cookies/Cookies.binarycookies", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Application Support/com.apple.TCC/TCC.db", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Mail/x", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Messages/chat.db", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Application Support/Google/Chrome/Default/Cookies", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Application Support/Firefox/profiles.ini", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Application Support/com.apple.Safari/x", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Safari/History.db", absolute: false, read_block: true, write_block: true },
-        Row { path: ".local-llm-app/secrets.json", absolute: false, read_block: true, write_block: true },
-        Row { path: ".local-llm-app/db.sqlite", absolute: false, read_block: true, write_block: true },
-        Row { path: "Library/Application Support/Froglips/db.sqlite", absolute: false, read_block: true, write_block: true },
+        Row {
+            path: ".ssh/id_rsa",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".ssh/config",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".aws/config",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".aws/credentials",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".aws/sso/cache/tok.json",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".gnupg/secring.gpg",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".netrc",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".npmrc",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".pypirc",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".gitconfig",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".docker/config.json",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".kube/config",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".config/gh/hosts.yml",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".config/gcloud/creds.db",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Keychains/login.keychain-db",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Cookies/Cookies.binarycookies",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Application Support/com.apple.TCC/TCC.db",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Mail/x",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Messages/chat.db",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Application Support/Google/Chrome/Default/Cookies",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Application Support/Firefox/profiles.ini",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Application Support/com.apple.Safari/x",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Safari/History.db",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".local-llm-app/secrets.json",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".local-llm-app/db.sqlite",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Application Support/Froglips/db.sqlite",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
         // ── persistence / shell-init: WRITE-blocked but READABLE ──
-        Row { path: "Library/LaunchAgents/x.plist", absolute: false, read_block: false, write_block: true },
-        Row { path: "Library/LaunchDaemons/x.plist", absolute: false, read_block: false, write_block: true },
-        Row { path: ".bashrc", absolute: false, read_block: false, write_block: true },
-        Row { path: ".bash_profile", absolute: false, read_block: false, write_block: true },
-        Row { path: ".profile", absolute: false, read_block: false, write_block: true },
-        Row { path: ".zshrc", absolute: false, read_block: false, write_block: true },
-        Row { path: ".zprofile", absolute: false, read_block: false, write_block: true },
-        Row { path: ".zshenv", absolute: false, read_block: false, write_block: true },
-        Row { path: "Library/Preferences/com.apple.Terminal.plist", absolute: false, read_block: false, write_block: true },
+        Row {
+            path: "Library/LaunchAgents/x.plist",
+            absolute: false,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: "Library/LaunchDaemons/x.plist",
+            absolute: false,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: ".bashrc",
+            absolute: false,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: ".bash_profile",
+            absolute: false,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: ".profile",
+            absolute: false,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: ".zshrc",
+            absolute: false,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: ".zprofile",
+            absolute: false,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: ".zshenv",
+            absolute: false,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: "Library/Preferences/com.apple.Terminal.plist",
+            absolute: false,
+            read_block: false,
+            write_block: true,
+        },
         // ── absolute system paths ──
-        Row { path: "/etc/passwd", absolute: true, read_block: true, write_block: true },
-        Row { path: "/private/etc/master.passwd", absolute: true, read_block: true, write_block: true },
-        Row { path: "/var/db/sudo/x", absolute: true, read_block: true, write_block: true },
-        Row { path: "/private/var/db/sudo/x", absolute: true, read_block: true, write_block: true },
-        Row { path: "/Library/Keychains/System.keychain", absolute: true, read_block: true, write_block: true },
-        Row { path: "/Library/Application Support/com.apple.TCC/TCC.db", absolute: true, read_block: false, write_block: true },
-        Row { path: "/System/Library/x", absolute: true, read_block: false, write_block: true },
-        Row { path: "/Applications/Froglips.app/Contents/MacOS/Froglips", absolute: true, read_block: false, write_block: true },
+        Row {
+            path: "/etc/passwd",
+            absolute: true,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "/private/etc/master.passwd",
+            absolute: true,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "/var/db/sudo/x",
+            absolute: true,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "/private/var/db/sudo/x",
+            absolute: true,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "/Library/Keychains/System.keychain",
+            absolute: true,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "/Library/Application Support/com.apple.TCC/TCC.db",
+            absolute: true,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: "/System/Library/x",
+            absolute: true,
+            read_block: false,
+            write_block: true,
+        },
+        Row {
+            path: "/Applications/Froglips.app/Contents/MacOS/Froglips",
+            absolute: true,
+            read_block: false,
+            write_block: true,
+        },
         // ── case-fold positives (APFS case-insensitive) ──
-        Row { path: "/ETC/passwd", absolute: true, read_block: true, write_block: true },
-        Row { path: ".SSH/authorized_keys", absolute: false, read_block: true, write_block: true },
+        Row {
+            path: "/ETC/passwd",
+            absolute: true,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: ".SSH/authorized_keys",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
         // ── credential basename anywhere in home ──
-        Row { path: "Documents/.env", absolute: false, read_block: true, write_block: true },
-        Row { path: "project/credentials", absolute: false, read_block: true, write_block: true },
-        Row { path: "project/credentials.json", absolute: false, read_block: true, write_block: true },
+        Row {
+            path: "Documents/.env",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "project/credentials",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
+        Row {
+            path: "project/credentials.json",
+            absolute: false,
+            read_block: true,
+            write_block: true,
+        },
         // ── NEGATIVES: prefix-sibling + ordinary files must NOT match ──
-        Row { path: ".sshfoo/x", absolute: false, read_block: false, write_block: false },
-        Row { path: "Documents/notes.txt", absolute: false, read_block: false, write_block: false },
-        Row { path: "Downloads/foo.json", absolute: false, read_block: false, write_block: false },
+        Row {
+            path: ".sshfoo/x",
+            absolute: false,
+            read_block: false,
+            write_block: false,
+        },
+        Row {
+            path: "Documents/notes.txt",
+            absolute: false,
+            read_block: false,
+            write_block: false,
+        },
+        Row {
+            path: "Downloads/foo.json",
+            absolute: false,
+            read_block: false,
+            write_block: false,
+        },
     ];
 
     #[test]

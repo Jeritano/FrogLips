@@ -115,21 +115,17 @@ async fn run_once(ctx: &GwCtx) -> Result<(), String> {
         // Bound the read so a silent-but-open (zombie) socket that stops sending
         // events AND heartbeat ACKs is detected instead of parking forever; the
         // gateway heartbeats well under this window in normal operation.
-        let frame = match tokio::time::timeout(
-            std::time::Duration::from_secs(90),
-            read.next(),
-        )
-        .await
-        {
-            Ok(Some(f)) => f,
-            Ok(None) => break, // stream ended
-            Err(_) => {
-                if let Some(h) = hb_task.take() {
-                    h.abort();
+        let frame =
+            match tokio::time::timeout(std::time::Duration::from_secs(90), read.next()).await {
+                Ok(Some(f)) => f,
+                Ok(None) => break, // stream ended
+                Err(_) => {
+                    if let Some(h) = hb_task.take() {
+                        h.abort();
+                    }
+                    return Err("read timeout (no gateway traffic)".to_string());
                 }
-                return Err("read timeout (no gateway traffic)".to_string());
-            }
-        };
+            };
         // If the heartbeat task has died, the connection is effectively dead —
         // reconnect now rather than waiting for the server's close frame.
         if !hb_alive.load(Ordering::Relaxed) {

@@ -21,7 +21,7 @@ use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex, Notify};
 use tokio::time::timeout;
@@ -305,13 +305,19 @@ impl ServerHandle {
             match g.as_mut() {
                 None => Err(anyhow!("server stdin closed")),
                 Some(stdin) => match timeout(WRITE_TIMEOUT, async {
-                    stdin.write_all(line.as_bytes()).await.context("write rpc")?;
+                    stdin
+                        .write_all(line.as_bytes())
+                        .await
+                        .context("write rpc")?;
                     stdin.flush().await.context("flush rpc")
                 })
                 .await
                 {
                     Ok(r) => r,
-                    Err(_) => Err(anyhow!("stdin write timed out after {}s", WRITE_TIMEOUT.as_secs())),
+                    Err(_) => Err(anyhow!(
+                        "stdin write timed out after {}s",
+                        WRITE_TIMEOUT.as_secs()
+                    )),
                 },
             }
         };
@@ -639,15 +645,67 @@ pub async fn start_server(
         tokio::spawn(async move { h.shutdown().await });
     }
 
-    // Log the full command line + env var names so a surprise/unexpected
-    // server spawn is visible in the in-app Diagnostics panel and ring.
+    // Log the command line + env var NAMES so a surprise/unexpected server spawn
+    // is visible in Diagnostics. MCP args routinely carry secrets positionally
+    // (`--token ghp_…`, `--api-key sk_…`, `postgres://u:p@host`), so redact them
+    // before logging — env values were already withheld; args were not, and the
+    // log feeds the shareable diagnostics bundle (sec audit 2026-06). Uses the
+    // shared credential-shape predicate so the rule stays in one place.
+    let safe_args: Vec<String> = {
+        let secret_flag = |s: &str| {
+            let l = s.to_ascii_lowercase();
+            l.contains("token")
+                || l.contains("secret")
+                || l.contains("password")
+                || l.contains("apikey")
+                || l.contains("api-key")
+                || l.contains("api_key")
+                || l.ends_with("key")
+                || l.ends_with("-pat")
+        };
+        let mut out = Vec::with_capacity(args.len());
+        let mut redact_next = false;
+        for a in &args {
+            if redact_next {
+                out.push("<redacted>".to_string());
+                redact_next = false;
+                continue;
+            }
+            if let Some((k, v)) = a.split_once('=') {
+                if !v.is_empty() && secret_flag(k) {
+                    out.push(format!("{k}=<redacted>"));
+                    continue;
+                }
+            }
+            if a.starts_with('-') && secret_flag(a) {
+                out.push(a.clone());
+                redact_next = true; // next positional is the secret value
+                continue;
+            }
+            if a.contains("://") {
+                out.push(crate::commands::misc::mask_url_userinfo(a));
+                continue;
+            }
+            if crate::commands::misc::value_looks_secret(a) {
+                out.push("<redacted>".to_string());
+                continue;
+            }
+            out.push(a.clone());
+        }
+        out
+    };
     crate::diagnostics::warn_with(
         "mcp",
-        &format!("starting server '{}': {} {}", name, command, args.join(" ")),
+        &format!(
+            "starting server '{}': {} {}",
+            name,
+            command,
+            safe_args.join(" ")
+        ),
         json!({
             "server": name,
             "command": command,
-            "args": args,
+            "args": safe_args,
             "env_keys": env.as_ref().map(|e| e.keys().cloned().collect::<Vec<_>>()).unwrap_or_default(),
         }),
     );
@@ -770,21 +828,28 @@ pub async fn start_server(
         let shutdown = crate::shutdown_signal();
         let stop = stop.clone();
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr).lines();
+            // Bounded per-line read (sec audit 2026-06): `.lines()`/`next_line()`
+            // grows its buffer unbounded, so a stdio server emitting one huge
+            // unterminated line could OOM the app. read_capped_line caps a single
+            // line at STDERR_CAP and skips (returns empty for) oversized lines.
+            let mut reader = BufReader::new(stderr);
             loop {
                 // Sticky-flag check covers the race where global shutdown
-                // fired while we were inside `next_line().await` — the
-                // `notify_waiters()` would have landed with no parked waiter
-                // and been lost without this guard.
+                // fired while we were inside the read — the `notify_waiters()`
+                // would have landed with no parked waiter and been lost without
+                // this guard.
                 if crate::is_shutting_down() {
                     break;
                 }
                 tokio::select! {
                     _ = shutdown.notified() => break,
                     _ = stop.notified() => break,
-                    line = reader.next_line() => {
+                    line = read_capped_line(&mut reader, STDERR_CAP) => {
                         match line {
                             Ok(Some(line)) => {
+                                if line.is_empty() {
+                                    continue; // skipped oversized / blank line
+                                }
                                 let mut g = buf.lock().await;
                                 g.push_str(&line);
                                 g.push('\n');

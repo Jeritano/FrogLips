@@ -160,7 +160,10 @@ mod tests {
             .into_iter()
             .find(|s| s.name == "test-sub")
             .expect("subsystem still recorded");
-        assert_eq!(after_same.since, since1, "since must not reset on same-state ping");
+        assert_eq!(
+            after_same.since, since1,
+            "since must not reset on same-state ping"
+        );
         assert_eq!(after_same.reason, "second", "reason still updates");
 
         // A different state DOES reset since (may be equal-or-greater depending

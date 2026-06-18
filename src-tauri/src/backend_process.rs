@@ -661,9 +661,7 @@ impl ServerState {
         match dead {
             None => {
                 // Mirror status()'s emit for the no-death path.
-                let alive = guard
-                    .as_ref()
-                    .map(|s| (s.model.clone(), s.backend.clone()));
+                let alive = guard.as_ref().map(|s| (s.model.clone(), s.backend.clone()));
                 let s = match guard.as_ref() {
                     Some(s) => self.live_status(&s.model, &s.backend),
                     None => self.dead_status(),
@@ -833,11 +831,7 @@ impl ServerState {
         ));
         // Capture model/backend BEFORE emitting the dead status (the ring's
         // attribution + the recovery payload share the same source).
-        let model = self
-            .last_crashed_model
-            .lock()
-            .clone()
-            .unwrap_or_default();
+        let model = self.last_crashed_model.lock().clone().unwrap_or_default();
         let backend = self
             .ring_backend
             .lock()
@@ -1033,7 +1027,9 @@ fn liveness_probe_enabled() -> bool {
             return val;
         }
     }
-    let val = crate::settings::load().backend_liveness_probe.unwrap_or(true);
+    let val = crate::settings::load()
+        .backend_liveness_probe
+        .unwrap_or(true);
     *guard = Some((Instant::now(), val));
     val
 }
@@ -1129,7 +1125,10 @@ mod tests {
         // ollama path: external daemon, port still open.
         let mut s = st.live_status("llama3", "ollama");
         s.ready = false;
-        assert!(s.running, "wedged backend is alive, must report running:true");
+        assert!(
+            s.running,
+            "wedged backend is alive, must report running:true"
+        );
         assert!(!s.ready, "wedged backend is not ready");
         assert_eq!(s.host, OLLAMA_HOST, "host must be preserved, not empty");
         assert_eq!(s.port, OLLAMA_PORT, "port must be preserved, not 0");
@@ -1170,7 +1169,7 @@ mod tests {
         assert!(!observe(&mut streak, false)); // 1
         assert!(!observe(&mut streak, false)); // 2
         assert!(observe(&mut streak, false)); // 3 → trips
-        // Three back-to-back from a clean slate trips exactly at the 3rd.
+                                              // Three back-to-back from a clean slate trips exactly at the 3rd.
         let mut s2 = 0u32;
         assert!(!observe(&mut s2, false));
         assert!(!observe(&mut s2, false));

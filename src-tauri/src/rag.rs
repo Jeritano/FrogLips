@@ -1028,64 +1028,64 @@ pub fn ingest_folder(opts: IngestOpts) -> Result<IngestReport> {
     // WS3: single-writer gate for the corpus-setup transaction.
     let (corpus_id, watermark, force_reembed, chosen): (i64, i64, bool, crate::embedder::Embedder) =
         crate::history::with_write(|tx| {
-        tx.execute(
-            "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
+            tx.execute(
+                "INSERT INTO rag_corpora (name, root_path, chunk_count, created_at, updated_at)
              VALUES (?1, ?2, 0, ?3, ?3)
              ON CONFLICT(name) DO UPDATE SET root_path = excluded.root_path, updated_at = ?3",
-            params![&opts.name, root_canon.to_string_lossy(), now],
-        )?;
-        let id: i64 = tx.query_row(
-            "SELECT id FROM rag_corpora WHERE name = ?1",
-            params![&opts.name],
-            |r| r.get(0),
-        )?;
-        // High-water mark BEFORE any new insert. rag_chunks.id is AUTOINCREMENT
-        // (monotonic for the table), so every chunk inserted from here on gets
-        // an id strictly greater than this — the discriminator for the final
-        // swap. Global MAX is intentional (not per-corpus): it's a lower bound
-        // that holds even if a concurrent ingest of another corpus interleaves.
-        let wm: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM rag_chunks", [], |r| {
-            r.get(0)
-        })?;
-        let stored: String = tx
-            .query_row(
-                "SELECT embedder FROM rag_corpora WHERE id = ?1",
-                params![id],
+                params![&opts.name, root_canon.to_string_lossy(), now],
+            )?;
+            let id: i64 = tx.query_row(
+                "SELECT id FROM rag_corpora WHERE name = ?1",
+                params![&opts.name],
                 |r| r.get(0),
-            )
-            .unwrap_or_else(|_| crate::embedder::HASHED_ID.to_string());
-        // Sticky embedder: if this corpus was built with the LEARNED embedder
-        // (Ollama) but the probe currently reads Hashed (daemon busy/slow),
-        // keep the learned one — embed_batch will succeed on a transient blip
-        // or fail loudly if the daemon is truly down, instead of silently
-        // re-embedding a good corpus into the weaker hashed space.
-        let chosen = if stored == crate::embedder::OLLAMA_MODEL
-            && detected == crate::embedder::Embedder::Hashed
-        {
-            crate::embedder::Embedder::Ollama
-        } else {
-            detected.clone()
-        };
-        let force = stored != chosen.id();
-        if force {
-            // Stale fingerprints would let the copy-forward resurrect vectors
-            // from the old embedding space.
-            tx.execute("DELETE FROM rag_files WHERE corpus_id = ?1", params![id])?;
-            // The new embedder produces a different-dim vector space. Drop the
-            // shared vec0 index so the lazy-create in flush_pending rebuilds it
-            // at the new dim; a post-swap backfill recovers any other corpora
-            // whose BLOBs already match the new dim (BLOB = source of truth).
-            crate::history::vec_drop_table(tx, crate::history::VEC_RAG_CHUNKS);
-            crate::diagnostics::info(
-                "rag-ingest",
-                &format!(
-                    "embedder changed {stored} -> {} — full re-embed",
-                    chosen.id()
-                ),
-            );
-        }
-        Ok((id, wm, force, chosen))
-    })?;
+            )?;
+            // High-water mark BEFORE any new insert. rag_chunks.id is AUTOINCREMENT
+            // (monotonic for the table), so every chunk inserted from here on gets
+            // an id strictly greater than this — the discriminator for the final
+            // swap. Global MAX is intentional (not per-corpus): it's a lower bound
+            // that holds even if a concurrent ingest of another corpus interleaves.
+            let wm: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM rag_chunks", [], |r| {
+                r.get(0)
+            })?;
+            let stored: String = tx
+                .query_row(
+                    "SELECT embedder FROM rag_corpora WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|_| crate::embedder::HASHED_ID.to_string());
+            // Sticky embedder: if this corpus was built with the LEARNED embedder
+            // (Ollama) but the probe currently reads Hashed (daemon busy/slow),
+            // keep the learned one — embed_batch will succeed on a transient blip
+            // or fail loudly if the daemon is truly down, instead of silently
+            // re-embedding a good corpus into the weaker hashed space.
+            let chosen = if stored == crate::embedder::OLLAMA_MODEL
+                && detected == crate::embedder::Embedder::Hashed
+            {
+                crate::embedder::Embedder::Ollama
+            } else {
+                detected.clone()
+            };
+            let force = stored != chosen.id();
+            if force {
+                // Stale fingerprints would let the copy-forward resurrect vectors
+                // from the old embedding space.
+                tx.execute("DELETE FROM rag_files WHERE corpus_id = ?1", params![id])?;
+                // The new embedder produces a different-dim vector space. Drop the
+                // shared vec0 index so the lazy-create in flush_pending rebuilds it
+                // at the new dim; a post-swap backfill recovers any other corpora
+                // whose BLOBs already match the new dim (BLOB = source of truth).
+                crate::history::vec_drop_table(tx, crate::history::VEC_RAG_CHUNKS);
+                crate::diagnostics::info(
+                    "rag-ingest",
+                    &format!(
+                        "embedder changed {stored} -> {} — full re-embed",
+                        chosen.id()
+                    ),
+                );
+            }
+            Ok((id, wm, force, chosen))
+        })?;
 
     // Embedder switch just dropped the shared vec0 table (it lazily recreates at
     // the new model's dim in flush_pending). Drop the memoized dim so the next
@@ -1486,7 +1486,12 @@ fn search_vec_rag(
 /// token is a plain phrase term (same neutralization as `search_messages_fts`).
 /// Returns an empty Vec (never an error) when the query has no usable tokens or
 /// the FTS table is unavailable — the caller then proceeds dense-only.
-fn search_fts(conn: &rusqlite::Connection, corpus_id: i64, query: &str, k: usize) -> Vec<(i64, usize)> {
+fn search_fts(
+    conn: &rusqlite::Connection,
+    corpus_id: i64,
+    query: &str,
+    k: usize,
+) -> Vec<(i64, usize)> {
     let safe: Vec<String> = query
         .split_whitespace()
         .take(32)
@@ -1518,7 +1523,9 @@ fn search_fts(conn: &rusqlite::Connection, corpus_id: i64, query: &str, k: usize
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows = stmt.query_map(params![fts_query, corpus_id, k as i64], |r| r.get::<_, i64>(0));
+    let rows = stmt.query_map(params![fts_query, corpus_id, k as i64], |r| {
+        r.get::<_, i64>(0)
+    });
     let rows = match rows {
         Ok(r) => r,
         Err(_) => return Vec::new(),
@@ -2005,9 +2012,7 @@ mod tests {
         // sections can't pack into one ≤MAX_CHUNK_CHARS chunk — so the heading
         // boundary forces a split rather than a blind 512-char window.
         let body = "x ".repeat(150); // ~300 chars per section body
-        let doc = format!(
-            "# Alpha\n\n{body}\n\n## Beta\n\n{body}\n\n## Gamma\n\n{body}\n"
-        );
+        let doc = format!("# Alpha\n\n{body}\n\n## Beta\n\n{body}\n\n## Gamma\n\n{body}\n");
         let chunks = chunk_text(&doc);
         // Expect at least three chunks (one per section).
         assert!(
@@ -2022,7 +2027,9 @@ mod tests {
         // A blind 512-char windower would have put "## Beta" mid-chunk; here it
         // must begin a chunk of its own.
         assert!(
-            chunks.iter().any(|c| c.2.trim_start().starts_with("## Beta")),
+            chunks
+                .iter()
+                .any(|c| c.2.trim_start().starts_with("## Beta")),
             "## Beta should head its own chunk: {:#?}",
             chunks.iter().map(|c| &c.2).collect::<Vec<_>>()
         );
@@ -2289,7 +2296,10 @@ mod tests {
         ingest_folder(opts()).expect("first ingest");
 
         // Fresh after ingest → not stale.
-        assert!(!corpus_stale(&name).unwrap(), "fresh corpus must not be stale");
+        assert!(
+            !corpus_stale(&name).unwrap(),
+            "fresh corpus must not be stale"
+        );
 
         // Modify the file so its SIZE changes — `corpus_stale` keys on
         // (mtime, size), and a size delta is detected independently of the
@@ -2311,7 +2321,10 @@ mod tests {
 
         // A brand-new file appears → stale.
         std::fs::write(dir.join("extra.txt"), "an entirely new document file").unwrap();
-        assert!(corpus_stale(&name).unwrap(), "new file must mark corpus stale");
+        assert!(
+            corpus_stale(&name).unwrap(),
+            "new file must mark corpus stale"
+        );
 
         // Unknown corpus → not stale (no error).
         assert!(!corpus_stale("__no_such_corpus_xyz").unwrap());
@@ -2406,7 +2419,9 @@ mod tests {
         // Exact identifier with an underscore (tokenchars '_' keeps it whole).
         let hits2 = search(&name, "resolve_trait_bound", 5).unwrap();
         assert!(
-            hits2.iter().any(|h| h.snippet.contains("resolve_trait_bound")),
+            hits2
+                .iter()
+                .any(|h| h.snippet.contains("resolve_trait_bound")),
             "snake_case identifier must be found whole: {hits2:?}"
         );
 

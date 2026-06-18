@@ -76,7 +76,9 @@ pub async fn run(ctx: GwCtx) {
         if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
             set_error(
                 "telegram",
-                v.get("description").and_then(|s| s.as_str()).map(String::from),
+                v.get("description")
+                    .and_then(|s| s.as_str())
+                    .map(String::from),
             );
             backoff.sleep().await;
             continue;
@@ -94,7 +96,9 @@ pub async fn run(ctx: GwCtx) {
             if let Some(uid) = upd.get("update_id").and_then(|n| n.as_i64()) {
                 offset = uid + 1;
             }
-            let Some(msg) = upd.get("message") else { continue };
+            let Some(msg) = upd.get("message") else {
+                continue;
+            };
             let Some(text) = msg.get("text").and_then(|s| s.as_str()) else {
                 continue;
             };
@@ -137,7 +141,10 @@ pub async fn send(token: &str, _fields: &Value, target: &str, text: &str) -> Res
             .map_err(|e| format!("sendMessage failed: {e}"))?;
         if !resp.status().is_success() {
             let code = resp.status();
-            return Err(format!("sendMessage {code}: {}", resp.text().await.unwrap_or_default()));
+            return Err(format!(
+                "sendMessage {code}: {}",
+                resp.text().await.unwrap_or_default()
+            ));
         }
     }
     Ok(())

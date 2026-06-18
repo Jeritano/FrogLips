@@ -25,7 +25,10 @@ const WEB_SEARCH_MAX_BYTES: usize = 4 * 1_048_576; // 4 MiB
 
 pub fn is_safe_public_host(host: &str) -> bool {
     // Reject localhost + RFC1918 + link-local + .local — defends against SSRF.
-    let h = host.to_ascii_lowercase();
+    let h0 = host.to_ascii_lowercase();
+    // Strip a single trailing dot: `localhost.` / `foo.local.` are valid FQDN
+    // forms that resolve identically but would slip the string comparisons below.
+    let h = h0.strip_suffix('.').unwrap_or(&h0);
     if h.is_empty() || h == "localhost" || h.ends_with(".local") || h.ends_with(".internal") {
         return false;
     }
@@ -222,9 +225,7 @@ fn build_pinned_no_redirect_client(
 /// validated against, so the SSRF posture is unchanged and the rebind window
 /// stays bounded by `PINNED_CLIENT_TTL`.
 static PINNED_CLIENT_CACHE: once_cell::sync::Lazy<
-    std::sync::Mutex<
-        std::collections::HashMap<String, (std::time::Instant, reqwest::Client)>,
-    >,
+    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, reqwest::Client)>>,
 > = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 const PINNED_CLIENT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -475,8 +476,21 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
         let href = cap.get(1).map(|m| m.as_str()).unwrap_or("");
         let title_html = cap.get(2).map(|m| m.as_str()).unwrap_or("");
         let snippet_html = cap.get(3).map(|m| m.as_str()).unwrap_or("");
+        let url = unwrap_ddg_redirect(href);
+        // The result URL comes from attacker-influenceable DDG markup. Only
+        // surface http(s) results to a safe public host so we never hand the
+        // model a `file://` or internal-IP "result" to fetch (sec review
+        // 2026-06 MED). web_fetch re-validates with resolve+pin at fetch time;
+        // this string-level filter stops bad URLs from being surfaced at all.
+        let url_ok = url::Url::parse(&url).ok().is_some_and(|u| {
+            matches!(u.scheme(), "http" | "https")
+                && u.host_str().map(is_safe_public_host).unwrap_or(false)
+        });
+        if !url_ok {
+            continue;
+        }
         hits.push(WebSearchHit {
-            url: unwrap_ddg_redirect(href),
+            url,
             title: strip_tags(title_html),
             snippet: strip_tags(snippet_html),
         });
@@ -641,8 +655,8 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
         || ct.contains("javascript")
         || ct.contains("yaml")
         || ct.is_empty(); // unknown → treat as text, the body is already UTF-8 lossy
-    // Audit A32: `<=` not `<` — read_capped fills to EXACTLY the cap, so a
-    // maximal attacker-chosen body landing on the boundary must still be scanned.
+                          // Audit A32: `<=` not `<` — read_capped fills to EXACTLY the cap, so a
+                          // maximal attacker-chosen body landing on the boundary must still be scanned.
     let body = if text_like && body.len() <= WEB_FETCH_MAX_BYTES {
         injection_scan::scan_and_wrap(&body).0
     } else {
@@ -820,14 +834,28 @@ pub async fn call_api(input: CallApiInput) -> Result<HttpResp, String> {
     // Redact the injected secret if the API reflects it back (sec review
     // 2026-06-11 #3 — header-echo endpoints like httpbin /headers would
     // otherwise hand the key straight to the model).
+    // Best-effort: redact the key (and the full auth header value) if the API
+    // reflects it back. Covers the common base64 echo too (JSON fields, Basic
+    // auth) — not every possible transform, but the realistic ones. Min length 8
+    // guards against over-redacting unrelated short/common substrings (sec review
+    // 2026-06).
     let redact = |s: String| -> String {
+        use base64::Engine;
         let mut out = s;
         if let Some(av) = &auth_value {
-            out = out.replace(av.as_str(), "<redacted>");
+            if av.len() >= 8 {
+                out = out.replace(av.as_str(), "<redacted>");
+            }
         }
         if let Some(key) = api.api_key.as_deref() {
-            if !key.is_empty() {
-                out = out.replace(key, "<redacted>");
+            if key.len() >= 8 {
+                for rep in [
+                    key.to_string(),
+                    base64::engine::general_purpose::STANDARD.encode(key),
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key),
+                ] {
+                    out = out.replace(&rep, "<redacted>");
+                }
             }
         }
         out

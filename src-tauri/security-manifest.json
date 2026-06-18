@@ -5,10 +5,11 @@
     "_doc": "Each entry: path = literal absolute path OR path relative to $HOME (homeRelative). read = blocked from the agent read_file/list/search gate. write = blocked from the agent write gate AND the renderer IPC write/read-src gate (path_safety.rs). sandboxDeny = denied (file-read* file-write*) inside the run_shell/run_code Seatbelt cage. Invariant enforced by code: write is ALWAYS true wherever read is true (the write gate calls the read gate first).",
 
     "absolute": [
-      { "path": "/Library/Keychains", "read": true, "write": true, "sandboxDeny": false },
-      { "path": "/private/var/db/sudo", "read": true, "write": true, "sandboxDeny": false },
-      { "path": "/var/db/sudo", "read": true, "write": true, "sandboxDeny": false },
-      { "path": "/etc", "read": true, "write": true, "sandboxDeny": false },
+      { "path": "/Library/Keychains", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "/private/var/db/sudo", "read": true, "write": true, "sandboxDeny": true },
+      { "path": "/var/db/sudo", "read": true, "write": true, "sandboxDeny": true },
+      { "_note": "/etc + /private/etc stay sandboxDeny:false — builds legitimately read /etc/hosts, resolv.conf, ssl/cert.pem; they are root-owned/world-readable, not secret stores.",
+        "path": "/etc", "read": true, "write": true, "sandboxDeny": false },
       { "path": "/private/etc", "read": true, "write": true, "sandboxDeny": false },
       { "path": "/System", "read": false, "write": true, "sandboxDeny": false },
       { "path": "/Library/Application Support/com.apple.TCC", "read": false, "write": true, "sandboxDeny": false },

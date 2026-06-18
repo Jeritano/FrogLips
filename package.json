@@ -1,7 +1,7 @@
 {
   "name": "froglips",
   "private": true,
-  "version": "0.14.16",
+  "version": "0.14.17",
   "type": "module",
   "sideEffects": [
     "**/*.css"
@@ -27,7 +27,7 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@xyflow/react": "^12.11.0",
     "clsx": "^2.1.1",
-    "dompurify": "^3.4.5",
+    "dompurify": "3.4.5",
     "highlight.js": "^11.11.1",
     "katex": "^0.17.0",
     "lucide-react": "^1.17.0",

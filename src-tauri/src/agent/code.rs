@@ -120,10 +120,8 @@ pub async fn format_code(path: String) -> Result<FormatResult, String> {
     // Fence both channels: a formatter echoes offending source lines on syntax
     // errors, so a poisoned source file's injection tokens can surface in
     // stdout/stderr. Wrap like every other subprocess output channel.
-    let (stdout, _) =
-        super::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&out));
-    let (stderr, _) =
-        super::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&err));
+    let (stdout, _) = super::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&out));
+    let (stderr, _) = super::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&err));
     Ok(FormatResult {
         formatter: cmd.to_string(),
         stdout,
@@ -145,6 +143,24 @@ pub struct PdfResult {
 
 pub async fn read_pdf(path: String, limit: Option<u64>) -> Result<PdfResult, String> {
     let resolved = validate_for_read(&path).map_err(err_string)?;
+    // Pre-read size cap (sec audit 2026-06). read_pdf previously slurped the
+    // whole file with no bound and handed it to pdf-extract, whose FlateDecode
+    // inflation is unbounded — a small compression-bomb PDF can expand to GBs and
+    // OOM the app (the `limit` arg only truncates OUTPUT text). read_file and the
+    // RAG ingest path both pre-cap by file size; this path didn't. Reject
+    // oversized input up front. (Bounds the compressed input; the residual
+    // expansion-ratio risk is a recoverable local self-DoS, and extraction runs
+    // on a blocking thread whose panics are isolated into a tool error.)
+    const MAX_PDF_BYTES: u64 = 32 * 1024 * 1024;
+    let meta = tokio::fs::metadata(&resolved)
+        .await
+        .map_err(|e| err_string(super::fs::classify_io(&e)))?;
+    if meta.len() > MAX_PDF_BYTES {
+        return Err(err_string(ToolError::invalid(format!(
+            "PDF too large to extract: {} bytes (cap {MAX_PDF_BYTES})",
+            meta.len()
+        ))));
+    }
     let bytes = tokio::fs::read(&resolved)
         .await
         .map_err(|e| err_string(super::fs::classify_io(&e)))?;

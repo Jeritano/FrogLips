@@ -19,6 +19,15 @@ static GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 fn log_dir() -> Option<PathBuf> {
     let base = dirs::home_dir()?.join(".local-llm-app");
     std::fs::create_dir_all(&base).ok()?;
+    // Restrict the runtime dir to 0700 so the rolling app.log / diag.log (which
+    // the appender creates with default perms) — and the DB — aren't readable by
+    // other local users. crash.log/settings/secrets are already 0600 per-file;
+    // this protects the logs that aren't (sec audit 2026-06).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
+    }
     Some(base)
 }
 

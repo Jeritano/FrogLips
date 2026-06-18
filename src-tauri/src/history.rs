@@ -289,10 +289,7 @@ fn vec_insert(
     // re-activating a memory) can't trip a UNIQUE constraint. Insert-only
     // callers skip this — the pre-DELETE would never match a fresh rowid.
     if allow_replace {
-        let _ = tx.execute(
-            &format!("DELETE FROM {name} WHERE {pk} = ?1"),
-            params![id],
-        );
+        let _ = tx.execute(&format!("DELETE FROM {name} WHERE {pk} = ?1"), params![id]);
     }
     if let Err(e) = tx.execute(
         &format!("INSERT INTO {name}({pk}, embedding) VALUES (?1, ?2)"),
@@ -314,10 +311,7 @@ pub(crate) fn vec_delete(tx: &rusqlite::Transaction<'_>, name: &str, pk: &str, i
         return;
     }
     if matches!(table_exists(tx, name), Ok(true)) {
-        let _ = tx.execute(
-            &format!("DELETE FROM {name} WHERE {pk} = ?1"),
-            params![id],
-        );
+        let _ = tx.execute(&format!("DELETE FROM {name} WHERE {pk} = ?1"), params![id]);
     }
 }
 
@@ -1878,38 +1872,38 @@ pub fn delete_conversation(id: i64) -> Result<()> {
     // WS3: single-writer gate. All statements run on the one serialized
     // IMMEDIATE transaction `with_write` opens.
     with_write(|tx| {
-    // SQLite ALTER TABLE can't add a FOREIGN KEY ... ON DELETE SET NULL to
-    // an existing column, so do the cascade in the app layer: any
-    // conversation whose `parent_conv_id` points at the deleted row has its
-    // parent reference cleared. Without this, deleting a parent leaves
-    // every descendant fork pointing at a non-existent id and the
-    // fork-tree query (get_fork_tree / list_branches) surfaces "parent
-    // conversation not found" errors. Run both updates + the final delete
-    // in a single transaction so a crash can never leave dangling refs.
-    tx.execute(
-        "UPDATE conversations SET parent_conv_id = NULL, parent_message_id = NULL
+        // SQLite ALTER TABLE can't add a FOREIGN KEY ... ON DELETE SET NULL to
+        // an existing column, so do the cascade in the app layer: any
+        // conversation whose `parent_conv_id` points at the deleted row has its
+        // parent reference cleared. Without this, deleting a parent leaves
+        // every descendant fork pointing at a non-existent id and the
+        // fork-tree query (get_fork_tree / list_branches) surfaces "parent
+        // conversation not found" errors. Run both updates + the final delete
+        // in a single transaction so a crash can never leave dangling refs.
+        tx.execute(
+            "UPDATE conversations SET parent_conv_id = NULL, parent_message_id = NULL
          WHERE parent_conv_id = ?1",
-        params![id],
-    )?;
-    // conversation_id reconciliation (WS2): the audit/metrics `conv_id` sibling
-    // columns carry an inline `ON DELETE SET NULL` FK when the SQLite build
-    // enforces FKs on ALTER-added columns, but we null them here too so the
-    // invariant holds even on builds that don't — keeping the audit rows alive
-    // (they're forensic) while clearing the dangling reference. These tables
-    // only exist once their v20/v24/v25 rungs have run; on a brand-new DB
-    // mid-migration the UPDATE would target a missing column, so each is
-    // best-effort (a missing table/column is a benign no-op, not a failure that
-    // would abort the user's delete).
-    let _ = tx.execute(
-        "UPDATE agent_audit SET conv_id = NULL WHERE conv_id = ?1",
-        params![id],
-    );
-    let _ = tx.execute(
-        "UPDATE agent_session_metrics SET conv_id = NULL WHERE conv_id = ?1",
-        params![id],
-    );
-    tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
-    Ok(())
+            params![id],
+        )?;
+        // conversation_id reconciliation (WS2): the audit/metrics `conv_id` sibling
+        // columns carry an inline `ON DELETE SET NULL` FK when the SQLite build
+        // enforces FKs on ALTER-added columns, but we null them here too so the
+        // invariant holds even on builds that don't — keeping the audit rows alive
+        // (they're forensic) while clearing the dangling reference. These tables
+        // only exist once their v20/v24/v25 rungs have run; on a brand-new DB
+        // mid-migration the UPDATE would target a missing column, so each is
+        // best-effort (a missing table/column is a benign no-op, not a failure that
+        // would abort the user's delete).
+        let _ = tx.execute(
+            "UPDATE agent_audit SET conv_id = NULL WHERE conv_id = ?1",
+            params![id],
+        );
+        let _ = tx.execute(
+            "UPDATE agent_session_metrics SET conv_id = NULL WHERE conv_id = ?1",
+            params![id],
+        );
+        tx.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        Ok(())
     })
 }
 
@@ -2480,7 +2474,11 @@ pub fn latest_unfinished_run(conv_id: i64) -> Result<Option<RunCheckpoint>> {
         return Ok(None);
     }
     let started_at = turns.first().map(|t| t.created_at).unwrap_or(0);
-    let updated_at = turns.iter().map(|t| t.created_at).max().unwrap_or(started_at);
+    let updated_at = turns
+        .iter()
+        .map(|t| t.created_at)
+        .max()
+        .unwrap_or(started_at);
     Ok(Some(RunCheckpoint {
         run_id,
         started_at,
@@ -2815,11 +2813,9 @@ mod tests {
         )
         .unwrap();
         let n: i64 = conn
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {VEC_RAG_CHUNKS}"),
-                [],
-                |r| r.get(0),
-            )
+            .query_row(&format!("SELECT COUNT(*) FROM {VEC_RAG_CHUNKS}"), [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 1);
     }
@@ -2873,25 +2869,16 @@ mod tests {
     /// prevents). Exercises the real pool + lock end-to-end.
     #[test]
     fn with_write_serializes_concurrent_writers_no_loss() {
-        let conv = create_conversation(
-            &format!("__test_ws3_{}", std::process::id()),
-            None,
-        )
-        .unwrap();
+        let conv =
+            create_conversation(&format!("__test_ws3_{}", std::process::id()), None).unwrap();
         const THREADS: usize = 8;
         const PER_THREAD: usize = 20;
         let handles: Vec<_> = (0..THREADS)
             .map(|t| {
                 std::thread::spawn(move || {
                     for i in 0..PER_THREAD {
-                        add_message(
-                            conv,
-                            "assistant",
-                            &format!("t{t}-msg{i}"),
-                            None,
-                            None,
-                        )
-                        .expect("concurrent add_message must not fail");
+                        add_message(conv, "assistant", &format!("t{t}-msg{i}"), None, None)
+                            .expect("concurrent add_message must not fail");
                     }
                 })
             })
@@ -3212,7 +3199,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(raw_fork, 2, "no shadow rows physically copied into the fork");
+        assert_eq!(
+            raw_fork, 2,
+            "no shadow rows physically copied into the fork"
+        );
         let shadow_on_fork: i64 = get_db()
             .unwrap()
             .query_row(
@@ -3222,7 +3212,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(shadow_on_fork, 0, "fork must carry zero checkpoint shadow rows");
+        assert_eq!(
+            shadow_on_fork, 0,
+            "fork must carry zero checkpoint shadow rows"
+        );
 
         delete_conversation(conv).unwrap();
         delete_conversation(fork_id).unwrap();
@@ -3687,7 +3680,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(has_idx, 1, "conv_id index must be (re)created by the v24 rung");
+        assert_eq!(
+            has_idx, 1,
+            "conv_id index must be (re)created by the v24 rung"
+        );
     }
 
     /// REGRESSION (v32 — external-content FTS corruption): the v18 messages_fts
@@ -3756,10 +3752,8 @@ mod tests {
 
         // The FTS index is consistent again: the integrity-check command raises
         // SQLITE_CORRUPT_VTAB if the index disagrees with the content table.
-        conn.execute_batch(
-            "INSERT INTO messages_fts(messages_fts) VALUES('integrity-check');",
-        )
-        .expect("messages_fts integrity-check must pass after the v32 rebuild");
+        conn.execute_batch("INSERT INTO messages_fts(messages_fts) VALUES('integrity-check');")
+            .expect("messages_fts integrity-check must pass after the v32 rebuild");
 
         // The visible row is still searchable (rebuild re-derived its posting).
         let found: i64 = conn
@@ -3796,10 +3790,8 @@ mod tests {
             .find(|m| m.version == 32)
             .expect("v32 rung exists");
         (v32.apply)(&conn).expect("v32 re-run must not error");
-        conn.execute_batch(
-            "INSERT INTO messages_fts(messages_fts) VALUES('integrity-check');",
-        )
-        .expect("integrity-check must still pass after a v32 re-run");
+        conn.execute_batch("INSERT INTO messages_fts(messages_fts) VALUES('integrity-check');")
+            .expect("integrity-check must still pass after a v32 re-run");
     }
 
     /// Migration v10 (`images`) is safe to apply twice in a row and against a
@@ -3953,7 +3945,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(total, 3, "user turn + 2 checkpoint rows, no dup after re-run");
+        assert_eq!(
+            total, 3,
+            "user turn + 2 checkpoint rows, no dup after re-run"
+        );
 
         // list_messages excludes checkpoint rows: only the visible user turn.
         let visible = list_messages(conv).unwrap();
@@ -4063,7 +4058,9 @@ mod tests {
             }],
         )
         .unwrap();
-        let newest = latest_unfinished_run(conv).unwrap().expect("newest open run");
+        let newest = latest_unfinished_run(conv)
+            .unwrap()
+            .expect("newest open run");
         assert_eq!(newest.run_id, run2, "the most-recent open run is offered");
 
         delete_conversation(conv).unwrap();
@@ -4074,9 +4071,8 @@ mod tests {
     /// as OPEN, so a run interrupted across the upgrade remains resumable.
     #[test]
     fn null_run_done_counts_as_open() {
-        let conv =
-            create_conversation(&format!("__test_resume_null_{}", std::process::id()), None)
-                .unwrap();
+        let conv = create_conversation(&format!("__test_resume_null_{}", std::process::id()), None)
+            .unwrap();
         let run = format!("run:nullopen:{}", std::process::id());
         // Write a checkpoint row directly with run_done left NULL, simulating a
         // row persisted before v30 added the column.
@@ -4106,8 +4102,7 @@ mod tests {
     #[test]
     fn checkpoint_shadows_excluded_from_message_search() {
         let tag = format!("zshadow{}", std::process::id());
-        let conv =
-            create_conversation(&format!("__test_shadow_{tag}"), None).unwrap();
+        let conv = create_conversation(&format!("__test_shadow_{tag}"), None).unwrap();
         // One visible user turn whose body shares the marker token.
         add_message(conv, "user", &format!("please find {tag} now"), None, None).unwrap();
         // A checkpoint shadow whose body ALSO contains the marker — and has the
@@ -4130,7 +4125,8 @@ mod tests {
         // FTS search returns ONLY the visible user message, never the shadow.
         let fts = search_messages_fts(tag.as_str(), 20).unwrap();
         assert!(
-            fts.iter().any(|h| h.conversation_id == conv && h.role == "user"),
+            fts.iter()
+                .any(|h| h.conversation_id == conv && h.role == "user"),
             "visible user turn must be searchable: {fts:?}"
         );
         assert!(
@@ -4161,12 +4157,18 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("ladder on fresh db");
         // Two real conversations: ids 1 and 2 (AUTOINCREMENT from empty table).
-        conn.execute("INSERT INTO conversations (title, created_at) VALUES ('a', 0)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO conversations (title, created_at) VALUES ('a', 0)",
+            [],
+        )
+        .unwrap();
         let real = conn.last_insert_rowid();
         // agent_audit rows: a clean numeric ref, plus a digit-prefixed junk ref
         // that truncates to the real conv id. Both start with conv_id NULL.
-        for (cid_text, _label) in [(real.to_string(), "numeric"), (format!("{real}abc"), "junk")] {
+        for (cid_text, _label) in [
+            (real.to_string(), "numeric"),
+            (format!("{real}abc"), "junk"),
+        ] {
             conn.execute(
                 "INSERT INTO agent_audit
                     (ts, conversation_id, tool_name, args_json, result_hash,
@@ -4342,20 +4344,23 @@ mod tests {
         // Deleting the conversation must null conv_id (whether the inline FK is
         // enforced by this SQLite build OR the app-layer UPDATE handles it) and
         // must NOT delete the forensic audit row.
-        let fk_enforced =
-            column_exists(&conn, "agent_audit", "conv_id").unwrap() && {
-                // App-layer null mirrors delete_conversation's WS2 sweep.
-                conn.execute(
-                    "UPDATE agent_audit SET conv_id = NULL WHERE conv_id = 7",
-                    [],
-                )
+        let fk_enforced = column_exists(&conn, "agent_audit", "conv_id").unwrap() && {
+            // App-layer null mirrors delete_conversation's WS2 sweep.
+            conn.execute(
+                "UPDATE agent_audit SET conv_id = NULL WHERE conv_id = 7",
+                [],
+            )
+            .unwrap();
+            conn.execute("DELETE FROM conversations WHERE id = 7", [])
                 .unwrap();
-                conn.execute("DELETE FROM conversations WHERE id = 7", [])
-                    .unwrap();
-                true
-            };
+            true
+        };
         assert!(fk_enforced);
-        assert_eq!(conv_id_of(numeric_id), None, "conv_id nulled on parent delete");
+        assert_eq!(
+            conv_id_of(numeric_id),
+            None,
+            "conv_id nulled on parent delete"
+        );
         let audit_still_there: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM agent_audit WHERE id = ?1",
@@ -4363,7 +4368,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(audit_still_there, 1, "audit row survives conversation delete");
+        assert_eq!(
+            audit_still_there, 1,
+            "audit row survives conversation delete"
+        );
     }
 
     /// Running the ladder a second time on an already-migrated DB is a no-op:

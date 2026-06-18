@@ -106,7 +106,10 @@ fn pattern_catalogue() -> Vec<(String, String)> {
         .iter()
         .map(|(name, pat)| ((*name).to_string(), (*pat).to_string()))
         .collect();
-    for t in &crate::security_manifest::manifest().injection_role_tokens.tokens {
+    for t in &crate::security_manifest::manifest()
+        .injection_role_tokens
+        .tokens
+    {
         // Escape the literal token so regex metachars (`|`, `[`, `]`, …) match
         // verbatim — same effect as the hand-escaped `r"<\|im_start\|>"` rows.
         v.push((t.name.clone(), regex::escape(&t.token)));

@@ -39,20 +39,29 @@ export const SAFE_REMOTE_TOOLS: readonly string[] = [
   "git_log",
   "git_show",
   "git_branches",
-  // research / knowledge (read-only; web tools are SSRF-guarded)
-  "web_fetch",
-  "web_search",
+  // local knowledge (read-only)
   "recall_memory",
   "search_project_knowledge",
   // pure compute
   "calculate",
 ];
 
+// DELIBERATELY EXCLUDED from the remote set: web_fetch + web_search (and of
+// course http_request / call_api). A remote chat run is UNATTENDED and processes
+// UNTRUSTED input — pairing local-data READ tools with web EGRESS forms the
+// "lethal trifecta" (private data + untrusted content + outbound channel): a
+// prompt-injection in the chat message (or in content the agent reads) could
+// read a local secret and exfiltrate it to an attacker URL with no human to
+// veto it (sec audit 2026-06 HIGH). Remote runs may read local context and reply
+// to the (allowlisted) requester over the chat channel, but have NO arbitrary
+// outbound channel. Re-enabling web tools for a remote channel must be a
+// deliberate, separately-gated decision — never the default.
+
 /** System-prompt note prepended for remote runs so the model stays concise and
  *  knows it is operating over a chat platform with read-only tools. */
 export const REMOTE_RUN_SYSTEM_NOTE =
   "You are answering a user over a chat messaging platform (e.g. Telegram), not in the desktop app. " +
   "Keep replies concise and plain-text friendly (no huge code dumps). " +
-  "You have READ-ONLY tools only (file/git reads, web search/fetch, memory recall, knowledge search, calculate) — " +
-  "you cannot write files, run shell/code, control the desktop, or take any action that changes state. " +
+  "You have READ-ONLY LOCAL tools only (file/git reads, memory recall, knowledge search, calculate) — " +
+  "you have NO web access and cannot write files, run shell/code, control the desktop, or take any action that changes state. " +
   "If the user asks for something requiring those, explain you can't do it over chat and suggest they use the Froglips app.";

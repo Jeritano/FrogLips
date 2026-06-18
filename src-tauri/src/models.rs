@@ -329,9 +329,7 @@ fn hf_config_metadata(repo_id: &str) -> Option<ModelMetadata> {
 
 /// Pure transform: derive context length + vision from a parsed HF
 /// `config.json` object. Split out from the fs read so it's unit-testable.
-fn metadata_from_hf_config(
-    config: &serde_json::Map<String, serde_json::Value>,
-) -> ModelMetadata {
+fn metadata_from_hf_config(config: &serde_json::Map<String, serde_json::Value>) -> ModelMetadata {
     // Context: `max_position_embeddings` at the top level, or nested under a
     // `text_config` for multimodal models (their language tower holds it).
     let context_length = config
@@ -657,7 +655,14 @@ mod tests {
     #[test]
     fn read_hf_config_rejects_bad_repo_ids() {
         // Traversal / non-repo ids must never build an fs path.
-        for bad in ["", "noslash", "..", "../escape", "org/../name", "org/name\0"] {
+        for bad in [
+            "",
+            "noslash",
+            "..",
+            "../escape",
+            "org/../name",
+            "org/name\0",
+        ] {
             assert!(read_hf_config(bad).is_none(), "should reject {bad:?}");
         }
     }

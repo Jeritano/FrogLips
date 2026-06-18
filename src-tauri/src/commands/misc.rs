@@ -128,7 +128,9 @@ pub fn reveal_log_dir(app: tauri::AppHandle) -> Result<(), String> {
     let dir = crate::logging::log_path()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .ok_or("log directory unavailable")?;
-    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(map_err)
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(map_err)
 }
 
 /// Open a RAG search hit's source file in the user's default app via the
@@ -316,7 +318,7 @@ fn os_description() -> String {
 /// caught so secrets in arbitrarily-named fields don't slip past the name
 /// filter. Conservative on purpose (prefix + embedded-URL-credential only) so
 /// it doesn't over-redact useful debug data like file paths or model ids.
-fn value_looks_secret(s: &str) -> bool {
+pub(crate) fn value_looks_secret(s: &str) -> bool {
     let t = s.trim();
     const PREFIXES: &[&str] = &[
         "sk-",
@@ -354,6 +356,44 @@ fn value_looks_secret(s: &str) -> bool {
         }
     }
     false
+}
+
+/// Mask the userinfo (`user:pass@`) of a URL token, keeping scheme+host.
+pub(crate) fn mask_url_userinfo(tok: &str) -> String {
+    if let Some(i) = tok.find("://") {
+        let (scheme, rest) = tok.split_at(i + 3);
+        if let Some(at) = rest.find('@') {
+            return format!("{scheme}<redacted>@{}", &rest[at + 1..]);
+        }
+    }
+    tok.to_string()
+}
+
+/// Best-effort redaction of secret-looking tokens from a PLAIN-TEXT log before it
+/// enters the shareable diagnostics bundle. The JSON settings section gets the
+/// structural `redact_secrets`, but the bundled logs (app.log/crash.log/diag.log)
+/// are free-form and can carry credentials — most concretely MCP-server spawn
+/// args like `--token ghp_…` / `--api-key sk_…` / `postgres://u:p@host`, plus any
+/// Bearer/JWT/key reflected into a log line. Scan each whitespace token with the
+/// same credential-shape predicate used for settings + mask URL userinfo, so the
+/// bundle a user attaches to a bug report no longer leaks secrets (sec audit
+/// 2026-06: redaction previously covered ONLY settings.json, not the logs).
+fn redact_log_text(s: &str) -> String {
+    s.split_inclusive(char::is_whitespace)
+        .map(|piece| {
+            let end = piece.trim_end_matches(char::is_whitespace).len();
+            let (tok, ws) = piece.split_at(end);
+            if tok.is_empty() {
+                piece.to_string()
+            } else if tok.contains("://") {
+                format!("{}{ws}", mask_url_userinfo(tok))
+            } else if value_looks_secret(tok) {
+                format!("<redacted>{ws}")
+            } else {
+                piece.to_string()
+            }
+        })
+        .collect()
 }
 
 /// Recursively mask secret-bearing values for the shareable diagnostics
@@ -432,8 +472,8 @@ fn validate_diagnostics_dest(dest: &str) -> Result<std::path::PathBuf, String> {
 /// 256 KiB ceiling the file rotates at so a hostile/runaway log can't balloon
 /// the bundle. Path derived from `logging::log_path()` — never caller input.
 fn read_diag_log() -> String {
-    let Some(path) = crate::logging::log_path()
-        .and_then(|p| p.parent().map(|d| d.join("diag.log")))
+    let Some(path) =
+        crate::logging::log_path().and_then(|p| p.parent().map(|d| d.join("diag.log")))
     else {
         return String::new();
     };
@@ -480,8 +520,7 @@ fn write_zip_sections<W: std::io::Write + std::io::Seek>(
     use std::io::Write;
     use zip::write::SimpleFileOptions;
     let mut zw = zip::ZipWriter::new(writer);
-    let opts =
-        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for (name, body) in sections {
         zw.start_file(*name, opts)?;
         zw.write_all(body.as_bytes())?;
@@ -516,9 +555,9 @@ pub async fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> 
              generated: {ts}\n\
              \n\
              Contents:\n\
-             - app.log       rolling application log (tail)\n\
-             - crash.log     panic / crash records\n\
-             - diag.log      frontend diagnostic ring buffer\n\
+             - app.log       rolling application log (tail; secret-like values redacted)\n\
+             - crash.log     panic / crash records (secret-like values redacted)\n\
+             - diag.log      frontend diagnostic ring buffer (secret-like values redacted)\n\
              - settings.json app settings (secret-like values redacted)\n",
             version = env!("CARGO_PKG_VERSION"),
             os = os_description(),
@@ -526,11 +565,13 @@ pub async fn export_diagnostics_bundle(dest_path: String) -> Result<(), String> 
         );
 
         let empty_or = |s: &str| if s.is_empty() { "<empty>" } else { s }.to_string();
+        // Logs are free-form text — run the plain-text secret redactor over each
+        // (settings.json is already structurally redacted by settings_section).
         let sections: [(&str, String); 5] = [
             ("manifest.txt", manifest),
-            ("app.log", empty_or(&app_log)),
-            ("crash.log", empty_or(&crash_log)),
-            ("diag.log", empty_or(&diag_log)),
+            ("app.log", empty_or(&redact_log_text(&app_log))),
+            ("crash.log", empty_or(&redact_log_text(&crash_log))),
+            ("diag.log", empty_or(&redact_log_text(&diag_log))),
             ("settings.json", settings_section),
         ];
         let section_refs: Vec<(&str, &str)> =
@@ -768,6 +809,17 @@ fn validate_settings_patch(
                         _ => return Err(format!("custom_backends[{i}] '{key}' invalid")),
                     }
                 }
+                // The custom-backend id is used verbatim as a Keychain account.
+                // Every other secret store is namespaced (`api:`, `mcp:`,
+                // `messaging:`, `openrouter`); reject an id that contains the
+                // namespace separator or is a reserved name so it can't collide
+                // with / clobber another feature's secret (sec review 2026-06 MED).
+                let id = o.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                if id.contains(':') || id.eq_ignore_ascii_case("openrouter") {
+                    return Err(format!(
+                        "custom_backends[{i}] id must not contain ':' or be the reserved name 'openrouter' (it is used as a Keychain account)"
+                    ));
+                }
                 let base = o.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
                 if !(base.starts_with("http://") || base.starts_with("https://")) {
                     return Err(format!("custom_backends[{i}] base_url must be http(s)"));
@@ -833,8 +885,9 @@ fn validate_settings_patch(
                             .as_u64()
                             .map(|n| n >= 1 && n <= u64::from(u16::MAX))
                             .or_else(|| {
-                                v.as_str()
-                                    .map(|s| s.trim().parse::<u16>().map(|p| p > 0).unwrap_or(false))
+                                v.as_str().map(|s| {
+                                    s.trim().parse::<u16>().map(|p| p > 0).unwrap_or(false)
+                                })
                             })
                             .unwrap_or(false);
                         if !ok {
@@ -878,8 +931,8 @@ fn validate_settings_patch(
                             Some(s) if !s.trim().is_empty() => {}
                             _ => {
                                 return Err(format!(
-                                    "messaging.{channel}: '{key}' is required (non-empty) when enabled"
-                                ))
+                                "messaging.{channel}: '{key}' is required (non-empty) when enabled"
+                            ))
                             }
                         }
                     }
@@ -1106,8 +1159,7 @@ fn open_conversation_window_impl<R: tauri::Runtime>(
     // shell. The `detached=1` flag is retained so the legacy index.html branch
     // in main.tsx still resolves on fallback. The hash fragment isn't used
     // because Tauri's WebviewUrl::App collapses query strings cleanly.
-    let url_path =
-        format!("detached.html?detached=1&conversation_id={conversation_id}");
+    let url_path = format!("detached.html?detached=1&conversation_id={conversation_id}");
     WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url_path.into()))
         .title(display_title)
         .inner_size(700.0, 500.0)
@@ -1334,7 +1386,9 @@ mod redaction_tests {
         let mut archive = zip::ZipArchive::new(Cursor::new(&buf)).expect("open zip");
         assert_eq!(archive.len(), 3, "entry count");
         for (name, body) in sections {
-            let mut entry = archive.by_name(name).unwrap_or_else(|_| panic!("missing {name}"));
+            let mut entry = archive
+                .by_name(name)
+                .unwrap_or_else(|_| panic!("missing {name}"));
             let mut got = String::new();
             entry.read_to_string(&mut got).expect("read entry");
             assert_eq!(got, body, "{name} body round-trips");

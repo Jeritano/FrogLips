@@ -32,18 +32,20 @@ async fn git_invoke(cwd: PathBuf, args: &[&str]) -> Result<GitResult, String> {
         .kill_on_drop(true);
     let timeout = std::time::Duration::from_secs(10);
     // capped_output bounds stdout/stderr buffering — git output can be huge.
-    let (out, err, code) =
-        match tokio::time::timeout(timeout, super::shell::capped_output(cmd, MAX_SHELL_OUTPUT, false))
-            .await
-        {
-            Ok(Ok(o)) => o,
-            Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
-            Err(_) => {
-                return Err(err_string(ToolError::Timeout {
-                    message: "git timed out after 10s".into(),
-                }))
-            }
-        };
+    let (out, err, code) = match tokio::time::timeout(
+        timeout,
+        super::shell::capped_output(cmd, MAX_SHELL_OUTPUT, false),
+    )
+    .await
+    {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
+        Err(_) => {
+            return Err(err_string(ToolError::Timeout {
+                message: "git timed out after 10s".into(),
+            }))
+        }
+    };
     Ok(GitResult {
         stdout: String::from_utf8_lossy(&out).into_owned(),
         stderr: String::from_utf8_lossy(&err).into_owned(),

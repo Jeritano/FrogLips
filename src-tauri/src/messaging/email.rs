@@ -77,8 +77,8 @@ async fn tls_connect(
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
     let config = tls_config();
     let connector = TlsConnector::from(config);
-    let server_name = ServerName::try_from(host.to_string())
-        .map_err(|_| format!("invalid hostname: {host}"))?;
+    let server_name =
+        ServerName::try_from(host.to_string()).map_err(|_| format!("invalid hostname: {host}"))?;
     let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect((host, port)))
         .await
         .map_err(|_| format!("connect {host}:{port} timed out"))?
@@ -106,13 +106,10 @@ async fn imap_login(
         .await
         .ok_or_else(|| "no IMAP greeting".to_string())?
         .map_err(|e| format!("IMAP greeting error: {e}"))?;
-    tokio::time::timeout(
-        Duration::from_secs(20),
-        client.login(username, password),
-    )
-    .await
-    .map_err(|_| "IMAP login timed out".to_string())?
-    .map_err(|(e, _client)| format!("IMAP login failed: {e}"))
+    tokio::time::timeout(Duration::from_secs(20), client.login(username, password))
+        .await
+        .map_err(|_| "IMAP login timed out".to_string())?
+        .map_err(|(e, _client)| format!("IMAP login failed: {e}"))
 }
 
 pub async fn validate(token: &str, fields: &Value) -> Result<String, String> {
@@ -267,10 +264,11 @@ async fn poll_once(
             .await
             .map_err(|_| format!("fetch {uid} timed out"))?
             .map_err(|e| format!("fetch {uid} failed: {e}"))?;
-            let fetches: Vec<_> = tokio::time::timeout(Duration::from_secs(20), stream.try_collect())
-                .await
-                .map_err(|_| format!("fetch {uid} collect timed out"))?
-                .map_err(|e| format!("fetch {uid} collect failed: {e}"))?;
+            let fetches: Vec<_> =
+                tokio::time::timeout(Duration::from_secs(20), stream.try_collect())
+                    .await
+                    .map_err(|_| format!("fetch {uid} collect timed out"))?
+                    .map_err(|e| format!("fetch {uid} collect failed: {e}"))?;
             Ok(fetches.iter().find_map(|f| f.body().map(|b| b.to_vec())))
         }
         .await;
@@ -319,7 +317,11 @@ async fn poll_once(
             continue;
         }
 
-        let subject = parsed.subject().unwrap_or("(no subject)").trim().to_string();
+        let subject = parsed
+            .subject()
+            .unwrap_or("(no subject)")
+            .trim()
+            .to_string();
         let body = parsed
             .body_text(0)
             .map(|c| c.into_owned())

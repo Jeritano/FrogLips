@@ -240,7 +240,8 @@ pub fn accept(ctx: &GwCtx, sender: &str) -> bool {
     // O(every sender ever) over the life of a long-running desktop process
     // (review H1/H2). Only sweeps when the map is non-trivially large.
     if r.rate.len() > 256 {
-        r.rate.retain(|_, (start, _)| now - *start < RATE_WINDOW_SECS);
+        r.rate
+            .retain(|_, (start, _)| now - *start < RATE_WINDOW_SECS);
     }
     let e = r.rate.entry(key).or_insert((now, 0));
     if now - e.0 >= RATE_WINDOW_SECS {
@@ -408,7 +409,10 @@ pub fn cursor_path(channel: &str) -> Option<std::path::PathBuf> {
 }
 pub fn load_cursor(channel: &str) -> Option<String> {
     let p = cursor_path(channel)?;
-    std::fs::read_to_string(p).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(p)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 pub fn save_cursor(channel: &str, cursor: &str) {
     if let Some(p) = cursor_path(channel) {
@@ -500,7 +504,10 @@ mod tests {
         let b: HashSet<String> = ["123".to_string(), "456".to_string()].into_iter().collect();
         let fp_a = cfg_fingerprint("tok", &a, &fields);
         let fp_b = cfg_fingerprint("tok", &b, &fields);
-        assert_ne!(fp_a, fp_b, "adding an allowed sender must change the fingerprint");
+        assert_ne!(
+            fp_a, fp_b,
+            "adding an allowed sender must change the fingerprint"
+        );
         // Stable across set ordering / re-computation.
         let a2: HashSet<String> = ["123".to_string()].into_iter().collect();
         assert_eq!(fp_a, cfg_fingerprint("tok", &a2, &fields));

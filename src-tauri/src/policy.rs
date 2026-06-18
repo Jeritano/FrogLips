@@ -244,9 +244,7 @@ pub fn evaluate_shell(cmd: &str, policy: &ProjectPolicy) -> ShellDecision {
 /// invocation (`/usr/bin/cargo`) to its basename. Returns `None` when no
 /// program token can be identified (empty / env-assignments only).
 fn normalized_program(cmd: &str) -> Option<&str> {
-    let token = cmd
-        .split_whitespace()
-        .find(|t| !is_env_assignment(t))?;
+    let token = cmd.split_whitespace().find(|t| !is_env_assignment(t))?;
     let token = unquote(token);
     if token.is_empty() {
         return None;
@@ -265,10 +263,7 @@ fn normalized_program(cmd: &str) -> Option<&str> {
 fn is_env_assignment(token: &str) -> bool {
     match token.split_once('=') {
         Some((name, _)) => {
-            !name.is_empty()
-                && name
-                    .chars()
-                    .all(|c| c == '_' || c.is_ascii_alphanumeric())
+            !name.is_empty() && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
         }
         None => false,
     }
@@ -467,15 +462,9 @@ mod tests {
             evaluate_shell("CARGO_TERM_COLOR=always cargo build", &p),
             Decision::Auto
         );
-        assert_eq!(
-            evaluate_shell("FOO=1 BAR=2 git status", &p),
-            Decision::Auto
-        );
+        assert_eq!(evaluate_shell("FOO=1 BAR=2 git status", &p), Decision::Auto);
         // Path-prefixed program matches the bare entry via basename.
-        assert_eq!(
-            evaluate_shell("/usr/bin/cargo build", &p),
-            Decision::Auto
-        );
+        assert_eq!(evaluate_shell("/usr/bin/cargo build", &p), Decision::Auto);
         // Surrounding quotes on the program token are stripped.
         assert_eq!(evaluate_shell("\"cargo\" build", &p), Decision::Auto);
         assert_eq!(evaluate_shell("'git' status", &p), Decision::Auto);

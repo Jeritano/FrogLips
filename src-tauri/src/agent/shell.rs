@@ -424,6 +424,13 @@ fn shell_sandbox_profile() -> Option<String> {
         let sp = esc(sub);
         p.push_str(&format!("  (subpath \"{he}/{sp}\")\n"));
     }
+    // Absolute root credential stores (system Keychain, sudo state). Home-relative
+    // creds were already denied above; this closes the absolute gap (sec review
+    // 2026-06 MED) without denying /etc (builds need it).
+    for abs in crate::security_manifest::manifest().absolute_sandbox_deny() {
+        let sp = esc(abs);
+        p.push_str(&format!("  (subpath \"{sp}\")\n"));
+    }
     p.push_str(")\n");
     Some(p)
 }
@@ -470,7 +477,7 @@ fn sandbox_active() -> bool {
 /// Base Command for an inner argv, wrapped in sandbox-exec (credential-deny
 /// profile) when sandboxing is active, else the argv run directly. The probe in
 /// `sandbox_active` guarantees the wrap can't brick shell on a bad profile.
-fn base_command(argv: &[&str]) -> tokio::process::Command {
+pub(super) fn base_command(argv: &[&str]) -> tokio::process::Command {
     if sandbox_active() {
         if let Some(profile) = cached_sandbox_profile() {
             let mut c = tokio::process::Command::new("/usr/bin/sandbox-exec");
@@ -528,7 +535,7 @@ fn sensitive_env_keys() -> &'static [String] {
     })
 }
 
-fn harden_env(cmd: &mut tokio::process::Command, user_env: Option<&[(String, String)]>) {
+pub(super) fn harden_env(cmd: &mut tokio::process::Command, user_env: Option<&[(String, String)]>) {
     for k in sensitive_env_keys() {
         cmd.env_remove(k);
     }
@@ -793,11 +800,13 @@ mod tests {
             .lines()
             .filter_map(|l| l.trim().strip_prefix("(subpath \""))
             .filter_map(|l| l.strip_suffix("\")"))
-            .map(|sp| {
+            // HOME-relative entries only: absolute root denies (e.g.
+            // /Library/Keychains) don't carry the home prefix and are asserted
+            // separately in sandbox_denies_absolute_root_credential_stores.
+            .filter_map(|sp| {
                 sp.strip_prefix(home)
                     .and_then(|s| s.strip_prefix('/'))
-                    .unwrap_or(sp)
-                    .to_string()
+                    .map(|s| s.to_string())
             })
             .collect()
     }
@@ -899,5 +908,28 @@ mod tests {
             "Seatbelt cage is NOT a superset of the read-credential denylist; \
              uncovered (add sandboxDeny:true or carve out): {gap:?}"
         );
+    }
+
+    #[test]
+    fn sandbox_denies_absolute_root_credential_stores() {
+        // The Seatbelt cage must deny the absolute root secret stores (system
+        // Keychain + sudo state) — these were previously reachable from
+        // run_shell because the profile only emitted home-relative denies
+        // (sec review 2026-06). /etc must NOT be denied (builds read it).
+        let abs: std::collections::BTreeSet<&str> = crate::security_manifest::manifest()
+            .absolute_sandbox_deny()
+            .collect();
+        assert!(
+            abs.contains("/Library/Keychains"),
+            "system Keychain not caged"
+        );
+        assert!(
+            abs.contains("/private/var/db/sudo") || abs.contains("/var/db/sudo"),
+            "sudo state not caged"
+        );
+        assert!(!abs.contains("/etc"), "/etc must stay readable for builds");
+        // And the generated profile actually contains the absolute subpath rule.
+        let profile = shell_sandbox_profile().expect("profile builds");
+        assert!(profile.contains("(subpath \"/Library/Keychains\")"));
     }
 }

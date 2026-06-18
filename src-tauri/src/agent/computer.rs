@@ -42,9 +42,8 @@ use serde_json::{json, Value};
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
-    fn AXIsProcessTrustedWithOptions(
-        options: core_foundation::dictionary::CFDictionaryRef,
-    ) -> bool;
+    fn AXIsProcessTrustedWithOptions(options: core_foundation::dictionary::CFDictionaryRef)
+        -> bool;
 }
 
 /// Mapping captured by the most recent `cu_screenshot`, used to translate the
@@ -141,7 +140,9 @@ pub async fn screenshot() -> Result<Value, String> {
         .await
         .map_err(|e| format!("screencapture failed: {e}"))?;
     if !status.success() {
-        return Err(format!("screencapture exited {status} (Screen Recording permission may be required)"));
+        return Err(format!(
+            "screencapture exited {status} (Screen Recording permission may be required)"
+        ));
     }
 
     // Downscale to cap vision-token cost. Best-effort: if sips is unavailable
@@ -196,8 +197,16 @@ pub async fn screenshot() -> Result<Value, String> {
 /// display bounds. Returns None when no screenshot has established a mapping.
 fn map_point(x: f64, y: f64) -> Option<CGPoint> {
     let g = (*LAST_SHOT.lock())?;
-    let sx = if g.img_w > 0.0 { g.point_w / g.img_w } else { 1.0 };
-    let sy = if g.img_h > 0.0 { g.point_h / g.img_h } else { 1.0 };
+    let sx = if g.img_w > 0.0 {
+        g.point_w / g.img_w
+    } else {
+        1.0
+    };
+    let sy = if g.img_h > 0.0 {
+        g.point_h / g.img_h
+    } else {
+        1.0
+    };
     let mut px = g.origin_x + x * sx;
     let mut py = g.origin_y + y * sy;
     px = px.clamp(g.origin_x, g.origin_x + g.point_w - 1.0);
@@ -245,8 +254,7 @@ pub fn move_to(x: f64, y: f64) -> Value {
     let Ok(src) = source() else {
         return soft_fail("cu_move", "failed to create event source");
     };
-    if let Ok(ev) =
-        CGEvent::new_mouse_event(src, CGEventType::MouseMoved, pt, CGMouseButton::Left)
+    if let Ok(ev) = CGEvent::new_mouse_event(src, CGEventType::MouseMoved, pt, CGMouseButton::Left)
     {
         ev.post(CGEventTapLocation::HID);
         ok_action("cu_move", format!("moved to ({:.0},{:.0})", pt.x, pt.y))
@@ -308,7 +316,10 @@ pub fn drag(x1: f64, y1: f64, x2: f64, y2: f64) -> Value {
     const STEPS: i32 = 12;
     for s in 1..=STEPS {
         let t = s as f64 / STEPS as f64;
-        let p = CGPoint::new(start.x + (end.x - start.x) * t, start.y + (end.y - start.y) * t);
+        let p = CGPoint::new(
+            start.x + (end.x - start.x) * t,
+            start.y + (end.y - start.y) * t,
+        );
         if let Ok(ev) = make(CGEventType::LeftMouseDragged, p) {
             ev.post(CGEventTapLocation::HID);
         }
@@ -336,9 +347,12 @@ pub fn scroll(x: f64, y: f64, dx: i32, dy: i32) -> Value {
         return soft_fail("cu_scroll", "failed to create event source");
     };
     // Position the pointer first so the scroll lands on the intended region.
-    if let Ok(mv) =
-        CGEvent::new_mouse_event(src.clone(), CGEventType::MouseMoved, pt, CGMouseButton::Left)
-    {
+    if let Ok(mv) = CGEvent::new_mouse_event(
+        src.clone(),
+        CGEventType::MouseMoved,
+        pt,
+        CGMouseButton::Left,
+    ) {
         mv.post(CGEventTapLocation::HID);
     }
     // wheel1 = vertical (positive = up), wheel2 = horizontal.
@@ -406,13 +420,42 @@ fn keycode_for(name: &str) -> Option<u16> {
         "f10" => 0x6D,
         "f11" => 0x67,
         "f12" => 0x6F,
-        "a" => 0x00, "s" => 0x01, "d" => 0x02, "f" => 0x03, "h" => 0x04, "g" => 0x05,
-        "z" => 0x06, "x" => 0x07, "c" => 0x08, "v" => 0x09, "b" => 0x0B, "q" => 0x0C,
-        "w" => 0x0D, "e" => 0x0E, "r" => 0x0F, "y" => 0x10, "t" => 0x11, "o" => 0x1F,
-        "u" => 0x20, "i" => 0x22, "p" => 0x23, "l" => 0x25, "j" => 0x26, "k" => 0x28,
-        "n" => 0x2D, "m" => 0x2E,
-        "1" => 0x12, "2" => 0x13, "3" => 0x14, "4" => 0x15, "5" => 0x17, "6" => 0x16,
-        "7" => 0x1A, "8" => 0x1C, "9" => 0x19, "0" => 0x1D,
+        "a" => 0x00,
+        "s" => 0x01,
+        "d" => 0x02,
+        "f" => 0x03,
+        "h" => 0x04,
+        "g" => 0x05,
+        "z" => 0x06,
+        "x" => 0x07,
+        "c" => 0x08,
+        "v" => 0x09,
+        "b" => 0x0B,
+        "q" => 0x0C,
+        "w" => 0x0D,
+        "e" => 0x0E,
+        "r" => 0x0F,
+        "y" => 0x10,
+        "t" => 0x11,
+        "o" => 0x1F,
+        "u" => 0x20,
+        "i" => 0x22,
+        "p" => 0x23,
+        "l" => 0x25,
+        "j" => 0x26,
+        "k" => 0x28,
+        "n" => 0x2D,
+        "m" => 0x2E,
+        "1" => 0x12,
+        "2" => 0x13,
+        "3" => 0x14,
+        "4" => 0x15,
+        "5" => 0x17,
+        "6" => 0x16,
+        "7" => 0x1A,
+        "8" => 0x1C,
+        "9" => 0x19,
+        "0" => 0x1D,
         "-" | "minus" => 0x1B,
         "=" | "equal" => 0x18,
         "," | "comma" => 0x2B,
@@ -446,7 +489,11 @@ pub fn key(combo: &str) -> Value {
     if let Err(v) = guard("cu_key") {
         return v;
     }
-    let parts: Vec<&str> = combo.split('+').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = combo
+        .split('+')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
     let Some((key_name, mods)) = parts.split_last() else {
         return soft_fail("cu_key", "empty key combo");
     };
@@ -485,8 +532,16 @@ pub fn cursor_position() -> Value {
     };
     let p = ev.location();
     let img = (*LAST_SHOT.lock()).map(|g| {
-        let sx = if g.point_w > 0.0 { g.img_w / g.point_w } else { 1.0 };
-        let sy = if g.point_h > 0.0 { g.img_h / g.point_h } else { 1.0 };
+        let sx = if g.point_w > 0.0 {
+            g.img_w / g.point_w
+        } else {
+            1.0
+        };
+        let sy = if g.point_h > 0.0 {
+            g.img_h / g.point_h
+        } else {
+            1.0
+        };
         ((p.x - g.origin_x) * sx, (p.y - g.origin_y) * sy)
     });
     json!({

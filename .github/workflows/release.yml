@@ -12,9 +12,14 @@ name: Release builds
 # (DMG + .app.tar.gz + .sig), so either path can ship a release.
 
 on:
-  push:
-    tags:
-      - 'v*'
+  # Releases are cut LOCALLY via `scripts/release.sh` (build + Developer-ID sign
+  # + Apple notarize + `gh release` upload) — that is the supported path. This
+  # CI workflow needs the Apple Developer ID cert + notary credentials as repo
+  # secrets to produce a signed mac-arm64 artifact; those are NOT configured, so
+  # a tag-triggered run always failed ("missing signed mac-arm64 artifact") and
+  # emailed a red build on every release. It is therefore manual-only — run it
+  # from the Actions tab IF/when those signing secrets are ever added.
+  workflow_dispatch: {}
 
 # Two simultaneous tag pushes (e.g. an accidental re-push, or a fast retag)
 # would race on `gh release upload --clobber` and could leave the release with

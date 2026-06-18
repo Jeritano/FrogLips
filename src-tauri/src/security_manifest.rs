@@ -137,6 +137,18 @@ impl SecurityManifest {
             .filter(|e| e.sandbox_deny)
             .map(|e| e.path.as_str())
     }
+
+    /// Absolute literal paths the Seatbelt cage denies for shell children.
+    /// Only the truly-sensitive root credential stores (system Keychain, sudo
+    /// state) are flagged — `/etc` deliberately stays readable so builds can
+    /// read hosts/resolv.conf/ssl certs.
+    pub fn absolute_sandbox_deny(&self) -> impl Iterator<Item = &str> {
+        self.protected_paths
+            .absolute
+            .iter()
+            .filter(|e| e.sandbox_deny)
+            .map(|e| e.path.as_str())
+    }
 }
 
 #[cfg(test)]

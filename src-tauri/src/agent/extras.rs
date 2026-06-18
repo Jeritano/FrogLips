@@ -385,8 +385,7 @@ pub async fn diff_files(left: String, right: String) -> Result<DiffResult, Strin
     if exit != 0 && exit != 1 {
         // stderr can echo attacker-controlled pathspecs/filenames; fence before
         // it re-enters the model via the error string.
-        let stderr =
-            crate::agent::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&err)).0;
+        let stderr = crate::agent::injection_scan::scan_and_wrap(&String::from_utf8_lossy(&err)).0;
         return Err(ok_err("io", format!("git diff exit {exit}: {stderr}")));
     }
     // Sec audit round 6: the diff body is the verbatim content of two arbitrary

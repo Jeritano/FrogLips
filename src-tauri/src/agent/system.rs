@@ -17,30 +17,40 @@ pub async fn applescript_run(script: String) -> Result<ShellResult, String> {
         return Err(err_string(ToolError::invalid("script length invalid")));
     }
     let started = Instant::now();
-    let mut cmd = tokio::process::Command::new("osascript");
-    cmd.arg("-e").arg(&script);
+    // Cage osascript exactly like run_shell (sec review 2026-06 HIGH): wrap it in
+    // the same Seatbelt credential-deny profile via `base_command` so an embedded
+    // `do shell script` INHERITS the cage (can't read ~/.ssh, Keychains, cookies)
+    // instead of escaping it, and strip secrets from the child env via
+    // `harden_env`. Previously osascript ran completely uncaged — a strictly more
+    // powerful exec primitive than the sandboxed run_shell.
+    let mut cmd = super::shell::base_command(&["osascript", "-e", script.as_str()]);
+    super::shell::harden_env(&mut cmd, None);
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let timeout = std::time::Duration::from_secs(APPLESCRIPT_TIMEOUT_SECS);
     // capped_output bounds stdout/stderr buffering (concurrent drain + hard cap)
-    // so an osascript spewing unbounded output can't OOM the app.
-    let (out, err, exit_code) =
-        match tokio::time::timeout(timeout, super::shell::capped_output(cmd, MAX_SHELL_OUTPUT, false))
-            .await
-        {
-            Ok(Ok(triple)) => triple,
-            Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
-            Err(_) => {
-                return Ok(ShellResult {
-                    stdout: String::new(),
-                    stderr: format!("timed out after {APPLESCRIPT_TIMEOUT_SECS}s"),
-                    exit_code: -1,
-                    duration_ms: started.elapsed().as_millis() as u64,
-                    timed_out: true,
-                })
-            }
-        };
+    // so an osascript spewing unbounded output can't OOM the app. `harden=true`
+    // also puts it in its own process group so a backgrounded `do shell script &`
+    // is reaped on timeout.
+    let (out, err, exit_code) = match tokio::time::timeout(
+        timeout,
+        super::shell::capped_output(cmd, MAX_SHELL_OUTPUT, true),
+    )
+    .await
+    {
+        Ok(Ok(triple)) => triple,
+        Ok(Err(e)) => return Err(err_string(ToolError::io(e.to_string()))),
+        Err(_) => {
+            return Ok(ShellResult {
+                stdout: String::new(),
+                stderr: format!("timed out after {APPLESCRIPT_TIMEOUT_SECS}s"),
+                exit_code: -1,
+                duration_ms: started.elapsed().as_millis() as u64,
+                timed_out: true,
+            })
+        }
+    };
     // Review 2026-06 (medium/security): osascript output is at least as
     // untrusted as run_shell/clipboard output — AppleScript can read Mail,
     // Messages, Safari page contents, the clipboard, etc. Fence both channels

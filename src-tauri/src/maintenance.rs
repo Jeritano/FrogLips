@@ -161,7 +161,9 @@ fn count_archived() -> Result<i64> {
             return Ok(0);
         }
         let n: i64 = c
-            .query_row("SELECT COUNT(*) FROM arch.messages_archive", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM arch.messages_archive", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
         Ok(n)
     })
@@ -744,6 +746,23 @@ pub fn restore_archived(conversation_id: i64) -> Result<usize> {
         history::with_write_lock(|| {
             conn.execute_batch("BEGIN IMMEDIATE")?;
             let inner = (|| -> Result<usize> {
+                // The parent conversation may have been DELETED after its
+                // messages were archived (the archive snapshots the title for
+                // exactly this case). Recreate a stub from the snapshotted title
+                // first, or the restored messages would be orphaned / violate the
+                // messages→conversations FK (review M5). INSERT OR IGNORE is a
+                // no-op when the conversation still exists; HAVING COUNT(*)>0
+                // means no stub is created when there's nothing to restore.
+                conn.execute(
+                    "INSERT OR IGNORE INTO conversations (id, title, created_at)
+                     SELECT ?1,
+                            COALESCE(MIN(conversation_title), 'Restored conversation'),
+                            COALESCE(MIN(created_at), strftime('%s','now'))
+                     FROM arch.messages_archive
+                     WHERE conversation_id = ?1
+                     HAVING COUNT(*) > 0",
+                    params![conversation_id],
+                )?;
                 // Re-insert with the ORIGINAL ids (the archive preserves them).
                 // The FTS insert-trigger reindexes each restored row.
                 let n = conn.execute(
@@ -856,7 +875,10 @@ mod tests {
             )
             .unwrap()
         };
-        assert_eq!(archived_here, 0, "the old message must have been archived (moved out of messages)");
+        assert_eq!(
+            archived_here, 0,
+            "the old message must have been archived (moved out of messages)"
+        );
 
         let present = |id: i64| -> i64 {
             let conn = get_db().unwrap();

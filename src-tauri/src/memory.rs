@@ -1374,7 +1374,10 @@ mod tests {
         // Must not panic.
         crate::history::ensure_vec_tables_present(&conn).expect("mixed-dim backfill no panic");
         let table_dim = crate::history::vec_table_dim(&conn, crate::history::VEC_MEMORIES);
-        assert!(table_dim.is_some(), "vec table created at the first-seen dim");
+        assert!(
+            table_dim.is_some(),
+            "vec table created at the first-seen dim"
+        );
         let td = table_dim.unwrap();
         // vec0 is usable only for the table's own dim; the other dim falls back.
         assert!(crate::history::vec0_usable_for(

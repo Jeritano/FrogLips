@@ -4,6 +4,73 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.17] — 2026-06-17
+
+Full-codebase security review remediation. A 9-agent adversarial review swept the
+agent tool layer, IPC/approval-token boundary, MCP, settings/secrets, persistence,
+backends, and frontend. The core was already strongly hardened (approval tokens,
+MCP, frontend XSS, SQL injection, and SSRF all verified clean); these fixes close
+the gaps it surfaced. Every fix was independently re-verified by a second pass.
+
+### Fixed
+
+- **AppleScript sandbox escape (High)** — `applescript_run` spawned `osascript`
+  outside the Seatbelt cage and without env hardening, so an embedded
+  `do shell script` could read `~/.ssh`, Keychains, and cookies that `run_shell`
+  blocks. It now runs through the same sandbox-exec credential-deny profile +
+  secret-stripped environment as the shell tools.
+- **Saved-API keys leaked to the webview (High)** — `settings_get` returned
+  `saved_apis` keys (GitHub PATs, etc.) in plaintext because the redaction layer
+  masked `custom_backends` but not `saved_apis`. Now masked; the marker
+  round-trips losslessly so saving doesn't erase the stored key.
+- **Seatbelt absolute-path denies (Medium)** — the shell sandbox only denied
+  `$HOME`-relative credential paths; it now also denies the absolute root stores
+  (system Keychain, sudo state). `/etc` stays readable so builds keep working.
+- **Custom-backend Keychain collision (Medium)** — a custom backend's `id` is used
+  as a Keychain account; the validator now rejects an `id` containing `:` or named
+  `openrouter` so it can't clobber another feature's namespaced secret.
+- **Archive restore could orphan messages (Medium)** — restoring an archived
+  conversation that was later deleted re-created the parent conversation from the
+  snapshotted title instead of leaving orphaned / FK-violating message rows.
+- **web_search result URLs unvalidated (Medium)** — search results (attacker-
+  influenceable markup) are now filtered to safe http(s) public hosts before being
+  surfaced to the model.
+- **call_api key redaction (Low)** — now also redacts the common base64 echo of a
+  reflected key, with a min-length guard against over-redaction.
+- **GGUF download size ceiling (Low)** — a 256 GiB cap prevents a hostile endpoint
+  (reached via redirect) from filling the disk.
+- **Workspace-confinement consistency (Low)** — `within_workspace` now uses the
+  same case-insensitive path comparison as the protected-path denylist.
+- **Hardening (Low)** — `search_files` regex compilation is now size-capped;
+  trailing-dot hostnames are normalized in the SSRF host check.
+
+A second, deeper adversarial audit (12 security lenses → refutation voting →
+completeness critic) then ran against the hardened tree and surfaced these,
+each re-verified before fixing:
+
+- **Remote-chat exfiltration / lethal trifecta (High)** — the messaging gateway's
+  "read-only" remote tool set paired local file/git reads with **web egress**
+  (`web_fetch`/`web_search`) in an **unattended** channel. A prompt-injection in a
+  chat message (or in content the agent read) could read a local secret and POST
+  it to an attacker URL with no human to veto. Web egress is removed from the
+  remote allowlist — remote runs read local context and reply only to the
+  allowlisted requester, with no arbitrary outbound channel. Remote runs are also
+  confined to the configured workspace when one is set.
+- **read_pdf decompression bomb (Medium)** — `read_pdf` slurped an uncapped file
+  into `pdf-extract` (unbounded FlateDecode inflation) → a tiny malicious PDF
+  could OOM the app. Now size-capped before read, like `read_file`/RAG ingest.
+- **Diagnostics-bundle secret leak (Medium)** — the shareable bundle redacted only
+  `settings.json`, not the bundled `app.log`/`crash.log`/`diag.log`; MCP server
+  spawn args (which carry secrets positionally, e.g. `--token …`) were logged
+  verbatim. Logs are now run through a plain-text secret redactor, and MCP args
+  are redacted at the log site.
+- **Hardening (Low)** — the runtime dir (`~/.local-llm-app`) is set to `0700` so
+  rolling logs aren't readable by other local users; the MCP stderr drainer is
+  now bounded per line (no unterminated-line OOM).
+
+(Deferred: a DOMPurify patch-bump was reverted — it broke the sanitizer in test,
+so the verified-clean 3.4.5 is kept pending a properly-tested upgrade.)
+
 ## [0.14.16] — 2026-06-17
 
 Messaging-layer review remediation (round 2) — a focused full review of the

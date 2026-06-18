@@ -311,7 +311,10 @@ mod tests {
     /// silently producing garbage vectors. This pins the safe degradation.
     #[test]
     fn candle_is_inert_until_runner_lands() {
-        assert!(!candle_available(), "candle must report unavailable for now");
+        assert!(
+            !candle_available(),
+            "candle must report unavailable for now"
+        );
         let err = candle_embed_batch(&["x"]).unwrap_err().to_string();
         assert!(
             err.contains("not available") && err.contains("re-ingest"),
