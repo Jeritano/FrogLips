@@ -248,3 +248,26 @@
   font-size: var(--fs-sm);
   margin-top: var(--space-2);
 }
+
+/* Honest "beta — unverified against a live server" markers. */
+.msg-beta {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+.msg-beta-note {
+  font-size: var(--fs-sm);
+  color: var(--text-muted, #6b7280);
+  line-height: var(--leading-body, 1.5);
+  padding: var(--space-3);
+  border: var(--border-hairline);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-2);
+  margin-bottom: var(--space-4);
+}

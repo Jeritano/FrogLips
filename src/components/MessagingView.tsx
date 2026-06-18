@@ -27,6 +27,9 @@ interface ChannelSpec {
   badge: string;
   desc: string;
   available?: boolean;
+  /** Implemented to spec but NOT yet verified against a live server — shown as
+   *  a "Beta" badge + caution so we don't overclaim. */
+  beta?: boolean;
   secretLabel?: string;
   secretHint?: string;
   allowedLabel?: string;
@@ -62,7 +65,7 @@ const CHANNELS: ChannelSpec[] = [
     guide: { label: "Matrix client-server API", url: "https://matrix.org/docs/" },
   },
   {
-    id: "discord", name: "Discord", color: "#5865F2", badge: "D", available: true,
+    id: "discord", name: "Discord", color: "#5865F2", badge: "D", available: true, beta: true,
     desc: "Run Froglips from Discord servers and DMs.",
     secretLabel: "Bot token",
     secretHint: "Bot token from the Discord Developer Portal (enable the Message Content intent).",
@@ -72,7 +75,7 @@ const CHANNELS: ChannelSpec[] = [
     guide: { label: "Discord Developer Portal", url: "https://discord.com/developers/applications" },
   },
   {
-    id: "slack", name: "Slack", color: "#4A154B", badge: "S", available: true,
+    id: "slack", name: "Slack", color: "#4A154B", badge: "S", available: true, beta: true,
     desc: "Run Froglips from Slack via Socket Mode.",
     secretLabel: "App token | Bot token",
     secretHint: "Both tokens separated by a pipe: xapp-… | xoxb-… (Socket Mode app token, then bot token).",
@@ -82,7 +85,7 @@ const CHANNELS: ChannelSpec[] = [
     guide: { label: "Slack Socket Mode", url: "https://api.slack.com/apis/socket-mode" },
   },
   {
-    id: "mattermost", name: "Mattermost", color: "#0058CC", badge: "M", available: true,
+    id: "mattermost", name: "Mattermost", color: "#0058CC", badge: "M", available: true, beta: true,
     desc: "Run Froglips from Mattermost.",
     secretLabel: "Bot token",
     secretHint: "A bot access token. Stored in your macOS Keychain.",
@@ -299,6 +302,7 @@ export function MessagingView() {
             >
               <BrandIcon ch={c} cls="msg-chan-icon" />
               <span className="msg-chan-name">{c.name}</span>
+              {c.beta && <span className="msg-beta">beta</span>}
               <span className={`msg-dot${statusOf(c.id)?.running ? " on" : ""}`} />
             </button>
           ))}
@@ -317,6 +321,13 @@ export function MessagingView() {
 
           {chan.available ? (
             <>
+              {chan.beta && (
+                <div className="msg-beta-note">
+                  <strong>Beta.</strong> This connector is implemented to the
+                  platform spec but has not yet been verified against a live{" "}
+                  {chan.name} server. Expect rough edges; please report issues.
+                </div>
+              )}
               <div className="msg-pills">
                 <span className={`msg-pill${enabled ? " on" : ""}`}>
                   {enabled ? "Enabled" : "Disabled"}
