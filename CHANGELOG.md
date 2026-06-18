@@ -4,6 +4,24 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.18] — 2026-06-18
+
+Honesty + CI pass ahead of a wider launch.
+
+### Changed
+
+- **Messaging: Discord / Slack / Mattermost marked _beta_.** These connectors are
+  implemented to the platform spec but have not yet been verified against a live
+  server, so the UI now shows a "beta" badge + a caution banner rather than
+  presenting them as fully proven. Telegram / Matrix / Email are unflagged
+  (tested).
+
+### Fixed (CI / dev)
+
+- Playwright e2e suite stabilized and re-enabled as a blocking gate: the shared
+  fixture suppresses the first-run tour overlay, and the plain-chat specs now
+  mock the real `/api/chat` NDJSON path (ollama) instead of `/v1` SSE.
+
 ## [0.14.17] — 2026-06-17
 
 Full-codebase security review remediation. A 9-agent adversarial review swept the
