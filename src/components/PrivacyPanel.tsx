@@ -40,6 +40,7 @@ export function PrivacyPanel({
   const [proxyBusy, setProxyBusy] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<string | null>(null);
 
+  // Silent refresh for on-open / after-save (no message spam).
   const refreshProxyStatus = async () => {
     try {
       const st = await api.webProxyStatus();
@@ -48,6 +49,36 @@ export function PrivacyPanel({
       setProxyStatus(null);
     }
   };
+
+  // Test button: ALWAYS reports a result so the click is never silent —
+  // reachable / not reachable / no proxy saved / error.
+  async function testProxy() {
+    setProxyBusy(true);
+    setProxyMsg("Checking…");
+    try {
+      const st = await api.webProxyStatus();
+      setProxyStatus({ enabled: st.enabled, reachable: st.reachable });
+      if (!st.enabled) {
+        setProxyMsg(
+          proxy.trim()
+            ? "No proxy saved yet — click Save first, then Test."
+            : "No proxy configured — egress is direct (not anonymized).",
+        );
+      } else if (st.reachable === true) {
+        setProxyMsg(
+          `● Reachable — ${st.url} is answering. Outbound HTTP is routed through it.`,
+        );
+      } else {
+        setProxyMsg(
+          `● NOT reachable — ${st.url ?? "the proxy"} isn't answering on its port. Requests fail-closed (no direct fallback). Start Tor (SOCKS 9050) or fix the URL.`,
+        );
+      }
+    } catch (e) {
+      setProxyMsg(`Couldn't check proxy status: ${e}`);
+    } finally {
+      setProxyBusy(false);
+    }
+  }
 
   async function saveProxy() {
     setProxyBusy(true);
@@ -214,7 +245,7 @@ export function PrivacyPanel({
             <button
               type="button"
               className="privacy-proxy-save"
-              onClick={() => void refreshProxyStatus()}
+              onClick={() => void testProxy()}
               disabled={proxyBusy}
             >
               Test

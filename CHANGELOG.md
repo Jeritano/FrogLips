@@ -4,6 +4,16 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.24] — 2026-06-23
+
+### Fixed
+
+- **Proxy "Test" button gave no feedback.** The result line only rendered when a
+  proxy was already saved + enabled, so clicking Test before saving (or with the
+  field empty) did nothing. Test now ALWAYS reports: reachable, not reachable
+  (with the fail-closed reminder), "no proxy saved — Save first", or an error —
+  and shows a "Checking…" state while it probes.
+
 ## [0.14.23] — 2026-06-23
 
 Optional anonymizing egress proxy (Tor/SOCKS) for outbound web calls.
