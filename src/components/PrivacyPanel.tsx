@@ -30,6 +30,43 @@ export function PrivacyPanel({
   const [backend, setBackend] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<string | null>(null);
 
+  // Anonymizing egress proxy (Tor/SOCKS). `proxy` is the editable input;
+  // `proxyStatus` is the live reachability of whatever is currently saved.
+  const [proxy, setProxy] = useState("");
+  const [proxyStatus, setProxyStatus] = useState<{
+    enabled: boolean;
+    reachable: boolean | null;
+  } | null>(null);
+  const [proxyBusy, setProxyBusy] = useState(false);
+  const [proxyMsg, setProxyMsg] = useState<string | null>(null);
+
+  const refreshProxyStatus = async () => {
+    try {
+      const st = await api.webProxyStatus();
+      setProxyStatus({ enabled: st.enabled, reachable: st.reachable });
+    } catch {
+      setProxyStatus(null);
+    }
+  };
+
+  async function saveProxy() {
+    setProxyBusy(true);
+    setProxyMsg(null);
+    try {
+      await api.settingsSet({ web_proxy: proxy.trim() || null });
+      await refreshProxyStatus();
+      setProxyMsg(
+        proxy.trim()
+          ? "Saved. New connections route through the proxy; restart to be sure all do."
+          : "Proxy disabled — egress is direct.",
+      );
+    } catch (e) {
+      setProxyMsg(`Couldn't save: ${e}`);
+    } finally {
+      setProxyBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (!open) return;
     void (async () => {
@@ -44,6 +81,13 @@ export function PrivacyPanel({
       } catch {
         setWorkspace(null);
       }
+      try {
+        const s = await api.settingsGet();
+        setProxy(s.web_proxy ?? "");
+      } catch {
+        setProxy("");
+      }
+      void refreshProxyStatus();
     })();
   }, [open]);
 
@@ -135,6 +179,62 @@ export function PrivacyPanel({
           <p className="privacy-muted">
             Path checks are case-insensitive, and untrusted text from the web,
             files, and tools is fenced as DATA so it can't hijack the agent.
+          </p>
+        </section>
+
+        <section className="privacy-section">
+          <h3>Anonymizing egress proxy</h3>
+          <p className="privacy-muted">
+            Route all outbound HTTP (web tools, cloud APIs, HuggingFace, the
+            updater) through a proxy — typically Tor. Use{" "}
+            <code>socks5h://127.0.0.1:9050</code> (the <code>h</code> resolves
+            DNS at the proxy — no leak). Loopback is never proxied, so local
+            Ollama/MLX keep working.
+          </p>
+          <div className="privacy-proxy-row">
+            <input
+              type="text"
+              className="privacy-proxy-input"
+              placeholder="socks5h://127.0.0.1:9050  (blank = direct)"
+              value={proxy}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              onChange={(e) => setProxy(e.target.value)}
+              aria-label="Egress proxy URL"
+            />
+            <button
+              type="button"
+              className="privacy-proxy-save"
+              onClick={() => void saveProxy()}
+              disabled={proxyBusy}
+            >
+              {proxyBusy ? "Saving…" : "Save"}
+            </button>
+            <button
+              type="button"
+              className="privacy-proxy-save"
+              onClick={() => void refreshProxyStatus()}
+              disabled={proxyBusy}
+            >
+              Test
+            </button>
+          </div>
+          {proxyStatus?.enabled && (
+            <p className="privacy-muted" data-testid="proxy-status">
+              {proxyStatus.reachable === true
+                ? "● Proxy reachable — egress is anonymized."
+                : proxyStatus.reachable === false
+                  ? "● Proxy NOT reachable — requests will FAIL (fail-closed, no direct fallback). Start Tor, or clear the field."
+                  : "Proxy configured."}
+            </p>
+          )}
+          {proxyMsg && <p className="privacy-muted">{proxyMsg}</p>}
+          <p className="privacy-muted">
+            Honest scope: this hides your IP for the HTTP paths. It does NOT make
+            you untraceable — authenticated cloud APIs still log your account +
+            content, and the computer-use browser can leak via fingerprinting.
+            For real privacy, keep inference local.
           </p>
         </section>
 

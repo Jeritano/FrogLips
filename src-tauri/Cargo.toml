@@ -1,6 +1,6 @@
 [package]
 name = "local-llm-app"
-version = "0.14.22"
+version = "0.14.23"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["Joseph D Eritano"]
 edition = "2021"
@@ -87,7 +87,7 @@ regex = "1"
 # `blocking` is required by embedder.rs (probe/embed singleton clients). It was
 # previously satisfied transitively; a dependency-resolution drift dropped it,
 # so it is declared explicitly here (version-independent, fail-closed).
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate", "stream", "json", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate", "stream", "json", "blocking", "socks"] }
 futures = "0.3"
 base64 = "0.22"
 getrandom = "0.2"

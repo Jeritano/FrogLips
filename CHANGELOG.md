@@ -4,6 +4,34 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.23] — 2026-06-23
+
+Optional anonymizing egress proxy (Tor/SOCKS) for outbound web calls.
+
+### Added
+
+- **Anonymizing egress proxy.** A new `web_proxy` setting (Privacy & safety
+  panel) routes ALL of the app's outbound HTTP — web tools, cloud model APIs,
+  HuggingFace pulls, MCP HTTP, the `hf` downloader, and the Ollama daemon's
+  cloud egress — through a single proxy, typically Tor
+  (`socks5h://127.0.0.1:9050`). Built on a centralized client factory
+  (`net.rs`) so every reqwest client + relevant subprocess shares it.
+  - **`socks5h`** resolves DNS at the proxy (no DNS leak).
+  - **Loopback is never proxied** (`127.0.0.1`/`localhost`/`::1`) — local
+    Ollama/MLX/llama.cpp backends keep working.
+  - **Fail-closed**: with a proxy set, requests go through it or fail — there is
+    no silent direct fallback (which would deanonymize). A malformed proxy URL
+    is rejected at save time.
+  - App-identifying `User-Agent`s ("Froglips/0.x") on the egress paths are
+    replaced with a generic one.
+  - The Privacy panel shows live reachability and a Test button.
+
+  **Honest scope:** this gives strong IP-level anonymity for the HTTP paths. It
+  does NOT make you untraceable — authenticated cloud APIs still log your
+  account + content, and the computer-use browser can leak via fingerprinting.
+  For real privacy, keep inference local. Known v1 gaps (not yet proxied): the
+  Tauri auto-updater's GitHub check and native (mistralrs) model downloads.
+
 ## [0.14.22] — 2026-06-22
 
 No more corrupted model downloads from a double-download race.

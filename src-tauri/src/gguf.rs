@@ -401,8 +401,7 @@ pub async fn download<R: tauri::Runtime>(
     // Resume: if a partial `.part` exists, send Range: bytes=N-.
     let existing = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     let url = hf_download_url(&repo, &filename);
-    let client = reqwest::Client::builder()
-        .user_agent("froglips-gguf-downloader/0.1")
+    let client = crate::net::client_builder()
         // 30-min absolute cap. Within that window, reqwest will stream
         // bytes as they arrive — there's no per-chunk timeout.
         .timeout(std::time::Duration::from_secs(1800))

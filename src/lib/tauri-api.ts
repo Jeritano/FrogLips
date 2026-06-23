@@ -1102,6 +1102,12 @@ export const api = {
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsSet: (patch: Partial<AppSettings>) =>
     invoke<AppSettings>("settings_set", { patch }),
+  // Anonymizing-egress-proxy status for the Privacy panel indicator:
+  // { enabled, url, reachable } (reachable is null when no proxy is set).
+  webProxyStatus: () =>
+    invoke<{ enabled: boolean; url: string | null; reachable: boolean | null }>(
+      "web_proxy_status",
+    ),
 
   // First-run setup wizard
   setupCompleteGet: () => invoke<boolean>("setup_complete_get"),

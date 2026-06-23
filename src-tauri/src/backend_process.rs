@@ -975,12 +975,19 @@ fn spawn_ollama_daemon() -> Result<()> {
         .ollama_keep_alive
         .unwrap_or_else(|| "30m".to_string());
     // kill_on_drop(false): dropping the handle leaves the OS process running.
-    let _child = Command::new("ollama")
-        .arg("serve")
+    let mut cmd = Command::new("ollama");
+    cmd.arg("serve")
         .env("OLLAMA_FLASH_ATTENTION", "1")
         .env("OLLAMA_KV_CACHE_TYPE", "q8_0")
         .env("OLLAMA_KEEP_ALIVE", keep)
-        .env("OLLAMA_NUM_PARALLEL", "1")
+        .env("OLLAMA_NUM_PARALLEL", "1");
+    // Route the daemon's OUTBOUND egress (e.g. `:cloud` model calls to
+    // ollama.com) through the anonymizing proxy. NO_PROXY keeps the local
+    // serving socket (127.0.0.1:11434) direct. No-op when no proxy is set.
+    for (k, v) in crate::net::proxy_env() {
+        cmd.env(k, v);
+    }
+    let _child = cmd
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(false)
@@ -1054,7 +1061,7 @@ fn liveness_probe_enabled() -> bool {
 fn probe_client() -> &'static reqwest::Client {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| reqwest::Client::builder().build().unwrap_or_default())
+    CLIENT.get_or_init(|| crate::net::client_builder().build().unwrap_or_default())
 }
 
 fn mlx_server_binary() -> Result<PathBuf> {

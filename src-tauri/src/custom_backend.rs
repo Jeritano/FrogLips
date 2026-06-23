@@ -45,7 +45,7 @@ use crate::settings;
 /// quick-prompt client — cloud first-token latency on a cold model can be
 /// several seconds.
 static CUSTOM_HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
-    reqwest::Client::builder()
+    crate::net::client_builder()
         .timeout(Duration::from_secs(180))
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -439,7 +439,7 @@ async fn build_pinned_client_for(base: &str) -> Result<reqwest::Client> {
         resolved
     };
 
-    reqwest::Client::builder()
+    crate::net::client_builder()
         .timeout(Duration::from_secs(180))
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(bare, &addrs)

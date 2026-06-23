@@ -173,7 +173,7 @@ async fn fetch_html(target: &str) -> Result<String, String> {
     let port = url.port_or_known_default().unwrap_or(443);
     let safe_addrs = resolve_to_safe_addrs(&host, port).await?;
 
-    let mut builder = reqwest::Client::builder()
+    let mut builder = crate::net::client_builder()
         .timeout(Duration::from_secs(15))
         .user_agent(USER_AGENT)
         // No redirects: the SSRF guard above (resolve_to_safe_addrs + the

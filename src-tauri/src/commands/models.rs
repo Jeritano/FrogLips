@@ -513,6 +513,12 @@ pub async fn pull_hf_model(repo_id: String) -> Result<String, String> {
         // progress to stderr) so a long pull cannot buffer unbounded.
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.arg(sub).arg("--").arg(&repo_id);
+        // Route the external `hf` downloader through the anonymizing proxy too,
+        // so a HuggingFace pull doesn't leak the real IP while the in-app HTTP
+        // egress is proxied. No-op when no proxy is configured.
+        for (k, v) in crate::net::proxy_env() {
+            cmd.env(k, v);
+        }
         match tokio::time::timeout(PULL_TIMEOUT, run_capped_pull(cmd)).await {
             Ok(Ok((success, stderr))) => {
                 if success && !stderr.contains("deprecated and no longer works") {

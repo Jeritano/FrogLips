@@ -223,9 +223,8 @@ pub struct McpRegistryEntry {
 }
 
 fn registry_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    crate::net::client_builder()
         .timeout(std::time::Duration::from_secs(15))
-        .user_agent("Froglips-MCP-Browser")
         .build()
         .map_err(|e| format!("http client: {e}"))
 }
@@ -392,7 +391,7 @@ async fn fetch_pulse() -> Result<Vec<McpRegistryEntry>, String> {
     // brotli/deflate so we advertise only `gzip`.
     const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
         AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
-    let client = reqwest::Client::builder()
+    let client = crate::net::client_builder()
         .timeout(std::time::Duration::from_secs(15))
         .user_agent(BROWSER_UA)
         .no_brotli()

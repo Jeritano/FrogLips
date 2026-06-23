@@ -203,12 +203,19 @@ fn build_pinned_no_redirect_client(
     safe_addrs: &[std::net::SocketAddr],
     timeout: std::time::Duration,
 ) -> Result<reqwest::Client, String> {
-    let mut b = reqwest::Client::builder()
+    // Route through the anonymizing proxy (if configured) + a generic,
+    // non-identifying User-Agent (no "Froglips/0.x" fingerprint).
+    let mut b = crate::net::client_builder()
         .timeout(timeout)
-        .user_agent("Froglips/0.9 (+https://github.com/Jeritano/FrogLips)")
         .redirect(reqwest::redirect::Policy::none());
-    for a in safe_addrs {
-        b = b.resolve_to_addrs(host, &[*a]);
+    // The SSRF address-pin only applies on a DIRECT connection. Through a proxy
+    // the proxy resolves + connects, so a local resolve override is inert — and
+    // a Tor exit can't reach the user's LAN regardless. The host was already
+    // validated as public upstream, so skipping the pin when proxied is safe.
+    if !crate::net::proxy_enabled() {
+        for a in safe_addrs {
+            b = b.resolve_to_addrs(host, &[*a]);
+        }
     }
     b.build()
         .map_err(|e| err_string(ToolError::io(e.to_string())))

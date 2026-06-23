@@ -21,7 +21,7 @@ use crate::settings;
 // One client for both MLX and Ollama backends; both are loopback so the
 // connection pool is small and shared safely.
 static QUICK_HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
-    reqwest::Client::builder()
+    crate::net::client_builder()
         .timeout(Duration::from_secs(180))
         .redirect(reqwest::redirect::Policy::none())
         .build()

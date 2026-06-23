@@ -126,6 +126,14 @@ pub struct Settings {
     /// real key, not into the forward-compat bag.
     #[serde(default)]
     pub messaging: MessagingConfig,
+    /// Anonymizing egress proxy (2026-06-23): when set, ALL outbound HTTP (web
+    /// tools, cloud model APIs, HuggingFace, MCP, updater) routes through this
+    /// proxy URL — typically Tor (`socks5h://127.0.0.1:9050`). Loopback is never
+    /// proxied, so local Ollama/MLX backends keep working. `None`/empty = direct.
+    /// Applied to the `net` factory on load + save. See `net.rs` for the (honest)
+    /// scope + limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_proxy: Option<String>,
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -811,6 +819,9 @@ pub fn lock_for_update() -> std::sync::MutexGuard<'static, ()> {
 /// Persist settings. API keys are written to the macOS Keychain and replaced
 /// with an empty placeholder in settings.json so no secret is stored cleartext.
 pub fn save(s: &Settings) -> std::io::Result<()> {
+    // Apply the anonymizing proxy immediately so new HTTP clients pick it up
+    // without a restart (long-lived Lazy clients still need one — see net.rs).
+    crate::net::set_proxy(s.web_proxy.clone());
     let Some(p) = settings_path() else {
         return Ok(());
     };

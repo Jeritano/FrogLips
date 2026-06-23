@@ -23,6 +23,7 @@ mod memory;
 mod messaging;
 mod models;
 mod native_inference;
+mod net;
 mod ollama_library;
 mod policy;
 mod quick_prompt;
@@ -125,6 +126,9 @@ pub fn run() {
     // Surface it loudly instead — name the path AND the error so the user can
     // see why their workspace didn't take.
     let persisted = settings::load();
+    // Apply the anonymizing egress proxy (if configured) BEFORE any HTTP client
+    // is built, so every outbound request from this launch routes through it.
+    net::set_proxy(persisted.web_proxy.clone());
     if let Some(ws) = persisted.workspace_root.clone() {
         match agent::set_workspace_root(Some(ws.clone())) {
             Ok(resolved) => {
@@ -734,6 +738,7 @@ pub fn run() {
             commands::agent::agent_ask_user_cancel,
             commands::misc::settings_get,
             commands::misc::settings_set,
+            commands::misc::web_proxy_status,
             commands::misc::setup_complete_get,
             commands::misc::setup_complete_set,
             commands::server::mlx_probe,

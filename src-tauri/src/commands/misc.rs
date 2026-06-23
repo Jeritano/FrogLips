@@ -952,6 +952,11 @@ pub fn settings_set(
         .as_object()
         .ok_or("settings patch must be a JSON object")?;
     validate_settings_patch(patch_obj)?;
+    // Reject a malformed anonymizing-proxy URL before it's persisted — a bad
+    // value that silently failed open would be a deanonymizing leak.
+    if let Some(serde_json::Value::String(proxy)) = patch_obj.get("web_proxy") {
+        crate::net::validate_proxy_url(proxy)?;
+    }
     // Hold the update lock across load→patch→save so a concurrent settings
     // write can't clobber this one (lost update). MED (2026-05-29).
     let _guard = settings::lock_for_update();
@@ -991,6 +996,18 @@ pub fn setup_complete_set(value: bool) -> Result<(), String> {
     let mut s = settings::load();
     s.setup_complete = Some(value);
     settings::save(&s).map_err(|e| e.to_string())
+}
+
+/// Egress-proxy status for the header indicator: whether an anonymizing proxy is
+/// configured and, if so, whether its host:port answers right now. `reachable`
+/// is null when no proxy is set.
+#[tauri::command]
+pub async fn web_proxy_status() -> serde_json::Value {
+    serde_json::json!({
+        "enabled": crate::net::proxy_enabled(),
+        "url": crate::net::proxy_url(),
+        "reachable": crate::net::proxy_reachable().await,
+    })
 }
 
 /* ── Quick prompt (menu-bar ephemeral prompt) ──────────────────────────── */

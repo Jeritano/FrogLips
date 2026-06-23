@@ -468,6 +468,10 @@ export interface AppSettings {
    *  Bot token lives in the Keychain, never here — this holds only the enable
    *  flag + allowed-sender allowlist. Absent (legacy/fresh) → gateway off. */
   messaging?: MessagingConfig | null;
+  /** Anonymizing egress proxy (e.g. `socks5h://127.0.0.1:9050` for Tor). When
+   *  set, all outbound HTTP routes through it; loopback (local backends) is
+   *  never proxied. Empty/absent = direct. See net.rs for the honest scope. */
+  web_proxy?: string | null;
 }
 
 /** Per-channel messaging gateway config. Secrets (tokens/passwords) live in the

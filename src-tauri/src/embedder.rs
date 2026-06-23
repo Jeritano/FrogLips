@@ -147,7 +147,7 @@ impl Embedder {
 fn probe_client() -> &'static reqwest::blocking::Client {
     static C: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     C.get_or_init(|| {
-        reqwest::blocking::Client::builder()
+        crate::net::blocking_client_builder()
             .timeout(PROBE_TIMEOUT)
             .build()
             .expect("build probe client")
@@ -157,7 +157,7 @@ fn probe_client() -> &'static reqwest::blocking::Client {
 fn embed_client() -> &'static reqwest::blocking::Client {
     static C: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     C.get_or_init(|| {
-        reqwest::blocking::Client::builder()
+        crate::net::blocking_client_builder()
             .timeout(EMBED_TIMEOUT)
             .build()
             .expect("build embed client")
