@@ -4,6 +4,18 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.26] — 2026-06-23
+
+### Changed
+
+- **Premium pass across the top panels** — Settings, Model Library, Dashboard,
+  and the Memories sidebar now match the Privacy panel's bar. A new `premium.css`
+  layer (loaded last) elevates the shared per-panel classes: gradient header
+  bands with bolder titles, unified elevated section cards (hairline border, large
+  radius), uppercase eyebrow headings, focus-glow inputs, filled-accent primary
+  buttons with a hover lift, solid-accent active segments, and card hover polish.
+  No structural/logic changes — pure visual layer from the existing tokens.
+
 ## [0.14.25] — 2026-06-23
 
 ### Changed

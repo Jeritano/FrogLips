@@ -22,3 +22,5 @@
 @import "./styles/skills-tools.css";
 @import "./styles/messaging.css";
 @import "./styles/sidebars.css";
+/* Premium layer — loaded LAST so it refines/overrides the per-panel classes. */
+@import "./styles/premium.css";

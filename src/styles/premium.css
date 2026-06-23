@@ -1,0 +1,118 @@
+/* ── Premium layer ───────────────────────────────────────────────────────
+ * Elevates the shared modal panels (Settings, Model Library, Dashboard) and the
+ * Memories sidebar to the premium bar set by the Privacy & safety panel. Loaded
+ * LAST (after panels.css / modals.css) so it refines existing per-panel classes
+ * by name — no JSX changes, no duplicated structure. Tokens only.
+ */
+
+/* ── Header bands ────────────────────────────────────────────────────────
+ * Turn the flat header rows into a subtle gradient band with a hairline rule,
+ * and make the titles read as premium (bolder, tighter tracking). */
+.settings-head,
+.mb-header,
+.dashboard-header {
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-4) var(--space-5);
+}
+.settings-title,
+.mb-title,
+.dashboard-header h2 {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.01em;
+}
+
+/* ── Section cards — unify to one elevated, rounded card ──────────────────
+ * `.settings-tuning-card`, `.dashboard-card`, and `.mb-card` were three slightly
+ * different boxes; normalize to the Privacy panel's card (surface-2, hairline
+ * border, large radius). */
+.settings-tuning-card,
+.dashboard-card,
+.mb-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+.settings-tuning-card,
+.dashboard-card {
+  padding: var(--space-4);
+}
+.mb-card {
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.05s ease;
+}
+.mb-card:hover {
+  border-color: var(--accent-strong);
+  box-shadow: var(--elev-2);
+  transform: translateY(-1px);
+}
+
+/* ── Eyebrow headings ────────────────────────────────────────────────────
+ * Uppercase, tracked, muted — the premium section label. */
+.dashboard-card h3,
+.settings-tuning-card h4,
+.settings-tuning-card h3 {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* ── Inputs — focus glow ring ──────────────────────────────────────────── */
+.mb-search:focus,
+.mb-source-select:focus,
+.settings-pane input:focus,
+.settings-pane select:focus,
+.settings-pane textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+/* ── Primary action buttons — filled accent with a hover lift ───────────── */
+.mb-pull-btn,
+.dashboard-action-btn {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  font-weight: var(--fw-semibold);
+  transition:
+    filter 0.15s ease,
+    transform 0.05s ease;
+}
+.mb-pull-btn:hover:not(:disabled),
+.dashboard-action-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.mb-pull-btn:active:not(:disabled),
+.dashboard-action-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* Segmented controls (dashboard time windows, settings rail tabs) — the active
+ * segment reads as a solid accent pill for a crisp, premium selection state. */
+.dashboard-window.active,
+.settings-rail-btn.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* ── Memories sidebar — match the card + interaction polish ─────────────── */
+.memory-toggle,
+.memory-item {
+  border-radius: var(--radius-md);
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.memory-item:hover {
+  border-color: var(--accent-strong);
+}
+.memory-tab.active {
+  font-weight: var(--fw-semibold);
+}
