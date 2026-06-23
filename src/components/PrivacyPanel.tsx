@@ -139,9 +139,14 @@ export function PrivacyPanel({
     >
       <div className="dashboard-modal privacy-modal">
         <div className="privacy-header">
-          <h2 className="privacy-title">
-            <ShieldCheck size={18} aria-hidden="true" /> Privacy &amp; safety
-          </h2>
+          <div>
+            <h2 className="privacy-title">
+              <ShieldCheck size={18} aria-hidden="true" /> Privacy &amp; safety
+            </h2>
+            <p className="privacy-subtitle">
+              Local-first posture, agent sandbox, and egress controls.
+            </p>
+          </div>
           <button
             className="dashboard-close"
             onClick={onClose}
@@ -151,7 +156,8 @@ export function PrivacyPanel({
           </button>
         </div>
 
-        <div className={`privacy-trust ${isLocal ? "is-local" : "is-cloud"}`}>
+        <div className="privacy-body">
+          <div className={`privacy-trust ${isLocal ? "is-local" : "is-cloud"}`}>
           {isLocal ? (
             <>
               <Lock size={16} aria-hidden="true" />
@@ -236,7 +242,7 @@ export function PrivacyPanel({
             />
             <button
               type="button"
-              className="privacy-proxy-save"
+              className="privacy-proxy-save is-primary"
               onClick={() => void saveProxy()}
               disabled={proxyBusy}
             >
@@ -277,6 +283,7 @@ export function PrivacyPanel({
           </p>
           <AuditLog />
         </section>
+        </div>
       </div>
     </div>
   );

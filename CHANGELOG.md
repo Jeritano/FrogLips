@@ -4,6 +4,18 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.25] — 2026-06-23
+
+### Changed
+
+- **Premium redesign of the Privacy & safety panel** — the new visual bar for
+  the app. Header band with an accent icon chip + subtitle, content as elevated
+  section cards with uppercase eyebrow headings, refined danger-dot lists,
+  gradient trust banner, a mono proxy input with a focus glow, and a filled
+  primary **Save** + outline **Test**. All from the existing design tokens
+  (elevation, accent, radius ladder) — same patterns will roll out to the other
+  panels.
+
 ## [0.14.24] — 2026-06-23
 
 ### Fixed
