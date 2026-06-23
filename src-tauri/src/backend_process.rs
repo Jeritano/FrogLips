@@ -333,7 +333,20 @@ impl ServerState {
             return Ok(self.live_status(&model, &backend));
         }
 
-        // MLX backend — spawn mlx_lm.server with captured stderr
+        // MLX backend — spawn mlx_lm.server with captured stderr.
+        //
+        // Authoritative double-download gate (2026-06-22): mlx_lm.server starts
+        // its OWN HuggingFace download when the snapshot isn't fully cached. If
+        // a Model Library "Pull" is in flight for this repo, spawning here would
+        // race the same `.incomplete` blobs and corrupt the partial download
+        // (observed ~9.9 GB → ~1 GB collapse). Refuse until the pull finishes;
+        // the frontend pre-checks `model_download_active` for a gentle UX, but
+        // this is the backstop that holds even if that check is bypassed.
+        if crate::download_registry::is_active(&model) {
+            return Err(anyhow!(
+                "\"{model}\" is still downloading — wait for the pull to finish, then press Start"
+            ));
+        }
         let binary =
             mlx_server_binary().context("mlx_lm.server not found — install: pip install mlx-lm")?;
         let mut cmd = Command::new(&binary);

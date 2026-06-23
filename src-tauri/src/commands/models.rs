@@ -483,6 +483,14 @@ async fn run_ollama_signin() -> Result<(), String> {
 #[tauri::command]
 pub async fn pull_hf_model(repo_id: String) -> Result<String, String> {
     validate_hf_repo(&repo_id)?;
+    // Single-flight: mark this repo as downloading and hold the guard for the
+    // whole pull. Refuse if a download is already in flight for it — a second
+    // concurrent downloader (another pull, or `mlx_lm.server` auto-started on
+    // select) races the same `.incomplete` blobs and corrupts the partial
+    // download. The guard clears the marker on return/drop (incl. the
+    // kill_on_drop timeout path), so `start_server` can load once we finish.
+    let _dl = crate::download_registry::begin(&repo_id)
+        .ok_or_else(|| format!("{repo_id} is already downloading"))?;
     let home = dirs::home_dir().unwrap_or_default();
     // Upper bound on a single attempt — 30 minutes is enough for any sane model
     // on a fast connection, and prevents the IPC command from hanging forever
@@ -521,6 +529,15 @@ pub async fn pull_hf_model(repo_id: String) -> Result<String, String> {
         }
     }
     Err(last_err)
+}
+
+/// True while a HuggingFace pull is in flight for `repo_id`. The frontend uses
+/// this to refuse auto-starting a model that is still downloading (which would
+/// spawn a second, racing downloader). The Rust side enforces the same gate in
+/// `backend_process::start`, so this is a UX nicety, not the security boundary.
+#[tauri::command]
+pub fn model_download_active(repo_id: String) -> bool {
+    crate::download_registry::is_active(&repo_id)
 }
 
 #[tauri::command]

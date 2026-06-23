@@ -318,6 +318,11 @@ export const api = {
   pullOllamaModel: (name: string) =>
     invoke<string>("pull_ollama_model", { name }),
   pullHfModel: (repoId: string) => invoke<string>("pull_hf_model", { repoId }),
+  // True while a HuggingFace pull is in flight for this repo. Used to refuse
+  // auto-starting a model that is still downloading (which would spawn a second
+  // racing downloader and corrupt the pull).
+  modelDownloadActive: (repoId: string) =>
+    invoke<boolean>("model_download_active", { repoId }),
   // Scrape + parse <https://ollama.com/library>. Cached server-side for 10
   // minutes. Throws on network/parse failure so the caller can fall back to
   // the curated `OLLAMA` array.

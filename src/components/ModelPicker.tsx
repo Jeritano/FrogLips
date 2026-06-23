@@ -327,6 +327,24 @@ export function ModelPicker({
       return true;
     }
     if (!entry) return false;
+    // Don't start (or auto-start-on-select) a local model that is still being
+    // pulled — launching the backend would spawn a SECOND HuggingFace download
+    // racing the in-flight pull and corrupt it. The Rust side enforces this too
+    // (backend_process::start refuses), but checking here avoids the failed
+    // spawn and shows a gentle "still downloading" notice instead of an error.
+    if (entry.backend === "mlx" || entry.backend === "native") {
+      try {
+        if (await api.modelDownloadActive(entry.id)) {
+          setErr(
+            `"${entry.id}" is still downloading — it'll be ready to Start once the pull finishes.`,
+          );
+          return false;
+        }
+      } catch {
+        // Non-fatal: if the check itself fails, fall through — the Rust gate
+        // still backstops the race.
+      }
+    }
     setBusy(true);
     setErr(null);
     // A fresh start attempt supersedes any prior gave-up recovery panel.

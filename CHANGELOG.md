@@ -4,6 +4,24 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.22] — 2026-06-22
+
+No more corrupted model downloads from a double-download race.
+
+### Fixed
+
+- **Selecting/starting an MLX model while it was still downloading corrupted the
+  pull.** The Model Library "Pull" runs `hf download`; selecting that model (or
+  the picker auto-starting it) spawned `mlx_lm.server`, which started its *own*
+  HuggingFace download of the same repo. The two writers raced the same
+  `.incomplete` blobs and reset each other — a large pull could collapse from
+  most-of-the-way-done back to almost nothing, then stall. Froglips now
+  single-flights downloads per repo (a new download registry): a second pull is
+  refused, and the backend refuses to launch `mlx_lm.server` for a repo that is
+  still downloading (the picker shows "still downloading" instead of failing).
+  Once the pull finishes, Start loads from the complete cache with no
+  re-download.
+
 ## [0.14.21] — 2026-06-18
 
 Chat toggles stop resetting when you leave Chat.

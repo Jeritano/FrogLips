@@ -11,6 +11,7 @@ mod data_backup;
 mod diagnostics;
 #[cfg(target_os = "macos")]
 mod dictation;
+mod download_registry;
 mod embedder;
 mod gguf;
 mod health;
@@ -610,6 +611,7 @@ pub fn run() {
             commands::models::model_metadata,
             commands::models::pull_ollama_model,
             commands::models::pull_hf_model,
+            commands::models::model_download_active,
             commands::models::ollama_library_fetch,
             commands::models::delete_ollama_model,
             commands::models::delete_mlx_model,
