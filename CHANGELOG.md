@@ -4,6 +4,18 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.27] — 2026-06-23
+
+### Changed
+
+- **Premium sweep finished** — the same visual language now covers the rest of
+  the app: Flows (picker cards, CardForm header band + inputs, RunPanel, primary
+  buttons), Table/Roundtable (seat cards + inputs), Skills & Tools (eyebrow
+  section heads, accent tabs/chips, search glow), the Setup wizard (step cards +
+  primary buttons), Knowledge (eyebrow titles, accent tab, search glow), and the
+  Chat composer (focus glow) + send button. All via the `premium.css` override
+  layer — tokens only, no JSX/logic changes.
+
 ## [0.14.26] — 2026-06-23
 
 ### Changed

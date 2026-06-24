@@ -72,7 +72,10 @@ const WINDOW_BUDGETS = [
   // glass overlays, and the px→var(--fs-*) type-scale sweep across the sheets.
   // →192 KB (v0.14.19): +~3 KB for sidebars.css — the collapsible/resizable
   // Templates rail + picker-split layout + left global-nav resize handle.
-  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 192 * KB },
+  // →200 KB (v0.14.25-27): premium.css — the premium visual layer swept across
+  // every panel/view (header bands, elevated cards, eyebrow headings, focus-glow
+  // inputs, accent buttons/segments). Pure token-driven overrides.
+  { html: "index.html", label: "main App", maxBytes: 260 * KB, cssMaxBytes: 200 * KB },
   { html: "quick.html", label: "Quick Prompt popover", maxBytes: 240 * KB, cssMaxBytes: 30 * KB },
   // detached boot graph 940→955 KB in v0.14.5: +~5 KB from the Compare toggle +
   // resume-affordance code now in the ChatWindow chunk the detached window loads.

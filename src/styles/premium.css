@@ -116,3 +116,138 @@
 .memory-tab.active {
   font-weight: var(--fw-semibold);
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Sweep 2 — remaining surfaces: Flows, Table, Skills & Tools, Setup wizard,
+ * Knowledge, Chat. Same premium language; conservative overrides only (radius,
+ * eyebrow headings, focus-glow, hover lift via shadow+transform — never layout-
+ * shifting borders on elements whose base border is unknown).
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/* ── Flows / Workflows ─────────────────────────────────────────────────── */
+.wf-form-head,
+.wf-run-head {
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border-bottom: 1px solid var(--border-subtle);
+}
+.wf-form-title {
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.01em;
+}
+.wf-list-item,
+.wf-form-card,
+.wf-run-item {
+  border-radius: var(--radius-lg);
+}
+.wf-list-item {
+  transition:
+    box-shadow 0.15s ease,
+    transform 0.05s ease;
+}
+.wf-list-item:hover {
+  box-shadow: var(--elev-2);
+  transform: translateY(-1px);
+}
+.wf-field input:focus,
+.wf-field select:focus,
+.wf-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.wf-btn-primary {
+  border-radius: var(--radius-md);
+  font-weight: var(--fw-semibold);
+  transition:
+    filter 0.15s ease,
+    transform 0.05s ease;
+}
+.wf-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.wf-btn-primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* ── Table / Roundtable ────────────────────────────────────────────────── */
+.rt-seat {
+  border-radius: var(--radius-lg);
+}
+.rt-seat-model:focus,
+.rt-seat-persona:focus,
+.rt-topic:focus,
+.rt-ctl select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+/* ── Skills & Tools ────────────────────────────────────────────────────── */
+.st-section-head {
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.07em;
+}
+.st-tab.sel,
+.st-chip.sel {
+  border-color: var(--accent);
+}
+.st-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+/* ── Setup wizard ──────────────────────────────────────────────────────── */
+.setup-wizard-step h2 {
+  letter-spacing: -0.01em;
+}
+.setup-wizard-card {
+  border-radius: var(--radius-lg);
+  transition:
+    box-shadow 0.15s ease,
+    transform 0.05s ease;
+}
+.setup-wizard-card:hover {
+  box-shadow: var(--elev-2);
+  transform: translateY(-1px);
+}
+.setup-wizard-primary {
+  border-radius: var(--radius-md);
+  font-weight: var(--fw-semibold);
+  transition:
+    filter 0.15s ease,
+    transform 0.05s ease;
+}
+.setup-wizard-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.setup-wizard-primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* ── Knowledge ─────────────────────────────────────────────────────────── */
+.knowledge-tab.sel {
+  font-weight: var(--fw-semibold);
+}
+.rag-title {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.rag-search-query:focus,
+.rag-search-corpus:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+/* ── Chat shell (conservative — composer + send only) ──────────────────── */
+.chat-input:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.send-btn {
+  font-weight: var(--fw-semibold);
+}
