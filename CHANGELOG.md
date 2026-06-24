@@ -4,6 +4,23 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.28] — 2026-06-23
+
+### Fixed
+- **MLX model "crashed repeatedly" false-failure** — an orphaned `mlx_lm.server`
+  left holding the local MLX port (8080) by a prior app instance that exited
+  uncleanly (force-quit, crash, or external `kill -9`, where `kill_on_drop`
+  never fires) would block every subsequent model spawn from binding the port,
+  so the watcher misreported a healthy model as crashed after 3 instant
+  bind-failure restarts. The model itself was fine; a zombie was squatting the
+  port. Now the backend reclaims the port before every spawn: it kills any
+  orphaned `mlx_lm.server` found via a PID breadcrumb (`~/.local-llm-app/mlx.pid`,
+  written on spawn / cleared on stop — survives an unclean exit) **and** via
+  `lsof` on the port (catches pre-upgrade orphans), each verified to actually be
+  an `mlx_lm.server` before SIGKILL so a recycled PID is never harmed. A boot
+  pass also reaps a stale orphan at startup so it stops wasting model-sized RAM
+  before you load anything.
+
 ## [0.14.27] — 2026-06-23
 
 ### Changed

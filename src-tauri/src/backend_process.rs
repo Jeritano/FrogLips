@@ -398,12 +398,23 @@ impl ServerState {
                 cmd.arg("--max-tokens").arg(max.to_string());
             }
         }
+        // Reclaim the port before binding. An orphaned mlx_lm.server (left by an
+        // unclean app exit, or an OS-killed parent that skipped Drop) keeps the
+        // port bound; without this, the spawn below dies on bind and the watcher
+        // misreads it as a repeated crash. Covers both restart attempts (this
+        // path) and a fresh first launch.
+        reclaim_mlx_port(MLX_PORT).await;
         let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("failed to spawn {}", binary.display()))?;
+        // Breadcrumb the PID so a future launch can reap this child even if the
+        // app exits uncleanly (where kill_on_drop never fires).
+        if let Some(pid) = child.id() {
+            write_mlx_pid(pid);
+        }
 
         // Pump stderr into a bounded ring
         if let Some(stderr) = child.stderr.take() {
@@ -647,6 +658,11 @@ impl ServerState {
             }
         }
         drop(guard);
+        // Graceful stop reaped the child cleanly — drop the breadcrumb so a
+        // later launch doesn't try to kill a (now dead, possibly PID-recycled)
+        // process. is_live_mlx already guards against that, but clearing keeps
+        // the file honest.
+        clear_mlx_pid();
         self.ready.store(false, Ordering::Release);
         self.unresponsive_streak.store(0, Ordering::Release);
         // Invalidate any in-flight probe so it can't emit ready=true after stop
@@ -927,6 +943,121 @@ impl ServerState {
     }
 }
 
+/// Path to the MLX child PID breadcrumb. Written on every successful spawn,
+/// removed on graceful stop. Its whole reason to exist: `kill_on_drop(true)`
+/// only fires when Rust runs Drop, which it does NOT when the app process is
+/// itself SIGKILLed (force-quit, crash, an external `kill -9`). In that case
+/// the `mlx_lm.server` child is reparented to init and keeps the MLX TCP port
+/// bound — so the next launch's spawn dies on bind and the watcher misreports
+/// it as "model server crashed repeatedly". The breadcrumb lets a fresh launch
+/// reap that orphan precisely (by PID), even across the unclean exit.
+fn mlx_pid_file() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".local-llm-app").join("mlx.pid"))
+}
+
+fn write_mlx_pid(pid: u32) {
+    if let Some(p) = mlx_pid_file() {
+        let _ = std::fs::write(&p, pid.to_string());
+    }
+}
+
+fn clear_mlx_pid() {
+    if let Some(p) = mlx_pid_file() {
+        let _ = std::fs::remove_file(&p);
+    }
+}
+
+/// True iff `pid` is a LIVE `mlx_lm.server` process. Two-step so a recycled PID
+/// (the OS reassigned it to an unrelated process after the original died) is
+/// never killed: first a `kill(pid, 0)` liveness check, then a `ps` command
+/// match confirming it is actually our model server. Returns false for pid<=1.
+fn is_live_mlx(pid: i32) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+    // signal 0 delivers nothing — pure liveness probe. 0 == process exists.
+    let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+    if !alive {
+        return false;
+    }
+    match std::process::Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).contains("mlx_lm.server"),
+        Err(_) => false,
+    }
+}
+
+fn sigkill(pid: i32) {
+    if pid > 1 {
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+/// Reclaim the MLX TCP port before a spawn so an orphaned `mlx_lm.server` can't
+/// cause a false "crashed repeatedly" bind-failure loop. Reaps from two
+/// sources, each verified to be an `mlx_lm.server` before SIGKILL: (1) the PID
+/// breadcrumb — precise, and survives an app SIGKILL where Drop (and thus
+/// `kill_on_drop`) never runs; (2) whatever currently LISTENs on the port via
+/// `lsof` — catches orphans left by an app version that predates the breadcrumb.
+///
+/// After killing, polls up to ~2s for the socket to actually close so the
+/// follow-on bind succeeds. Returns the number of processes reaped.
+///
+/// `lsof` is invoked by absolute path: a GUI app launched from Finder/`open`
+/// does not inherit `/usr/sbin` on PATH, so a bare `lsof` would silently fail.
+pub async fn reclaim_mlx_port(port: u16) -> usize {
+    let mut reaped = 0usize;
+    // (1) breadcrumb
+    if let Some(pidf) = mlx_pid_file() {
+        if let Ok(s) = std::fs::read_to_string(&pidf) {
+            if let Ok(pid) = s.trim().parse::<i32>() {
+                if is_live_mlx(pid) {
+                    sigkill(pid);
+                    reaped += 1;
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&pidf);
+    }
+    // (2) port holders
+    if let Ok(out) = Command::new("/usr/sbin/lsof")
+        .args(["-ti", &format!("tcp:{port}"), "-sTCP:LISTEN"])
+        .output()
+        .await
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Ok(pid) = line.trim().parse::<i32>() {
+                if is_live_mlx(pid) {
+                    sigkill(pid);
+                    reaped += 1;
+                }
+            }
+        }
+    }
+    if reaped > 0 {
+        // Wait for the OS to release the socket before the caller binds it.
+        for _ in 0..20 {
+            if tokio::net::TcpStream::connect((MLX_HOST, port)).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        crate::diagnostics::warn_with(
+            "backend",
+            &format!(
+                "reclaimed MLX port {port}: killed {reaped} orphaned mlx_lm.server \
+                 process(es) holding the port before spawn"
+            ),
+            serde_json::json!({ "port": port, "reaped": reaped }),
+        );
+    }
+    reaped
+}
+
 async fn kill_child(child: &mut Child) {
     // `tokio::process::Child::kill()` already sends SIGKILL on Unix — no
     // SIGTERM-first courtesy step. If the wait times out the process is in
@@ -1084,6 +1215,24 @@ fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_live_mlx_rejects_unkillable_pids() {
+        // pid 0 (process group), 1 (init/launchd), and negatives must never be
+        // candidates for SIGKILL — reaping any of them would be catastrophic.
+        assert!(!is_live_mlx(0));
+        assert!(!is_live_mlx(1));
+        assert!(!is_live_mlx(-1));
+        assert!(!is_live_mlx(-12345));
+    }
+
+    #[test]
+    fn is_live_mlx_false_for_dead_pid() {
+        // A very high PID almost certainly doesn't exist; even if it did, the
+        // ps-command match would reject a non-mlx process. Either way: false,
+        // so the reclaim never kills an unrelated/recycled PID.
+        assert!(!is_live_mlx(2_000_000_000));
+    }
 
     #[test]
     fn restart_attempts_are_capped() {

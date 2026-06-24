@@ -352,6 +352,17 @@ pub fn run() {
                     });
                 }
 
+                // Reap an orphaned mlx_lm.server left holding the MLX port by a
+                // PRIOR app instance that exited uncleanly (force-quit / crash /
+                // external kill — where kill_on_drop never fired). Single-instance
+                // lock guarantees no live sibling owns it, so any squatter is a
+                // stale orphan. Without this it keeps ~model-sized RAM AND blocks
+                // the next spawn's bind, surfacing as "model server crashed
+                // repeatedly". Off the first-paint path.
+                tauri::async_runtime::spawn(async move {
+                    backend_process::reclaim_mlx_port(backend_process::MLX_PORT).await;
+                });
+
                 let s = state.clone();
                 let shutdown = shutdown_signal();
                 tauri::async_runtime::spawn(async move {
