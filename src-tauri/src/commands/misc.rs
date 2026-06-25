@@ -615,49 +615,14 @@ pub fn settings_get() -> settings::Settings {
     settings::redacted(settings::load())
 }
 
-/// Top-level keys `settings_set` will accept. Anything else in the patch is
-/// rejected so a malformed/hostile IPC call can't smuggle unknown fields into
-/// settings.json (which then flow into `serde(default)` deserialization).
-const ALLOWED_SETTINGS_KEYS: &[&str] = &[
-    "workspace_root",
-    "last_model",
-    "last_backend",
-    "memory_mode",
-    "active_preset_id",
-    "embedding_model",
-    "recall_threshold",
-    "window",
-    "theme",
-    "custom_backends",
-    "mcp_servers",
-    "setup_complete",
-    "user_profile",
-    "hardware_profile",
-    // 2026-06-11 — these new keys were missing from the allowlist, so every
-    // settings_set carrying them was silently rejected (the keep_alive
-    // select, the draft-model field, the auto-update gate, the API registry
-    // all failed to persist).
-    "ollama_keep_alive",
-    "mlx_draft_model",
-    "mlx_max_tokens",
-    "auto_update_check",
-    "saved_apis",
-    "agent_max_iterations",
-    // W5B (2026-06-15): beginner "Simple mode" toggle. Without this key the
-    // settings_set carrying it would be silently rejected and the toggle would
-    // never persist.
-    "simple_mode",
-    // Skills & Tools hub (2026-06-16): GLOBAL list of built-in tool names the
-    // user switched off in the hub. Without this key the settings_set carrying
-    // it would be silently rejected and the toggles would never persist.
-    "disabled_tools",
-    // Computer Use (2026-06-16): gated desktop-control opt-in. (Bugfix: this was
-    // omitted when the feature landed, so the toggle never persisted.)
-    "computer_use_enabled",
-    // Messaging gateway (2026-06-16): per-channel enable + allowed-sender list
-    // for running the agent over chat platforms (Telegram v1).
-    "messaging",
-];
+// NOTE: there is no hand-maintained key allowlist anymore. It drifted from the
+// `Settings` struct repeatedly (2026-06-11, then 2026-06-24 — the latter
+// silently bricked the v0.14.23 Tor/SOCKS proxy, which `settings_set` rejected
+// as an "unknown settings key" so it could never be saved). `validate_settings_
+// patch` now rejects unknown keys by round-tripping the patch through `Settings`
+// and checking the `#[serde(flatten)] extra` catch-all (see there), making the
+// struct the single source of truth — a new field is accepted automatically and
+// can never silently drop again.
 
 /// Per-field byte caps for the "About You" profile. Keeps a hostile or
 /// runaway IPC call from injecting an unbounded blob into every system prompt.
@@ -670,10 +635,18 @@ const PROFILE_LONG_MAX: usize = 2048;
 fn validate_settings_patch(
     patch: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    for k in patch.keys() {
-        if !ALLOWED_SETTINGS_KEYS.contains(&k.as_str()) {
-            return Err(format!("unknown settings key: {k}"));
-        }
+    // Drift-proof unknown-key rejection. Round-trip the patch through `Settings`:
+    // serde routes any key it doesn't recognize into the `#[serde(flatten)] extra`
+    // catch-all, so a non-empty `extra` means the patch carried an unknown key.
+    // This also type-checks every recognized field (stricter than the old
+    // name-only allowlist) while accepting any current/future real field for
+    // free. `web_proxy`'s `skip_serializing_if` doesn't matter here — that only
+    // affects serialization, not the deserialize we do to validate.
+    let probe: settings::Settings =
+        serde_json::from_value(serde_json::Value::Object(patch.clone()))
+            .map_err(|e| format!("invalid settings patch: {e}"))?;
+    if let Some((k, _)) = probe.extra.iter().next() {
+        return Err(format!("unknown settings key: {k}"));
     }
 
     if let Some(mcp) = patch.get("mcp_servers") {
@@ -1222,6 +1195,34 @@ mod settings_validation_tests {
     #[test]
     fn rejects_unknown_top_level_key() {
         let err = validate_settings_patch(&obj(r#"{"evil":1}"#)).unwrap_err();
+        assert!(err.contains("unknown settings key"), "got: {err}");
+    }
+
+    #[test]
+    fn accepts_every_real_settings_field_no_allowlist_drift() {
+        // Review H1 regression: the old hand-maintained allowlist drifted from
+        // the Settings struct and silently rejected real keys — most painfully
+        // `web_proxy`, so the v0.14.23 Tor/SOCKS proxy could never be saved.
+        // These five were the keys missing at review time; each must now persist.
+        for patch in [
+            r#"{"web_proxy":"socks5h://127.0.0.1:9050"}"#,
+            r#"{"inference_permits":2}"#,
+            r#"{"backend_liveness_probe":false}"#,
+            r#"{"max_concurrent_subagents":4}"#,
+            r#"{"maintenance":{}}"#,
+        ] {
+            assert!(
+                validate_settings_patch(&obj(patch)).is_ok(),
+                "real settings key wrongly rejected: {patch}"
+            );
+        }
+    }
+
+    #[test]
+    fn round_trip_still_rejects_unknown_alongside_known() {
+        // A patch mixing a valid key with a bogus one is rejected on the bogus
+        // one (it lands in the serde flatten `extra` catch-all).
+        let err = validate_settings_patch(&obj(r#"{"theme":"dark","bogus_key":1}"#)).unwrap_err();
         assert!(err.contains("unknown settings key"), "got: {err}");
     }
 

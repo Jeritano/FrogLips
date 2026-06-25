@@ -4,6 +4,34 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.29] — 2026-06-24
+
+Fixes from a full multi-agent codebase review (2 high + 1 medium).
+
+### Fixed
+- **The anonymizing proxy could not be enabled at all (high).** The
+  `settings_set` key allowlist had drifted from the `Settings` struct and was
+  missing `web_proxy`, `inference_permits`, and `backend_liveness_probe`, so
+  every patch carrying them was rejected as "unknown settings key" and persisted
+  nothing — the v0.14.23 Tor/SOCKS feature silently never saved (and the permit
+  + liveness toggles reset on relaunch). Replaced the hand-maintained allowlist
+  with a round-trip through `Settings` (unknown keys land in the serde-flatten
+  `extra` catch-all), so the struct is now the single source of truth and a
+  field can never silently drop again. Saving a proxy now both persists and
+  activates it live.
+- **File watcher could leak credential-file activity (high).** `watch_path`
+  gated only the watch root, not individual events; a recursive watch under a
+  broad root (e.g. `$HOME` when no workspace is set) streamed create/modify/
+  delete events — path + timing — for `~/.ssh`, `~/.aws`, `~/.gnupg`, the secret
+  store, etc. to the agent. The per-event callback now re-applies
+  `is_protected_read_path` (as `search_files`/RAG already do) and uses the
+  case-insensitive path comparator for correct APFS containment.
+- **Model start/stop could stall up to ~2s during a restart storm (medium).**
+  `start()` held the backend inner lock across `reclaim_mlx_port` (which spawns
+  `lsof` and may wait for the socket to close), blocking concurrent stop/status
+  IPC. The reclaim now runs with the lock released and re-validates the
+  generation before storing, so a concurrent start/stop wins cleanly.
+
 ## [0.14.28] — 2026-06-23
 
 ### Fixed

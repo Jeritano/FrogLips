@@ -262,7 +262,25 @@ pub async fn watch_path(
             // Defense-in-depth: FSEvents on macOS can over-report events from
             // sibling directories on the same volume in pathological cases.
             // Require the event path to actually be under the watched root.
-            if !p.starts_with(&root_for_cb) {
+            // Use the project-wide case-insensitive comparator (review L4):
+            // APFS is case-insensitive and FSEvents can report a casing that
+            // differs from the canonical root, which a case-sensitive
+            // `starts_with` would wrongly drop.
+            if !crate::agent::fs::path_starts_with_ci(p, &root_for_cb) {
+                continue;
+            }
+            // SECURITY (review H2): the watch ROOT is gated at registration, but
+            // a recursive watch under a broad root (e.g. $HOME, the fallback
+            // when no workspace is configured) would otherwise stream
+            // Create/Modify/Delete events — path + timing — for credential
+            // stores (~/.ssh, ~/.aws, ~/.gnupg, ~/.config/gh, the Froglips
+            // secret store, browser/Mail stores) straight to the agent. That is
+            // exactly the side channel `is_protected_read_path` exists to close,
+            // and `search_files`/RAG already re-check it per entry. Re-apply it
+            // here per event so a watcher can never become a credential-activity
+            // oracle (reachable via prompt injection on a fresh install with no
+            // workspace set).
+            if crate::agent::fs::is_protected_read_path(p) {
                 continue;
             }
             let p_str = p.to_string_lossy().into_owned();

@@ -403,6 +403,14 @@ impl ServerState {
         // port bound; without this, the spawn below dies on bind and the watcher
         // misreads it as a repeated crash. Covers both restart attempts (this
         // path) and a fresh first launch.
+        //
+        // M2 (review): reclaim_mlx_port spawns `lsof` and can wait up to ~2s for
+        // the socket to close, but it touches no `self.inner` state — so release
+        // the inner lock across it. Otherwise a user stop()/status() IPC contends
+        // for that whole window during a restart storm. We re-acquire below and
+        // re-validate the generation before storing, so a concurrent start()/
+        // stop() that ran during the gap wins and we abort instead of clobbering.
+        drop(guard);
         reclaim_mlx_port(MLX_PORT).await;
         let mut child = cmd
             .stdout(Stdio::null())
@@ -505,6 +513,22 @@ impl ServerState {
             });
         }
 
+        // Re-acquire the inner lock dropped before reclaim. If the generation
+        // moved while it was released, another start()/stop() superseded this one
+        // during the gap — abort: kill the child we just spawned and report the
+        // current status rather than clobbering the winner. (Status is built
+        // AFTER dropping the guard so live_status/dead_status can't deadlock on
+        // self.inner.)
+        let mut guard = self.inner.lock().await;
+        if self.generation.load(Ordering::Acquire) != my_generation {
+            let cur = guard.as_ref().map(|s| (s.model.clone(), s.backend.clone()));
+            drop(guard);
+            kill_child(&mut child).await;
+            return Ok(match cur {
+                Some((m, b)) => self.live_status(&m, &b),
+                None => self.dead_status(),
+            });
+        }
         // The watcher in lib.rs::setup polls `status()` periodically and detects
         // natural child death there; no per-server watcher task needed here.
         *guard = Some(RunningServer {

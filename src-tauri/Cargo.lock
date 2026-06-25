@@ -4069,7 +4069,7 @@ dependencies = [
 
 [[package]]
 name = "local-llm-app"
-version = "0.14.28"
+version = "0.14.29"
 dependencies = [
  "anyhow",
  "async-imap",
