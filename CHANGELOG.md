@@ -4,6 +4,36 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.30] — 2026-06-25
+
+Security-hardening wave from the full codebase review (web/SSRF + agent tools).
+
+### Security
+- **`http_request`/`call_api` no longer replay model headers or body across a
+  cross-host redirect** (review L3). Custom auth headers (`X-Api-Key`,
+  `X-Auth-Token`, etc. — not covered by the standard deny-list) and the request
+  body are now sent only on a hop matching the original host and not downgraded
+  https→http, so an open redirect to an attacker host can't harvest secrets.
+- **Destination-port guard on all web egress** (review L2). `web_fetch`/
+  `web_search` are restricted to standard web ports; `http_request`/`call_api`
+  refuse well-known internal-service ports (ssh/db/cache/etc.). Stops the tools
+  being used as a public-IP port scanner / protocol-confusion probe.
+- **Untrusted-content fence can't be broken out of** (review M1). Body content
+  containing the `BEGIN/END UNTRUSTED CONTENT` markers (or case/spacing
+  variants) is now defanged before wrapping, so a web page / MCP result / shell
+  output can't terminate the DATA fence early and smuggle post-fence
+  instructions. Mirrors the existing TS-side protection.
+- **Proxy egress fails closed** (review L9). If an anonymizing proxy is
+  configured but its URL won't build, outbound requests now error instead of
+  silently falling back to a direct connection that would leak the real IP.
+- **`run_code` temp dir is verified self-owned and private** before use (review
+  L7) — a pre-planted, foreign-owned, or group/world-writable
+  `froglips-code-<pid>` dir is now rejected.
+- **File-write parent re-check** (review L5). The write path re-canonicalizes the
+  parent directory and re-confirms workspace containment immediately before
+  writing, narrowing a parent-symlink swap window (the leaf was already
+  O_NOFOLLOW/0600).
+
 ## [0.14.29] — 2026-06-24
 
 Fixes from a full multi-agent codebase review (2 high + 1 medium).

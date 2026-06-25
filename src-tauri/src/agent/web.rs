@@ -269,13 +269,35 @@ fn pinned_no_redirect_client(
     Ok(client)
 }
 
+/// Destination-port policy for `web_fetch`/`web_search`: only standard web
+/// ports. Blocks using the fetch tools as a public-IP port scanner or
+/// protocol-confusion probe (review L2).
+fn web_port_allowed(p: u16) -> bool {
+    matches!(p, 80 | 443 | 8080 | 8443)
+}
+
+/// Destination-port policy for `http_request`/`call_api`: more flexible (real
+/// APIs use odd https ports) but still refuses well-known internal-service
+/// ports so the tools can't be aimed at ssh/db/cache/etc. on a public IP
+/// (review L2). RFC1918/loopback are already blocked by `is_safe_public_host`;
+/// this stops the external-amplifier port-scan case.
+fn api_port_allowed(p: u16) -> bool {
+    !matches!(
+        p,
+        22 | 23 | 25 | 110 | 135 | 139 | 143 | 445 | 1433 | 1521
+            | 3306 | 3389 | 5432 | 5900 | 5901 | 6379 | 9200 | 9300 | 11211 | 27017 | 27018
+    )
+}
+
 /// Manually follow redirects with per-hop SSRF validation + DNS pinning.
 /// `build_req` is called for every hop to produce a fresh request against the
 /// pinned client (so headers/method/body carry across as the caller intends).
-/// Returns the final non-redirect response.
+/// `port_allowed` gates the destination port on every hop (a redirect can move
+/// the port). Returns the final non-redirect response.
 async fn send_following_redirects<F>(
     mut url: url::Url,
     timeout: std::time::Duration,
+    port_allowed: &(dyn Fn(u16) -> bool + Sync),
     build_req: F,
 ) -> Result<reqwest::Response, String>
 where
@@ -294,6 +316,13 @@ where
             }));
         }
         let port = url.port_or_known_default().unwrap_or(443);
+        if !port_allowed(port) {
+            return Err(err_string(ToolError::Protected {
+                message: format!(
+                    "destination port {port} is not allowed (SSRF / port-scan guard)"
+                ),
+            }));
+        }
         // Resolve-and-validate, then pin the connection to that exact set.
         let safe_addrs = resolve_to_safe_addrs(&host, port).await?;
         let client = pinned_no_redirect_client(&host, &safe_addrs, timeout)?;
@@ -362,7 +391,10 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
     // cannot point the real connection at a loopback/metadata address.
     let timeout = std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS);
     let resp =
-        send_following_redirects(url.clone(), timeout, |client, u| client.get(u.clone())).await?;
+        send_following_redirects(url.clone(), timeout, &web_port_allowed, |client, u| {
+            client.get(u.clone())
+        })
+        .await?;
     let status = resp.status().as_u16();
     // Trust the server's Content-Type for HTML detection rather than peeking
     // at the body. Substring sniffing tripped on any page that merely
@@ -437,7 +469,10 @@ pub async fn web_search(query: String, n: Option<usize>) -> Result<WebSearchResu
     let url = url::Url::parse(&url_str)
         .map_err(|e| err_string(ToolError::invalid(format!("bad url: {e}"))))?;
     let timeout = std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS);
-    let resp = send_following_redirects(url, timeout, |client, u| client.get(u.clone())).await?;
+    let resp = send_following_redirects(url, timeout, &web_port_allowed, |client, u| {
+        client.get(u.clone())
+    })
+    .await?;
     // Read with the larger search cap so the structured `result__a` parse below
     // can't be clipped mid-tag (which would silently drop the final hit). The
     // body is parsed, never returned wholesale, so the larger cap is parse-only.
@@ -625,13 +660,26 @@ pub async fn http_request(input: HttpReqInput) -> Result<HttpResp, String> {
     };
 
     // Manual redirect following with per-hop DNS pinning (SSRF/TOCTOU).
-    let resp = send_following_redirects(url.clone(), timeout, |client, u| {
+    // L3: only replay model-supplied headers + body on a hop matching the
+    // ORIGINAL host and not downgraded https->http. An open redirect to an
+    // attacker host must not receive custom auth headers (X-Api-Key/X-Auth-Token
+    // etc. — NOT in DENY_HEADERS) or the request body.
+    let origin_host = url.host_str().map(|h| h.to_ascii_lowercase());
+    let origin_scheme = url.scheme().to_string();
+    let resp = send_following_redirects(url.clone(), timeout, &api_port_allowed, |client, u| {
         let mut req = client.request(method_obj.clone(), u.clone());
-        for (k, v) in &headers {
-            req = req.header(k, v);
-        }
-        if let Some(b) = &body {
-            req = req.body(b.clone());
+        let same_origin = u
+            .host_str()
+            .map(|h| Some(h.to_ascii_lowercase()) == origin_host)
+            .unwrap_or(false)
+            && !(origin_scheme == "https" && u.scheme() == "http");
+        if same_origin {
+            for (k, v) in &headers {
+                req = req.header(k, v);
+            }
+            if let Some(b) = &body {
+                req = req.body(b.clone());
+            }
         }
         req
     })
@@ -794,15 +842,23 @@ pub async fn call_api(input: CallApiInput) -> Result<HttpResp, String> {
         other => other,
     };
 
-    let resp = send_following_redirects(url.clone(), timeout, |client, u| {
+    let resp = send_following_redirects(url.clone(), timeout, &api_port_allowed, |client, u| {
         let mut req = client.request(method_obj.clone(), u.clone());
-        for (k, v) in &model_headers {
-            req = req.header(k, v);
-        }
         let same_host = u
             .host_str()
             .map(|h| h.eq_ignore_ascii_case(&registered_host))
             .unwrap_or(false);
+        // L3: only replay model-supplied headers + body on a same-host hop, so a
+        // cross-host redirect can't receive custom headers (X-Api-Key etc.) or
+        // the body. (Auth header is gated even more tightly just below.)
+        if same_host {
+            for (k, v) in &model_headers {
+                req = req.header(k, v);
+            }
+            if let Some(b) = &body {
+                req = req.body(b.clone());
+            }
+        }
         // Audit A17: host-only was not enough — a same-host https→http
         // downgrade redirect re-sent the bearer key in CLEARTEXT. Attach auth
         // only on a same-host hop that is https, OR http to a loopback host
@@ -822,9 +878,6 @@ pub async fn call_api(input: CallApiInput) -> Result<HttpResp, String> {
             if let Some(av) = &auth_value {
                 req = req.header(auth_header_name.as_str(), av);
             }
-        }
-        if let Some(b) = &body {
-            req = req.body(b.clone());
         }
         req
     })

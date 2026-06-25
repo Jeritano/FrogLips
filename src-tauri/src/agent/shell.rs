@@ -168,6 +168,25 @@ pub async fn run_code(
         .map_err(|e| err_string(ToolError::io(e.to_string())))?;
     // Re-assert 0700 in case the dir pre-existed from an earlier run.
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    // L7 (defense-in-depth): the per-pid dir name is predictable and recursive
+    // create() silently REUSES a pre-existing dir. The leaf file below is still
+    // create_new + O_NOFOLLOW + 0600 (so the secret-bearing snippet can't be
+    // hijacked), but bail if the dir isn't a real directory we own and isn't
+    // private — symlink_metadata doesn't follow, so a pre-planted symlink is
+    // caught too.
+    {
+        use std::os::unix::fs::MetadataExt;
+        let md = std::fs::symlink_metadata(&dir)
+            .map_err(|e| err_string(ToolError::io(e.to_string())))?;
+        if !md.is_dir()
+            || md.uid() != unsafe { libc::geteuid() }
+            || md.permissions().mode() & 0o077 != 0
+        {
+            return Err(err_string(ToolError::Protected {
+                message: "code temp dir is not a private, self-owned directory".into(),
+            }));
+        }
+    }
     let mut path = dir.clone();
     path.push(format!("code_{nanos}_{seq}.{ext}"));
     // Security (defense-in-depth): create the file at mode 0600 ATOMICALLY at

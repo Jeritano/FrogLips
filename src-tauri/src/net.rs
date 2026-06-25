@@ -97,23 +97,48 @@ fn build_proxy() -> Result<Option<reqwest::Proxy>, reqwest::Error> {
     }
 }
 
+/// A guaranteed-unreachable loopback proxy used to FAIL CLOSED when a proxy is
+/// configured but its URL won't build. Rather than silently falling back to
+/// direct egress — which would leak the real IP and defeat the anonymity
+/// guarantee (review L9) — route everything to a dead port so requests error
+/// out. NO_PROXY still exempts loopback DESTINATIONS so local backends/daemons
+/// keep working.
+fn fail_closed_proxy() -> Option<reqwest::Proxy> {
+    reqwest::Proxy::all("socks5h://127.0.0.1:1")
+        .ok()
+        .map(|p| p.no_proxy(reqwest::NoProxy::from_string(NO_PROXY_HOSTS)))
+}
+
 /// Async client builder pre-configured with the proxy (if set) + generic UA.
-/// Callers add their own timeouts/headers. If the proxy string is malformed at
-/// build time we fall back to a DIRECT builder — but `set_proxy` only stores
-/// validated URLs, so that path is effectively unreachable in normal use.
+/// Callers add their own timeouts/headers. Fails CLOSED if a proxy is
+/// configured but its URL won't build (see [`fail_closed_proxy`]); only a
+/// genuinely-unset proxy (`Ok(None)`) yields a direct builder.
 pub fn client_builder() -> reqwest::ClientBuilder {
     let mut b = reqwest::Client::builder().user_agent(GENERIC_UA);
-    if let Ok(Some(p)) = build_proxy() {
-        b = b.proxy(p);
+    match build_proxy() {
+        Ok(Some(p)) => b = b.proxy(p),
+        Ok(None) => {}
+        Err(_) => {
+            if let Some(dead) = fail_closed_proxy() {
+                b = b.proxy(dead);
+            }
+        }
     }
     b
 }
 
-/// Blocking variant of [`client_builder`] (embedder probe paths).
+/// Blocking variant of [`client_builder`] (embedder probe paths). Same
+/// fail-closed proxy semantics.
 pub fn blocking_client_builder() -> reqwest::blocking::ClientBuilder {
     let mut b = reqwest::blocking::Client::builder().user_agent(GENERIC_UA);
-    if let Ok(Some(url)) = proxy_url().map(|u| reqwest::Proxy::all(&u)).transpose() {
-        b = b.proxy(url.no_proxy(reqwest::NoProxy::from_string(NO_PROXY_HOSTS)));
+    match build_proxy() {
+        Ok(Some(p)) => b = b.proxy(p),
+        Ok(None) => {}
+        Err(_) => {
+            if let Some(dead) = fail_closed_proxy() {
+                b = b.proxy(dead);
+            }
+        }
     }
     b
 }

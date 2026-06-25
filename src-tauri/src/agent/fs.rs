@@ -959,6 +959,22 @@ async fn write_one_validated(
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| err_string(classify_io(&e)))?;
+        // L5 (defense-in-depth): write_nofollow_sync only O_NOFOLLOW-guards the
+        // LEAF. A concurrent local attacker could swap an intermediate parent
+        // dir for a symlink between validation and open, redirecting the write
+        // outside the workspace. Re-canonicalize the parent right before writing
+        // and re-confirm containment (mirrors snapshot.rs's parent re-check).
+        // Narrow window — the leaf is still O_NOFOLLOW/0600 regardless.
+        match tokio::fs::canonicalize(parent).await {
+            Ok(cp) if within_workspace(&cp) => {}
+            _ => {
+                return Err(err_string(ToolError::Protected {
+                    message:
+                        "parent directory resolved outside the workspace before write (symlink race)"
+                            .into(),
+                }));
+            }
+        }
     }
     let snap_path = resolved.clone();
     let _ = tokio::task::spawn_blocking(move || match prior_bytes {
