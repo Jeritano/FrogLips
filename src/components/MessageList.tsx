@@ -1062,11 +1062,19 @@ function clearFindMarks(root: HTMLElement): void {
     const parent = mark.parentNode;
     if (!parent) continue;
     // Replace the <mark> with its text content, then merge adjacent text nodes.
-    parent.replaceChild(
-      mark.ownerDocument.createTextNode(mark.textContent ?? ""),
-      mark,
-    );
-    parent.normalize();
+    // M5: this DOM lives inside React-owned dangerouslySetInnerHTML subtrees. If
+    // React reconciled the subtree while Find was open, `mark` can already be
+    // detached → replaceChild/normalize throw NotFoundError. Degrade to leaving
+    // a stray mark rather than crashing the whole render.
+    try {
+      parent.replaceChild(
+        mark.ownerDocument.createTextNode(mark.textContent ?? ""),
+        mark,
+      );
+      parent.normalize();
+    } catch {
+      /* node already reconciled by React — skip */
+    }
   }
 }
 
@@ -1123,7 +1131,12 @@ function applyFindMarks(root: HTMLElement, query: string): HTMLElement[] {
       idx = lower.indexOf(needle, last);
     }
     if (last < text.length) frag.appendChild(doc.createTextNode(text.slice(last)));
-    node.parentNode?.replaceChild(frag, node);
+    // M5: guard against a node React already reconciled out from under us.
+    try {
+      node.parentNode?.replaceChild(frag, node);
+    } catch {
+      /* stale node — skip this match */
+    }
   }
   return marks;
 }

@@ -1888,7 +1888,10 @@ export async function runAgentLoop(
             // timeout would fire immediately and orphan the subagents).
             const AWAIT_TIMEOUT_CAP_MS = 600_000;
             const coerced = Number(args.timeout_seconds ?? 600);
-            const rawTimeoutSecs = Number.isFinite(coerced) ? coerced : 600;
+            // L20: also reject a finite 0/negative (Number.isFinite alone let
+            // those through → 0ms timeout fires instantly and orphans subagents).
+            const rawTimeoutSecs =
+              Number.isFinite(coerced) && coerced > 0 ? coerced : 600;
             const timeoutMs = Math.min(
               AWAIT_TIMEOUT_CAP_MS,
               Math.max(0, rawTimeoutSecs) * 1000,

@@ -316,7 +316,12 @@ function decisionFrom(
 
 /** Cosine similarity of two equal-ish-length vectors. 0 when either is zero. */
 export function cosineSim(a: number[], b: number[]): number {
-  const n = Math.min(a.length, b.length);
+  // L22: reject mismatched dimensions instead of silently truncating to the
+  // shorter length. A stale prototype from a previous embedding model would
+  // otherwise score against a new-model query and return a bogus similarity;
+  // returning 0 makes it lose cleanly.
+  if (a.length !== b.length) return 0;
+  const n = a.length;
   let dot = 0,
     na = 0,
     nb = 0;
@@ -484,10 +489,16 @@ export async function routeMessage(
 
   // Stage 1 — keyword/substring fast-path.
   const lc = trimmed.toLowerCase();
+  const kwMatch = (r: ChatRoute) =>
+    r.keywords?.some((k) => k.trim() && lc.includes(k.trim().toLowerCase()));
+  // L23: if the sticky route itself matches a keyword, keep it — don't let a
+  // keyword that also matches another route force an avoidable model switch
+  // (with its multi-second reload) that the stickiness rationale warns against.
+  if (sticky && kwMatch(sticky)) {
+    return decisionFrom(sticky, "keyword");
+  }
   for (const r of routes) {
-    if (
-      r.keywords?.some((k) => k.trim() && lc.includes(k.trim().toLowerCase()))
-    ) {
+    if (kwMatch(r)) {
       return decisionFrom(r, "keyword");
     }
   }

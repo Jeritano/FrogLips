@@ -296,6 +296,21 @@ export function ModelPicker({
     entry: ModelEntry | null,
     cb: CustomBackend | null,
   ) {
+    // M6: if the target is still downloading, start() bails AFTER stop() and
+    // leaves NOTHING running where a model was working. Check before tearing
+    // down the current model.
+    if (entry && (entry.backend === "mlx" || entry.backend === "native")) {
+      try {
+        if (await api.modelDownloadActive(entry.id)) {
+          setErr(
+            `"${entry.id}" is still downloading — it'll be ready to Start once the pull finishes.`,
+          );
+          return;
+        }
+      } catch {
+        // Non-fatal: fall through — start()/the Rust gate still backstop.
+      }
+    }
     await stop();
     await start(entry ?? undefined, cb ?? undefined);
   }

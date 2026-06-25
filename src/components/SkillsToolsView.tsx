@@ -706,27 +706,25 @@ function ToolsetsTab({
     return m;
   }, [servers]);
 
-  const persistConfigList = useCallback(
-    (next: McpServerConfig[]) => {
-      setConfigs(next);
-      void persistConfigs(next, updateSettings);
-    },
-    [updateSettings],
-  );
-
   const toggleMcpEnabled = useCallback(
     (cfg: McpServerConfig) => {
-      const next = configs.map((c) =>
-        c.name === cfg.name ? { ...c, enabled: !mcpEnabled(c) } : c,
-      );
-      persistConfigList(next);
+      // L32: read the freshest list via a functional update so two rapid toggles
+      // in one render batch don't both close over a stale `configs` snapshot
+      // (one would clobber the other). Mirrors setToolEnabled's fresh read.
+      setConfigs((prev) => {
+        const next = prev.map((c) =>
+          c.name === cfg.name ? { ...c, enabled: !mcpEnabled(c) } : c,
+        );
+        void persistConfigs(next, updateSettings);
+        return next;
+      });
       announce(
         mcpEnabled(cfg)
           ? `Disabled MCP server ${cfg.name}`
           : `Enabled MCP server ${cfg.name}`,
       );
     },
-    [configs, persistConfigList],
+    [updateSettings],
   );
 
   const startServer = useCallback(

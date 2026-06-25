@@ -537,10 +537,13 @@ export function RoundtableView() {
     (v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0,
   );
   const [confirmLocal, setConfirmLocal] = useState(false);
-  // Re-arm the 2-local-models confirm whenever the seat set changes, so a
-  // user who edited the config gets warned again instead of starting a
-  // different bad config on the first click.
-  useEffect(() => setConfirmLocal(false), [seats]);
+  // Re-arm the 2-local-models confirm whenever the resolved MODEL set changes,
+  // so a user who edited the config gets warned again. L35: key on the
+  // optionKey signature, not `seats` identity — `seats` changes on every
+  // name/persona keystroke (via updateSeat), which used to reset the confirm
+  // and force the user to click Start twice again.
+  const seatModelSig = seats.map((s) => s.optionKey).join(",");
+  useEffect(() => setConfirmLocal(false), [seatModelSig]);
 
   // Portal target in the App header — lets the Roundtable header (title +
   // presets/Reset, or the live meter/actions) share the theme-toggle's row.

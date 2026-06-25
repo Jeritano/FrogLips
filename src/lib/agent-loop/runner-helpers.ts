@@ -122,6 +122,15 @@ export function isToolStalling(
     key = `read_file:${String(args.path ?? "")}`;
   } else if (fnName === "search_files") {
     key = `search_files:${String(args.path ?? "")}${String(args.pattern ?? "")}`;
+  } else if (fnName === "read_files") {
+    // L21: read_files takes a `paths` array — chunk-thrashing it with varying
+    // offsets previously evaded the stall guard. Key by the joined path set.
+    const paths = Array.isArray(args.paths)
+      ? args.paths.map((p) => String(p)).join(",")
+      : String(args.paths ?? "");
+    key = `read_files:${paths}`;
+  } else if (fnName === "read_pdf") {
+    key = `read_pdf:${String(args.path ?? "")}`;
   }
   if (key === null) {
     return { stalling: false, key: "", count: 0, tool: fnName };
@@ -131,9 +140,9 @@ export function isToolStalling(
   return {
     stalling: count > STALL_SAME_PATH_LIMIT,
     key:
-      fnName === "read_file"
-        ? String(args.path ?? "")
-        : String(args.pattern ?? ""),
+      fnName === "search_files"
+        ? String(args.pattern ?? "")
+        : String(args.path ?? args.paths ?? ""),
     count,
     tool: fnName,
   };

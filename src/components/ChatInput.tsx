@@ -303,8 +303,10 @@ function ChatInputImpl({
     if (ret && typeof (ret as Promise<boolean>).then === "function") {
       void (ret as Promise<boolean>).then((ok) => {
         if (ok === false && mountedRef.current) {
-          setText(t);
-          setImages(imgs ?? []);
+          // L28: only restore if the user hasn't typed something new during the
+          // warm-up window — a blind setText(t) would clobber their fresh input.
+          setText((cur) => (cur.trim() ? cur : t));
+          setImages((cur) => (cur.length ? cur : (imgs ?? [])));
         }
       });
     }

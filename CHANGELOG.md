@@ -4,6 +4,36 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.32] — 2026-06-25
+
+Frontend/agent-loop correctness wave from the full review (the third batch).
+
+### Fixed
+- **Switching to a still-downloading model no longer kills the running one**
+  (review M6) — the picker checks the download state before tearing down the
+  active model, so a mistimed switch leaves your working model running.
+- **Find-in-conversation can't crash the render** (review M5) — the highlight
+  DOM splice now degrades to no-highlight if React reconciled the subtree mid-
+  find, instead of throwing `NotFoundError`.
+- **`await_subagents` rejects a 0/negative timeout** (review L20) — a finite
+  non-positive value used to fire instantly and orphan subagents; it now falls
+  back to the 600s default.
+- **Stall guard covers `read_files`/`read_pdf`** (review L21) — chunk-thrashing
+  those tools no longer evades the per-path read limit.
+- **Chat router respects stickiness on keyword match** (review L23) and rejects
+  mismatched-dimension prototype vectors (review L22) — a stale prototype from a
+  previous embedding model can no longer score a bogus match or force an
+  avoidable model switch.
+- **Dashboard polling pauses when the window is hidden** (review L30) and its
+  sortable headers are keyboard-operable with `aria-sort` (review L31).
+- **MCP enable/disable toggle reads fresh state** (review L32) — rapid toggles no
+  longer clobber each other from a stale snapshot.
+- **Composer restore won't clobber new input** (review L28) — a failed warm-up
+  only restores the old text if you haven't typed something new.
+- **Roundtable demo-seed is StrictMode-safe** (review L34) and the two-local-
+  models confirm only re-arms on a real model change, not every keystroke
+  (review L35).
+
 ## [0.14.31] — 2026-06-25
 
 Backend/data-correctness wave from the full review (the second batch).

@@ -212,13 +212,20 @@ export function Dashboard({ open, onClose }: Props) {
     if (!open) return;
     void refresh();
     timerRef.current = window.setInterval(() => {
-      void refresh();
+      // L30: skip the heavy IPC pull (up to 10k session rows + perf + storage)
+      // while the window is hidden; refresh on visibility regain instead.
+      if (document.visibilityState === "visible") void refresh();
     }, REFRESH_INTERVAL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       if (timerRef.current != null) {
         window.clearInterval(timerRef.current);
         timerRef.current = null;
       }
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [open, refresh]);
 
@@ -421,7 +428,23 @@ export function Dashboard({ open, onClose }: Props) {
                         <th
                           key={k}
                           className={sortKey === k ? `sorted-${sortDir}` : ""}
+                          role="button"
+                          tabIndex={0}
+                          aria-sort={
+                            sortKey === k
+                              ? sortDir === "asc"
+                                ? "ascending"
+                                : "descending"
+                              : "none"
+                          }
                           onClick={() => toggleSort(k)}
+                          onKeyDown={(e) => {
+                            // L31: sortable headers must be keyboard-operable.
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              toggleSort(k);
+                            }
+                          }}
                         >
                           {lbl}
                           {sortKey === k && (sortDir === "asc" ? " ▲" : " ▼")}

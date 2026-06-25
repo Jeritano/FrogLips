@@ -159,6 +159,10 @@ export function WorkflowsPage({ status }: Props) {
   useEffect(() => {
     if (demoSeeded.current) return;
     if (localStorage.getItem("froglips.demoFlowSeeded")) return;
+    // L34: claim the guard SYNCHRONOUSLY before the await (mirrors `healed`
+    // below) — otherwise StrictMode's double-invoke runs the async body twice
+    // before the ref is set and seeds two demo flows.
+    demoSeeded.current = true;
     void (async () => {
       try {
         const existing = await api.workflowList();
@@ -170,7 +174,6 @@ export function WorkflowsPage({ status }: Props) {
           FLOW_TEMPLATES.find((x) => x.id === "brainstorm-moa") ??
           FLOW_TEMPLATES[0];
         if (!t) return;
-        demoSeeded.current = true;
         const graph = cloneTemplateGraph(t);
         await api.workflowSave(
           null,
