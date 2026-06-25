@@ -166,7 +166,32 @@ fn is_automated(parsed: &mail_parser::Message, from_addr_lc: &str) -> bool {
         "bounces",
         "daemon",
     ];
-    BLOCK.iter().any(|p| local == *p || local.contains(p))
+    BLOCK.iter().any(|p| local_part_token_match(local, p))
+}
+
+/// True if `needle` appears in `local` as a whole token (bounded by the
+/// start/end of the string or a `-._+` separator), or equals it. Review L19:
+/// the old `local.contains(p)` flagged `academon@` (contains "daemon") and
+/// `bounceback.bob@` (contains "bounce") as automated, dropping legitimate human
+/// senders before the allowlist check. Boundary matching keeps `mailer-daemon`,
+/// `bounce.handler`, etc. while sparing those.
+fn local_part_token_match(local: &str, needle: &str) -> bool {
+    if local == needle {
+        return true;
+    }
+    let is_sep = |c: char| matches!(c, '-' | '.' | '_' | '+');
+    let mut from = 0;
+    while let Some(rel) = local[from..].find(needle) {
+        let i = from + rel;
+        let before_ok = i == 0 || local[..i].chars().next_back().is_some_and(is_sep);
+        let end = i + needle.len();
+        let after_ok = end == local.len() || local[end..].chars().next().is_some_and(is_sep);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = i + 1;
+    }
+    false
 }
 
 pub async fn run(mut ctx: GwCtx) {

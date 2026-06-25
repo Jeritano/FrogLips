@@ -525,13 +525,26 @@ pub fn update_memory_status(id: i64, status: &str) -> Result<()> {
     if status == "active" {
         let conn = get_db()?;
         // Pull the embedding for this id and insert into cache (read path).
-        let blob: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT embedding FROM memories WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .ok();
+        // L13: distinguish a real read error from no-row/NULL. The old `.ok()`
+        // swallowed a transient DB error, silently leaving the reactivated row
+        // out of the in-RAM cache (under-recall until the next rebuild); now we
+        // log it. (embedding may legitimately be NULL → inner Option.)
+        let blob: Option<Vec<u8>> = match conn.query_row(
+            "SELECT embedding FROM memories WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, Option<Vec<u8>>>(0),
+        ) {
+            Ok(b) => b,
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                crate::diagnostics::warn_with(
+                    "memory",
+                    "reactivated memory: embedding read failed; cache refills on next rebuild",
+                    serde_json::json!({ "id": id, "error": e.to_string() }),
+                );
+                None
+            }
+        };
         drop(conn);
         if let Some(b) = blob {
             if !b.is_empty() {

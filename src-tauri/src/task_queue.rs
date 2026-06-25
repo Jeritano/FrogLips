@@ -101,6 +101,30 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
     // first agent `task_create` call. Use `tauri::async_runtime::spawn`
     // instead — it's a thin wrapper that grabs Tauri's managed runtime
     // handle and works from both sync and async command contexts.
+    // L14: reserve a slot under the TASKS guard BEFORE spawning, so a burst can
+    // never momentarily start more than MAX_CONCURRENT_TASKS children (the old
+    // order spawned first then rolled back over-cap — a brief real overshoot).
+    {
+        let mut map = TASKS.lock();
+        // Count only non-terminal tasks — terminal entries linger until pruned
+        // and must not count against the concurrency cap.
+        let active = map
+            .values()
+            .filter(|e| {
+                !matches!(
+                    e.lock().info.status,
+                    TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled
+                )
+            })
+            .count();
+        if active >= MAX_CONCURRENT_TASKS {
+            return Err(format!(
+                "task queue full ({MAX_CONCURRENT_TASKS} active) — cancel finished ones first"
+            ));
+        }
+        map.insert(id.clone(), entry.clone());
+    }
+    let info = entry.lock().info.clone();
     drop(tauri::async_runtime::spawn(async move {
         // Flip to Running
         entry_for_task.lock().info.status = TaskStatus::Running;
@@ -129,38 +153,6 @@ pub fn create(command: String, cwd: Option<String>) -> Result<TaskInfo, String> 
             }
         }
     }));
-    // bug (TOCTOU): hold a single TASKS guard across the cap re-count and the
-    // insert so the count-check and insert are atomic. Counting under a guard
-    // that's dropped before insert would let two concurrent creates both
-    // observe `active < MAX` and both insert, exceeding the cap. Today
-    // task_create is a sync command serialized on the main thread, but this
-    // keeps the cap correct regardless of how the command is scheduled.
-    let mut map = TASKS.lock();
-    // Count only non-terminal tasks — terminal entries linger in the map
-    // until pruned and must not count against the concurrency cap.
-    let active = map
-        .values()
-        .filter(|e| {
-            !matches!(
-                e.lock().info.status,
-                TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled
-            )
-        })
-        .count();
-    if active >= MAX_CONCURRENT_TASKS {
-        // Roll back the just-spawned task: signal cancellation so the detached
-        // shell tears down instead of leaking past the cap. The entry was
-        // never inserted into the map, so signal its cancel sender directly.
-        drop(map);
-        if let Some(tx) = entry.lock().cancel.take() {
-            let _ = tx.send(());
-        }
-        return Err(format!(
-            "task queue full ({MAX_CONCURRENT_TASKS} active) — cancel finished ones first"
-        ));
-    }
-    let info = entry.lock().info.clone();
-    map.insert(id.clone(), entry);
     Ok(info)
 }
 

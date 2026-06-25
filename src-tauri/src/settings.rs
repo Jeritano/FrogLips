@@ -257,9 +257,15 @@ pub struct MaintenanceConfig {
     #[serde(default = "default_active_window_secs")]
     pub active_window_secs: i64,
     /// When true, archived rows are also hard-deleted from the archive DB after
-    /// a retention window. Default FALSE — archive-not-delete is the contract.
+    /// `archive_retention_days`. Default FALSE — archive-not-delete is the
+    /// contract; a privacy-conscious user opts in to genuine deletion.
     #[serde(default)]
     pub hard_delete_archived: bool,
+    /// Retention window (days) for `hard_delete_archived`: an archived row is
+    /// hard-deleted only once it has lived in the archive at least this long.
+    /// Default 365 (conservative). Ignored unless `hard_delete_archived`.
+    #[serde(default = "default_archive_retention_days")]
+    pub archive_retention_days: i64,
     /// Run a full `VACUUM` automatically. Default FALSE — VACUUM rewrites the
     /// whole DB and takes a global lock; it only runs via the explicit
     /// `db_maintenance_vacuum` command.
@@ -271,6 +277,9 @@ pub struct MaintenanceConfig {
 }
 
 fn default_archive_age_days() -> i64 {
+    365
+}
+fn default_archive_retention_days() -> i64 {
     365
 }
 fn default_active_window_secs() -> i64 {
@@ -288,6 +297,7 @@ impl Default for MaintenanceConfig {
             archive_age_days: default_archive_age_days(),
             active_window_secs: default_active_window_secs(),
             hard_delete_archived: false,
+            archive_retention_days: default_archive_retention_days(),
             auto_vacuum: false,
             idle_interval_hours: default_idle_interval_hours(),
         }
@@ -491,11 +501,16 @@ fn write_secrets(map: &std::collections::BTreeMap<String, String>) -> bool {
 /// frontend never needs the plaintext, only whether a key is set.
 const REDACTED_MARKER: &str = "__keychain__";
 
-/// Test override: when set, keys are kept in-memory instead of touching the
-/// real macOS Keychain so the suite never prompts or pollutes the login
-/// keychain. Production code never sets this.
+/// Whether to keep API keys in a 0600 file instead of the macOS Keychain.
+/// L16: this used to key off `FROGLIPS_SETTINGS_DIR`, so relocating the config
+/// directory in PRODUCTION silently downgraded secret storage from the Keychain
+/// to a plaintext file. Decoupled: the test build (`cfg!(test)`) never touches
+/// the real Keychain (no prompts / no login-keychain pollution), and a
+/// production user must opt out explicitly via the dedicated
+/// `FROGLIPS_DISABLE_KEYCHAIN` var. Relocating config no longer changes the
+/// secret backend.
 fn keychain_disabled() -> bool {
-    std::env::var("FROGLIPS_SETTINGS_DIR").is_ok_and(|d| !d.is_empty())
+    cfg!(test) || std::env::var("FROGLIPS_DISABLE_KEYCHAIN").is_ok_and(|d| !d.is_empty())
 }
 
 /// Keychain service name for all Froglips API-key items (audit A28).
@@ -1161,6 +1176,7 @@ mod tests {
                     archive_age_days: 30,
                     active_window_secs: 3600,
                     hard_delete_archived: false,
+                    archive_retention_days: 365,
                     auto_vacuum: false,
                     idle_interval_hours: 12,
                 }),

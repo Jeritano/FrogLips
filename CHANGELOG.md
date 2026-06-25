@@ -4,6 +4,41 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.31] — 2026-06-25
+
+Backend/data-correctness wave from the full review (the second batch).
+
+### Fixed
+- **Honor `hard_delete_archived`** (review M4). The setting was persisted but no
+  code consumed it, so a privacy-conscious user who enabled it to purge old
+  chats kept them forever. It now prunes archived rows older than the new
+  `archive_retention_days` window (default 365) from the archive DB, atomically
+  within the archive transaction. Default behavior is unchanged (archive-not-
+  delete; opt-in only).
+- **GGUF resume validates `Content-Range`** (review L17/L18). A 206 response that
+  ignored our `Range` would append at the wrong offset and silently corrupt the
+  download; the resume now verifies the server's start offset and discards the
+  partial + restarts if it doesn't match.
+- **Email auto-reply detection uses whole-token matching** (review L19). Senders
+  like `academon@` / `bounceback.bob@` are no longer misclassified as automated
+  and dropped (the old substring match flagged any address containing
+  "daemon"/"bounce").
+- **Task queue reserves its slot before spawning** (review L14) — a burst can no
+  longer momentarily start more than the concurrency cap of child processes.
+- **Workflow graph validation rejects duplicate card ids** (review L15) — two
+  cards sharing an id used to collapse the scheduler's fire-tracking so only one
+  fired.
+- **API-key Keychain storage no longer downgrades when relocating config**
+  (review L16). The Keychain kill-switch was tied to `FROGLIPS_SETTINGS_DIR`;
+  it's now a dedicated test/opt-out path, so moving the config directory keeps
+  keys in the Keychain.
+- **Port-reclaim also catches a not-yet-listening orphan** (review L10) — the
+  `lsof` probe dropped its LISTEN-only filter (still gated to real
+  `mlx_lm.server` PIDs), covering an orphan stuck on its startup network call.
+- **Reactivated-memory cache read logs instead of swallowing errors** (review
+  L13). The MLX liveness probe kill path was reviewed and confirmed safe for the
+  shipped threaded server (review M3, documented).
+
 ## [0.14.30] — 2026-06-25
 
 Security-hardening wave from the full codebase review (web/SSRF + agent tools).

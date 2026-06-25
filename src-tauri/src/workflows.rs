@@ -257,6 +257,7 @@ pub fn validate_graph_json(graph_json: &str) -> Result<()> {
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("'edges' must be an array"))?;
 
+    let mut seen_ids = std::collections::HashSet::new();
     for (i, card) in cards.iter().enumerate() {
         let c = card
             .as_object()
@@ -266,6 +267,17 @@ pub fn validate_graph_json(graph_json: &str) -> Result<()> {
                 Some(v) if v.is_string() => {}
                 _ => return Err(anyhow::anyhow!("card {i} field '{key}' must be a string")),
             }
+        }
+        // L15: card ids must be unique — the scheduler's last-fired tracking is
+        // keyed by "<workflow_id>:<card_id>", so two cards sharing an id would
+        // collapse to one tracking slot and only one would ever fire. The
+        // frontend normalizes ids; this is the backend's last line of defense
+        // against a compromised/buggy renderer.
+        let id = c.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        if !seen_ids.insert(id) {
+            return Err(anyhow::anyhow!(
+                "duplicate card id '{id}' (card ids must be unique)"
+            ));
         }
         match c.get("tools") {
             Some(v)

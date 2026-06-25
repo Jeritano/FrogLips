@@ -428,6 +428,35 @@ pub async fn download<R: tauri::Runtime>(
         return Err(anyhow!("HF returned status {status}"));
     }
     let resuming = status.as_u16() == 206 && existing > 0;
+    if resuming {
+        // L17/L18: a 206 that ignored our Range would have us append at the
+        // wrong offset and silently corrupt the file. Verify the server's
+        // Content-Range start equals the byte we asked to resume from; if it's
+        // missing or mismatched, the resume isn't trustworthy — discard the
+        // partial and fail so the next attempt restarts cleanly from byte 0.
+        // ("bytes <start>-<end>/<total>" → start.)
+        fn parse_content_range_start(s: &str) -> Option<u64> {
+            s.trim()
+                .strip_prefix("bytes ")?
+                .split('-')
+                .next()?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        }
+        let cr_ok = resp
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range_start)
+            .is_some_and(|start| start == existing);
+        if !cr_ok {
+            let _ = std::fs::remove_file(&part);
+            return Err(anyhow!(
+                "resume rejected: server ignored Range (bad/absent Content-Range) — discarded partial, retry to restart"
+            ));
+        }
+    }
     let content_len = resp.content_length().unwrap_or(0);
     let total = if resuming {
         existing + content_len

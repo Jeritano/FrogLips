@@ -823,6 +823,13 @@ impl ServerState {
         // allocates a connection pool + TLS config each call. Cached in a
         // OnceLock; the per-probe timeout is set on the request, not the client,
         // so one shared client serves every backend.
+        // M3 (review, resolved not-a-bug): a concern was that a long MLX
+        // generation could starve this probe and get the server killed
+        // mid-output. It can't for the shipped backend: mlx_lm.server uses a
+        // ThreadingHTTPServer (each request its own thread), `/v1/models` takes
+        // no model/generation lock, and MLX releases the GIL during Metal
+        // decode — so the probe answers promptly even while a generation runs.
+        // The kill path therefore only trips on a genuinely wedged server.
         let url = format!("http://{host}:{port}{path}");
         match probe_client().get(&url).timeout(PROBE_TIMEOUT).send().await {
             Ok(resp) => resp.status().is_success(),
@@ -1047,9 +1054,13 @@ pub async fn reclaim_mlx_port(port: u16) -> usize {
         }
         let _ = std::fs::remove_file(&pidf);
     }
-    // (2) port holders
+    // (2) port holders. No -sTCP:LISTEN filter (review L10): an orphan still
+    // stuck on its startup HuggingFace GET has the port bound but is not yet
+    // LISTENing, and the filter would miss it. is_live_mlx() gates every PID to
+    // an actual mlx_lm.server, so a mere client connection on the port (e.g. the
+    // app itself) is never killed.
     if let Ok(out) = Command::new("/usr/sbin/lsof")
-        .args(["-ti", &format!("tcp:{port}"), "-sTCP:LISTEN"])
+        .args(["-ti", &format!("tcp:{port}")])
         .output()
         .await
     {

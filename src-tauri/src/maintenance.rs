@@ -348,6 +348,20 @@ fn run_archive_phase(cfg: &MaintenanceConfig) -> PhaseResult {
                            )",
                         params![now, cutoff, active_floor],
                     )?;
+                    // M4: honor `hard_delete_archived`. Once opted in (default
+                    // off — archive-not-delete stays the contract), prune rows
+                    // that have lived in the archive past the retention window.
+                    // Archive-only DELETE (the live rows were already moved this
+                    // pass or earlier); uses idx_messages_archive_archived_at.
+                    // Runs in the SAME BEGIN IMMEDIATE txn, so it's atomic with
+                    // the move.
+                    if cfg.hard_delete_archived {
+                        let retention_floor = now - cfg.archive_retention_days.max(0) * 86_400;
+                        conn.execute(
+                            "DELETE FROM arch.messages_archive WHERE archived_at < ?1",
+                            params![retention_floor],
+                        )?;
+                    }
                     Ok(deleted as i64)
                 })();
                 match inner {
@@ -858,6 +872,7 @@ mod tests {
             archive_age_days: 365,
             active_window_secs: 86_400,
             hard_delete_archived: false,
+            archive_retention_days: 365,
             auto_vacuum: false,
             idle_interval_hours: 6,
         };
@@ -950,6 +965,7 @@ mod tests {
             archive_age_days: 365,
             active_window_secs: 86_400,
             hard_delete_archived: false,
+            archive_retention_days: 365,
             auto_vacuum: false,
             idle_interval_hours: 6,
         };
