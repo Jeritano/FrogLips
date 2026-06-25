@@ -1076,7 +1076,10 @@ pub async fn reclaim_mlx_port(port: u16) -> usize {
     if reaped > 0 {
         // Wait for the OS to release the socket before the caller binds it.
         for _ in 0..20 {
-            if tokio::net::TcpStream::connect((MLX_HOST, port)).await.is_err() {
+            if tokio::net::TcpStream::connect((MLX_HOST, port))
+                .await
+                .is_err()
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

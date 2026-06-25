@@ -356,9 +356,8 @@ fn surrounding_snippet(text: &str, start: usize, end: usize) -> String {
 /// Matches the DATA-fence markers (and case/spacing/dash-count variants) so
 /// attacker-controlled body content can't smuggle in a line the model reads as
 /// the real BEGIN/END marker. See [`neutralize_fence_markers`].
-static FENCE_MARKER_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)-{2,}\s*(?:BEGIN|END)\s+UNTRUSTED\s+CONTENT\s*-{2,}").unwrap()
-});
+static FENCE_MARKER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)-{2,}\s*(?:BEGIN|END)\s+UNTRUSTED\s+CONTENT\s*-{2,}").unwrap());
 
 /// Defang any BEGIN/END fence marker embedded in untrusted content. Without
 /// this, a web page / MCP result / shell output / diff containing

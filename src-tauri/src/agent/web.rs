@@ -284,8 +284,26 @@ fn web_port_allowed(p: u16) -> bool {
 fn api_port_allowed(p: u16) -> bool {
     !matches!(
         p,
-        22 | 23 | 25 | 110 | 135 | 139 | 143 | 445 | 1433 | 1521
-            | 3306 | 3389 | 5432 | 5900 | 5901 | 6379 | 9200 | 9300 | 11211 | 27017 | 27018
+        22 | 23
+            | 25
+            | 110
+            | 135
+            | 139
+            | 143
+            | 445
+            | 1433
+            | 1521
+            | 3306
+            | 3389
+            | 5432
+            | 5900
+            | 5901
+            | 6379
+            | 9200
+            | 9300
+            | 11211
+            | 27017
+            | 27018
     )
 }
 
@@ -318,9 +336,7 @@ where
         let port = url.port_or_known_default().unwrap_or(443);
         if !port_allowed(port) {
             return Err(err_string(ToolError::Protected {
-                message: format!(
-                    "destination port {port} is not allowed (SSRF / port-scan guard)"
-                ),
+                message: format!("destination port {port} is not allowed (SSRF / port-scan guard)"),
             }));
         }
         // Resolve-and-validate, then pin the connection to that exact set.
@@ -390,11 +406,10 @@ pub async fn web_fetch(url_str: String) -> Result<WebFetchResult, String> {
     // connection pinned to that hop's validated IP set, so a rebinding DNS
     // cannot point the real connection at a loopback/metadata address.
     let timeout = std::time::Duration::from_secs(WEB_FETCH_TIMEOUT_SECS);
-    let resp =
-        send_following_redirects(url.clone(), timeout, &web_port_allowed, |client, u| {
-            client.get(u.clone())
-        })
-        .await?;
+    let resp = send_following_redirects(url.clone(), timeout, &web_port_allowed, |client, u| {
+        client.get(u.clone())
+    })
+    .await?;
     let status = resp.status().as_u16();
     // Trust the server's Content-Type for HTML detection rather than peeking
     // at the body. Substring sniffing tripped on any page that merely
