@@ -24,6 +24,31 @@ if [[ "$VERSION" != "$TAURI_VERSION" || "$VERSION" != "$CARGO_VERSION" ]]; then
 fi
 echo "✓ Version lockstep OK (package.json = tauri.conf.json = Cargo.toml = $VERSION)"
 
+# ── Lint + advisory preflight ────────────────────────────────────────────────
+# Mirror the CI gates that the build itself does NOT run, so a local release can
+# no longer push a commit that turns CI red after the fact (which is exactly how
+# v0.14.30-32 shipped green locally but failed CI on cargo fmt + a quinn-proto
+# advisory). Fail FAST, before the long notarized build.
+echo "▶ Rust formatting check (cargo fmt --check)…"
+if ! ( cd src-tauri && cargo fmt --check ); then
+  echo "✗ cargo fmt --check failed — run 'cargo fmt' in src-tauri before releasing." >&2
+  exit 1
+fi
+echo "✓ cargo fmt clean"
+
+echo "▶ Dependency advisory scan (cargo audit)…"
+if command -v cargo-audit >/dev/null 2>&1; then
+  # cargo audit exits non-zero on VULNERABILITIES; unmaintained/yanked are
+  # warnings and do not fail it — same posture as the CI gate.
+  if ! ( cd src-tauri && cargo audit ); then
+    echo "✗ cargo audit found a vulnerability — resolve it (e.g. 'cargo update -p <crate>') before releasing." >&2
+    exit 1
+  fi
+  echo "✓ cargo audit clean"
+else
+  echo "⚠ cargo-audit not installed — skipping advisory scan (install: 'cargo install cargo-audit'). CI still enforces it." >&2
+fi
+
 # Kill any running instance so DMG bundling + app bundle replace work.
 # NOTE: matches Contents/MacOS specifically — avoids killing bundle_dmg.sh,
 # which has "Froglips.app" in its argv and was getting clobbered before.
