@@ -965,12 +965,28 @@ async fn write_one_validated(
         // outside the workspace. Re-canonicalize the parent right before writing
         // and re-confirm containment (mirrors snapshot.rs's parent re-check).
         // Narrow window — the leaf is still O_NOFOLLOW/0600 regardless.
+        // L2: re-check BOTH within_workspace AND the protected-write denylist on
+        // the re-resolved leaf (mirrors validate_for_write's post-canonicalize
+        // branch). On a $HOME workspace, within_workspace alone would let a
+        // parent-symlink swap redirect a write toward ~/.ssh etc.
         match tokio::fs::canonicalize(parent).await {
-            Ok(cp) if within_workspace(&cp) => {}
-            _ => {
+            Ok(cp) => {
+                let target = match resolved.file_name() {
+                    Some(name) => cp.join(name),
+                    None => cp.clone(),
+                };
+                if !within_workspace(&target) || is_protected_for_write(&target) {
+                    return Err(err_string(ToolError::Protected {
+                        message:
+                            "parent resolved outside the workspace or into a protected path before write (symlink race)"
+                                .into(),
+                    }));
+                }
+            }
+            Err(_) => {
                 return Err(err_string(ToolError::Protected {
                     message:
-                        "parent directory resolved outside the workspace before write (symlink race)"
+                        "parent directory could not be re-resolved before write (symlink race)"
                             .into(),
                 }));
             }

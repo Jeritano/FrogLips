@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../../types";
+import { isToolStalling } from "../runner-helpers";
 
 // Mock the tauri-api module — agentReadFile must not actually try to invoke
 // Tauri, and the classifier hooks need to return without throwing.
@@ -101,5 +102,39 @@ describe("stall guard", () => {
       }
     });
     expect(stallMsgs.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("isToolStalling (per-tool keying)", () => {
+  // STALL_SAME_PATH_LIMIT = 6, so the 7th identical call trips the guard.
+  it("counts read_files by its joined path set (L21) and tags the right tool", () => {
+    const counts = new Map<string, number>();
+    let last = { stalling: false, key: "", count: 0, tool: "" };
+    for (let i = 0; i < 7; i++) {
+      last = isToolStalling("read_files", { paths: ["a.ts", "b.ts"] }, counts);
+    }
+    expect(last.stalling).toBe(true);
+    expect(last.tool).toBe("read_files"); // L17: message must name the real tool
+    // A different path set is tracked independently and does not stall.
+    expect(isToolStalling("read_files", { paths: ["c.ts"] }, counts).stalling).toBe(
+      false,
+    );
+  });
+
+  it("counts read_pdf by path", () => {
+    const counts = new Map<string, number>();
+    let last = { stalling: false, key: "", count: 0, tool: "" };
+    for (let i = 0; i < 7; i++) {
+      last = isToolStalling("read_pdf", { path: "x.pdf" }, counts);
+    }
+    expect(last.stalling).toBe(true);
+    expect(last.tool).toBe("read_pdf");
+  });
+
+  it("does not flag tools outside the read/search family", () => {
+    const counts = new Map<string, number>();
+    expect(
+      isToolStalling("apply_patch", { path: "x" }, counts).stalling,
+    ).toBe(false);
   });
 });

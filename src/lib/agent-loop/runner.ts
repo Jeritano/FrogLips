@@ -1677,9 +1677,11 @@ export async function runAgentLoop(
           const stall = isToolStalling(fnName, args, readCounts);
           if (stall.stalling) {
             const stallMsg =
-              stall.tool === "read_file"
-                ? `read_file has been called ${stall.count} times for '${stall.key}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`
-                : `search_files has been run ${stall.count} times for the same pattern ('${stall.key}'). You already have these results — stop repeating the search and act on what you found, or answer the user now.`;
+              stall.tool === "search_files"
+                ? `search_files has been run ${stall.count} times for the same pattern ('${stall.key}'). You already have these results — stop repeating the search and act on what you found, or answer the user now.`
+                : stall.tool === "read_file"
+                  ? `read_file has been called ${stall.count} times for '${stall.key}'. Stop chunking — call read_file ONCE without 'limit' to read up to 65536 bytes, then continue only if total_bytes > 65536. If you have enough context, answer the user now.`
+                  : `${stall.tool} has been called ${stall.count} times for '${stall.key}'. Stop chunking — you already have this content. Act on it, or answer the user now.`;
             pushToolResult(
               msgs,
               opts.conversationId,

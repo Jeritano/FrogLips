@@ -919,7 +919,13 @@ pub fn find_duplicate(query_emb: Vec<f32>, threshold: f32) -> Result<Option<i64>
         let conn = get_db()?;
         if vec0_memories_usable(&conn, query_emb.len()) {
             match find_duplicate_vec0(&conn, &query_emb, threshold) {
-                Ok(hit) => return Ok(hit),
+                // L8: only short-circuit on a HIT. On Ok(None), fall through to
+                // the linear cache+pending scan — find_duplicate_vec0 over-fetches
+                // a bounded DEDUP_K then post-filters to active/pending, so a
+                // top-K crowded with inactive rows can hide a farther active
+                // duplicate that the linear scan would catch.
+                Ok(Some(id)) => return Ok(Some(id)),
+                Ok(None) => {}
                 Err(e) => {
                     crate::diagnostics::warn_with(
                         "memory",

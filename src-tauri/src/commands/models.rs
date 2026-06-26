@@ -51,6 +51,14 @@ pub async fn model_metadata(
     model: String,
     backend: String,
 ) -> Result<models::ModelMetadata, String> {
+    // L34: validate the renderer-supplied id up front like the sibling commands
+    // (read_hf_config self-defends against ../NUL, but keep defense-in-depth
+    // parity so this command can't silently drift).
+    if backend == "ollama" {
+        validate_ollama_name(&model)?;
+    } else {
+        validate_hf_repo(&model)?;
+    }
     blocking(move || Ok(models::model_metadata(&model, &backend))).await
 }
 

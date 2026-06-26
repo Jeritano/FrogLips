@@ -547,7 +547,19 @@ fn sensitive_env_keys() -> &'static [String] {
                     || up.starts_with("GITHUB_")
                     || up.starts_with("GH_")
                     || up.starts_with("ANTHROPIC")
-                    || up.starts_with("OPENAI");
+                    || up.starts_with("OPENAI")
+                    // L4: credential-POINTER vars — the value is a path to a
+                    // secret file the Seatbelt deny-set only blocks at its
+                    // DEFAULT location. Strip them so a pointer aimed elsewhere
+                    // can't smuggle the creds into the cage.
+                    || up == "KUBECONFIG"
+                    || up == "GOOGLE_APPLICATION_CREDENTIALS"
+                    || up == "GOOGLE_GHA_CREDS_PATH"
+                    || up == "DOCKER_CONFIG"
+                    || up == "DOCKER_AUTH_CONFIG"
+                    || up.starts_with("CLOUDSDK_")
+                    || up.starts_with("AZURE_")
+                    || up.starts_with("GCP_");
                 sensitive.then_some(k)
             })
             .collect()

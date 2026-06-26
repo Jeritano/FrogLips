@@ -131,6 +131,12 @@ describe("cosineSim", () => {
   it("is 0 when a vector is all-zero", () => {
     expect(cosineSim([0, 0], [1, 1])).toBe(0);
   });
+  it("is 0 on a dimension mismatch (L22 — no silent truncation)", () => {
+    // A stale prototype from a previous embedding model must not score against a
+    // new-model query by truncating to the shorter length.
+    expect(cosineSim([1, 2, 3], [1, 2])).toBe(0);
+    expect(cosineSim([1], [1, 2, 3])).toBe(0);
+  });
 });
 
 describe("routeMessage — semantic stage (Stage 2)", () => {

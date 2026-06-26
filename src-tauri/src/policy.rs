@@ -153,13 +153,15 @@ pub fn load_for_cwd(cwd: &Path) -> Option<ProjectPolicy> {
 /// Now uses `libc::geteuid` directly so the comparison reflects the
 /// running process's real uid.
 /// User-opt-in trust marker. A project's `.froglips/policy.json` is honored
-/// only when the user has explicitly created (or run a CLI/UX gesture to
-/// create) `.froglips/.trusted` in the same directory. A cloned repo
-/// inherits its trust marker from the remote if any, but the user can
-/// always wipe it; an attacker has no way to ship a valid trust marker
-/// because they can't sign the user's keychain — we read the file's
-/// access-time and content as a defense-in-depth signal (zero bytes
-/// expected, but non-empty is also fine).
+/// only when `.froglips/.trusted` exists in the same directory AND is owned by
+/// the current user.
+///
+/// L30: this is a WEAK marker — presence + ownership ONLY. There is no
+/// signature / keychain binding / content check (an earlier comment overclaimed
+/// one). The real defense against a repo shipping an auto-approve policy is
+/// `isRepoLocalPolicy` in runner.ts, which suppresses repo-local Auto verdicts
+/// regardless of this marker. Do not treat `.trusted` as cryptographically
+/// strong, and do not "simplify away" the runner.ts suppression on its account.
 fn user_trusts_policy_dir(project_root: &Path) -> bool {
     let marker = project_root.join(POLICY_DIR).join(".trusted");
     if !marker.is_file() {
@@ -286,8 +288,31 @@ fn unquote(token: &str) -> &str {
 /// `denied_write_paths` is checked first (deny wins). Then if
 /// `allowed_write_paths` is set and the path matches one of its entries,
 /// return `Auto`. Otherwise return `NeedsConfirm`.
+/// Collapse `.` / `..` segments purely lexically (no filesystem access) so a
+/// traversal in a renderer-supplied path can't fool the allow/deny patterns
+/// (review L1). Filesystem canonicalization still happens later in fs.rs.
+fn lexically_normalize(p: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 pub fn evaluate_write(path: &Path, policy: &ProjectPolicy) -> WriteDecision {
-    let path_str = path.to_string_lossy();
+    // L1: evaluate the LEXICALLY-NORMALIZED path, not the raw IPC string. A `..`
+    // segment could otherwise satisfy an allow pattern (granting Auto) or dodge
+    // a deny pattern. fs.rs re-canonicalizes before the actual write (defense in
+    // depth), but the auto-approve VERDICT must never be granted on a traversal.
+    let normalized = lexically_normalize(path);
+    let path_str = normalized.to_string_lossy();
     let path_str = path_str.as_ref();
 
     if let Some(deny) = &policy.denied_write_paths {
@@ -581,6 +606,32 @@ mod tests {
         // Not in allow list and not denied → NeedsConfirm.
         assert_eq!(
             evaluate_write(Path::new("README.md"), &p),
+            Decision::NeedsConfirm
+        );
+    }
+
+    #[test]
+    fn evaluate_write_normalizes_traversal_before_matching() {
+        // L1: a `..` segment must not let a path auto-approve via an allow rule
+        // nor dodge a deny rule. Paths are lexically normalized first.
+        let p = ProjectPolicy {
+            allowed_write_paths: Some(vec!["src/".into()]),
+            denied_write_paths: Some(vec!["secrets/".into()]),
+            ..ProjectPolicy::default()
+        };
+        // `src/../secrets/x` normalizes to `secrets/x` → DENIED, not allowed.
+        assert_eq!(
+            evaluate_write(Path::new("src/../secrets/x"), &p),
+            Decision::Denied
+        );
+        // `src/./main.rs` normalizes to `src/main.rs` → still Auto.
+        assert_eq!(
+            evaluate_write(Path::new("src/./main.rs"), &p),
+            Decision::Auto
+        );
+        // A traversal that escapes the allow root is no longer auto-approved.
+        assert_eq!(
+            evaluate_write(Path::new("src/../README.md"), &p),
             Decision::NeedsConfirm
         );
     }

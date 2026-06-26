@@ -357,10 +357,22 @@ fn run_archive_phase(cfg: &MaintenanceConfig) -> PhaseResult {
                     // the move.
                     if cfg.hard_delete_archived {
                         let retention_floor = now - cfg.archive_retention_days.max(0) * 86_400;
-                        conn.execute(
+                        let pruned = conn.execute(
                             "DELETE FROM arch.messages_archive WHERE archived_at < ?1",
                             params![retention_floor],
                         )?;
+                        // L31: this is a DESTRUCTIVE, non-restorable delete — log
+                        // the rowcount (every other phase reports its count) so it
+                        // isn't silently discarded. Best-effort log inside the txn.
+                        if pruned > 0 {
+                            crate::diagnostics::info(
+                                "maintenance",
+                                &format!(
+                                    "hard-deleted {pruned} archived message(s) past the {}-day retention window",
+                                    cfg.archive_retention_days
+                                ),
+                            );
+                        }
                     }
                     Ok(deleted as i64)
                 })();

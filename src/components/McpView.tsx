@@ -308,7 +308,20 @@ export function McpView() {
         let env: Record<string, string> | undefined;
         if (form.env.trim()) {
           try {
-            env = JSON.parse(form.env);
+            const parsed: unknown = JSON.parse(form.env);
+            // L29: JSON.parse happily accepts arrays/scalars/null — verify it's a
+            // plain object before forwarding as Record<string,string>, so a
+            // pasted `["A","B"]` fails cleanly here instead of confusingly in Rust.
+            if (
+              typeof parsed !== "object" ||
+              parsed === null ||
+              Array.isArray(parsed)
+            ) {
+              setErr("Env must be a JSON object.");
+              setBusy(null);
+              return;
+            }
+            env = parsed as Record<string, string>;
           } catch {
             setErr("Env must be a JSON object.");
             setBusy(null);

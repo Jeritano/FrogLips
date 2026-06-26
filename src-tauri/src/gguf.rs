@@ -100,10 +100,11 @@ pub struct GgufFile {
     pub mtime: u64,
 }
 
-/// Validate an HF repo id ("org/name" or "org/name/subpath/...").
-/// Mirrors `validate_hf_repo` in lib.rs, but lives here so the gguf
-/// module is self-contained and unit-testable without the broader
-/// lib.rs surface.
+/// Validate an HF repo id — exactly `org/name` (L32: the code below requires
+/// precisely two non-empty segments; an earlier doc claimed subpaths were
+/// allowed, which it never accepted). Mirrors `validate_hf_repo` in lib.rs, but
+/// lives here so the gguf module is self-contained and unit-testable without the
+/// broader lib.rs surface.
 pub fn validate_repo(repo: &str) -> Result<()> {
     if repo.is_empty() || repo.len() > MAX_REPO_LEN {
         return Err(anyhow!("repo length out of range"));
@@ -444,12 +445,23 @@ pub async fn download<R: tauri::Runtime>(
                 .parse::<u64>()
                 .ok()
         }
-        let cr_ok = resp
+        // L33: also parse the total ("bytes <start>-<end>/<total>") and reject a
+        // resume whose remote total is smaller than what we already have — the
+        // remote shrank, so appending onto our stale partial would corrupt it.
+        fn parse_content_range_total(s: &str) -> Option<u64> {
+            s.trim().rsplit('/').next()?.trim().parse::<u64>().ok()
+        }
+        let cr = resp
             .headers()
             .get(reqwest::header::CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_content_range_start)
-            .is_some_and(|start| start == existing);
+            .and_then(|v| v.to_str().ok());
+        let cr_ok = match cr {
+            Some(h) => {
+                parse_content_range_start(h).is_some_and(|start| start == existing)
+                    && parse_content_range_total(h).is_none_or(|total| total >= existing)
+            }
+            None => false,
+        };
         if !cr_ok {
             let _ = std::fs::remove_file(&part);
             return Err(anyhow!(

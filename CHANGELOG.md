@@ -4,6 +4,50 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.33] — 2026-06-25
+
+Fixes from review v2 — a regression I introduced in v0.14.30-32, several
+incomplete fixes from that batch, two user-facing mediums, and regression tests.
+
+### Fixed
+- **Regression: Roundtable demo-seed could double-seed** (M1) — the StrictMode
+  `useRef` guard added to WorkflowsPage in v0.14.32 was missing from the
+  identical RoundtableView effect. Added.
+- **Fence-defang now covers dash-omitted markers** (L5) — `---END UNTRUSTED
+  CONTENT` / `END UNTRUSTED CONTENT---` are neutralized, not just the
+  dash-on-both-ends form. +regression tests.
+- **File-write parent re-check also enforces the protected-path denylist** (L2)
+  — not just `within_workspace`, so a parent-symlink swap can't redirect a write
+  toward `~/.ssh` on a $HOME workspace.
+- **GGUF resume validates the Content-Range total**, not just the start (L33) —
+  rejects a remote that shrank.
+- **Stall-guard hint names the actual tool** for `read_files`/`read_pdf` (L17)
+  instead of mislabeling them "search_files". +tests.
+- **`model_metadata` validates its repo/model id** like its sibling commands (L34).
+- **`browser_navigate` gained the destination-port policy + full landed-URL
+  re-validation** (L6/L7) — parity with `web_fetch`/`http_request`.
+- **Boot orphan-reap can't SIGKILL a just-started model** (M2) — gated on idle +
+  serialized via the backend lock.
+- **Two Settings fields (model-idle, agent turn-limit) now reflect saved values**
+  (M3) — value-derived `key` remount.
+- **Shell env-strip covers credential-pointer vars** (L4: KUBECONFIG,
+  GOOGLE_APPLICATION_CREDENTIALS, DOCKER_CONFIG, CLOUDSDK_*, AZURE_*, …).
+- **Policy auto-approve evaluates lexically-normalized paths** (L1) — a `..`
+  can't satisfy an allow rule or dodge a deny rule. +tests.
+- Memory `find_duplicate` falls through to the linear scan on a vec0 miss (L8);
+  task-id seeding is per-thread-unique (L13); the MLX PID breadcrumb is written
+  only after the start wins the generation re-check (L14); hard-delete prune logs
+  its rowcount (L31); find-nav guards detached nodes (L25); deleting a card with
+  its form open closes the form (L28); MCP env JSON must be an object (L29).
+  Doc/code drift corrected (L30 policy trust marker, L32 gguf repo shape).
+
+### Deferred (low / self-healing / needs larger change — documented in code)
+L3 (run_code fd reuse, same-uid only), L9/L10 (RAG self-healing edges), L15
+(spawn-serialization mutex), L16 (live MCP bearer, self-heals via 401), L18/L19
+(prefetch + markdown-attr cosmetic), L21 (binding migration), L22 (handoff needs
+a hasPredecessor flag), L23 (haltWhen on dry-runs), plus measure-first perf
+micro-opts.
+
 ## [0.14.32] — 2026-06-25
 
 Frontend/agent-loop correctness wave from the full review (the third batch).

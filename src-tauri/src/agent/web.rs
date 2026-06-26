@@ -272,7 +272,7 @@ fn pinned_no_redirect_client(
 /// Destination-port policy for `web_fetch`/`web_search`: only standard web
 /// ports. Blocks using the fetch tools as a public-IP port scanner or
 /// protocol-confusion probe (review L2).
-fn web_port_allowed(p: u16) -> bool {
+pub(crate) fn web_port_allowed(p: u16) -> bool {
     matches!(p, 80 | 443 | 8080 | 8443)
 }
 

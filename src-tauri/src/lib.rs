@@ -359,8 +359,12 @@ pub fn run() {
                 // stale orphan. Without this it keeps ~model-sized RAM AND blocks
                 // the next spawn's bind, surfacing as "model server crashed
                 // repeatedly". Off the first-paint path.
+                // M2: gate the reap on idle + serialize it via the inner lock so
+                // it can never SIGKILL a child a concurrent start_server just
+                // spawned (which would read as a crash + spurious restart).
+                let s_reap = state.clone();
                 tauri::async_runtime::spawn(async move {
-                    backend_process::reclaim_mlx_port(backend_process::MLX_PORT).await;
+                    s_reap.reap_orphans_if_idle().await;
                 });
 
                 let s = state.clone();

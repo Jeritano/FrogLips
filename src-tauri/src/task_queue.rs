@@ -56,10 +56,21 @@ fn random_id() -> String {
 }
 
 fn rand_seed() -> u32 {
-    // Cheap, not cryptographic — only used to avoid collisions on same-nanosecond calls.
+    // Cheap, not cryptographic — only used to avoid collisions on same-nanosecond
+    // calls. L13: the old const 0xdead_beef seed was IDENTICAL on every thread,
+    // so two threads' first calls produced the same value at the same nanosecond
+    // → colliding task ids → map.insert silently overwrote a live entry. Seed
+    // per-thread-unique (mixing nanos) on first use; xorshift then advances it
+    // per call so consecutive ids on one thread never repeat.
     use std::cell::Cell;
-    thread_local!(static SEED: Cell<u32> = const { Cell::new(0xdead_beef) });
-    SEED.with(crate::util::xorshift)
+    thread_local!(static SEED: Cell<u32> = const { Cell::new(0) });
+    SEED.with(|s| {
+        if s.get() == 0 {
+            let init = (crate::util::now_nanos() as u32) ^ 0x9e37_79b9;
+            s.set(if init == 0 { 1 } else { init });
+        }
+        crate::util::xorshift(s)
+    })
 }
 
 /// Opportunistic auto-prune budget. Code review H2: TASKS never shrank on

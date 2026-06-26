@@ -163,6 +163,23 @@ impl ServerState {
         *self.app.lock() = Some(app);
     }
 
+    /// Boot-time orphan reap, gated on idle and serialized via the inner lock.
+    /// `reclaim_mlx_port` can't tell a freshly-spawned valid child from a stale
+    /// orphan, so reaping while a `start()` is in flight could SIGKILL the live
+    /// child (review M2). Holding the inner lock across the reclaim serializes
+    /// it against start()/stop(); if a server is already running/starting we
+    /// skip entirely. Only meaningful at boot (reaping a PRIOR process's
+    /// orphan) — the lock-hold is acceptable there: it's instant unless an
+    /// orphan is actually found, and nothing else is mid-start during boot.
+    pub async fn reap_orphans_if_idle(&self) {
+        let guard = self.inner.lock().await;
+        if guard.is_some() {
+            return;
+        }
+        reclaim_mlx_port(MLX_PORT).await;
+        drop(guard);
+    }
+
     fn emit(&self, status: &ServerStatus) {
         if let Some(app) = self.app.lock().clone() {
             {
@@ -418,11 +435,9 @@ impl ServerState {
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("failed to spawn {}", binary.display()))?;
-        // Breadcrumb the PID so a future launch can reap this child even if the
-        // app exits uncleanly (where kill_on_drop never fires).
-        if let Some(pid) = child.id() {
-            write_mlx_pid(pid);
-        }
+        // (L14: the PID breadcrumb is written below, only AFTER the generation
+        // re-check passes — a superseded start must not point the breadcrumb at
+        // the child it's about to kill.)
 
         // Pump stderr into a bounded ring
         if let Some(stderr) = child.stderr.take() {
@@ -528,6 +543,11 @@ impl ServerState {
                 Some((m, b)) => self.live_status(&m, &b),
                 None => self.dead_status(),
             });
+        }
+        // L14: generation held — now this child is the winner, so breadcrumb its
+        // PID for future orphan-reaping.
+        if let Some(pid) = child.id() {
+            write_mlx_pid(pid);
         }
         // The watcher in lib.rs::setup polls `status()` periodically and detects
         // natural child death there; no per-server watcher task needed here.

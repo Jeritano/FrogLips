@@ -79,6 +79,16 @@ pub async fn validate_navigate_url(
                 }));
             }
             let port = url.port_or_known_default().unwrap_or(443);
+            // L6: gate the destination port like web_fetch/http_request do —
+            // don't let the agent drive Chrome to public-IP service ports
+            // (6379/22/…). Standard web ports only for navigation.
+            if !super::web::web_port_allowed(port) {
+                return Err(err_string(ToolError::Protected {
+                    message: format!(
+                        "destination port {port} not allowed for navigation (SSRF / port-scan guard)"
+                    ),
+                }));
+            }
             // Resolve and verify every A/AAAA record lands in a safe range.
             super::web::resolve_to_safe_addrs(&host, port).await?
         }
@@ -235,11 +245,13 @@ mod backend {
         // URL; if it resolves unsafe, do NOT hand its content back — close the
         // page and fail. (The fetch already happened in-browser, but the
         // attacker never receives the internal response through the tool.)
-        let landed_host = url::Url::parse(&landed)
-            .ok()
-            .and_then(|u| u.host_str().map(|h| h.to_string()));
-        let pinned_host = host_pin.as_ref().map(|(h, _)| h.clone());
-        if landed.starts_with("http") && landed_host != pinned_host {
+        // L7: re-validate the FULL landed URL whenever it's http(s) — not only
+        // on a host change. The old host-only trigger skipped a same-host
+        // redirect to a different (now port-gated) port or an https→http
+        // downgrade. This still validates host + port + resolved IPs of the
+        // final URL. (Full per-hop interception of Chrome's own redirect chain
+        // is a larger CDP change, deferred for this alpha feature.)
+        if landed.starts_with("http") {
             if let Err(e) = validate_navigate_url(&landed).await {
                 let _ = session.page.goto("about:blank").await;
                 return Err(err_string(ToolError::PermissionDenied {

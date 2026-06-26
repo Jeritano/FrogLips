@@ -365,6 +365,11 @@ export function SettingsModal({
                   <span>Model idle</span>
                   <select
                     data-testid="settings-keep-alive"
+                    // M3: value-derived key remounts the control once the
+                    // persisted value loads async, so it reflects the saved
+                    // setting instead of the hardcoded default (matches the
+                    // sibling fields that already use this pattern).
+                    key={keepAliveInit}
                     defaultValue={keepAliveInit}
                     onChange={(e) => {
                       void updateSettings({
@@ -387,6 +392,8 @@ export function SettingsModal({
                     type="number"
                     min={5}
                     max={400}
+                    // M3: remount on async-loaded value (see keep-alive above).
+                    key={maxIterInit}
                     defaultValue={maxIterInit}
                     style={{ width: 80 }}
                     onChange={(e) => {

@@ -553,6 +553,10 @@ export function WorkflowsPage({ status }: Props) {
   const deleteCard = useCallback((id: string) => {
     setCards((c) => c.filter((x) => x.id !== id));
     setEdges((e) => e.filter((x) => x.from !== id && x.to !== id));
+    // L28: if the card being deleted has its edit form open, close it —
+    // otherwise a later Save maps over a `cards` list missing the id and
+    // silently evaporates the edits.
+    setFormCard((fc) => (fc?.id === id ? null : fc));
   }, []);
 
   // Convert a DOMRect (viewport coords) into the form's fly-origin shape.

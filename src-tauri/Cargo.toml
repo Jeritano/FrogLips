@@ -1,6 +1,6 @@
 [package]
 name = "local-llm-app"
-version = "0.14.32"
+version = "0.14.33"
 description = "Froglips — local LLM chat, MLX backend"
 authors = ["Joseph D Eritano"]
 edition = "2021"
@@ -91,7 +91,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 futures = "0.3"
 base64 = "0.22"
 getrandom = "0.2"
-pdf-extract = "0.7"
+pdf-extract = "0.12"
 html2text = "0.13"
 sha2 = "0.10"
 # Diagnostics bundle: a real .zip the user can attach to a bug report (was a

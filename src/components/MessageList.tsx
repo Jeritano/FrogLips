@@ -1479,7 +1479,14 @@ export function MessageList({
     if (marks.length === 0) return;
     const clamped = ((i % marks.length) + marks.length) % marks.length;
     marks.forEach((m, j) => m.classList.toggle(FIND_CURRENT_CLASS, j === clamped));
-    marks[clamped]?.scrollIntoView({ block: "center", behavior: "smooth" });
+    const target = marks[clamped];
+    // L25: the streaming bubble re-renders per token (the rebuild effect
+    // excludes `streaming` from deps), which can detach previously-marked nodes
+    // while findMarksRef still holds them. scrollIntoView on a detached node is
+    // a silent no-op — only act on a still-connected mark.
+    if (target?.isConnected) {
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
     setFindActive(clamped);
   }, []);
 

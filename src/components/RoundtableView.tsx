@@ -558,8 +558,15 @@ export function RoundtableView() {
   // debate was invisible until the user designed one themselves. Seed one
   // canned transcript exactly once (clearly labeled as a sample), only when
   // there are no real outcomes to drown out.
+  const demoTableSeeded = useRef(false);
   useEffect(() => {
+    // M1 (review regression): claim the guard SYNCHRONOUSLY before the await —
+    // mirrors WorkflowsPage's L34 fix. The localStorage flag is written only
+    // after an async IPC, so StrictMode's double-invoke (and a navigate-away
+    // race) would otherwise pass both runs and seed two sample outcomes.
+    if (demoTableSeeded.current) return;
     if (localStorage.getItem("froglips.demoTableSeeded")) return;
+    demoTableSeeded.current = true;
     void (async () => {
       try {
         const existing = await api.roundtableRunList(null);

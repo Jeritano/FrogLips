@@ -380,6 +380,13 @@ function buildCardOptions(
   // instead of the path specified in the card prompt. Workflow cards run
   // task-focused without personal-profile leakage; the prompt itself is the
   // source of truth.
+  // L22 (NOT changed): emitting a sentinel on empty output was considered, but
+  // `null` is normalized to `""` upstream, so `previousOutput` can't tell a
+  // first card (no predecessor) from a predecessor that returned empty — both
+  // are `""`. Emitting on `""` would wrongly hand the FIRST card a handoff (and
+  // breaks the deliberate "empty → no handoff" contract in edge-cases.test.ts).
+  // A correct fix needs a `hasPredecessor` flag threaded from the caller;
+  // deferred. The empty-output chain-link loss is rare and low-impact.
   if (previousOutput != null && previousOutput.length > 0) {
     // SECURITY: previous-card output is adversary-controlled — surface it as
     // fenced system data, not as a `user` instruction. See `buildHandoffMessage`.
