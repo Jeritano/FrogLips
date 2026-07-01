@@ -1,5 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message, ProjectPolicy } from "../../../types";
+import { normalizePolicyPath } from "../runner";
+
+describe("normalizePolicyPath (L2 — TS/Rust parity)", () => {
+  it("collapses . and .. so a traversal can't satisfy/dodge a policy pattern", () => {
+    // Mirrors Rust lexically_normalize: leading `..` collapse to nothing.
+    expect(normalizePolicyPath("src/../../../etc/passwd")).toBe("etc/passwd");
+    expect(normalizePolicyPath("src/./main.rs")).toBe("src/main.rs");
+    expect(normalizePolicyPath("src/../secrets/x")).toBe("secrets/x");
+    expect(normalizePolicyPath("a/b/../c")).toBe("a/c");
+    expect(normalizePolicyPath("/abs/./p")).toBe("/abs/p");
+  });
+});
 
 // Mock the tauri-api surface so the runner can execute under jsdom without
 // real Tauri bindings. policyLoad is stubbed to return null by default; the

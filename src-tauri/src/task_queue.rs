@@ -43,6 +43,10 @@ static TASKS: Lazy<Mutex<HashMap<String, Arc<Mutex<TaskEntry>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 const MAX_CONCURRENT_TASKS: usize = 32;
+/// A task that has stayed `Pending` this long never reached `Running` (its
+/// spawned future didn't run) — `prune` reclaims it so the slot isn't leaked
+/// against the concurrency cap. Generous vs the ~instant real Pending→Running.
+const STUCK_PENDING_SECS: u64 = 120;
 
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
@@ -212,8 +216,16 @@ pub fn prune(older_than_secs: u64) -> usize {
             TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled
         );
         let finished_at = g.info.finished_at;
+        // I1: a slot reserved as Pending flips to Running in the spawned
+        // future's first line (~instant). One stuck Pending far past that means
+        // the future never ran (runtime torn down at spawn) — reclaim it so it
+        // doesn't count against MAX_CONCURRENT_TASKS forever.
+        let stuck_pending = matches!(g.info.status, TaskStatus::Pending)
+            && now.saturating_sub(g.info.created_at) >= older_than_secs.max(STUCK_PENDING_SECS);
         drop(g);
-        if finished {
+        if stuck_pending {
+            to_remove.push(id.clone());
+        } else if finished {
             if let Some(t) = finished_at {
                 if now.saturating_sub(t) >= older_than_secs {
                     to_remove.push(id.clone());

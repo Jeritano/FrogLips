@@ -187,7 +187,10 @@ function buildSubOpts(
     approveAllWrite: false,
     dryRun: parent.dryRun,
     approvedShellPrefixes: [],
-    onApproveShellPrefix: parent.onApproveShellPrefix,
+    // I2: don't inherit the parent's "remember this shell prefix" callback — a
+    // subagent modal is attacker-influenceable, so a "remember" click there must
+    // not persist a prefix into the parent's global config.
+    onApproveShellPrefix: undefined,
     // Suppress UI noise: subagent runs are background work; parent's
     // metrics + UI shouldn't see every intermediate step.
     onUpdate: () => {},

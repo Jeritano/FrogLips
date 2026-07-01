@@ -426,17 +426,18 @@ pub struct ProcessList {
 
 pub async fn list_processes(filter: Option<String>) -> Result<ProcessList, String> {
     let mut cmd = tokio::process::Command::new("ps");
-    // -A: all; -o: format; -c: command only (no args clutter)
+    // L6: filter to the CURRENT uid (matches the doc) instead of `-A` (all
+    // users) — on a shared host `-A` disclosed other users' process basenames.
     // RSS is in KiB on macOS.
-    cmd.args([
-        "-A",
-        "-o",
-        "pid=,ppid=,%cpu=,rss=,comm=",
-        "-r", // sort by CPU desc
-    ])
-    .stdout(Stdio::piped())
-    .stderr(Stdio::null())
-    .kill_on_drop(true);
+    let uid = unsafe { libc::geteuid() };
+    cmd.arg("-U")
+        .arg(uid.to_string())
+        .arg("-o")
+        .arg("pid=,ppid=,%cpu=,rss=,comm=")
+        .arg("-r") // sort by CPU desc
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
     let fut = capped_output(cmd, 512 * 1024, false);
     let timeout = Duration::from_secs(5);
     let (out, _err, exit) = match tokio::time::timeout(timeout, fut).await {

@@ -247,7 +247,16 @@ fn pinned_no_redirect_client(
     sorted.sort();
     let key = {
         use std::fmt::Write;
-        let mut k = format!("{host}|{}|", timeout.as_millis());
+        // M1: include the proxy identity — a built client's egress mode (direct +
+        // DNS-pin vs proxied) is fixed at build time, and the proxy is runtime-
+        // mutable. Without this, enabling the proxy could reuse a cached DIRECT
+        // client for up to the TTL, egressing the user's real IP right after they
+        // turned on the anonymizer.
+        let mut k = format!(
+            "{host}|{}|{}|",
+            timeout.as_millis(),
+            crate::net::proxy_url().unwrap_or_default()
+        );
         for a in &sorted {
             let _ = write!(k, "{a},");
         }

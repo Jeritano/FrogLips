@@ -2026,8 +2026,9 @@ const SEARCH_SNIPPET_CHARS: usize = 160;
 
 /// Escape `%`, `_` and the escape char itself for a SQL `LIKE` pattern, so a
 /// user query containing wildcards matches literally. Paired with
-/// `ESCAPE '\'` in the query.
-fn escape_like(query: &str) -> String {
+/// `ESCAPE '\'` in the query. `pub(crate)` so memory.rs reuses it (review L7)
+/// instead of a divergent hand-rolled escape that missed the backslash.
+pub(crate) fn escape_like(query: &str) -> String {
     let mut out = String::with_capacity(query.len());
     for c in query.chars() {
         if matches!(c, '%' | '_' | '\\') {

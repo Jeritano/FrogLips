@@ -776,7 +776,6 @@ pub fn run() {
             commands::mcp::mcp_server_stderr,
             commands::mcp::mcp_start_remote_server,
             commands::mcp::mcp_oauth_connect,
-            commands::mcp::mcp_oauth_refresh,
             commands::mcp::mcp_remote_has_token,
             commands::mcp::mcp_delete_remote_token,
             commands::mcp::mcp_registry_search,

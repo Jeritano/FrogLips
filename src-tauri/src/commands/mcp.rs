@@ -185,25 +185,10 @@ pub async fn mcp_oauth_connect(
         .map_err(|e| format!("{e:#}"))
 }
 
-/// Refresh a stored OAuth access token for a remote MCP server. Returns true
-/// if a refreshed token was stored (false if no OAuth creds exist).
-#[tauri::command]
-pub async fn mcp_oauth_refresh(name: String) -> Result<bool, String> {
-    let key = format!("mcp_oauth:{name}");
-    let Some(json) = crate::settings::keychain_get(&key) else {
-        return Ok(false);
-    };
-    let creds: mcp::oauth::OauthCreds =
-        serde_json::from_str(&json).map_err(|e| format!("stored oauth creds: {e}"))?;
-    let fresh = mcp::oauth::refresh(&creds)
-        .await
-        .map_err(|e| format!("{e:#}"))?;
-    crate::settings::keychain_set_account(&format!("mcp:{name}"), &fresh.access_token);
-    if let Ok(j) = serde_json::to_string(&fresh) {
-        crate::settings::keychain_set_account(&key, &j);
-    }
-    Ok(true)
-}
+// L5: the renderer-callable `mcp_oauth_refresh` command was removed — it had no
+// approval-token gate (unlike every other server/credential MCP command) and no
+// frontend caller. Token refresh is handled internally by `try_oauth_refresh`
+// on a 401 (mcp/mod.rs), which also updates the live transport bearer.
 
 /// A normalized MCP registry listing (from the official registry or PulseMCP).
 #[derive(serde::Serialize, Clone)]

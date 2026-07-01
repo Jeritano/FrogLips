@@ -915,6 +915,44 @@ pub(crate) fn write_nofollow_sync(
     Ok(())
 }
 
+/// Re-confirm a write target's parent immediately before an O_NOFOLLOW write.
+/// `write_nofollow_sync` only guards the LEAF component; a concurrent same-uid
+/// attacker could swap an intermediate parent dir for a symlink in the
+/// validate→open window, redirecting the write outside the workspace or into a
+/// protected path. Re-canonicalize the parent and re-check BOTH `within_workspace`
+/// and `is_protected_for_write` on the re-resolved leaf (mirrors
+/// `validate_for_write`'s post-canonicalize branch). Called at EVERY write site
+/// (`write_one_validated`, `edit_file`, `multi_edit`) via this one helper so the
+/// guard can never drift per-path again (review L1/L2 — the v0.14.33 fix had
+/// landed only on `write_one_validated`).
+async fn reconfirm_parent_before_write(resolved: &Path) -> Result<(), String> {
+    let Some(parent) = resolved.parent() else {
+        return Ok(());
+    };
+    match tokio::fs::canonicalize(parent).await {
+        Ok(cp) => {
+            let target = match resolved.file_name() {
+                Some(name) => cp.join(name),
+                None => cp.clone(),
+            };
+            if !within_workspace(&target) || is_protected_for_write(&target) {
+                return Err(err_string(ToolError::Protected {
+                    message:
+                        "parent resolved outside the workspace or into a protected path before write (symlink race)"
+                            .into(),
+                }));
+            }
+        }
+        Err(_) => {
+            return Err(err_string(ToolError::Protected {
+                message: "parent directory could not be re-resolved before write (symlink race)"
+                    .into(),
+            }));
+        }
+    }
+    Ok(())
+}
+
 /// Write one file through the confined path: validate → size cap → parent
 /// `create_dir_all` → per-file undo snapshot → no-follow write. Shared by
 /// `write_file` (single) and `write_files` (multi) so both go through the
@@ -959,39 +997,10 @@ async fn write_one_validated(
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| err_string(classify_io(&e)))?;
-        // L5 (defense-in-depth): write_nofollow_sync only O_NOFOLLOW-guards the
-        // LEAF. A concurrent local attacker could swap an intermediate parent
-        // dir for a symlink between validation and open, redirecting the write
-        // outside the workspace. Re-canonicalize the parent right before writing
-        // and re-confirm containment (mirrors snapshot.rs's parent re-check).
-        // Narrow window — the leaf is still O_NOFOLLOW/0600 regardless.
-        // L2: re-check BOTH within_workspace AND the protected-write denylist on
-        // the re-resolved leaf (mirrors validate_for_write's post-canonicalize
-        // branch). On a $HOME workspace, within_workspace alone would let a
-        // parent-symlink swap redirect a write toward ~/.ssh etc.
-        match tokio::fs::canonicalize(parent).await {
-            Ok(cp) => {
-                let target = match resolved.file_name() {
-                    Some(name) => cp.join(name),
-                    None => cp.clone(),
-                };
-                if !within_workspace(&target) || is_protected_for_write(&target) {
-                    return Err(err_string(ToolError::Protected {
-                        message:
-                            "parent resolved outside the workspace or into a protected path before write (symlink race)"
-                                .into(),
-                    }));
-                }
-            }
-            Err(_) => {
-                return Err(err_string(ToolError::Protected {
-                    message:
-                        "parent directory could not be re-resolved before write (symlink race)"
-                            .into(),
-                }));
-            }
-        }
     }
+    // L5/L2/L1: re-confirm the parent right before the O_NOFOLLOW write (shared
+    // helper — called at EVERY write site so the guard can't drift per-path).
+    reconfirm_parent_before_write(&resolved).await?;
     let snap_path = resolved.clone();
     let _ = tokio::task::spawn_blocking(move || match prior_bytes {
         Some(b) => super::snapshot::capture_with_bytes(&snap_path, b, snapshot_label),
@@ -1171,6 +1180,8 @@ pub async fn edit_file(
         })
         .await;
     }
+    // L1: same parent re-confirm as the write_file path before the leaf write.
+    reconfirm_parent_before_write(&target).await?;
     tokio::task::spawn_blocking(move || write_nofollow_sync(&target, &bytes, false))
         .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?
@@ -1578,6 +1589,8 @@ pub async fn multi_edit(path: String, edits: Vec<EditOp>) -> Result<MultiEditRes
     let new_size = content.len() as u64;
     let bytes = content.into_bytes();
     let target = resolved.clone();
+    // L1: same parent re-confirm as the write_file path before the leaf write.
+    reconfirm_parent_before_write(&target).await?;
     tokio::task::spawn_blocking(move || write_nofollow_sync(&target, &bytes, false))
         .await
         .map_err(|e| err_string(ToolError::io(e.to_string())))?

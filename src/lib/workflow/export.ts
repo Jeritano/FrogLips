@@ -65,7 +65,15 @@ export function flowFromDoc(text: string): FlowImport {
       error: "Flow document is missing its cards/edges graph.",
     };
   }
-  const graph: WorkflowGraph = { cards: g.cards, edges: g.edges };
+  // H1 (security): an imported/pasted Flow is a MORE-untrusted source than
+  // chat-authored cards (force-gated in create-flow.ts). Stamp every imported
+  // card so elevated tools can't run auto-approved on a "paste + Run": require
+  // human re-review and disable unattended auto-run. The user Arms cards after
+  // reviewing them. Single import chokepoint → covers every importer.
+  const cards = (g.cards as unknown as Array<Record<string, unknown>>).map(
+    (c) => ({ ...c, needsReview: true, unattended: false }),
+  ) as unknown as WorkflowGraph["cards"];
+  const graph: WorkflowGraph = { cards, edges: g.edges };
   const v = validateGraph(graph);
   if (!v.ok) {
     return { ok: false, error: `Invalid Flow graph: ${v.error}` };

@@ -1176,8 +1176,6 @@ export const api = {
       approval,
     });
   },
-  mcpOauthRefresh: (name: string) =>
-    invoke<boolean>("mcp_oauth_refresh", { name }),
   mcpRemoteHasToken: (name: string) =>
     invoke<boolean>("mcp_remote_has_token", { name }),
   mcpDeleteRemoteToken: (name: string) =>

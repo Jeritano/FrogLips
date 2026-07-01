@@ -176,7 +176,16 @@ impl ServerState {
         if guard.is_some() {
             return;
         }
-        reclaim_mlx_port(MLX_PORT).await;
+        let reaped = reclaim_mlx_port(MLX_PORT).await;
+        // L3: start() releases the inner lock across its own reclaim+spawn, so a
+        // child it spawned in that window is on the port while `guard` is still
+        // None here — reclaim could kill it. If we reaped anything, bump the
+        // generation so that start()'s post-reclaim re-check detects the change
+        // and aborts cleanly (killing its now-dead child) instead of storing it
+        // → no spurious "crashed repeatedly" restart loop.
+        if reaped > 0 {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+        }
         drop(guard);
     }
 

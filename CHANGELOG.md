@@ -4,6 +4,45 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.34] — 2026-06-26
+
+Security review v3 fixes — two TS gate bypasses, a de-anonymization gap, and the
+v0.14.33 parity regressions closed with SHARED helpers so the class stops
+recurring.
+
+### Security
+- **Imported Flows can't run elevated tools auto-approved (H1).** `flowFromDoc`
+  now stamps `needsReview:true` + `unattended:false` on every imported card — an
+  imported/pasted Flow (more untrusted than chat) must be human-Armed before its
+  `run_shell`/`write_file`/`http_request` cards run.
+- **Repo-local policy can't auto-approve writes (H2).** The WRITE branch now
+  applies the same `isRepoLocalPolicy` suppression the shell/dangerous branches
+  already had, so a repo-shipped `allowed_write_paths` no longer skips the
+  write-confirm modal.
+- **Proxy toggle no longer leaks the real IP (M1).** The pinned-client cache key
+  includes the proxy identity, so enabling Tor/SOCKS can't reuse a cached direct
+  client for up to the 60s TTL.
+- **`mcp_oauth_refresh` command removed (L5)** — it was ungated and had no
+  frontend caller; refresh is handled internally on 401.
+- **`list_processes` filters to the current uid (L6)**; memory keyword search
+  reuses the correct LIKE-escape (L7); subagents don't inherit the parent's
+  "remember shell prefix" callback (I2).
+
+### Fixed (v0.14.33 parity regressions — now via shared helpers + tests)
+- **File-write parent re-check now covers `edit_file`/`multi_edit`** (L1) via a
+  single `reconfirm_parent_before_write` helper called at every write site.
+- **Path normalization now on the LIVE TS enforcing path** (L2) —
+  `normalizePolicyPath` mirrors Rust `lexically_normalize`; +unit test.
+- **Boot orphan-reap bumps the generation** so a raced `start()` aborts cleanly
+  instead of storing a killed child (L3).
+- Task-queue reclaims a stuck-Pending slot (I1); parallel-prefetch stall
+  behavior documented as best-effort (L9).
+
+### Deferred (documented in code — bounded/UI, non-security)
+L4 (OAuth AS consent-UI surfacing; AS already sourced from the resource's own
+list), L8 (scheduler key-format on schedule-kind change), L10 (roundtable
+auto-save editor snapshot), L11 (run-from-card pre-flight subset ordering).
+
 ## [0.14.33] — 2026-06-25
 
 Fixes from review v2 — a regression I introduced in v0.14.30-32, several

@@ -371,19 +371,38 @@ function policyShellVerdict(
   return prefixes.includes(first) ? "auto" : "needs-confirm";
 }
 
+/**
+ * Lexically collapse `.`/`..` segments (mirrors Rust `lexically_normalize` in
+ * policy.rs) so a `..` can't satisfy an allow rule or dodge a deny rule. L2:
+ * this is the LIVE enforcing path — v0.14.33 added the collapse to Rust
+ * `evaluate_write` but missed this TS twin. Purely string-level; `fs.rs`
+ * canonicalizes for real before any write.
+ */
+export function normalizePolicyPath(path: string): string {
+  const isAbs = path.startsWith("/");
+  const out: string[] = [];
+  for (const seg of path.split(/[\\/]+/)) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") out.pop();
+    else out.push(seg);
+  }
+  return (isAbs ? "/" : "") + out.join("/");
+}
+
 function policyWriteVerdict(
   policy: ProjectPolicy,
   path: string,
 ): PolicyVerdict {
   if (!path) return "needs-confirm";
+  const norm = normalizePolicyPath(path);
   if (policy.denied_write_paths) {
     for (const p of policy.denied_write_paths) {
-      if (matchesPolicyPattern(path, p)) return "denied";
+      if (matchesPolicyPattern(norm, p)) return "denied";
     }
   }
   if (policy.allowed_write_paths) {
     for (const p of policy.allowed_write_paths) {
-      if (matchesPolicyPattern(path, p)) return "auto";
+      if (matchesPolicyPattern(norm, p)) return "auto";
     }
     return "needs-confirm";
   }
@@ -478,7 +497,16 @@ export function policyDecisionFor(
     // have no path to evaluate — fall through to the existing prompt.
     const path = typeof args.path === "string" ? args.path : "";
     if (!path) return "needs-confirm";
-    return policyWriteVerdict(policy, path);
+    const v = policyWriteVerdict(policy, path);
+    // H2: repo-local policies are attacker-controllable — clone/extract makes
+    // .froglips/.trusted owned by the extracting user, defeating the Rust
+    // ownership check, so `policy.rs` delegates the real defense to this
+    // suppression. The dangerous + shell branches above already apply it; the
+    // WRITE branch must too, else a repo-shipped `allowed_write_paths` silently
+    // auto-approves in-workspace overwrites. Only a user-GLOBAL policy may
+    // auto-approve writes; deny verdicts are still honored.
+    if (isRepoLocalPolicy(policy)) return v === "auto" ? "needs-confirm" : v;
+    return v;
   }
   return "needs-confirm";
 }
@@ -1482,6 +1510,12 @@ export async function runAgentLoop(
       // serial path — only the awaited IPC overlaps. `load_claude_skill` is
       // excluded because it narrows the run's allowlist as a side effect and
       // must run through the serial post-processing.
+      // L9 (accepted): the stall guard runs in the SERIAL consumption loop, so
+      // up to PARALLEL_READ_CAP over-limit identical reads can spend their IPC
+      // before the guard trips. Bounded (read-only, capped pool, MAX_ITERATIONS
+      // + dedupe) — for the parallel path stall protection is a best-effort
+      // budget, not a hard per-call cap. Read-only amplification only; a prompt
+      // injection can't escalate past extra reads.
       const isCloudRoute =
         typeof opts.model === "string" && opts.model.endsWith(":cloud");
       const canParallelize =

@@ -622,7 +622,10 @@ pub fn search_keyword(query: &str, limit: i64, ctx: &MemoryContext) -> Result<Ve
     if q.is_empty() {
         return Ok(vec![]);
     }
-    let like = format!("%{}%", q.replace('%', "\\%").replace('_', "\\_"));
+    // L7: reuse history::escape_like (escapes `\` too) — the old hand-rolled
+    // escape missed the backslash, silently dropping matches for queries with a
+    // literal `\` under `ESCAPE '\'`.
+    let like = format!("%{}%", crate::history::escape_like(q));
     let conn = get_db()?;
     // Fetch a broader candidate set then filter by scope in Rust — the join
     // expression for "global OR (project AND root match) OR (conv AND conv
