@@ -147,6 +147,48 @@ fn classify(kind: &EventKind) -> &'static str {
     }
 }
 
+/// Debounce decision for a single event, factored out of the watch callback so
+/// it is deterministically unit-testable with an injected clock (`ts_ms`) and
+/// no real filesystem/FSEvents dependency.
+///
+/// Returns `true` if the event should be emitted, `false` if it collapses into
+/// a prior same-path same-kind event still inside the window. On emit it
+/// records `(ts_ms, kind)` in `last_seen` so subsequent burst members debounce
+/// against it. `window_ms == 0` disables debouncing (always emit).
+///
+/// Contract (see `debounce_admit_collapses_burst`): a run of same-path
+/// same-kind events whose timestamps all fall within `window_ms` of the first
+/// emitted one collapses to exactly one emitted event. A different-kind event
+/// for the same path resets the stored kind, so a later same-kind event is
+/// admitted again — this is why a real OS event stream that interleaves other
+/// kinds between writes can let extra events through, and why the reliable
+/// coverage lives here rather than in a wall-clock integration test.
+fn debounce_admit(
+    last_seen: &mut HashMap<String, (u64, String)>,
+    path: &str,
+    kind: &str,
+    ts_ms: u64,
+    window_ms: u64,
+) -> bool {
+    if window_ms == 0 {
+        return true;
+    }
+    if let Some((prev_ts, prev_kind)) = last_seen.get(path) {
+        if prev_kind == kind && ts_ms.saturating_sub(*prev_ts) < window_ms {
+            return false;
+        }
+    }
+    // PERF (medium): bound the map. Entries whose last_ts is already older than
+    // the debounce window can never debounce again, so dropping them is
+    // correctness-neutral. Prune opportunistically only when the map grows past
+    // the cap to keep the common path cheap.
+    if last_seen.len() >= DEBOUNCE_MAP_PRUNE_CAP {
+        last_seen.retain(|_, (prev_ts, _)| ts_ms.saturating_sub(*prev_ts) < window_ms);
+    }
+    last_seen.insert(path.to_string(), (ts_ms, kind.to_string()));
+    true
+}
+
 /// Push an event into the ring, evicting the oldest if full. Stamps a
 /// monotonic `seq` (the poll cursor) so same-millisecond events stay
 /// individually addressable.
@@ -290,23 +332,14 @@ pub async fn watch_path(
                 }
             }
             // Debounce: skip same-path same-kind events inside the window.
+            // Decision logic lives in `debounce_admit` so it stays deterministically
+            // testable with an injected clock (no wall-clock flake).
             if !debounce.is_zero() {
                 let window = debounce.as_millis() as u64;
                 let mut g = last_seen_for_cb.lock();
-                if let Some((prev_ts, prev_kind)) = g.get(&p_str) {
-                    if *prev_kind == kind && ts.saturating_sub(*prev_ts) < window {
-                        continue;
-                    }
+                if !debounce_admit(&mut g, &p_str, &kind, ts, window) {
+                    continue;
                 }
-                // PERF (medium): bound the map. Entries whose last_ts is already
-                // older than the debounce window can never debounce again, so
-                // dropping them is correctness-neutral. Prune opportunistically
-                // only when the map grows past the cap to keep the common path
-                // cheap.
-                if g.len() >= DEBOUNCE_MAP_PRUNE_CAP {
-                    g.retain(|_, (prev_ts, _)| ts.saturating_sub(*prev_ts) < window);
-                }
-                g.insert(p_str.clone(), (ts, kind.clone()));
             }
             let ev = WatchEvent {
                 kind: kind.clone(),
@@ -515,54 +548,78 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
-    #[tokio::test]
-    async fn debounce_collapses_burst() {
-        // See watcher_detects_file_create: take the shared workspace lock + pin
-        // root to None so a parallel WORKSPACE_ROOT mutation can't fail watch_path.
-        let _ws = crate::agent::fs::WS_TEST_LOCK.lock();
-        let _ = crate::agent::fs::set_workspace_root(None);
-        let tmp = tempdir_in_target("fs_watcher_debounce");
-        let handle = watch_path(
-            tmp.to_string_lossy().into_owned(),
-            None,
-            Some(2000), // 2-second debounce window
-        )
-        .await
-        .expect("watch start");
+    /// Debounce collapse, driven through `debounce_admit` with an injected clock.
+    ///
+    /// This deliberately does NOT go through the real filesystem + `notify` +
+    /// FSEvents. The debounce *decision* is deterministic given the event
+    /// timestamps; the flake in the old wall-clock version came entirely from
+    /// the OS event stream — under CI load macOS FSEvents can split the burst
+    /// and interleave a non-"modified" event between writes, resetting the
+    /// same-kind dedup and letting extra modify events slip through, so an
+    /// assertion on the residual count (even a loose `<4`) was inherently racy.
+    /// Feeding synthetic events with controlled `ts_ms` removes that
+    /// nondeterminism and lets us assert the *exact* collapse contract instead
+    /// of a bound — strictly stronger than the old test, and cannot flake.
+    /// (The full watch→notify→ring→poll pipeline is still exercised
+    /// end-to-end by `watcher_detects_file_create`.)
+    #[test]
+    fn debounce_collapses_burst() {
+        const WINDOW: u64 = 2000;
+        let path = "/ws/burst.txt";
 
-        sleep(Duration::from_millis(200)).await;
-
-        let f = tmp.join("burst.txt");
-        fs::write(&f, "a").expect("w1");
-        fs::write(&f, "b").expect("w2");
-        fs::write(&f, "c").expect("w3");
-        fs::write(&f, "d").expect("w4");
-        flush().await;
-
-        let poll = poll_watch(handle.watch_id.clone(), None, Some(100))
-            .await
-            .expect("poll");
-        // With a 2s debounce, the 4 rapid writes must COLLAPSE — they cannot each
-        // produce their own modify event. The exact residual count isn't
-        // deterministic: macOS FSEvents can split the create+initial-modify from
-        // the burst and, under CI load, interleave a non-"modified" event between
-        // writes, which resets the same-kind dedup and lets an extra modify
-        // through. So the contract we assert is the documented one — "definitely
-        // not 4+" — i.e. strictly fewer than the 4 writes. (A hard ≤2 was tighter
-        // than the debounce actually guarantees on a loaded runner → flaky.)
-        let modify_count = poll
-            .events
+        // A 4-write same-kind burst inside the window collapses to exactly one
+        // emitted event — the guarantee the old test tried (and failed) to
+        // assert against a live event stream.
+        let mut m = HashMap::new();
+        let burst = [1000u64, 1005, 1010, 1015]; // all within 2000ms of the first
+        let emitted = burst
             .iter()
-            .filter(|e| e.kind == "modified" && e.path.ends_with("burst.txt"))
+            .filter(|&&ts| debounce_admit(&mut m, path, "modified", ts, WINDOW))
             .count();
-        assert!(
-            modify_count < 4,
-            "expected debounce to collapse the 4-write burst (<4 modify events), got {modify_count}: {:?}",
-            poll.events
+        assert_eq!(
+            emitted, 1,
+            "4-write same-kind burst inside the window must collapse to exactly 1 emitted event"
         );
 
-        let _ = stop_watch(handle.watch_id);
-        let _ = fs::remove_dir_all(&tmp);
+        // First event is always emitted; same-kind repeats strictly inside the
+        // window are suppressed; a same-kind event at/after the window edge is
+        // emitted again (2999-1000=1999 < 2000 collapses; 3000-1000=2000 does not).
+        let mut m = HashMap::new();
+        assert!(debounce_admit(&mut m, path, "modified", 1000, WINDOW));
+        assert!(!debounce_admit(&mut m, path, "modified", 1100, WINDOW));
+        assert!(!debounce_admit(&mut m, path, "modified", 2999, WINDOW));
+        assert!(debounce_admit(&mut m, path, "modified", 3000, WINDOW));
+
+        // A different-kind event for the same path resets the stored kind, so a
+        // subsequent same-kind event is admitted even inside the window. This is
+        // exactly the OS-interleaving path that made the wall-clock test flaky.
+        let mut m = HashMap::new();
+        assert!(debounce_admit(&mut m, path, "modified", 1000, WINDOW));
+        assert!(!debounce_admit(&mut m, path, "modified", 1010, WINDOW)); // collapsed
+        assert!(debounce_admit(&mut m, path, "created", 1020, WINDOW)); // different kind
+        assert!(debounce_admit(&mut m, path, "modified", 1030, WINDOW)); // kind reset → admitted
+
+        // Distinct paths never debounce against each other.
+        let mut m = HashMap::new();
+        assert!(debounce_admit(
+            &mut m,
+            "/ws/a.txt",
+            "modified",
+            1000,
+            WINDOW
+        ));
+        assert!(debounce_admit(
+            &mut m,
+            "/ws/b.txt",
+            "modified",
+            1000,
+            WINDOW
+        ));
+
+        // window == 0 disables debouncing entirely — every event is emitted.
+        let mut m = HashMap::new();
+        assert!(debounce_admit(&mut m, path, "modified", 1000, 0));
+        assert!(debounce_admit(&mut m, path, "modified", 1000, 0));
     }
 
     #[test]
