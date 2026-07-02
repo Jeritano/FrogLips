@@ -4,6 +4,16 @@ All notable changes to Froglips are documented in this file. Format loosely foll
 
 ## [Unreleased]
 
+## [0.14.35] — 2026-06-26
+
+### Fixed
+- **New Ollama models now appear in the library browser.** The scraped catalogue
+  (cloud + `ollama.com/library`, ~255 models) was truncated to a 200-entry cap
+  applied AFTER merge, silently dropping the tail of the library — exactly where
+  newer, less-popular models sort — so recent releases never showed. Raised the
+  cap to 500 (memory/DoS bound only; the payload stays small). Note: the list is
+  still cached in-memory for 10 minutes, so a brand-new model can lag up to that.
+
 ## [0.14.34] — 2026-06-26
 
 Security review v3 fixes — two TS gate bypasses, a de-anonymization gap, and the

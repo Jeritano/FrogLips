@@ -51,10 +51,13 @@ const LIBRARY_URL: &str = "https://ollama.com/library";
 /// Cloud model catalogue. Ollama's newest cloud-hosted models live on a
 /// separate search page, not the main `/library` listing.
 const CLOUD_URL: &str = "https://ollama.com/search?c=cloud";
-/// Hard cap on entries returned to the frontend. The page typically lists
-/// 30-100 models — 200 is a generous upper bound that still keeps the IPC
-/// payload small.
-const MAX_ENTRIES: usize = 200;
+/// Hard cap on entries returned to the frontend (a memory/DoS bound). Bumped
+/// 200→500: the `/library` listing alone now serves ~235 models and merges
+/// AFTER the ~20 cloud entries, so a 200 cap silently truncated the tail of the
+/// library — exactly where newer, less-popular models sort — making new models
+/// invisible in the app. 500 covers the full catalogue + headroom; the payload
+/// stays small.
+const MAX_ENTRIES: usize = 500;
 /// Max chars of description text to keep per entry.
 const DESC_CAP: usize = 500;
 /// In-memory cache TTL.
